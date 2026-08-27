@@ -62,17 +62,10 @@ jobs:
           distribution: temurin
           java-version: ${{ github.event.inputs.java_version }}
 
-      # ============ 3. 设置 Android SDK ============
-      - name: 🤖 Set up Android SDK
-        uses: android-actions/setup-android@v3
-        with:
-          packages: |
-            platforms;android-34
-            build-tools;34.0.0
-
-      # ============ 4. 设置 Gradle ============
+      # ============ 3. 设置 Gradle ============
       # 使用 setup-gradle 而非依赖 gradlew，规避 gradle-wrapper.jar 缺失问题
       # 它会安装指定版本的 Gradle 到 PATH，并配置依赖缓存
+      # 注意：不使用 setup-android，因为 ubuntu-latest 镜像已预装 Android SDK 34 + build-tools
       - name: 🛠️ Set up Gradle ${{ github.event.inputs.gradle_version }}
         uses: gradle/actions/setup-gradle@v3
         with:
