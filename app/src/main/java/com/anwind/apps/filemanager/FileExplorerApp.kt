@@ -215,13 +215,17 @@ private fun FileExplorerContent(scope: WindowContentScope) {
                         EmptyState(theme, "此文件夹为空")
                     } else if (isGridView) {
                         FileGrid(realItems, theme) { file ->
-                            if (file.isDirectory) realStack = realStack + file
-                            else openRealFile(context, file)
+                            if (file is DocumentFile) {
+                                if (file.isDirectory) realStack = realStack + file
+                                else openRealFile(context, file)
+                            }
                         }
                     } else {
                         FileList(realItems, theme) { file ->
-                            if (file.isDirectory) realStack = realStack + file
-                            else openRealFile(context, file)
+                            if (file is DocumentFile) {
+                                if (file.isDirectory) realStack = realStack + file
+                                else openRealFile(context, file)
+                            }
                         }
                     }
                 } else if (items.isEmpty()) {
