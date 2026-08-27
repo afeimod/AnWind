@@ -21,6 +21,35 @@ android {
         }
     }
 
+    // ============================================================
+    // 签名配置
+    // ============================================================
+    // 优先使用环境变量指定的 release keystore（CI 环境会自动生成）
+    // 如果环境变量不存在（本地开发），回退到 debug 签名
+    //
+    // ⚠️ 重要：debug 签名的 APK 会被标记为 testOnly=true，
+    //    Android 14 系统安装器会拒绝安装（必须 adb install -t）
+    //    所以 CI 构建必须用 release keystore 签名
+    // ============================================================
+    val keystorePath = System.getenv("KEYSTORE_PATH")
+    val keystorePass = System.getenv("KEYSTORE_PASS")
+    val keyAlias = System.getenv("KEY_ALIAS") ?: "anwind"
+    val keyPass = System.getenv("KEY_PASS")
+
+    signingConfigs {
+        create("release") {
+            if (keystorePath != null && file(keystorePath).exists()) {
+                storeFile = file(keystorePath)
+                storePassword = keystorePass
+                this.keyAlias = keyAlias
+                this.keyPassword = keyPass ?: keystorePass
+                println("✅ Using release keystore from: $keystorePath")
+            } else {
+                println("⚠️  No release keystore found, release APK will use debug signing (testOnly)")
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
@@ -28,11 +57,13 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
-            // ⚠️ 使用 debug 签名让 release APK 可直接安装到 Android 7-14
-            // 原因：Android 14 拒绝安装未签名的 APK（会提示"应用未安装"或"解析包时出现问题"）
-            // 正式发布时请替换为自己的 keystore，参考：
-            //   keytool -genkey -v -keystore anwind.keystore -alias anwind -keyalg RSA -keysize 2048 -validity 10000
-            signingConfig = signingConfigs.getByName("debug")
+            // 使用 release keystore 签名（CI 环境自动生成）
+            // 如果没有 release keystore，回退到 debug 签名
+            signingConfig = if (keystorePath != null && file(keystorePath).exists()) {
+                signingConfigs.getByName("release")
+            } else {
+                signingConfigs.getByName("debug")
+            }
         }
         debug {
             isMinifyEnabled = false
@@ -57,10 +88,6 @@ android {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
-    }
-    // 允许 assets 中的虚拟文件系统
-    androidResources {
-        // no-op
     }
 }
 

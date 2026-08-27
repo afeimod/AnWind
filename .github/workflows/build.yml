@@ -86,6 +86,30 @@ jobs:
           fi
           ls -lh gradle/wrapper/
 
+      # ============ 5.5 生成 release keystore ============
+      # 关键：用 debug 签名签的 release APK 会被标记为 testOnly=true，
+      # Android 14 系统安装器拒绝安装（必须 adb install -t）。
+      # 这里生成一个真正的 release keystore，让 APK 带标准 V1+V2+V3 签名，
+      # 不带 testOnly，任何 Android 设备都能直接点击安装。
+      - name: 🔑 Generate release keystore
+        run: |
+          keytool -genkeypair -v \
+            -keystore anwind-release.keystore \
+            -alias anwind \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000 \
+            -storepass anwind-release-pass-2026 \
+            -keypass anwind-release-pass-2026 \
+            -dname "CN=AnWind, OU=Dev, O=AnWind, L=Beijing, ST=Beijing, C=CN"
+          echo "✅ Release keystore generated"
+          ls -lh anwind-release.keystore
+        env:
+          KEYSTORE_PATH: ${{ github.workspace }}/anwind-release.keystore
+          KEYSTORE_PASS: anwind-release-pass-2026
+          KEY_ALIAS: anwind
+          KEY_PASS: anwind-release-pass-2026
+
       # ============ 6. 校验项目结构 ============
       - name: 🔍 Validate project structure
         run: |
@@ -116,11 +140,21 @@ jobs:
       - name: 🔨 Build Debug APK
         if: github.event.inputs.build_type == 'debug' || github.event.inputs.build_type == 'both'
         run: gradle assembleDebug --stacktrace --no-daemon
+        env:
+          KEYSTORE_PATH: ${{ github.workspace }}/anwind-release.keystore
+          KEYSTORE_PASS: anwind-release-pass-2026
+          KEY_ALIAS: anwind
+          KEY_PASS: anwind-release-pass-2026
 
-      # ============ 9. 构建 Release APK（不签名，仅编译） ============
+      # ============ 9. 构建 Release APK（用 release keystore 签名） ============
       - name: 🔨 Build Release APK
         if: github.event.inputs.build_type == 'release' || github.event.inputs.build_type == 'both'
         run: gradle assembleRelease --stacktrace --no-daemon
+        env:
+          KEYSTORE_PATH: ${{ github.workspace }}/anwind-release.keystore
+          KEYSTORE_PASS: anwind-release-pass-2026
+          KEY_ALIAS: anwind
+          KEY_PASS: anwind-release-pass-2026
 
       # ============ 10. 运行单元测试（可选） ============
       - name: 🧪 Run unit tests
@@ -128,20 +162,38 @@ jobs:
         continue-on-error: true
         run: gradle test --no-daemon || echo "⚠️ Tests skipped or failed (non-blocking)"
 
-      # ============ 11. 列出生成的 APK ============
-      - name: 📦 List built APKs
+      # ============ 11. 列出并验证 APK ============
+      - name: 📦 List and verify APKs
         if: success()
         run: |
           echo "=== Built APK files ==="
           find app/build/outputs/apk -name "*.apk" -exec ls -lh {} \; || echo "No APK found"
           echo ""
-          echo "=== APK details ==="
+          echo "=== APK signature & testOnly verification ==="
           for apk in $(find app/build/outputs/apk -name "*.apk" 2>/dev/null); do
+            echo "----------------------------------------"
             echo "File: $apk"
-            if command -v aapt2 >/dev/null 2>&1; then
-              aapt2 dump badging "$apk" | head -5
+            # 检查签名
+            if unzip -l "$apk" | grep -q "META-INF/.*\.RSA"; then
+              echo "✓ 签名: 有 V2/V3 签名 (RSA 文件存在)"
+            elif unzip -l "$apk" | grep -q "META-INF/CERT\.SF"; then
+              echo "✓ 签名: 有 V1 签名 (CERT.SF 存在)"
+            else
+              echo "✗ 签名: 无签名！(APK 无法安装)"
             fi
-            echo "---"
+            # 检查 testOnly 标志
+            # Android 14 拒绝安装 testOnly APK
+            if command -v aapt2 >/dev/null 2>&1; then
+              badging=$(aapt2 dump badging "$apk" 2>/dev/null)
+              if echo "$badging" | grep -q "testOnly='true'"; then
+                echo "✗ testOnly: TRUE (Android 系统安装器会拒绝安装！)"
+              else
+                echo "✓ testOnly: false (可正常安装)"
+              fi
+              echo ""
+              echo "APK info:"
+              echo "$badging" | head -8
+            fi
           done
 
       # ============ 12. 上传 APK Artifact ============
