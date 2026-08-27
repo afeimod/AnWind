@@ -15,7 +15,7 @@ enum class LaunchMode { FULLSCREEN, FLOATING }
 data class WindowState(
     val id: String = UUID.randomUUID().toString(),
     val appId: String,
-    val title: String,
+    var title: String,
     val launchMode: LaunchMode,
     // 浮动窗口位置/大小（FULLSCREEN 模式忽略）
     var x: Int = 60,

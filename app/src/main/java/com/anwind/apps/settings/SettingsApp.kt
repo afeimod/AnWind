@@ -30,7 +30,7 @@ import kotlinx.coroutines.launch
 val SettingsApp = AppDef(
     id = "settings",
     displayName = "设置",
-    iconAsset = "emoji:⚙️",
+    iconAsset = "icons/settings.png",
     launchMode = LaunchMode.FULLSCREEN,
     defaultWidth = 800.dp,
     defaultHeight = 560.dp,
@@ -66,12 +66,12 @@ private fun SettingsContent(scope: WindowContentScope) {
                 modifier = Modifier.padding(bottom = 16.dp)
             )
 
-            SettingsNavItem("🎨", "主题", activeSection == "theme") { activeSection = "theme" }
-            SettingsNavItem("🖼️", "壁纸", activeSection == "wallpaper") { activeSection = "wallpaper" }
-            SettingsNavItem("🔊", "声音", activeSection == "sound") { activeSection = "sound" }
-            SettingsNavItem("🖥️", "任务栏", activeSection == "taskbar") { activeSection = "taskbar" }
-            SettingsNavItem("🌐", "浏览器", activeSection == "browser") { activeSection = "browser" }
-            SettingsNavItem("ℹ️", "关于", activeSection = "about") { activeSection = "about" }
+            SettingsNavItem("🎨", "主题", active = activeSection == "theme") { activeSection = "theme" }
+            SettingsNavItem("🖼️", "壁纸", active = activeSection == "wallpaper") { activeSection = "wallpaper" }
+            SettingsNavItem("🔊", "声音", active = activeSection == "sound") { activeSection = "sound" }
+            SettingsNavItem("🖥️", "任务栏", active = activeSection == "taskbar") { activeSection = "taskbar" }
+            SettingsNavItem("🌐", "浏览器", active = activeSection == "browser") { activeSection = "browser" }
+            SettingsNavItem("ℹ️", "关于", active = activeSection == "about") { activeSection = "about" }
         }
 
         // 右侧内容

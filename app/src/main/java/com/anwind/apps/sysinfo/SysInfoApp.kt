@@ -55,7 +55,7 @@ private fun SysInfoContent(scope: WindowContentScope) {
             "系统概览" to listOf(
                 "操作系统" to "AnWind ${theme.displayName}",
                 "Android 版本" to "${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})",
-                "安全补丁" to Build.SECURITY_PATCH,
+                "安全补丁" to getSecurityPatch(),
                 "构建编号" to Build.DISPLAY
             ),
             "硬件信息" to listOf(
@@ -143,6 +143,17 @@ private fun getInternalStorageAvailable(): Long {
         val stat = StatFs(File("/").absolutePath)
         stat.availableBytes
     } catch (_: Exception) { 0L }
+}
+
+/**
+ * 获取安全补丁日期（API 23+ 才有 Build.VERSION.SECURITY_PATCH）
+ */
+private fun getSecurityPatch(): String {
+    return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+        Build.VERSION.SECURITY_PATCH
+    } else {
+        "unknown"
+    }
 }
 
 private fun formatSize(bytes: Long): String {

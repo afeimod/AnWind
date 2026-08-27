@@ -61,8 +61,20 @@ fun DesktopIconGrid() {
                 sortOrder = idx
             )
         }
-        val shortcutItems = shortcuts.map {
-            it.toDesktopItem()
+        val shortcutItems = shortcuts.map { entity ->
+            DesktopItem(
+                id = "shortcut_${entity.id}",
+                label = entity.label,
+                iconAsset = entity.iconAsset,
+                type = when (entity.type) {
+                    1 -> DesktopItemType.SHORTCUT_URL
+                    2 -> DesktopItemType.SHORTCUT_FILE
+                    3 -> DesktopItemType.SHORTCUT_APP
+                    else -> DesktopItemType.SHORTCUT_URL
+                },
+                target = entity.target,
+                sortOrder = entity.sortOrder
+            )
         }
         builtin + shortcutItems
     }

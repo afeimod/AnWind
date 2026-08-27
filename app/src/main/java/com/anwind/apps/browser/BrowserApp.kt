@@ -11,8 +11,10 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -55,7 +57,7 @@ import java.io.ByteArrayInputStream
 val BrowserApp = AppDef(
     id = "browser",
     displayName = "浏览器",
-    iconAsset = "emoji:🌐",
+    iconAsset = "icons/browser.png",
     launchMode = LaunchMode.FULLSCREEN,
     defaultWidth = 1080.dp,
     defaultHeight = 720.dp,

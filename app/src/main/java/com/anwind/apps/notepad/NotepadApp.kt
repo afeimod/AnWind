@@ -22,7 +22,7 @@ import com.anwind.core.window.WindowContentScope
 val NotepadApp = AppDef(
     id = "notepad",
     displayName = "记事本",
-    iconAsset = "emoji:📝",
+    iconAsset = "icons/notepad.png",
     launchMode = LaunchMode.FLOATING,
     defaultWidth = 560.dp,
     defaultHeight = 400.dp,

@@ -15,7 +15,7 @@ import androidx.compose.ui.unit.dp
  * @property defaultHeight 浮动模式默认高度
  * @property pinnedToTaskbar  是否固定到任务栏
  * @property pinnedToDesktop  是否在桌面显示图标
- * @property content       该应用的 Composable 内容
+ * @property content       该应用的 Composable 内容，接收 WindowContentScope 参数
  */
 data class AppDef(
     val id: String,
@@ -26,7 +26,7 @@ data class AppDef(
     val defaultHeight: Dp = 520.dp,
     val pinnedToTaskbar: Boolean = false,
     val pinnedToDesktop: Boolean = true,
-    val content: @Composable WindowContentScope.() -> Unit
+    val content: @Composable (WindowContentScope) -> Unit
 )
 
 /**

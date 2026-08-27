@@ -35,7 +35,7 @@ import kotlinx.coroutines.withContext
 val FileExplorerApp = AppDef(
     id = "file_explorer",
     displayName = "文件资源管理器",
-    iconAsset = "emoji:📁",
+    iconAsset = "icons/file_explorer.png",
     launchMode = LaunchMode.FULLSCREEN,
     defaultWidth = 900.dp,
     defaultHeight = 600.dp,

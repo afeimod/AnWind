@@ -247,7 +247,7 @@ private fun SearchBox(theme: WinTheme) {
         modifier = Modifier
             .height(theme.taskbarHeight - 12.dp)
             .width(180.dp)
-            .background(theme.taskbarIconColor.copy(alpha = 0.08f), RoundedCornerShape(theme.taskbarHeight.value / 2f).dp)
+            .background(theme.taskbarIconColor.copy(alpha = 0.08f), RoundedCornerShape(theme.taskbarHeight.value / 2f))
             .padding(horizontal = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {

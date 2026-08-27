@@ -62,7 +62,15 @@ jobs:
           distribution: temurin
           java-version: ${{ github.event.inputs.java_version }}
 
-      # ============ 3. 设置 Gradle ============
+      # ============ 3. 设置 Android SDK ============
+      - name: 🤖 Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: |
+            platforms;android-34
+            build-tools;34.0.0
+
+      # ============ 4. 设置 Gradle ============
       # 使用 setup-gradle 而非依赖 gradlew，规避 gradle-wrapper.jar 缺失问题
       # 它会安装指定版本的 Gradle 到 PATH，并配置依赖缓存
       - name: 🛠️ Set up Gradle ${{ github.event.inputs.gradle_version }}
@@ -72,7 +80,7 @@ jobs:
           # 开启缓存，加速二次构建（main 分支可写缓存，其他分支只读）
           cache-read-only: ${{ github.ref != 'refs/heads/main' }}
 
-      # ============ 4. 检查 gradle-wrapper.jar 是否存在 ============
+      # ============ 5. 检查 gradle-wrapper.jar 是否存在 ============
       # 如果不存在，自动生成 wrapper（首次推送仓库时常见情况）
       - name: 🔧 Ensure gradle-wrapper.jar exists
         run: |
@@ -85,7 +93,7 @@ jobs:
           fi
           ls -lh gradle/wrapper/
 
-      # ============ 5. 校验项目结构 ============
+      # ============ 6. 校验项目结构 ============
       - name: 🔍 Validate project structure
         run: |
           echo "=== Project root ==="
@@ -100,34 +108,34 @@ jobs:
           echo "=== Source files count ==="
           find app/src/main/java -name "*.kt" | wc -l
           echo "Kotlin files"
+          echo ""
+          echo "=== Assets ==="
+          find app/src/main/assets -type f | sort
 
-      # ============ 6. 写入 local.properties（SDK 路径） ============
+      # ============ 7. 写入 local.properties（SDK 路径） ============
       - name: 📝 Write local.properties
         run: |
           echo "sdk.dir=$ANDROID_HOME" > local.properties
           echo "✓ local.properties written"
           cat local.properties
 
-      # ============ 7. 构建 Debug APK ============
+      # ============ 8. 构建 Debug APK ============
       - name: 🔨 Build Debug APK
         if: github.event.inputs.build_type == 'debug' || github.event.inputs.build_type == 'both'
         run: gradle assembleDebug --stacktrace --no-daemon
 
-      # ============ 8. 构建 Release APK（不签名，仅编译） ============
+      # ============ 9. 构建 Release APK（不签名，仅编译） ============
       - name: 🔨 Build Release APK
         if: github.event.inputs.build_type == 'release' || github.event.inputs.build_type == 'both'
         run: gradle assembleRelease --stacktrace --no-daemon
-        env:
-          # Release 构建需要签名配置，此处仅做 unsigned 编译
-          ORG_GRADLE_PROJECT_androidSigningDebug: "false"
 
-      # ============ 9. 运行单元测试（可选） ============
+      # ============ 10. 运行单元测试（可选） ============
       - name: 🧪 Run unit tests
         if: github.event.inputs.build_type == 'debug'
         continue-on-error: true
         run: gradle test --no-daemon || echo "⚠️ Tests skipped or failed (non-blocking)"
 
-      # ============ 10. 列出生成的 APK ============
+      # ============ 11. 列出生成的 APK ============
       - name: 📦 List built APKs
         if: success()
         run: |
@@ -143,7 +151,7 @@ jobs:
             echo "---"
           done
 
-      # ============ 11. 上传 APK Artifact ============
+      # ============ 12. 上传 APK Artifact ============
       - name: 📤 Upload Debug APK
         if: github.event.inputs.upload_apk == 'true' && (github.event.inputs.build_type == 'debug' || github.event.inputs.build_type == 'both')
         uses: actions/upload-artifact@v4
@@ -164,7 +172,7 @@ jobs:
           retention-days: 30
           compression-level: 0
 
-      # ============ 12. 上传构建报告（失败时排查用） ============
+      # ============ 13. 上传构建报告（失败时排查用） ============
       - name: 📤 Upload build reports on failure
         if: failure()
         uses: actions/upload-artifact@v4
@@ -177,7 +185,7 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-      # ============ 13. 构建摘要 ============
+      # ============ 14. 构建摘要 ============
       - name: 📊 Build summary
         if: always()
         run: |

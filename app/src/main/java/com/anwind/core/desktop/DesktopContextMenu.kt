@@ -9,10 +9,14 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -51,6 +55,7 @@ fun DesktopContextMenu(
     val theme = LocalWinTheme.current
     val wm = remember { WindowManager.get() }
     val app = AnWindApp.get()
+    val scope0 = rememberCoroutineScope()
     var showShortcutDialog by remember { mutableStateOf(false) }
 
     Popup(
@@ -99,23 +104,25 @@ fun DesktopContextMenu(
         ShortcutCreateDialog(
             onDismiss = { showShortcutDialog = false },
             onCreate = { shortcut ->
-                Thread {
-                    app.database.shortcutDao().insert(
-                        ShortcutEntity(
-                            label = shortcut.label,
-                            iconAsset = shortcut.iconAsset,
-                            type = when (shortcut.type) {
-                                DesktopItemType.SHORTCUT_URL -> 1
-                                DesktopItemType.SHORTCUT_FILE -> 2
-                                DesktopItemType.SHORTCUT_APP -> 3
-                                else -> 1
-                            },
-                            target = shortcut.target,
-                            launchArgs = shortcut.launchArgs,
-                            sortOrder = 0
+                scope0.launch {
+                    withContext(Dispatchers.IO) {
+                        app.database.shortcutDao().insert(
+                            ShortcutEntity(
+                                label = shortcut.label,
+                                iconAsset = shortcut.iconAsset,
+                                type = when (shortcut.type) {
+                                    DesktopItemType.SHORTCUT_URL -> 1
+                                    DesktopItemType.SHORTCUT_FILE -> 2
+                                    DesktopItemType.SHORTCUT_APP -> 3
+                                    else -> 1
+                                },
+                                target = shortcut.target,
+                                launchArgs = shortcut.launchArgs,
+                                sortOrder = 0
+                            )
                         )
-                    )
-                }.start()
+                    }
+                }
                 showShortcutDialog = false
             }
         )
