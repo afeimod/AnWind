@@ -28,6 +28,11 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            // ⚠️ 使用 debug 签名让 release APK 可直接安装到 Android 7-14
+            // 原因：Android 14 拒绝安装未签名的 APK（会提示"应用未安装"或"解析包时出现问题"）
+            // 正式发布时请替换为自己的 keystore，参考：
+            //   keytool -genkey -v -keystore anwind.keystore -alias anwind -keyalg RSA -keysize 2048 -validity 10000
+            signingConfig = signingConfigs.getByName("debug")
         }
         debug {
             isMinifyEnabled = false
