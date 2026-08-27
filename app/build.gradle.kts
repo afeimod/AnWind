@@ -132,9 +132,6 @@ dependencies {
     // Document file (for local HTML access via SAF)
     implementation("androidx.documentfile:documentfile:1.0.1")
 
-    // Splash screen
-    implementation("androidx.core:core-splashscreen:1.0.1")
-
     // Test
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.1.5")
