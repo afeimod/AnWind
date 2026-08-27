@@ -1,6 +1,11 @@
 package com.anwind.apps.filemanager
 
 import android.content.Context
+import android.content.Intent
+import android.net.Uri
+import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -56,6 +61,15 @@ private fun FileExplorerContent(scope: WindowContentScope) {
         value = withContext(Dispatchers.IO) { vfs.list(currentPath) }
     }
 
+    // APK 文件选择器
+    val apkPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            installApk(context, uri)
+        }
+    }
+
     Column(modifier = Modifier.fillMaxSize().background(theme.windowBackgroundColor)) {
 
         // ===== 工具栏 =====
@@ -94,6 +108,13 @@ private fun FileExplorerContent(scope: WindowContentScope) {
                     color = if (theme.isDark) Color.White else Color.Black,
                     fontSize = 12.sp
                 )
+            }
+            Spacer(Modifier.width(8.dp))
+            // 安装 APK 按钮
+            IconButton(onClick = {
+                apkPickerLauncher.launch(arrayOf("application/vnd.android.package-archive"))
+            }) {
+                Icon(Icons.Default.Add, "安装APK", tint = if (theme.isDark) Color.White else Color.Black)
             }
         }
 
@@ -141,6 +162,13 @@ private fun FileExplorerContent(scope: WindowContentScope) {
                                             launchMode = LaunchMode.FULLSCREEN,
                                             launchArgs = mapOf("url" to url)
                                         )
+                                    } else if (file.extension == "apk") {
+                                        // 安装 APK（通过文件选择器选择的 URI）
+                                        if (file.realUri != null) {
+                                            installApk(context, file.realUri)
+                                        } else {
+                                            Toast.makeText(context, "APK 文件路径不可用，请使用工具栏的安装按钮选择文件", Toast.LENGTH_SHORT).show()
+                                        }
                                     }
                                 }
                             )
@@ -223,11 +251,30 @@ private fun FileRow(file: VirtualFile, onClick: () -> Unit) {
 }
 
 private fun iconForExtension(ext: String): String = when (ext.lowercase()) {
+    "apk" -> "📦"
     "html", "htm" -> "🌐"
     "txt" -> "📄"
     "jpg", "png", "gif" -> "🖼️"
     "mp3", "wav" -> "🎵"
     "mp4", "avi" -> "📺"
     "pdf" -> "📕"
+    "exe", "msi" -> "⚙️"
+    "zip", "rar", "7z" -> "🗜️"
     else -> "📄"
+}
+
+/**
+ * 启动系统安装程序安装 APK 文件
+ */
+private fun installApk(context: Context, uri: Uri) {
+    try {
+        val intent = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(uri, "application/vnd.android.package-archive")
+            flags = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK
+            addCategory(Intent.CATEGORY_DEFAULT)
+        }
+        context.startActivity(intent)
+    } catch (e: Exception) {
+        Toast.makeText(context, "无法启动安装程序: ${e.message}", Toast.LENGTH_LONG).show()
+    }
 }

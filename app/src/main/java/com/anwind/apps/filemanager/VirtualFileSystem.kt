@@ -11,7 +11,8 @@ data class VirtualFile(
     val isDirectory: Boolean,
     val size: Long = 0,
     val extension: String = "",
-    val assetPath: String = ""  // assets 中的实际路径（用于打开 html 等）
+    val assetPath: String = "",  // assets 中的实际路径（用于打开 html 等）
+    val realUri: android.net.Uri? = null  // 真实文件系统的 URI（用于安装 APK 等）
 ) {
     val sizeText: String
         get() = when {
