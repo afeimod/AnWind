@@ -6,10 +6,9 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.grid.GridCells
-import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -37,17 +36,19 @@ import com.anwind.data.model.Shortcut
 import java.io.IOException
 
 /**
- * 桌面图标网格：左侧竖排排列。
+ * 桌面图标网格：靠左上角、从左到右自动换行排列（类似 Windows 桌面）。
  *
  * 数据来源：
  * 1. AppRegistry 中 pinnedToDesktop=true 的内置应用
  * 2. 数据库中保存的快捷方式
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun DesktopIconGrid() {
     val app = AnWindApp.get()
     val shortcuts by app.database.shortcutDao().observeAll().collectAsState(initial = emptyList())
     val builtinApps = remember { AppRegistry.desktopApps() }
+    val iconSize by app.settingsStore.iconSize.collectAsState(initial = 48f)
 
     // 合并桌面项
     val items: List<DesktopItem> = remember(shortcuts, builtinApps) {
@@ -79,29 +80,36 @@ fun DesktopIconGrid() {
         builtin + shortcutItems
     }
 
-    LazyVerticalGrid(
-        columns = GridCells.Fixed(1),   // 单列竖排，类似 Windows 桌面默认布局
+    Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(8.dp),
-        verticalArrangement = Arrangement.spacedBy(4.dp)
+            .padding(8.dp)
+            .verticalScroll(rememberScrollState())
     ) {
-        items(items, key = { it.id }) { item ->
-            DesktopIcon(item = item)
+        // 从左到右、自动换行排列；图标超出一屏时可纵向滚动，不会被裁剪
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            items.forEach { item ->
+                DesktopIcon(item = item, iconSize = iconSize)
+            }
         }
     }
 }
 
 @Composable
-private fun DesktopIcon(item: DesktopItem) {
+private fun DesktopIcon(item: DesktopItem, iconSize: Float) {
     val theme = LocalWinTheme.current
     val wm = remember { WindowManager.get() }
     val app = AppRegistry.get(item.target) // 内置应用
+    val iconPx = iconSize.dp
+    val cellWidth = (iconSize + 24).dp
 
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         modifier = Modifier
-            .width(72.dp)
+            .width(cellWidth)
             .pointerInput(item.id) {
                 detectTapGestures(
                     onDoubleTap = {
@@ -151,7 +159,7 @@ private fun DesktopIcon(item: DesktopItem) {
             .padding(4.dp)
     ) {
         // 图标
-        IconPainter(item.iconAsset, size = 36.dp)
+        IconPainter(item.iconAsset, size = iconPx)
 
         Spacer(Modifier.height(2.dp))
 
@@ -164,7 +172,7 @@ private fun DesktopIcon(item: DesktopItem) {
             textAlign = TextAlign.Center,
             maxLines = 2,
             overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.width(72.dp)
+            modifier = Modifier.width(cellWidth)
         )
     }
 }

@@ -17,6 +17,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import com.anwind.AnWindApp
 import com.anwind.core.desktop.IconPainter
 import com.anwind.core.theme.LocalWinTheme
@@ -26,6 +28,7 @@ import com.anwind.core.window.AppDef
 import com.anwind.core.window.LaunchMode
 import com.anwind.core.window.WindowContentScope
 import kotlinx.coroutines.launch
+import kotlin.math.roundToInt
 
 val SettingsApp = AppDef(
     id = "settings",
@@ -68,6 +71,7 @@ private fun SettingsContent(scope: WindowContentScope) {
 
             SettingsNavItem("🎨", "主题", active = activeSection == "theme") { activeSection = "theme" }
             SettingsNavItem("🖼️", "壁纸", active = activeSection == "wallpaper") { activeSection = "wallpaper" }
+            SettingsNavItem("🖥️", "显示", active = activeSection == "display") { activeSection = "display" }
             SettingsNavItem("🔊", "声音", active = activeSection == "sound") { activeSection = "sound" }
             SettingsNavItem("🖥️", "任务栏", active = activeSection == "taskbar") { activeSection = "taskbar" }
             SettingsNavItem("🌐", "浏览器", active = activeSection == "browser") { activeSection = "browser" }
@@ -79,6 +83,7 @@ private fun SettingsContent(scope: WindowContentScope) {
             when (activeSection) {
                 "theme" -> ThemeSection()
                 "wallpaper" -> WallpaperSection()
+                "display" -> DisplaySection()
                 "sound" -> SoundSection()
                 "taskbar" -> TaskbarSection()
                 "browser" -> BrowserSection()
@@ -209,6 +214,22 @@ private fun WallpaperSection() {
     val scope0 = rememberCoroutineScope()
     val customWallpaper by app.settingsStore.customWallpaper.collectAsState(initial = null)
 
+    // 从图库选择图片作为壁纸（OpenDocument 授予可持久化的读取权限）
+    val pickWallpaper = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            // 持久化读取权限，重启后仍可使用该壁纸
+            runCatching {
+                app.contentResolver.takePersistableUriPermission(
+                    uri,
+                    android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
+            }
+            scope0.launch { app.settingsStore.setCustomWallpaper(uri.toString()) }
+        }
+    }
+
     Column {
         Text("壁纸", color = if (theme.isDark) Color.White else Color.Black,
             fontSize = 22.sp, fontWeight = FontWeight.Bold)
@@ -217,15 +238,81 @@ private fun WallpaperSection() {
             color = if (theme.isDark) Color.White else Color.Black, fontSize = 12.sp)
         Spacer(Modifier.height(12.dp))
 
-        Button(onClick = {
-            // 简化：清除自定义，回到主题默认
-            scope0.launch { app.settingsStore.setCustomWallpaper(null) }
-        }) { Text("恢复默认壁纸") }
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Button(onClick = { pickWallpaper.launch(arrayOf("image/*")) }) {
+                Text("从图库选择壁纸")
+            }
+            if (customWallpaper != null) {
+                Button(onClick = {
+                    scope0.launch { app.settingsStore.setCustomWallpaper(null) }
+                }) { Text("恢复默认壁纸") }
+            }
+        }
+    }
+}
 
+/**
+ * 显示设置：桌面图标大小、时钟显示秒、任务栏自动隐藏。
+ */
+@Composable
+private fun DisplaySection() {
+    val theme = LocalWinTheme.current
+    val app = AnWindApp.get()
+    val scope0 = rememberCoroutineScope()
+    val iconSize by app.settingsStore.iconSize.collectAsState(initial = 48f)
+    val showSeconds by app.settingsStore.showSeconds.collectAsState(initial = false)
+    val taskbarAutohide by app.settingsStore.taskbarAutohide.collectAsState(initial = false)
+
+    Column {
+        Text("显示", color = if (theme.isDark) Color.White else Color.Black,
+            fontSize = 22.sp, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(20.dp))
-        Text("提示：可通过图库应用设置自定义壁纸（即将推出）",
+
+        // 桌面图标大小
+        Text("桌面图标大小", color = if (theme.isDark) Color.White else Color.Black, fontSize = 13.sp)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Slider(
+                value = iconSize,
+                onValueChange = {
+                    scope0.launch { app.settingsStore.setIconSize(it) }
+                },
+                valueRange = 28f..72f
+            )
+            Spacer(Modifier.width(12.dp))
+            Text(
+                "${iconSize.roundToInt()}dp",
+                color = if (theme.isDark) Color.White else Color.Black,
+                fontSize = 12.sp
+            )
+        }
+        Spacer(Modifier.height(16.dp))
+
+        // 时钟显示秒
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("时钟显示秒", color = if (theme.isDark) Color.White else Color.Black, fontSize = 13.sp)
+            Spacer(Modifier.weight(1f))
+            Switch(
+                checked = showSeconds,
+                onCheckedChange = { v -> scope0.launch { app.settingsStore.setShowSeconds(v) } }
+            )
+        }
+        Spacer(Modifier.height(8.dp))
+
+        // 任务栏自动隐藏
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("任务栏自动隐藏", color = if (theme.isDark) Color.White else Color.Black, fontSize = 13.sp)
+            Spacer(Modifier.weight(1f))
+            Switch(
+                checked = taskbarAutohide,
+                onCheckedChange = { v -> scope0.launch { app.settingsStore.setTaskbarAutohide(v) } }
+            )
+        }
+        Spacer(Modifier.height(8.dp))
+        Text(
+            "开启后，指针移到底部边缘时任务栏自动出现，离开后自动隐藏。",
             color = if (theme.isDark) Color.White else Color.Black,
-            fontSize = 11.sp)
+            fontSize = 11.sp
+        )
     }
 }
 

@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
@@ -21,6 +22,7 @@ class SettingsStore(private val context: Context) {
         val SOUND_ENABLED = booleanPreferencesKey("sound_enabled")
         val TASKBAR_AUTOHIDE = booleanPreferencesKey("taskbar_autohide")
         val SHOW_SECONDS = booleanPreferencesKey("show_seconds")
+        val ICON_SIZE = floatPreferencesKey("icon_size")
         val DEFAULT_BROWSER_HOME = stringPreferencesKey("default_browser_home")
     }
 
@@ -28,6 +30,7 @@ class SettingsStore(private val context: Context) {
     val soundEnabled: Flow<Boolean> = context.appPrefs.data.map { it[Keys.SOUND_ENABLED] ?: true }
     val taskbarAutohide: Flow<Boolean> = context.appPrefs.data.map { it[Keys.TASKBAR_AUTOHIDE] ?: false }
     val showSeconds: Flow<Boolean> = context.appPrefs.data.map { it[Keys.SHOW_SECONDS] ?: false }
+    val iconSize: Flow<Float> = context.appPrefs.data.map { it[Keys.ICON_SIZE] ?: 48f }
     val defaultBrowserHome: Flow<String> = context.appPrefs.data
         .map { it[Keys.DEFAULT_BROWSER_HOME] ?: "https://www.bing.com" }
 
@@ -48,6 +51,10 @@ class SettingsStore(private val context: Context) {
 
     suspend fun setShowSeconds(enabled: Boolean) {
         context.appPrefs.edit { it[Keys.SHOW_SECONDS] = enabled }
+    }
+
+    suspend fun setIconSize(size: Float) {
+        context.appPrefs.edit { it[Keys.ICON_SIZE] = size }
     }
 
     suspend fun setDefaultBrowserHome(url: String) {

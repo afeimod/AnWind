@@ -11,7 +11,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import com.anwind.AnWindApp
 import com.anwind.core.theme.LocalWinTheme
 import com.anwind.core.theme.WinTheme
 import com.anwind.core.window.WindowHost
@@ -31,6 +34,16 @@ fun DesktopEnvironment(
 ) {
     val context = LocalContext.current
     val wm = remember { WindowManager.get() }
+    val app = AnWindApp.get()
+    val density = LocalDensity.current
+
+    // 显示设置
+    val taskbarAutohide by app.settingsStore.taskbarAutohide.collectAsState(initial = false)
+    val showSeconds by app.settingsStore.showSeconds.collectAsState(initial = false)
+
+    // 任务栏自动隐藏：只在与阈值交界处翻转，避免每次指针移动都触发整体重组
+    var taskbarShown by remember { mutableStateOf(true) }
+    var bottomThresholdPx by remember { mutableStateOf(0f) }
 
     // 启动音效
     LaunchedEffect(theme.variant) {
@@ -47,10 +60,32 @@ fun DesktopEnvironment(
         modifier = Modifier
             .fillMaxSize()
             .background(Color.Black)
+            // 仅在开启自动隐藏时监听指针位置（不消费事件），用于底部边缘呼出任务栏
+            .pointerInput(taskbarAutohide) {
+                if (taskbarAutohide) {
+                    awaitPointerEventScope {
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            val y = event.changes.firstOrNull()?.position?.y ?: continue
+                            val visible = y >= bottomThresholdPx
+                            if (visible != taskbarShown) taskbarShown = visible
+                        }
+                    }
+                }
+            }
     ) {
         val fullHeight = maxHeight
         val taskbarHeight = theme.taskbarHeight
         val workAreaHeight = fullHeight - taskbarHeight
+
+        // 计算底部边缘呼出阈值（屏幕高度 - 28dp），供指针监听协程读取
+        SideEffect {
+            bottomThresholdPx = with(density) { fullHeight.toPx() } - with(density) { 28.dp.toPx() }
+        }
+
+        // 任务栏可见性：未开启自动隐藏时始终显示；开启时指针靠近底部或开始菜单打开才显示
+        val taskbarVisible = !taskbarAutohide || taskbarShown || startMenuOpen
+        val taskbarOffsetY = if (taskbarVisible) 0 else with(density) { taskbarHeight.toPx() }.toInt()
 
         // ===== 1. 壁纸层 =====
         WallpaperLayer(
@@ -109,10 +144,12 @@ fun DesktopEnvironment(
             theme = theme,
             startMenuOpen = startMenuOpen,
             onStartClick = { startMenuOpen = !startMenuOpen },
+            showSeconds = showSeconds,
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
                 .height(taskbarHeight)
+                .offset { IntOffset(0, taskbarOffsetY) }
         )
 
         // ===== 6. 右键上下文菜单 =====

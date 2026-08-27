@@ -23,6 +23,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import com.anwind.core.theme.LocalWinTheme
+import kotlin.math.roundToInt
 
 /**
  * 单个窗口的 chrome（标题栏 + 内容区）。
@@ -49,9 +50,13 @@ fun WindowChrome(
     val finalW = if (state.isMaximized) workAreaWidth else state.width
     val finalH = if (state.isMaximized) workAreaHeight else state.height
 
+    // 拖拽偏移：只在本地 Compose 状态中累加，避免拖拽中每帧触发全局重组导致卡顿。
+    // 松手时一次性提交给 WindowManager。
+    var dragOffset by remember { mutableStateOf(Offset.Zero) }
+
     Box(
         modifier = Modifier
-            .offset { IntOffset(finalX, finalY) }
+            .offset { IntOffset(finalX + dragOffset.x.roundToInt(), finalY + dragOffset.y.roundToInt()) }
             .size(width = finalW.dp, height = finalH.dp)
             .background(theme.windowBackgroundColor, theme.windowShape)
             .border(theme.windowBorderWidth, theme.windowBorderColor, theme.windowShape)
@@ -65,10 +70,22 @@ fun WindowChrome(
                     .background(theme.windowTitleBarColor)
                     .pointerInput(state.id) {
                         detectDragGestures(
-                            onDragStart = { wm.focus(state.id) }
-                        ) { change, drag ->
+                            onDragStart = {
+                                wm.focus(state.id)
+                                dragOffset = Offset.Zero
+                            },
+                            onDragEnd = {
+                                // 拖拽结束，把累计位移一次性提交，触发一次全局刷新
+                                if (dragOffset != Offset.Zero) {
+                                    wm.move(state.id, dragOffset.x.roundToInt(), dragOffset.y.roundToInt())
+                                    wm.commitChanges()
+                                }
+                                dragOffset = Offset.Zero
+                            },
+                            onDragCancel = { dragOffset = Offset.Zero }
+                        ) { change, dragAmount ->
                             change.consume()
-                            wm.move(state.id, drag.x.toInt(), drag.y.toInt())
+                            dragOffset += dragAmount
                         }
                     }
                     .pointerInput(state.id) {

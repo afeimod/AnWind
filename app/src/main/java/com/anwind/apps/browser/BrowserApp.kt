@@ -1,8 +1,15 @@
 package com.anwind.apps.browser
 
 import android.net.Uri
+import android.view.View
+import android.webkit.CookieManager
+import android.webkit.JsPromptResult
+import android.webkit.JsResult
+import android.webkit.WebChromeClient
+import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
+import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.compose.foundation.background
@@ -202,7 +209,11 @@ private fun BrowserContent(scope: WindowContentScope) {
                                     )
                                 }
                             }
-                        }
+                        },
+                        onTitleChanged = { newTitle ->
+                            activeTab.title = newTitle
+                        },
+                        onRetry = { tabManager.getTab(activeTabId)?.refresh() }
                     )
                 }
             }
@@ -235,51 +246,174 @@ private fun BrowserContent(scope: WindowContentScope) {
 /**
  * WebView 容器：渲染网页。
  *
- * 同时支持 http(s):// 和 content:// (本地 HTML 文件)
+ * 同时支持 http(s):// 和 content:// (本地 HTML 文件)。
+ * 配置了完整的 WebSettings、加载进度、错误提示、JS 弹窗自动确认、标题同步。
  */
 @Composable
 private fun WebViewContainer(
     url: String,
-    onUrlChanged: (String) -> Unit
+    onUrlChanged: (String) -> Unit,
+    onTitleChanged: (String) -> Unit = {},
+    onRetry: () -> Unit = {}
 ) {
-    AndroidView(
-        factory = { ctx ->
-            WebView(ctx).apply {
-                settings.javaScriptEnabled = true
-                settings.domStorageEnabled = true
-                settings.allowFileAccess = true
-                settings.allowContentAccess = true
-                webViewClient = object : WebViewClient() {
-                    override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
-                        val newUrl = request.url.toString()
-                        onUrlChanged(newUrl)
-                        return false
+    val theme = LocalWinTheme.current
+    var progress by remember { mutableStateOf(0) }
+    var errorMessage by remember { mutableStateOf<String?>(null) }
+
+    Box(modifier = Modifier.fillMaxSize().background(theme.windowBackgroundColor)) {
+        AndroidView(
+            factory = { ctx ->
+                WebView(ctx).apply {
+                    // ===== WebSettings 完整配置 =====
+                    settings.apply {
+                        javaScriptEnabled = true
+                        domStorageEnabled = true
+                        databaseEnabled = true
+                        allowFileAccess = true
+                        allowContentAccess = true
+                        allowFileAccessFromFileURLs = true
+                        loadWithOverviewMode = true
+                        useWideViewPort = true
+                        mediaPlaybackRequiresUserGesture = false
+                        javaScriptCanOpenWindowsAutomatically = true
+                        cacheMode = WebSettings.LOAD_DEFAULT
+                        mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+                        setSupportZoom(true)
+                        builtInZoomControls = true
+                        displayZoomControls = false
+                        setSupportMultipleWindows(false)
+                    }
+                    // 硬件加速
+                    setLayerType(View.LAYER_TYPE_HARDWARE, null)
+                    // Cookie（this 即当前 WebView）
+                    val cookieManager = CookieManager.getInstance()
+                    cookieManager.setAcceptCookie(true)
+                    cookieManager.setAcceptThirdPartyCookies(this, true)
+
+                    webViewClient = object : WebViewClient() {
+                        override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
+                            // 在当前 WebView 内继续加载，并同步地址栏
+                            onUrlChanged(request.url.toString())
+                            return false
+                        }
+
+                        override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
+                            errorMessage = null
+                        }
+
+                        override fun onReceivedError(
+                            view: WebView?,
+                            request: WebResourceRequest?,
+                            error: WebResourceError?
+                        ) {
+                            super.onReceivedError(view, request, error)
+                            // 仅主框架错误才提示；忽略 -1（未知/取消）与 DNS 解析失败（WebView 会自行重试）
+                            if (request?.isForMainFrame == true) {
+                                val code = error?.errorCode ?: -1
+                                if (code != -1 && code != WebViewClient.ERROR_HOST_LOOKUP) {
+                                    errorMessage = error?.description?.toString() ?: "加载失败"
+                                }
+                            }
+                        }
+
+                        override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
+                            // 支持本地 content:// URI 的 HTML 文件读取
+                            val uri = request.url
+                            if (uri.scheme == "content") {
+                                return try {
+                                    val mime = ctx.contentResolver.getType(uri) ?: "text/html"
+                                    val stream = ctx.contentResolver.openInputStream(uri)
+                                    WebResourceResponse(mime, "UTF-8", stream)
+                                } catch (_: Exception) { null }
+                            }
+                            return super.shouldInterceptRequest(view, request)
+                        }
                     }
 
-                    override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
-                        // 支持本地 content:// URI 的 HTML 文件读取
-                        val uri = request.url
-                        if (uri.scheme == "content") {
-                            return try {
-                                val mime = ctx.contentResolver.getType(uri) ?: "text/html"
-                                val stream = ctx.contentResolver.openInputStream(uri)
-                                WebResourceResponse(mime, "UTF-8", stream)
-                            } catch (_: Exception) { null }
+                    webChromeClient = object : WebChromeClient() {
+                        override fun onProgressChanged(view: WebView?, newProgress: Int) {
+                            progress = newProgress
                         }
-                        return super.shouldInterceptRequest(view, request)
+
+                        override fun onReceivedTitle(view: WebView?, title: String?) {
+                            if (!title.isNullOrEmpty()) onTitleChanged(title)
+                        }
+
+                        // 自动确认 JS 弹窗，避免网页交互卡住
+                        override fun onJsAlert(view: WebView?, url: String?, message: String?, result: JsResult?): Boolean {
+                            result?.confirm()
+                            return true
+                        }
+
+                        override fun onJsConfirm(view: WebView?, url: String?, message: String?, result: JsResult?): Boolean {
+                            result?.confirm()
+                            return true
+                        }
+
+                        override fun onJsPrompt(
+                            view: WebView?, url: String?, message: String?,
+                            defaultValue: String?, result: JsPromptResult?
+                        ): Boolean {
+                            result?.confirm(defaultValue)
+                            return true
+                        }
                     }
+
+                    loadUrl(url)
                 }
-                loadUrl(url)
+            },
+            update = { webview ->
+                // 仅当URL不同时才加载，避免无限循环
+                if (webview.url != url && !url.startsWith("anwind://")) {
+                    errorMessage = null
+                    webview.loadUrl(url)
+                }
+            },
+            modifier = Modifier.fillMaxSize()
+        )
+
+        // 加载进度条
+        if (progress in 1 until 100) {
+            LinearProgressIndicator(
+                progress = { progress / 100f },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .align(Alignment.TopCenter)
+                    .height(2.dp),
+                color = theme.accentColor,
+                trackColor = theme.accentColor.copy(alpha = 0.2f)
+            )
+        }
+
+        // 错误提示层
+        errorMessage?.let { msg ->
+            Column(
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .padding(24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text("😕", fontSize = 40.sp)
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    text = "页面加载失败",
+                    color = if (theme.isDark) Color.White else Color.Black,
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    text = msg,
+                    color = if (theme.isDark) Color.White else Color.Black,
+                    fontSize = 12.sp
+                )
+                Spacer(Modifier.height(16.dp))
+                Button(onClick = onRetry) {
+                    Text("重试")
+                }
             }
-        },
-        update = { webview ->
-            // 仅当URL不同时才加载，避免无限循环
-            if (webview.url != url && !url.startsWith("anwind://")) {
-                webview.loadUrl(url)
-            }
-        },
-        modifier = Modifier.fillMaxSize()
-    )
+        }
+    }
 }
 
 /**

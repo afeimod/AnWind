@@ -41,6 +41,7 @@ fun Taskbar(
     theme: WinTheme,
     startMenuOpen: Boolean,
     onStartClick: () -> Unit,
+    showSeconds: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     val wm = remember { WindowManager.get() }
@@ -61,8 +62,8 @@ fun Taskbar(
             .background(bgColor)
     ) {
         when (theme.taskbarAlignment) {
-            TaskbarAlignment.LEFT -> LeftAlignedTaskbar(theme, startMenuOpen, onStartClick, tick)
-            TaskbarAlignment.CENTER -> CenterAlignedTaskbar(theme, startMenuOpen, onStartClick, tick)
+            TaskbarAlignment.LEFT -> LeftAlignedTaskbar(theme, startMenuOpen, onStartClick, tick, showSeconds)
+            TaskbarAlignment.CENTER -> CenterAlignedTaskbar(theme, startMenuOpen, onStartClick, tick, showSeconds)
         }
     }
 }
@@ -72,7 +73,8 @@ private fun LeftAlignedTaskbar(
     theme: WinTheme,
     startMenuOpen: Boolean,
     onStartClick: () -> Unit,
-    tick: Long
+    tick: Long,
+    showSeconds: Boolean
 ) {
     val wm = remember { WindowManager.get() }
     val runningWindows = remember(tick, theme) { wm.windows }  // 注意：wm 变更时通过外层 recompose 传入
@@ -137,7 +139,7 @@ private fun LeftAlignedTaskbar(
         Spacer(Modifier.weight(1f))
 
         // 系统托盘 + 时钟
-        SystemTray(theme = theme, tick = tick)
+        SystemTray(theme = theme, tick = tick, showSeconds = showSeconds)
     }
 }
 
@@ -146,7 +148,8 @@ private fun CenterAlignedTaskbar(
     theme: WinTheme,
     startMenuOpen: Boolean,
     onStartClick: () -> Unit,
-    tick: Long
+    tick: Long,
+    showSeconds: Boolean
 ) {
     val wm = remember { WindowManager.get() }
     val runningWindows = remember(tick, theme) { wm.windows }
@@ -214,6 +217,7 @@ private fun CenterAlignedTaskbar(
         SystemTray(
             theme = theme,
             tick = tick,
+            showSeconds = showSeconds,
             modifier = Modifier.align(Alignment.CenterEnd)
         )
     }
@@ -300,7 +304,7 @@ private fun TaskbarAppIcon(
 }
 
 @Composable
-private fun SystemTray(theme: WinTheme, tick: Long, modifier: Modifier = Modifier) {
+private fun SystemTray(theme: WinTheme, tick: Long, showSeconds: Boolean, modifier: Modifier = Modifier) {
     Row(
         modifier = modifier
             .padding(end = 12.dp, start = 8.dp),
@@ -312,7 +316,7 @@ private fun SystemTray(theme: WinTheme, tick: Long, modifier: Modifier = Modifie
         Icon(Icons.Default.BatteryFull, contentDescription = "Battery", tint = theme.taskbarClockColor, modifier = Modifier.size(16.dp))
 
         // 时钟
-        val timeFormat = SimpleDateFormat("HH:mm", Locale.getDefault())
+        val timeFormat = SimpleDateFormat(if (showSeconds) "HH:mm:ss" else "HH:mm", Locale.getDefault())
         val dateFormat = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
         val timeStr = timeFormat.format(Date(tick))
         val dateStr = dateFormat.format(Date(tick))
