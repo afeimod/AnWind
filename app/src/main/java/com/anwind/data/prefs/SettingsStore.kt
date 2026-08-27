@@ -24,6 +24,12 @@ class SettingsStore(private val context: Context) {
         val SHOW_SECONDS = booleanPreferencesKey("show_seconds")
         val ICON_SIZE = floatPreferencesKey("icon_size")
         val DEFAULT_BROWSER_HOME = stringPreferencesKey("default_browser_home")
+        // UI 缩放（整体缩放所有 dp/sp，>1 放大，<1 缩小）
+        val UI_SCALE = floatPreferencesKey("ui_scale")
+        // 显示方向：auto / portrait / landscape
+        val DISPLAY_ORIENTATION = stringPreferencesKey("display_orientation")
+        // 浏览器桌面/手机模式：desktop / mobile
+        val BROWSER_UA_MODE = stringPreferencesKey("browser_ua_mode")
     }
 
     val customWallpaper: Flow<String?> = context.appPrefs.data.map { it[Keys.CUSTOM_WALLPAPER] }
@@ -33,6 +39,11 @@ class SettingsStore(private val context: Context) {
     val iconSize: Flow<Float> = context.appPrefs.data.map { it[Keys.ICON_SIZE] ?: 48f }
     val defaultBrowserHome: Flow<String> = context.appPrefs.data
         .map { it[Keys.DEFAULT_BROWSER_HOME] ?: "https://www.bing.com" }
+    val uiScale: Flow<Float> = context.appPrefs.data.map { it[Keys.UI_SCALE] ?: 1.0f }
+    val displayOrientation: Flow<String> = context.appPrefs.data
+        .map { it[Keys.DISPLAY_ORIENTATION] ?: "auto" }
+    val browserUaMode: Flow<String> = context.appPrefs.data
+        .map { it[Keys.BROWSER_UA_MODE] ?: "desktop" }
 
     suspend fun setCustomWallpaper(uri: String?) {
         context.appPrefs.edit { prefs ->
@@ -59,5 +70,17 @@ class SettingsStore(private val context: Context) {
 
     suspend fun setDefaultBrowserHome(url: String) {
         context.appPrefs.edit { it[Keys.DEFAULT_BROWSER_HOME] = url }
+    }
+
+    suspend fun setUiScale(scale: Float) {
+        context.appPrefs.edit { it[Keys.UI_SCALE] = scale.coerceIn(0.6f, 1.8f) }
+    }
+
+    suspend fun setDisplayOrientation(orientation: String) {
+        context.appPrefs.edit { it[Keys.DISPLAY_ORIENTATION] = orientation }
+    }
+
+    suspend fun setBrowserUaMode(mode: String) {
+        context.appPrefs.edit { it[Keys.BROWSER_UA_MODE] = mode }
     }
 }

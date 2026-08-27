@@ -6,6 +6,7 @@ import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.documentfile.provider.DocumentFile
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -70,6 +71,30 @@ private fun FileExplorerContent(scope: WindowContentScope) {
         }
     }
 
+    // ===== 真实手机存储（SAF）浏览 =====
+    // realStack 非空时浏览真实存储：栈底为根目录，越往后越深
+    var realStack by remember { mutableStateOf<List<DocumentFile>>(emptyList()) }
+    val browsingReal get() = realStack.isNotEmpty()
+    val storagePicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocumentTree()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            // 持久化读取权限，重启后仍可访问
+            runCatching {
+                context.contentResolver.takePersistableUriPermission(
+                    uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
+            }
+            val root = DocumentFile.fromTreeUri(context, uri)
+            if (root != null) realStack = listOf(root)
+        }
+    }
+
+    // 真实存储当前目录下的文件
+    val realItems = if (browsingReal) {
+        remember(realStack) { realStack.last().listFiles()?.toList() ?: emptyList() }
+    } else emptyList()
+
     Column(modifier = Modifier.fillMaxSize().background(theme.windowBackgroundColor)) {
 
         // ===== 工具栏 =====
@@ -82,15 +107,22 @@ private fun FileExplorerContent(scope: WindowContentScope) {
             verticalAlignment = Alignment.CenterVertically
         ) {
             IconButton(onClick = {
-                val parent = vfs.parent(currentPath)
-                if (parent != null) currentPath = parent
+                when {
+                    // 真实存储：逐级返回，到根目录后回到虚拟文件系统
+                    browsingReal && realStack.size > 1 -> realStack = realStack.dropLast(1)
+                    browsingReal -> realStack = emptyList()
+                    else -> vfs.parent(currentPath)?.let { currentPath = it }
+                }
             }) {
                 Icon(Icons.Default.ArrowBack, "Back", tint = if (theme.isDark) Color.White else Color.Black)
             }
             IconButton(onClick = { /* forward */ }) {
                 Icon(Icons.Default.ArrowForward, "Forward", tint = if (theme.isDark) Color.White else Color.Black)
             }
-            IconButton(onClick = { /* refresh */ }) {
+            IconButton(onClick = {
+                // 刷新：真实存储重新读取当前目录，虚拟 FS 重新加载
+                if (browsingReal) realStack = realStack.toList() else currentPath = currentPath
+            }) {
                 Icon(Icons.Default.Refresh, "Refresh", tint = if (theme.isDark) Color.White else Color.Black)
             }
             Spacer(Modifier.width(8.dp))
@@ -104,9 +136,12 @@ private fun FileExplorerContent(scope: WindowContentScope) {
                 contentAlignment = Alignment.CenterStart
             ) {
                 Text(
-                    text = currentPath,
+                    text = if (browsingReal)
+                        "📱 手机存储 / ${realStack.joinToString(" / ") { it.name ?: "" }}"
+                    else currentPath,
                     color = if (theme.isDark) Color.White else Color.Black,
-                    fontSize = 12.sp
+                    fontSize = 12.sp,
+                    maxLines = 1
                 )
             }
             Spacer(Modifier.width(8.dp))
@@ -128,6 +163,7 @@ private fun FileExplorerContent(scope: WindowContentScope) {
                     .padding(8.dp)
             ) {
                 SidebarItem("🖥️ 此电脑", currentPath == "C:\\") { currentPath = "C:\\" }
+                SidebarItem("📱 手机存储", browsingReal) { storagePicker.launch(null) }
                 SidebarItem("📁 文档", false) { currentPath = "C:\\Users\\User\\Documents" }
                 SidebarItem("🖼️ 图片", false) { currentPath = "C:\\Users\\User\\Pictures" }
                 SidebarItem("🎵 音乐", false) { currentPath = "C:\\Users\\User\\Music" }
@@ -137,7 +173,33 @@ private fun FileExplorerContent(scope: WindowContentScope) {
 
             // ===== 文件列表 =====
             Box(modifier = Modifier.weight(1f).fillMaxHeight()) {
-                if (items.isEmpty()) {
+                if (browsingReal) {
+                    // 真实手机存储
+                    if (realItems.isEmpty()) {
+                        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            Text(
+                                "此文件夹为空",
+                                color = if (theme.isDark) Color.White else Color.Black,
+                                fontSize = 12.sp
+                            )
+                        }
+                    } else {
+                        LazyColumn {
+                            items(realItems, key = { it.uri.toString() }) { file ->
+                                RealFileRow(
+                                    file = file,
+                                    onClick = {
+                                        if (file.isDirectory) {
+                                            realStack = realStack + file
+                                        } else {
+                                            openRealFile(context, file)
+                                        }
+                                    }
+                                )
+                            }
+                        }
+                    }
+                } else if (items.isEmpty()) {
                     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         Text(
                             "此文件夹为空",
@@ -188,7 +250,7 @@ private fun FileExplorerContent(scope: WindowContentScope) {
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
-                "${items.size} 个项目",
+                if (browsingReal) "${realItems.size} 个项目" else "${items.size} 个项目",
                 color = if (theme.isDark) Color.White else Color.Black,
                 fontSize = 11.sp
             )
@@ -247,6 +309,67 @@ private fun FileRow(file: VirtualFile, onClick: () -> Unit) {
                 fontSize = 11.sp
             )
         }
+    }
+}
+
+/**
+ * 真实存储文件行：使用 SAF DocumentFile 渲染。
+ */
+@Composable
+private fun RealFileRow(file: DocumentFile, onClick: () -> Unit) {
+    val theme = LocalWinTheme.current
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = if (file.isDirectory) "📁" else iconForExtension(file.extension),
+            fontSize = 16.sp
+        )
+        Spacer(Modifier.width(12.dp))
+        Text(
+            text = file.name ?: "未命名",
+            color = if (theme.isDark) Color.White else Color.Black,
+            fontSize = 12.sp,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f)
+        )
+        if (!file.isDirectory) {
+            val len = file.length()
+            val sizeText = when {
+                len < 1024 -> "$len B"
+                len < 1024 * 1024 -> "${len / 1024} KB"
+                else -> "${len / (1024 * 1024)} MB"
+            }
+            Text(
+                text = sizeText,
+                color = if (theme.isDark) Color.White else Color.Black,
+                fontSize = 11.sp
+            )
+        }
+    }
+}
+
+/**
+ * 打开真实存储中的文件：HTML 用浏览器，APK 启动安装，其余提示。
+ */
+private fun openRealFile(context: Context, file: DocumentFile) {
+    val name = (file.name ?: "").lowercase()
+    when {
+        name.endsWith(".html") || name.endsWith(".htm") -> {
+            WindowManager.get().open(
+                appId = "browser",
+                title = "Browser",
+                launchMode = LaunchMode.FULLSCREEN,
+                launchArgs = mapOf("url" to file.uri.toString())
+            )
+        }
+        name.endsWith(".apk") -> installApk(context, file.uri)
+        else -> Toast.makeText(context, "暂不支持打开该类型文件", Toast.LENGTH_SHORT).show()
     }
 }
 

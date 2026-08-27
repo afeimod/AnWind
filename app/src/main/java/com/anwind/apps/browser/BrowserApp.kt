@@ -49,6 +49,10 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayInputStream
 
+/** 桌面版 Chrome UA（不含 Mobile/Android，让服务器返回 PC 版页面） */
+private const val DESKTOP_UA =
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+
 /**
  * 浏览器应用定义。
  *
@@ -91,17 +95,25 @@ private fun BrowserContent(scope: WindowContentScope) {
     var addressInput by remember { mutableStateOf("") }
     var showBookmarks by remember { mutableStateOf(false) }
     var showHistory by remember { mutableStateOf(false) }
+    // 桌面/手机模式（持久化，切换后立即重载当前页生效）
+    val uaMode by app.settingsStore.browserUaMode.collectAsState(initial = "desktop")
+    fun toggleUaMode() {
+        val next = if (uaMode == "desktop") "mobile" else "desktop"
+        scope0.launch { app.settingsStore.setBrowserUaMode(next) }
+    }
+    // 用户设置的主页
+    val defaultHome by app.settingsStore.defaultBrowserHome.collectAsState(initial = "https://www.bing.com")
 
     // 启动时打开初始标签
     LaunchedEffect(Unit) {
         val initialUrl = when {
-            launchUrl.isNullOrEmpty() -> null
+            launchUrl.isNullOrEmpty() -> defaultHome
             launchType == DesktopItemType.SHORTCUT_FILE.name && launchUrl.startsWith("content://") -> launchUrl
             else -> normalizeUrl(launchUrl)
         }
-        val tab = tabManager.openTab(initialUrl ?: "anwind://home")
+        val tab = tabManager.openTab(initialUrl)
         activeTabId = tab.id
-        addressInput = initialUrl ?: ""
+        addressInput = initialUrl
     }
 
     Column(modifier = Modifier.fillMaxSize().background(theme.windowBackgroundColor)) {
@@ -136,9 +148,9 @@ private fun BrowserContent(scope: WindowContentScope) {
             onForward = { tabManager.getTab(activeTabId)?.goForward() },
             onRefresh = { tabManager.getTab(activeTabId)?.refresh() },
             onHome = {
-                val tab = tabManager.openOrSwitchHome(activeTabId)
-                activeTabId = tab.id
-                addressInput = ""
+                // 返回用户设置的主页
+                tabManager.getTab(activeTabId)?.loadUrl(defaultHome)
+                addressInput = defaultHome
             },
             onGo = {
                 val url = normalizeUrl(addressInput)
@@ -172,7 +184,9 @@ private fun BrowserContent(scope: WindowContentScope) {
                 }
             },
             onShowBookmarks = { showBookmarks = !showBookmarks },
-            onShowHistory = { showHistory = !showHistory }
+            onShowHistory = { showHistory = !showHistory },
+            uaMode = uaMode,
+            onToggleUaMode = { toggleUaMode() }
         )
 
         // ===== 内容区 =====
@@ -198,6 +212,8 @@ private fun BrowserContent(scope: WindowContentScope) {
                 } else {
                     WebViewContainer(
                         url = url,
+                        tab = activeTab,
+                        uaMode = uaMode,
                         onUrlChanged = { newUrl ->
                             addressInput = newUrl
                             activeTab.url = newUrl
@@ -252,6 +268,8 @@ private fun BrowserContent(scope: WindowContentScope) {
 @Composable
 private fun WebViewContainer(
     url: String,
+    tab: BrowserTab,
+    uaMode: String = "desktop",
     onUrlChanged: (String) -> Unit,
     onTitleChanged: (String) -> Unit = {},
     onRetry: () -> Unit = {}
@@ -259,11 +277,20 @@ private fun WebViewContainer(
     val theme = LocalWinTheme.current
     var progress by remember { mutableStateOf(0) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
+    // 记录已应用的 UA，切换模式时重载当前页
+    var appliedUa by remember { mutableStateOf(uaMode) }
+    // 保存默认移动版 UA，供手机模式恢复（用 holder 避免在 factory 内写 state）
+    val mobileUaHolder = remember { arrayOfNulls<String>(1) }
 
     Box(modifier = Modifier.fillMaxSize().background(theme.windowBackgroundColor)) {
         AndroidView(
             factory = { ctx ->
                 WebView(ctx).apply {
+                    // 绑定到标签，让工具栏命令（后退/前进/刷新/加载）能操作真实 WebView
+                    tab.webView = this
+                    // 捕获默认移动版 UA，供手机模式恢复
+                    val mobileUa = settings.userAgentString
+                    mobileUaHolder[0] = mobileUa
                     // ===== WebSettings 完整配置 =====
                     settings.apply {
                         javaScriptEnabled = true
@@ -272,6 +299,7 @@ private fun WebViewContainer(
                         allowFileAccess = true
                         allowContentAccess = true
                         allowFileAccessFromFileURLs = true
+                        allowUniversalAccessFromFileURLs = true
                         loadWithOverviewMode = true
                         useWideViewPort = true
                         mediaPlaybackRequiresUserGesture = false
@@ -282,6 +310,8 @@ private fun WebViewContainer(
                         builtInZoomControls = true
                         displayZoomControls = false
                         setSupportMultipleWindows(false)
+                        // 应用 UA 模式
+                        userAgentString = if (uaMode == "desktop") DESKTOP_UA else mobileUa
                     }
                     // 硬件加速
                     setLayerType(View.LAYER_TYPE_HARDWARE, null)
@@ -363,12 +393,22 @@ private fun WebViewContainer(
                 }
             },
             update = { webview ->
+                // 重新绑定当前标签到共享 WebView，切换标签后命令仍可用
+                tab.webView = webview
+                // UA 模式切换：立即切换 UA 并重载，让手机/桌面版页面生效
+                if (appliedUa != uaMode) {
+                    appliedUa = uaMode
+                    webview.settings.userAgentString =
+                        if (uaMode == "desktop") DESKTOP_UA else (mobileUaHolder[0] ?: webview.settings.userAgentString)
+                    webview.reload()
+                }
                 // 仅当URL不同时才加载，避免无限循环
                 if (webview.url != url && !url.startsWith("anwind://")) {
                     errorMessage = null
                     webview.loadUrl(url)
                 }
             },
+            onRelease = { tab.webView = null },
             modifier = Modifier.fillMaxSize()
         )
 
@@ -606,7 +646,9 @@ private fun Toolbar(
     onGo: () -> Unit,
     onBookmark: () -> Unit,
     onShowBookmarks: () -> Unit,
-    onShowHistory: () -> Unit
+    onShowHistory: () -> Unit,
+    uaMode: String = "desktop",
+    onToggleUaMode: () -> Unit = {}
 ) {
     val theme = LocalWinTheme.current
     Row(
@@ -677,6 +719,14 @@ private fun Toolbar(
         IconButton(onClick = onShowHistory, modifier = Modifier.size(36.dp)) {
             Icon(Icons.Default.History, contentDescription = "History",
                 tint = if (theme.isDark) Color.White else Color.Black)
+        }
+        // 桌面/手机模式切换
+        IconButton(onClick = onToggleUaMode, modifier = Modifier.size(36.dp)) {
+            Icon(
+                imageVector = if (uaMode == "desktop") Icons.Default.Computer else Icons.Default.Smartphone,
+                contentDescription = if (uaMode == "desktop") "桌面模式" else "手机模式",
+                tint = if (theme.isDark) Color.White else Color.Black
+            )
         }
     }
 }

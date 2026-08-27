@@ -72,6 +72,7 @@ private fun SettingsContent(scope: WindowContentScope) {
             SettingsNavItem("🎨", "主题", active = activeSection == "theme") { activeSection = "theme" }
             SettingsNavItem("🖼️", "壁纸", active = activeSection == "wallpaper") { activeSection = "wallpaper" }
             SettingsNavItem("🖥️", "显示", active = activeSection == "display") { activeSection = "display" }
+            SettingsNavItem("✨", "个性化", active = activeSection == "personal") { activeSection = "personal" }
             SettingsNavItem("🔊", "声音", active = activeSection == "sound") { activeSection = "sound" }
             SettingsNavItem("🖥️", "任务栏", active = activeSection == "taskbar") { activeSection = "taskbar" }
             SettingsNavItem("🌐", "浏览器", active = activeSection == "browser") { activeSection = "browser" }
@@ -84,6 +85,7 @@ private fun SettingsContent(scope: WindowContentScope) {
                 "theme" -> ThemeSection()
                 "wallpaper" -> WallpaperSection()
                 "display" -> DisplaySection()
+                "personal" -> PersonalSection()
                 "sound" -> SoundSection()
                 "taskbar" -> TaskbarSection()
                 "browser" -> BrowserSection()
@@ -262,6 +264,8 @@ private fun DisplaySection() {
     val iconSize by app.settingsStore.iconSize.collectAsState(initial = 48f)
     val showSeconds by app.settingsStore.showSeconds.collectAsState(initial = false)
     val taskbarAutohide by app.settingsStore.taskbarAutohide.collectAsState(initial = false)
+    val uiScale by app.settingsStore.uiScale.collectAsState(initial = 1f)
+    val orientation by app.settingsStore.displayOrientation.collectAsState(initial = "auto")
 
     Column {
         Text("显示", color = if (theme.isDark) Color.White else Color.Black,
@@ -284,6 +288,45 @@ private fun DisplaySection() {
                 color = if (theme.isDark) Color.White else Color.Black,
                 fontSize = 12.sp
             )
+        }
+        Spacer(Modifier.height(16.dp))
+
+        // UI 缩放（整体缩放所有界面元素和文字）
+        Text("UI 缩放", color = if (theme.isDark) Color.White else Color.Black, fontSize = 13.sp)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Slider(
+                value = uiScale,
+                onValueChange = {
+                    scope0.launch { app.settingsStore.setUiScale(it) }
+                },
+                valueRange = 0.6f..1.8f
+            )
+            Spacer(Modifier.width(12.dp))
+            Text(
+                "${(uiScale * 100).roundToInt()}%",
+                color = if (theme.isDark) Color.White else Color.Black,
+                fontSize = 12.sp
+            )
+        }
+        Text(
+            "缩放整个桌面的图标、文字和窗口大小。默认 100%，调小后界面更紧凑、可显示更多内容。",
+            color = if (theme.isDark) Color.White else Color.Black,
+            fontSize = 11.sp
+        )
+        Spacer(Modifier.height(16.dp))
+
+        // 显示方向
+        Text("显示方向", color = if (theme.isDark) Color.White else Color.Black, fontSize = 13.sp)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OrientationOption("自动", orientation == "auto") {
+                scope0.launch { app.settingsStore.setDisplayOrientation("auto") }
+            }
+            OrientationOption("竖屏", orientation == "portrait") {
+                scope0.launch { app.settingsStore.setDisplayOrientation("portrait") }
+            }
+            OrientationOption("横屏", orientation == "landscape") {
+                scope0.launch { app.settingsStore.setDisplayOrientation("landscape") }
+            }
         }
         Spacer(Modifier.height(16.dp))
 
@@ -313,6 +356,84 @@ private fun DisplaySection() {
             color = if (theme.isDark) Color.White else Color.Black,
             fontSize = 11.sp
         )
+    }
+}
+
+/**
+ * 单选项按钮（用于显示方向、浏览器模式等二/三选一设置）。
+ */
+@Composable
+private fun OrientationOption(label: String, selected: Boolean, onClick: () -> Unit) {
+    val theme = LocalWinTheme.current
+    Box(
+        modifier = Modifier
+            .clickable(onClick = onClick)
+            .background(
+                if (selected) theme.accentColor.copy(alpha = 0.2f) else theme.buttonBackgroundColor.copy(alpha = 0.5f),
+                RoundedCornerShape(6.dp)
+            )
+            .border(
+                width = if (selected) 1.dp else 0.dp,
+                color = if (selected) theme.accentColor else Color.Transparent,
+                shape = RoundedCornerShape(6.dp)
+            )
+            .padding(horizontal = 16.dp, vertical = 8.dp)
+    ) {
+        Text(
+            label,
+            color = if (theme.isDark) Color.White else Color.Black,
+            fontSize = 13.sp
+        )
+    }
+}
+
+/**
+ * 个性化设置：浏览器默认模式、浏览器主页等。
+ */
+@Composable
+private fun PersonalSection() {
+    val theme = LocalWinTheme.current
+    val app = AnWindApp.get()
+    val scope0 = rememberCoroutineScope()
+    val uaMode by app.settingsStore.browserUaMode.collectAsState(initial = "desktop")
+    val home by app.settingsStore.defaultBrowserHome.collectAsState(initial = "https://www.bing.com")
+    var homeInput by remember { mutableStateOf(home) }
+
+    Column {
+        Text("个性化", color = if (theme.isDark) Color.White else Color.Black,
+            fontSize = 22.sp, fontWeight = FontWeight.Bold)
+        Spacer(Modifier.height(8.dp))
+        Text("自定义浏览与桌面体验", color = if (theme.isDark) Color.White else Color.Black, fontSize = 12.sp)
+        Spacer(Modifier.height(20.dp))
+
+        // 浏览器默认模式
+        Text("浏览器默认模式", color = if (theme.isDark) Color.White else Color.Black, fontSize = 13.sp)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OrientationOption("桌面模式", uaMode == "desktop") {
+                scope0.launch { app.settingsStore.setBrowserUaMode("desktop") }
+            }
+            OrientationOption("手机模式", uaMode == "mobile") {
+                scope0.launch { app.settingsStore.setBrowserUaMode("mobile") }
+            }
+        }
+        Text(
+            "桌面模式显示完整 PC 版网页，手机模式显示移动版网页。可在浏览器工具栏随时切换。",
+            color = if (theme.isDark) Color.White else Color.Black, fontSize = 11.sp
+        )
+        Spacer(Modifier.height(16.dp))
+
+        // 浏览器主页
+        Text("浏览器主页网址", color = if (theme.isDark) Color.White else Color.Black, fontSize = 13.sp)
+        Spacer(Modifier.height(4.dp))
+        OutlinedTextField(
+            value = homeInput,
+            onValueChange = { homeInput = it },
+            modifier = Modifier.fillMaxWidth(0.6f)
+        )
+        Spacer(Modifier.height(8.dp))
+        Button(onClick = { scope0.launch { app.settingsStore.setDefaultBrowserHome(homeInput) } }) {
+            Text("保存")
+        }
     }
 }
 
