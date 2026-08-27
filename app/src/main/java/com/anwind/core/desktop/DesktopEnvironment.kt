@@ -24,6 +24,11 @@ import java.io.IOException
 /**
  * 桌面环境：壁纸 + 桌面图标网格 + 任务栏 + 开始菜单 + 浮动窗口。
  *
+ * 视觉重构后：
+ * - 任务栏浮在底部（留 4dp 空隙）
+ * - 开始菜单居中浮在任务栏上方
+ * - 浮动窗口层与任务栏/开始菜单层分离
+ *
  * 这是应用启动后唯一的顶层 Composable。
  */
 @Composable
@@ -76,7 +81,8 @@ fun DesktopEnvironment(
     ) {
         val fullHeight = maxHeight
         val taskbarHeight = theme.taskbarHeight
-        val workAreaHeight = fullHeight - taskbarHeight
+        // 工作区高度 = 全屏高度 - 任务栏高度 - 任务栏底部 4dp - 任务栏顶部 4dp 空隙
+        val workAreaHeight = fullHeight - taskbarHeight - 8.dp
 
         // 计算底部边缘呼出阈值（屏幕高度 - 28dp），供指针监听协程读取
         SideEffect {
@@ -128,18 +134,26 @@ fun DesktopEnvironment(
             WindowHost()
         }
 
-        // ===== 4. 开始菜单层 =====
+        // ===== 4. 开始菜单层（居中浮动，位于任务栏上方） =====
         if (startMenuOpen) {
+            // 背景遮罩：点击关闭
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .pointerInput(Unit) {
+                        detectTapGestures(onTap = { startMenuOpen = false })
+                    }
+            )
             StartMenu(
                 theme = theme,
                 onDismiss = { startMenuOpen = false },
                 modifier = Modifier
-                    .align(Alignment.BottomStart)
-                    .padding(start = 4.dp, bottom = taskbarHeight + 4.dp)
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = taskbarHeight + 12.dp)
             )
         }
 
-        // ===== 5. 任务栏（底部固定） =====
+        // ===== 5. 任务栏（底部浮起） =====
         Taskbar(
             theme = theme,
             startMenuOpen = startMenuOpen,
@@ -158,7 +172,7 @@ fun DesktopEnvironment(
                 data = data,
                 onDismiss = { contextMenu = null },
                 modifier = Modifier
-                    .align(Alignment.TopStart)  // 用 absoluteOffset 调整
+                    .align(Alignment.TopStart)
             )
         }
     }

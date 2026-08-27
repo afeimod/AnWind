@@ -5,6 +5,7 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.floatPreferencesKey
+import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
@@ -14,6 +15,9 @@ private val Context.appPrefs by preferencesDataStore(name = "anwind_prefs")
 
 /**
  * 应用通用偏好设置：壁纸、音量、是否启用启动音效等。
+ *
+ * 视觉重构后扩展：增加了蓝牙、鼠标、键盘、电源、应用默认程序、隐私权限等更多设置项，
+ * 覆盖 Win11 风格设置中心的主要分类。
  */
 class SettingsStore(private val context: Context) {
 
@@ -30,8 +34,40 @@ class SettingsStore(private val context: Context) {
         val DISPLAY_ORIENTATION = stringPreferencesKey("display_orientation")
         // 浏览器桌面/手机模式：desktop / mobile
         val BROWSER_UA_MODE = stringPreferencesKey("browser_ua_mode")
+
+        // === 蓝牙与设备 ===
+        val BLUETOOTH_ENABLED = booleanPreferencesKey("bluetooth_enabled")
+        val MOUSE_POINTER_SPEED = floatPreferencesKey("mouse_pointer_speed")
+        val KEYBOARD_VIBRATION = booleanPreferencesKey("keyboard_vibration")
+        val TOUCH_FEEDBACK = booleanPreferencesKey("touch_feedback")
+
+        // === 系统：电源、通知 ===
+        val POWER_SAVER = booleanPreferencesKey("power_saver")
+        val BRIGHTNESS = floatPreferencesKey("brightness")
+        val NOTIFICATIONS_ENABLED = booleanPreferencesKey("notifications_enabled")
+        val DO_NOT_DISTURB = booleanPreferencesKey("do_not_disturb")
+
+        // === 应用：默认程序 ===
+        val DEFAULT_BROWSER = stringPreferencesKey("default_browser")
+        val DEFAULT_FILE_MANAGER = stringPreferencesKey("default_file_manager")
+        val AUTOSTART_APPS = stringPreferencesKey("autostart_apps")  // 逗号分隔的 app id
+
+        // === 时间与语言 ===
+        val TIME_FORMAT_24H = booleanPreferencesKey("time_format_24h")
+        val LANGUAGE = stringPreferencesKey("language")
+
+        // === 隐私和安全 ===
+        val LOCATION_ENABLED = booleanPreferencesKey("location_enabled")
+        val CAMERA_ACCESS = booleanPreferencesKey("camera_access")
+        val MICROPHONE_ACCESS = booleanPreferencesKey("microphone_access")
+        val DIAGNOSTICS_OPT_IN = booleanPreferencesKey("diagnostics_opt_in")
+
+        // === Windows Update ===
+        val AUTO_UPDATE = booleanPreferencesKey("auto_update")
+        val UPDATE_CHANNEL = stringPreferencesKey("update_channel")  // stable / beta / dev
     }
 
+    // === 基础设置 ===
     val customWallpaper: Flow<String?> = context.appPrefs.data.map { it[Keys.CUSTOM_WALLPAPER] }
     val soundEnabled: Flow<Boolean> = context.appPrefs.data.map { it[Keys.SOUND_ENABLED] ?: true }
     val taskbarAutohide: Flow<Boolean> = context.appPrefs.data.map { it[Keys.TASKBAR_AUTOHIDE] ?: false }
@@ -45,6 +81,38 @@ class SettingsStore(private val context: Context) {
     val browserUaMode: Flow<String> = context.appPrefs.data
         .map { it[Keys.BROWSER_UA_MODE] ?: "desktop" }
 
+    // === 蓝牙与设备 ===
+    val bluetoothEnabled: Flow<Boolean> = context.appPrefs.data.map { it[Keys.BLUETOOTH_ENABLED] ?: false }
+    val mousePointerSpeed: Flow<Float> = context.appPrefs.data.map { it[Keys.MOUSE_POINTER_SPEED] ?: 1.0f }
+    val keyboardVibration: Flow<Boolean> = context.appPrefs.data.map { it[Keys.KEYBOARD_VIBRATION] ?: true }
+    val touchFeedback: Flow<Boolean> = context.appPrefs.data.map { it[Keys.TOUCH_FEEDBACK] ?: false }
+
+    // === 系统 ===
+    val powerSaver: Flow<Boolean> = context.appPrefs.data.map { it[Keys.POWER_SAVER] ?: false }
+    val brightness: Flow<Float> = context.appPrefs.data.map { it[Keys.BRIGHTNESS] ?: 0.8f }
+    val notificationsEnabled: Flow<Boolean> = context.appPrefs.data.map { it[Keys.NOTIFICATIONS_ENABLED] ?: true }
+    val doNotDisturb: Flow<Boolean> = context.appPrefs.data.map { it[Keys.DO_NOT_DISTURB] ?: false }
+
+    // === 应用 ===
+    val defaultBrowser: Flow<String> = context.appPrefs.data.map { it[Keys.DEFAULT_BROWSER] ?: "browser" }
+    val defaultFileManager: Flow<String> = context.appPrefs.data.map { it[Keys.DEFAULT_FILE_MANAGER] ?: "file_explorer" }
+    val autostartApps: Flow<String> = context.appPrefs.data.map { it[Keys.AUTOSTART_APPS] ?: "" }
+
+    // === 时间与语言 ===
+    val timeFormat24h: Flow<Boolean> = context.appPrefs.data.map { it[Keys.TIME_FORMAT_24H] ?: true }
+    val language: Flow<String> = context.appPrefs.data.map { it[Keys.LANGUAGE] ?: "zh-CN" }
+
+    // === 隐私和安全 ===
+    val locationEnabled: Flow<Boolean> = context.appPrefs.data.map { it[Keys.LOCATION_ENABLED] ?: false }
+    val cameraAccess: Flow<Boolean> = context.appPrefs.data.map { it[Keys.CAMERA_ACCESS] ?: true }
+    val microphoneAccess: Flow<Boolean> = context.appPrefs.data.map { it[Keys.MICROPHONE_ACCESS] ?: true }
+    val diagnosticsOptIn: Flow<Boolean> = context.appPrefs.data.map { it[Keys.DIAGNOSTICS_OPT_IN] ?: false }
+
+    // === Windows Update ===
+    val autoUpdate: Flow<Boolean> = context.appPrefs.data.map { it[Keys.AUTO_UPDATE] ?: true }
+    val updateChannel: Flow<String> = context.appPrefs.data.map { it[Keys.UPDATE_CHANNEL] ?: "stable" }
+
+    // === 基础 setter ===
     suspend fun setCustomWallpaper(uri: String?) {
         context.appPrefs.edit { prefs ->
             if (uri == null) prefs.remove(Keys.CUSTOM_WALLPAPER)
@@ -82,5 +150,83 @@ class SettingsStore(private val context: Context) {
 
     suspend fun setBrowserUaMode(mode: String) {
         context.appPrefs.edit { it[Keys.BROWSER_UA_MODE] = mode }
+    }
+
+    // === 蓝牙与设备 setter ===
+    suspend fun setBluetoothEnabled(enabled: Boolean) {
+        context.appPrefs.edit { it[Keys.BLUETOOTH_ENABLED] = enabled }
+    }
+
+    suspend fun setMousePointerSpeed(speed: Float) {
+        context.appPrefs.edit { it[Keys.MOUSE_POINTER_SPEED] = speed.coerceIn(0.5f, 2.0f) }
+    }
+
+    suspend fun setKeyboardVibration(enabled: Boolean) {
+        context.appPrefs.edit { it[Keys.KEYBOARD_VIBRATION] = enabled }
+    }
+
+    suspend fun setTouchFeedback(enabled: Boolean) {
+        context.appPrefs.edit { it[Keys.TOUCH_FEEDBACK] = enabled }
+    }
+
+    // === 系统 setter ===
+    suspend fun setPowerSaver(enabled: Boolean) {
+        context.appPrefs.edit { it[Keys.POWER_SAVER] = enabled }
+    }
+
+    suspend fun setBrightness(value: Float) {
+        context.appPrefs.edit { it[Keys.BRIGHTNESS] = value.coerceIn(0.2f, 1.0f) }
+    }
+
+    suspend fun setNotificationsEnabled(enabled: Boolean) {
+        context.appPrefs.edit { it[Keys.NOTIFICATIONS_ENABLED] = enabled }
+    }
+
+    suspend fun setDoNotDisturb(enabled: Boolean) {
+        context.appPrefs.edit { it[Keys.DO_NOT_DISTURB] = enabled }
+    }
+
+    // === 应用 setter ===
+    suspend fun setDefaultBrowser(id: String) {
+        context.appPrefs.edit { it[Keys.DEFAULT_BROWSER] = id }
+    }
+
+    suspend fun setDefaultFileManager(id: String) {
+        context.appPrefs.edit { it[Keys.DEFAULT_FILE_MANAGER] = id }
+    }
+
+    // === 时间与语言 setter ===
+    suspend fun setTimeFormat24h(enabled: Boolean) {
+        context.appPrefs.edit { it[Keys.TIME_FORMAT_24H] = enabled }
+    }
+
+    suspend fun setLanguage(lang: String) {
+        context.appPrefs.edit { it[Keys.LANGUAGE] = lang }
+    }
+
+    // === 隐私和安全 setter ===
+    suspend fun setLocationEnabled(enabled: Boolean) {
+        context.appPrefs.edit { it[Keys.LOCATION_ENABLED] = enabled }
+    }
+
+    suspend fun setCameraAccess(enabled: Boolean) {
+        context.appPrefs.edit { it[Keys.CAMERA_ACCESS] = enabled }
+    }
+
+    suspend fun setMicrophoneAccess(enabled: Boolean) {
+        context.appPrefs.edit { it[Keys.MICROPHONE_ACCESS] = enabled }
+    }
+
+    suspend fun setDiagnosticsOptIn(enabled: Boolean) {
+        context.appPrefs.edit { it[Keys.DIAGNOSTICS_OPT_IN] = enabled }
+    }
+
+    // === Windows Update setter ===
+    suspend fun setAutoUpdate(enabled: Boolean) {
+        context.appPrefs.edit { it[Keys.AUTO_UPDATE] = enabled }
+    }
+
+    suspend fun setUpdateChannel(channel: String) {
+        context.appPrefs.edit { it[Keys.UPDATE_CHANNEL] = channel }
     }
 }

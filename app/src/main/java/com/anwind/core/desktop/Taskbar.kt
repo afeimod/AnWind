@@ -17,6 +17,8 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -34,7 +36,12 @@ import java.util.Locale
 /**
  * 任务栏：开始按钮 + 搜索 + 固定应用 + 运行中窗口 + 系统托盘 + 时钟。
  *
- * 根据主题的 taskbarAlignment 决定整体布局（Win10 左 / Win11 中）。
+ * 视觉重构后所有主题统一采用 Win11 风格：
+ * - 居中布局
+ * - 浮动圆角矩形（与底部留 4dp 间距）
+ * - Mica/Aero 半透明材质
+ * - 阴影
+ * - 应用图标带运行中下划线指示
  */
 @Composable
 fun Taskbar(
@@ -44,7 +51,6 @@ fun Taskbar(
     showSeconds: Boolean = false,
     modifier: Modifier = Modifier
 ) {
-    val wm = remember { WindowManager.get() }
     var tick by remember { mutableStateOf(0L) }
 
     // 每秒刷新时钟
@@ -55,91 +61,32 @@ fun Taskbar(
         }
     }
 
-    val bgColor = theme.taskbarColor.copy(alpha = theme.taskbarAlpha)
-
-    Box(
+    // 浮动任务栏：底边留 4dp 空隙，整体宽度 80% 居中
+    BoxWithConstraints(
         modifier = modifier
-            .background(bgColor)
     ) {
-        when (theme.taskbarAlignment) {
-            TaskbarAlignment.LEFT -> LeftAlignedTaskbar(theme, startMenuOpen, onStartClick, tick, showSeconds)
-            TaskbarAlignment.CENTER -> CenterAlignedTaskbar(theme, startMenuOpen, onStartClick, tick, showSeconds)
-        }
-    }
-}
+        val taskbarColor = theme.taskbarColor.copy(alpha = theme.taskbarAlpha)
+        val floatingWidth = maxWidth * 0.85f  // 居中浮动的宽度
+        val bottomPadding = 4.dp
 
-@Composable
-private fun LeftAlignedTaskbar(
-    theme: WinTheme,
-    startMenuOpen: Boolean,
-    onStartClick: () -> Unit,
-    tick: Long,
-    showSeconds: Boolean
-) {
-    val wm = remember { WindowManager.get() }
-    val runningWindows = remember(tick, theme) { wm.windows }  // 注意：wm 变更时通过外层 recompose 传入
-
-    Row(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(horizontal = 4.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        // 开始按钮
-        StartButton(theme = theme, isOpen = startMenuOpen, onClick = onStartClick)
-
-        Spacer(Modifier.width(4.dp))
-
-        // 搜索框（简化版）
-        SearchBox(theme = theme)
-
-        Spacer(Modifier.width(4.dp))
-
-        // 固定到任务栏的应用
-        val pinnedApps = remember { AppRegistry.taskbarApps() }
-        pinnedApps.forEach { app ->
-            TaskbarAppIcon(
-                iconAsset = app.iconAsset,
-                theme = theme,
-                onClick = {
-                    val existing = wm.windowsForApp(app.id)
-                    if (existing.isEmpty()) {
-                        wm.open(
-                            appId = app.id,
-                            title = app.displayName,
-                            launchMode = app.launchMode,
-                            initialWidth = app.defaultWidth.value.toInt(),
-                            initialHeight = app.defaultHeight.value.toInt()
-                        )
-                    } else {
-                        wm.taskbarClick(existing.first().id)
-                    }
-                }
-            )
-            Spacer(Modifier.width(2.dp))
-        }
-
-        // 运行中的窗口（不包括已固定的）
-        val pinnedIds = pinnedApps.map { it.id }.toSet()
-        val runningOnly = runningWindows.filter { it.appId !in pinnedIds }
-        runningOnly.forEach { w ->
-            val app = AppRegistry.get(w.appId)
-            if (app != null) {
-                TaskbarAppIcon(
-                    iconAsset = app.iconAsset,
-                    theme = theme,
-                    isRunning = true,
-                    isActive = w.isVisible && wm.topWindow()?.id == w.id,
-                    onClick = { wm.taskbarClick(w.id) }
-                )
-                Spacer(Modifier.width(2.dp))
+        Row(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .padding(bottom = bottomPadding),
+            horizontalArrangement = Arrangement.Center
+        ) {
+            Box(
+                modifier = Modifier
+                    .width(floatingWidth)
+                    .height(theme.taskbarHeight)
+                    .shadow(8.dp, RoundedCornerShape(theme.taskbarHeight.value / 2f))
+                    .clip(RoundedCornerShape(theme.taskbarHeight.value / 2f))
+                    .background(taskbarColor)
+            ) {
+                CenterAlignedTaskbar(theme, startMenuOpen, onStartClick, tick, showSeconds)
             }
         }
-
-        Spacer(Modifier.weight(1f))
-
-        // 系统托盘 + 时钟
-        SystemTray(theme = theme, tick = tick, showSeconds = showSeconds)
     }
 }
 
@@ -161,6 +108,10 @@ private fun CenterAlignedTaskbar(
             verticalAlignment = Alignment.CenterVertically
         ) {
             StartButton(theme = theme, isOpen = startMenuOpen, onClick = onStartClick)
+            Spacer(Modifier.width(8.dp))
+
+            // 搜索框（仅 Win11/Win10 显示完整版，其他主题显示简化版）
+            SearchBox(theme = theme)
             Spacer(Modifier.width(8.dp))
 
             val pinnedApps = remember { AppRegistry.taskbarApps() }
@@ -186,18 +137,19 @@ private fun CenterAlignedTaskbar(
                 Spacer(Modifier.width(4.dp))
             }
 
-            // 分隔线
-            Box(
-                modifier = Modifier
-                    .width(1.dp)
-                    .height(24.dp)
-                    .background(theme.taskbarIconColor.copy(alpha = 0.3f))
-            )
-            Spacer(Modifier.width(4.dp))
-
-            // 运行中（非固定）
+            // 分隔线（仅在同时有运行中窗口时显示）
             val pinnedIds = pinnedApps.map { it.id }.toSet()
             val runningOnly = runningWindows.filter { it.appId !in pinnedIds }
+            if (runningOnly.isNotEmpty()) {
+                Box(
+                    modifier = Modifier
+                        .width(1.dp)
+                        .height(24.dp)
+                        .background(theme.taskbarIconColor.copy(alpha = 0.2f))
+                )
+                Spacer(Modifier.width(4.dp))
+            }
+
             runningOnly.forEach { w ->
                 val app = AppRegistry.get(w.appId)
                 if (app != null) {
@@ -228,19 +180,45 @@ private fun StartButton(theme: WinTheme, isOpen: Boolean, onClick: () -> Unit) {
     val bgColor = if (isOpen) theme.accentColor.copy(alpha = 0.3f) else Color.Transparent
     Box(
         modifier = Modifier
-            .size(theme.taskbarHeight - 8.dp)
-            .background(bgColor, RoundedCornerShape(4.dp))
+            .size(theme.taskbarHeight - 10.dp)
+            .clip(RoundedCornerShape(50))
+            .background(bgColor)
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center
     ) {
-        // Win 徽标：4 个色块
-        Row {
-            Box(Modifier.size(8.dp).background(Color(0xFFF25022)))  // 红
-            Box(Modifier.size(8.dp).background(Color(0xFF7FBA00)))  // 绿
-        }
-        Row {
-            Box(Modifier.size(8.dp).background(Color(0xFF00A4EF)))  // 蓝
-            Box(Modifier.size(8.dp).background(Color(0xFFFFB900)))  // 黄
+        // Win 徽标：4 个色块（现代化的圆角设计）
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(1.dp)
+        ) {
+            Row(horizontalArrangement = Arrangement.spacedBy(1.dp)) {
+                Box(
+                    Modifier
+                        .size(7.dp)
+                        .clip(RoundedCornerShape(1.dp))
+                        .background(Color(0xFFF25022))
+                )
+                Box(
+                    Modifier
+                        .size(7.dp)
+                        .clip(RoundedCornerShape(1.dp))
+                        .background(Color(0xFF7FBA00))
+                )
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(1.dp)) {
+                Box(
+                    Modifier
+                        .size(7.dp)
+                        .clip(RoundedCornerShape(1.dp))
+                        .background(Color(0xFF00A4EF))
+                )
+                Box(
+                    Modifier
+                        .size(7.dp)
+                        .clip(RoundedCornerShape(1.dp))
+                        .background(Color(0xFFFFB900))
+                )
+            }
         }
     }
 }
@@ -249,23 +227,24 @@ private fun StartButton(theme: WinTheme, isOpen: Boolean, onClick: () -> Unit) {
 private fun SearchBox(theme: WinTheme) {
     Row(
         modifier = Modifier
-            .height(theme.taskbarHeight - 12.dp)
-            .width(180.dp)
-            .background(theme.taskbarIconColor.copy(alpha = 0.08f), RoundedCornerShape(theme.taskbarHeight.value / 2f))
-            .padding(horizontal = 8.dp),
+            .height(theme.taskbarHeight - 14.dp)
+            .width(140.dp)
+            .clip(RoundedCornerShape(theme.taskbarHeight.value / 2f))
+            .background(theme.taskbarIconColor.copy(alpha = 0.08f))
+            .padding(horizontal = 10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Icon(
             imageVector = Icons.Default.Search,
-            contentDescription = "Search",
+            contentDescription = "搜索",
             tint = theme.taskbarIconColor,
-            modifier = Modifier.size(16.dp)
+            modifier = Modifier.size(14.dp)
         )
         Spacer(Modifier.width(6.dp))
         Text(
             text = "搜索",
             color = theme.taskbarIconColor.copy(alpha = 0.6f),
-            fontSize = theme.fontSizeBody
+            fontSize = theme.fontSizeSmall
         )
     }
 }
@@ -279,25 +258,26 @@ private fun TaskbarAppIcon(
     onClick: () -> Unit
 ) {
     val bgColor = if (isActive) theme.taskbarIconColor.copy(alpha = 0.15f)
-                  else if (isRunning) theme.taskbarIconColor.copy(alpha = 0.05f)
+                  else if (isRunning) theme.taskbarIconColor.copy(alpha = 0.06f)
                   else Color.Transparent
     Box(
         modifier = Modifier
-            .size(theme.taskbarHeight - 8.dp)
-            .background(bgColor, RoundedCornerShape(4.dp))
+            .size(theme.taskbarHeight - 10.dp)
+            .clip(RoundedCornerShape(50))
+            .background(bgColor)
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center
     ) {
-        IconPainter(iconAsset, size = 24.dp)
-        // 运行中标记
+        IconPainter(iconAsset, size = 22.dp)
+        // 运行中标记：底部圆点指示器（Win11 风格）
         if (isRunning) {
             Box(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
-                    .padding(bottom = 2.dp)
-                    .width(if (isActive) 16.dp else 6.dp)
-                    .height(2.dp)
-                    .background(theme.taskbarIconColor)
+                    .padding(bottom = 3.dp)
+                    .size(width = if (isActive) 12.dp else 4.dp, height = 3.dp)
+                    .clip(RoundedCornerShape(50))
+                    .background(theme.taskbarIconColor.copy(alpha = if (isActive) 1f else 0.6f))
             )
         }
     }
@@ -309,11 +289,12 @@ private fun SystemTray(theme: WinTheme, tick: Long, showSeconds: Boolean, modifi
         modifier = modifier
             .padding(end = 12.dp, start = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp)
+        horizontalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        Icon(Icons.Default.Wifi, contentDescription = "WiFi", tint = theme.taskbarClockColor, modifier = Modifier.size(16.dp))
-        Icon(Icons.Default.VolumeUp, contentDescription = "Volume", tint = theme.taskbarClockColor, modifier = Modifier.size(16.dp))
-        Icon(Icons.Default.BatteryFull, contentDescription = "Battery", tint = theme.taskbarClockColor, modifier = Modifier.size(16.dp))
+        // 系统图标组
+        Icon(Icons.Default.Wifi, contentDescription = "WiFi", tint = theme.taskbarClockColor, modifier = Modifier.size(15.dp))
+        Icon(Icons.Default.VolumeUp, contentDescription = "音量", tint = theme.taskbarClockColor, modifier = Modifier.size(15.dp))
+        Icon(Icons.Default.BatteryFull, contentDescription = "电池", tint = theme.taskbarClockColor, modifier = Modifier.size(15.dp))
 
         // 时钟
         val timeFormat = SimpleDateFormat(if (showSeconds) "HH:mm:ss" else "HH:mm", Locale.getDefault())

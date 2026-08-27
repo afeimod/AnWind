@@ -10,7 +10,39 @@ import java.util.UUID
 enum class LaunchMode { FULLSCREEN, FLOATING }
 
 /**
+ * 调整大小的方向：8 个边缘 + 4 个角落 = 12 个区域（但实际只取 8 个）
+ * - LEFT/RIGHT/TOP/BOTTOM: 单边调整
+ * - TOP_LEFT/TOP_RIGHT/BOTTOM_LEFT/BOTTOM_RIGHT: 角落同时调整两个方向
+ */
+enum class ResizeEdge {
+    LEFT, RIGHT, TOP, BOTTOM,
+    TOP_LEFT, TOP_RIGHT, BOTTOM_LEFT, BOTTOM_RIGHT;
+
+    /** 是否影响左边（即 x 坐标变化） */
+    val affectsLeft: Boolean
+        get() = this == LEFT || this == TOP_LEFT || this == BOTTOM_LEFT
+
+    /** 是否影响右边（即 width 变化） */
+    val affectsRight: Boolean
+        get() = this == RIGHT || this == TOP_RIGHT || this == BOTTOM_RIGHT
+
+    /** 是否影响顶边（即 y 坐标变化） */
+    val affectsTop: Boolean
+        get() = this == TOP || this == TOP_LEFT || this == TOP_RIGHT
+
+    /** 是否影响底边（即 height 变化） */
+    val affectsBottom: Boolean
+        get() = this == BOTTOM || this == BOTTOM_LEFT || this == BOTTOM_RIGHT
+}
+
+/**
  * 窗口状态：单个打开的窗口
+ *
+ * 视觉重构后：
+ * - 支持拖拽移动（dragOffset 提交一次性）
+ * - 支持 8 方向调整大小
+ * - 支持最小化/最大化
+ * - 支持调整 z-index 焦点
  */
 data class WindowState(
     val id: String = UUID.randomUUID().toString(),
@@ -42,11 +74,13 @@ data class WindowState(
 /**
  * 窗口管理器：单例，管理所有打开的窗口。
  *
- * 设计要点：
+ * 视觉重构：
  * - 全部窗口存在 MutableList 中，按 zIndex 排序
  * - 顶部窗口 zIndex 最大
  * - 任务栏点击最小化/还原
  * - 同一个 appId 可重复打开（允许多窗口）
+ * - 新增 8 方向调整大小逻辑，支持从任意边缘/角落缩放
+ * - 调整大小时遵循最小尺寸限制
  */
 class WindowManager {
 
@@ -133,6 +167,7 @@ class WindowManager {
         }
     }
 
+    /** 拖拽窗口标题栏：相对位移加到当前位置 */
     fun move(windowId: String, dx: Int, dy: Int) {
         _windows.firstOrNull { it.id == windowId && !it.isMaximized }?.let {
             it.x += dx
@@ -141,14 +176,80 @@ class WindowManager {
         }
     }
 
-    fun resize(windowId: String, dw: Int, dh: Int) {
+    /**
+     * 设置窗口的绝对位置（拖拽时直接设置，避免累加误差）
+     * 配合 WindowChrome 的本地 dragOffset 使用：松手时把"窗口原位置 + dragOffset"作为绝对位置提交。
+     */
+    fun setAbsolutePosition(windowId: String, x: Int, y: Int) {
         _windows.firstOrNull { it.id == windowId && !it.isMaximized }?.let {
-            it.width = (it.width + dw).coerceAtLeast(280)
-            it.height = (it.height + dh).coerceAtLeast(200)
+            it.x = x
+            it.y = y
         }
     }
 
-    /** 拖拽结束后调用，触发 UI 刷新 */
+    /**
+     * 调整大小：根据指定的边缘方向，应用 delta 到对应的边。
+     * 支持 8 个方向（4 边 + 4 角），自动遵守最小尺寸 280x180。
+     */
+    fun resize(
+        windowId: String,
+        edge: ResizeEdge,
+        dx: Int,
+        dy: Int,
+        workAreaWidth: Int = Int.MAX_VALUE,
+        workAreaHeight: Int = Int.MAX_VALUE
+    ) {
+        _windows.firstOrNull { it.id == windowId && !it.isMaximized }?.let { w ->
+            val minWidth = 280
+            val minHeight = 180
+
+            // 处理左右边
+            if (edge.affectsLeft) {
+                // 左边移动：x 和 width 同时变化
+                val newWidth = w.width - dx
+                if (newWidth >= minWidth) {
+                    w.x += dx
+                    w.width = newWidth
+                } else {
+                    // 触底最小宽度：把 x 推到 width=minWidth 的位置
+                    val fixDx = w.width - minWidth
+                    w.x += fixDx
+                    w.width = minWidth
+                }
+            }
+            if (edge.affectsRight) {
+                val newWidth = w.width + dx
+                w.width = newWidth.coerceIn(minWidth, (workAreaWidth - w.x).coerceAtLeast(minWidth))
+            }
+            // 处理上下边
+            if (edge.affectsTop) {
+                val newHeight = w.height - dy
+                if (newHeight >= minHeight) {
+                    w.y += dy
+                    w.height = newHeight
+                } else {
+                    val fixDy = w.height - minHeight
+                    w.y += fixDy
+                    w.height = minHeight
+                }
+            }
+            if (edge.affectsBottom) {
+                val newHeight = w.height + dy
+                w.height = newHeight.coerceIn(minHeight, (workAreaHeight - w.y).coerceAtLeast(minHeight))
+            }
+            // 不立即 notifyChanged，避免调整大小时频繁重组
+        }
+    }
+
+    /** 设置窗口的绝对尺寸（备用接口） */
+    fun setAbsoluteSize(windowId: String, width: Int, height: Int) {
+        _windows.firstOrNull { it.id == windowId && !it.isMaximized }?.let {
+            it.width = width.coerceAtLeast(280)
+            it.height = height.coerceAtLeast(180)
+        }
+    }
+
+    /** 拖拽/调整大小结束后调用，触发 UI 刷新 */
     fun commitChanges() {
         notifyChanged()
     }

@@ -133,7 +133,7 @@ private fun DesktopIcon(item: DesktopItem, iconSize: Float) {
                                     appId = "browser",
                                     title = "Browser",
                                     launchMode = AppRegistry.get("browser")?.launchMode
-                                        ?: com.anwind.core.window.LaunchMode.FULLSCREEN,
+                                        ?: com.anwind.core.window.LaunchMode.FLOATING,
                                     launchArgs = mapOf(
                                         "url" to item.target,
                                         "type" to item.type.name

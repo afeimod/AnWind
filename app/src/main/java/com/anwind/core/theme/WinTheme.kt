@@ -12,6 +12,10 @@ import androidx.compose.ui.unit.sp
 
 /**
  * Windows 主题枚举：覆盖 95 / XP / 7 / 10 / 11 五代
+ *
+ * 视觉重构：所有主题统一采用 Win11 风格的现代化外观
+ * （细边框 + 大圆角 + 阴影 + 居中任务栏 + Mica 半透明材质），
+ * 但保留各自时代的色调特征与历史质感。
  */
 enum class WindowsVariant {
     WIN95, WIN_XP, WIN7, WIN10, WIN11;
@@ -37,24 +41,27 @@ enum class WindowsVariant {
 enum class TaskbarAlignment { LEFT, CENTER }
 
 /**
- * 窗口边框风格
+ * 窗口边框风格 - 现代化重构后统一为细边框 + 大圆角
  */
 enum class WindowChrome {
-    /** Win95 经典：粗边框 + 灰色标题栏 + 方角 */
+    /** Win95 经典灰色调 + 现代圆角 */
     CLASSIC,
-    /** XP Luna：蓝色渐变标题栏 + 圆角 */
+    /** XP Luna 蓝色调 + 现代圆角 */
     LUNA,
-    /** Win7 Aero：半透明玻璃 + 圆角 */
+    /** Win7 Aero 半透明蓝色调 + 现代圆角 */
     AERO,
-    /** Win10：扁平 + 细边框 + 方角 */
+    /** Win10 深色扁平 + 现代圆角 */
     FLAT,
-    /** Win11：Mica 材质 + 大圆角 + 居中控件 */
+    /** Win11 Mica 材质 + 大圆角 + 居中任务栏 */
     MICA
 }
 
 /**
  * 单个 Windows 主题的完整视觉描述。
  * 所有 UI 组件都从这里读取颜色/形状/字体。
+ *
+ * 视觉重构说明：所有主题统一采用 Win11 风格基础外观，
+ * 通过颜色/字体/材质细节区分各时代特征。
  */
 data class WinTheme(
     val variant: WindowsVariant,
@@ -91,12 +98,24 @@ data class WinTheme(
     val windowCornerSize: Dp,
     val windowTitleBarHeight: Dp,
     val windowControlButtonsOnLeft: Boolean,   // Win95/XP/7 在右，无所谓；这里保留兼容字段
+    /** 窗口阴影半径 - 现代化所有窗口都有阴影 */
+    val windowShadowElevation: Dp,
+    /** 标题栏图标颜色（Win11 风格的彩色徽标） */
+    val windowTitleBarIconColor: Color,
 
     // === 控件 / 按钮 ===
     val buttonBackgroundColor: Color,
     val buttonTextColor: Color,
     val buttonCornerSize: Dp,
     val accentColor: Color,
+    /** 链接/可点击文字颜色 */
+    val linkColor: Color,
+    /** 二级文本/描述文字颜色 */
+    val secondaryTextColor: Color,
+    /** 分隔线颜色 */
+    val dividerColor: Color,
+    /** 卡片背景色 */
+    val cardBackgroundColor: Color,
 
     // === 字体 ===
     val fontFamily: FontFamily,
@@ -113,16 +132,23 @@ data class WinTheme(
 ) {
     val windowShape: Shape
         get() = when (windowChrome) {
-            WindowChrome.CLASSIC -> RectangleShape
-            WindowChrome.LUNA   -> RoundedCornerShape(8.dp)
-            WindowChrome.AERO   -> RoundedCornerShape(8.dp)
-            WindowChrome.FLAT   -> RoundedCornerShape(topStart = 2.dp, topEnd = 2.dp)
-            WindowChrome.MICA   -> RoundedCornerShape(8.dp)
+            WindowChrome.CLASSIC -> RoundedCornerShape(windowCornerSize)
+            WindowChrome.LUNA   -> RoundedCornerShape(windowCornerSize)
+            WindowChrome.AERO   -> RoundedCornerShape(windowCornerSize)
+            WindowChrome.FLAT   -> RoundedCornerShape(windowCornerSize)
+            WindowChrome.MICA   -> RoundedCornerShape(windowCornerSize)
         }
 
     val buttonShape: Shape
-        get() = if (windowChrome == WindowChrome.CLASSIC) RectangleShape
-                else RoundedCornerShape(buttonCornerSize)
+        get() = RoundedCornerShape(buttonCornerSize)
+
+    /** 控件圆角形状（用于卡片/列表项） */
+    val cardShape: Shape
+        get() = RoundedCornerShape(8.dp)
+
+    /** 标题栏控制按钮形状（Win11 风格的圆角矩形） */
+    val controlButtonShape: Shape
+        get() = RoundedCornerShape(0.dp)  // Win11 控件按钮其实是直角的
 
     companion object {
         val Default = Themes.Win11
@@ -132,12 +158,13 @@ data class WinTheme(
 /**
  * 主题工厂：5 个 Windows 主题的具体定义。
  *
- * 每个主题的视觉特征都尽量贴近原版：
- * - Win95：灰色 #C0C0C0、方角、粗边框、Tahoma/Sans 字体
- * - XP：Luna 蓝色渐变标题栏、绿色草地壁纸、QEMU 字体
- * - Win7：Aero 玻璃、半透明、Harmony 字体
- * - Win10：扁平、深色或亮色、左对齐任务栏
- * - Win11：Mica、大圆角、居中任务栏
+ * 视觉重构：所有主题采用 Win11 风格基础外观（细边框 + 大圆角 + 阴影 + 居中任务栏），
+ * 通过色调和材质细节区分时代特征：
+ * - Win95：经典灰色调、Tahoma 字体（保留朴素感）
+ * - WinXP：Luna 蓝色色调（去掉了过时的渐变标题栏）
+ * - Win7：Aero 玻璃半透明蓝色调
+ * - Win10：扁平深色调
+ * - Win11：Mica 浅色调（最贴近视频参考样式）
  */
 object Themes {
 
@@ -147,36 +174,42 @@ object Themes {
         wallpaperAsset = "wallpapers/win95.png",
         desktopIconTextColor = Color.White,
         desktopIconTextShadow = true,
-        taskbarAlignment = TaskbarAlignment.LEFT,
+        taskbarAlignment = TaskbarAlignment.CENTER,  // 改为居中以统一现代风格
         taskbarColor = Color(0xFFC0C0C0),
-        taskbarAlpha = 1.0f,
-        taskbarHeight = 36.dp,
+        taskbarAlpha = 0.92f,
+        taskbarHeight = 44.dp,
         taskbarStartButtonColor = Color(0xFF808080),
         taskbarIconColor = Color.Black,
         taskbarClockColor = Color.Black,
-        startButtonLabel = "Start",
-        startMenuWidth = 240.dp,
+        startButtonLabel = "开始",
+        startMenuWidth = 360.dp,
         startMenuColor = Color(0xFFC0C0C0),
-        startMenuAlpha = 1.0f,
-        startMenuShape = RectangleShape,
+        startMenuAlpha = 0.97f,
+        startMenuShape = RoundedCornerShape(8.dp),
         windowChrome = WindowChrome.CLASSIC,
-        windowTitleBarColor = Color(0xFF000080),    // 经典海军蓝
-        windowTitleBarTextColor = Color.White,
-        windowBackgroundColor = Color(0xFFC0C0C0),
-        windowBorderColor = Color(0xFF808080),
-        windowBorderWidth = 2.dp,
-        windowCornerSize = 0.dp,
-        windowTitleBarHeight = 24.dp,
+        windowTitleBarColor = Color(0xFFE8E8E8),    // 浅灰标题栏，配合深色文字（Win11 风格）
+        windowTitleBarTextColor = Color(0xFF1F1F1F),
+        windowBackgroundColor = Color(0xFFF5F5F5),
+        windowBorderColor = Color(0xFFB0B0B0),
+        windowBorderWidth = 1.dp,
+        windowCornerSize = 8.dp,
+        windowTitleBarHeight = 36.dp,
         windowControlButtonsOnLeft = false,
-        buttonBackgroundColor = Color(0xFFC0C0C0),
+        windowShadowElevation = 12.dp,
+        windowTitleBarIconColor = Color(0xFF000080),
+        buttonBackgroundColor = Color(0xFFE0E0E0),
         buttonTextColor = Color.Black,
-        buttonCornerSize = 0.dp,
+        buttonCornerSize = 4.dp,
         accentColor = Color(0xFF000080),
+        linkColor = Color(0xFF0066CC),
+        secondaryTextColor = Color(0xFF616161),
+        dividerColor = Color(0xFFE0E0E0),
+        cardBackgroundColor = Color(0xFFEBEBEB),
         fontFamily = FontFamily.SansSerif,
         fontSizeSmall = 11.sp,
-        fontSizeBody = 12.sp,
-        fontSizeTitle = 14.sp,
-        fontWeightTitle = FontWeight.Bold,
+        fontSizeBody = 13.sp,
+        fontSizeTitle = 16.sp,
+        fontWeightTitle = FontWeight.SemiBold,
         startupSoundAsset = "sounds/win95.mp3",
         isDark = false
     )
@@ -187,36 +220,42 @@ object Themes {
         wallpaperAsset = "wallpapers/winxp_bliss.jpg",
         desktopIconTextColor = Color.White,
         desktopIconTextShadow = true,
-        taskbarAlignment = TaskbarAlignment.LEFT,
-        taskbarColor = Color(0xFF245EDB),
-        taskbarAlpha = 1.0f,
-        taskbarHeight = 36.dp,
+        taskbarAlignment = TaskbarAlignment.CENTER,
+        taskbarColor = Color(0xFFE1E8F5),   // 浅蓝灰，更现代化
+        taskbarAlpha = 0.92f,
+        taskbarHeight = 44.dp,
         taskbarStartButtonColor = Color(0xFF2D7A3E),
-        taskbarIconColor = Color.White,
-        taskbarClockColor = Color.White,
-        startButtonLabel = "start",
-        startMenuWidth = 280.dp,
-        startMenuColor = Color(0xFFFFFFFF),
-        startMenuAlpha = 1.0f,
+        taskbarIconColor = Color(0xFF1F3F7F),
+        taskbarClockColor = Color(0xFF1F3F7F),
+        startButtonLabel = "开始",
+        startMenuWidth = 380.dp,
+        startMenuColor = Color(0xFFF6F8FB),
+        startMenuAlpha = 0.98f,
         startMenuShape = RoundedCornerShape(8.dp),
         windowChrome = WindowChrome.LUNA,
-        windowTitleBarColor = Color(0xFF0058E6),
-        windowTitleBarTextColor = Color.White,
-        windowBackgroundColor = Color(0xFFECE9D8),
-        windowBorderColor = Color(0xFF0058E6),
+        windowTitleBarColor = Color(0xFFE8F0FE),   // 浅蓝色标题栏（Win11 风格）
+        windowTitleBarTextColor = Color(0xFF0A3F8F),
+        windowBackgroundColor = Color(0xFFFAFCFE),
+        windowBorderColor = Color(0xFFB8CCE8),
         windowBorderWidth = 1.dp,
         windowCornerSize = 8.dp,
-        windowTitleBarHeight = 28.dp,
+        windowTitleBarHeight = 36.dp,
         windowControlButtonsOnLeft = false,
-        buttonBackgroundColor = Color(0xFFECE9D8),
-        buttonTextColor = Color.Black,
-        buttonCornerSize = 4.dp,
-        accentColor = Color(0xFF0058E6),
+        windowShadowElevation = 14.dp,
+        windowTitleBarIconColor = Color(0xFF0A6E3F),
+        buttonBackgroundColor = Color(0xFFE1EBF8),
+        buttonTextColor = Color(0xFF0A3F8F),
+        buttonCornerSize = 6.dp,
+        accentColor = Color(0xFF0A6E3F),   // XP 经典绿色作为强调色
+        linkColor = Color(0xFF0066CC),
+        secondaryTextColor = Color(0xFF6E7B8B),
+        dividerColor = Color(0xFFD5DDE8),
+        cardBackgroundColor = Color(0xFFEDF2F8),
         fontFamily = FontFamily.SansSerif,
-        fontSizeSmall = 11.sp,
-        fontSizeBody = 12.sp,
-        fontSizeTitle = 14.sp,
-        fontWeightTitle = FontWeight.Bold,
+        fontSizeSmall = 12.sp,
+        fontSizeBody = 13.sp,
+        fontSizeTitle = 16.sp,
+        fontWeightTitle = FontWeight.SemiBold,
         startupSoundAsset = "sounds/winxp.mp3",
         isDark = false
     )
@@ -227,35 +266,41 @@ object Themes {
         wallpaperAsset = "wallpapers/win7.jpg",
         desktopIconTextColor = Color.White,
         desktopIconTextShadow = true,
-        taskbarAlignment = TaskbarAlignment.LEFT,
-        taskbarColor = Color(0xFF1F1F1F),
-        taskbarAlpha = 0.85f,
-        taskbarHeight = 40.dp,
-        taskbarStartButtonColor = Color(0xFF00BCF2),
-        taskbarIconColor = Color.White,
-        taskbarClockColor = Color.White,
+        taskbarAlignment = TaskbarAlignment.CENTER,
+        taskbarColor = Color(0xFFD7E4F2),   // Aero 玻璃浅蓝
+        taskbarAlpha = 0.82f,
+        taskbarHeight = 46.dp,
+        taskbarStartButtonColor = Color(0xFF1BA1E2),
+        taskbarIconColor = Color(0xFF1F3F5F),
+        taskbarClockColor = Color(0xFF1F3F5F),
         startButtonLabel = null,
-        startMenuWidth = 320.dp,
-        startMenuColor = Color(0xFF2A2A2A),
-        startMenuAlpha = 0.95f,
-        startMenuShape = RoundedCornerShape(8.dp),
+        startMenuWidth = 400.dp,
+        startMenuColor = Color(0xFFF0F5FA),
+        startMenuAlpha = 0.97f,
+        startMenuShape = RoundedCornerShape(10.dp),
         windowChrome = WindowChrome.AERO,
-        windowTitleBarColor = Color(0xFF9BB5E2),
-        windowTitleBarTextColor = Color.Black,
-        windowBackgroundColor = Color(0xFFF0F0F0),
-        windowBorderColor = Color(0xFF9BB5E2),
+        windowTitleBarColor = Color(0xFFE5EFF8),   // Aero 浅蓝玻璃
+        windowTitleBarTextColor = Color(0xFF1F3F5F),
+        windowBackgroundColor = Color(0xFFFAFCFE),
+        windowBorderColor = Color(0xFFA4C0DE),
         windowBorderWidth = 1.dp,
         windowCornerSize = 8.dp,
-        windowTitleBarHeight = 30.dp,
+        windowTitleBarHeight = 36.dp,
         windowControlButtonsOnLeft = false,
-        buttonBackgroundColor = Color(0xFFE1E8F2),
-        buttonTextColor = Color.Black,
-        buttonCornerSize = 4.dp,
+        windowShadowElevation = 16.dp,
+        windowTitleBarIconColor = Color(0xFF1BA1E2),
+        buttonBackgroundColor = Color(0xFFDDE9F3),
+        buttonTextColor = Color(0xFF1F3F5F),
+        buttonCornerSize = 6.dp,
         accentColor = Color(0xFF1BA1E2),
+        linkColor = Color(0xFF0066CC),
+        secondaryTextColor = Color(0xFF5F7A95),
+        dividerColor = Color(0xFFCCD8E5),
+        cardBackgroundColor = Color(0xFFE8EFF6),
         fontFamily = FontFamily.SansSerif,
-        fontSizeSmall = 11.sp,
+        fontSizeSmall = 12.sp,
         fontSizeBody = 13.sp,
-        fontSizeTitle = 15.sp,
+        fontSizeTitle = 16.sp,
         fontWeightTitle = FontWeight.SemiBold,
         startupSoundAsset = "sounds/win7.mp3",
         isDark = false
@@ -267,36 +312,42 @@ object Themes {
         wallpaperAsset = "wallpapers/win10.jpg",
         desktopIconTextColor = Color.White,
         desktopIconTextShadow = true,
-        taskbarAlignment = TaskbarAlignment.LEFT,
-        taskbarColor = Color(0xFF000000),
+        taskbarAlignment = TaskbarAlignment.CENTER,
+        taskbarColor = Color(0xFF1F1F1F),
         taskbarAlpha = 0.85f,
-        taskbarHeight = 40.dp,
+        taskbarHeight = 46.dp,
         taskbarStartButtonColor = Color(0xFF0078D7),
         taskbarIconColor = Color.White,
         taskbarClockColor = Color.White,
         startButtonLabel = null,
-        startMenuWidth = 360.dp,
-        startMenuColor = Color(0xFF1F1F1F),
+        startMenuWidth = 400.dp,
+        startMenuColor = Color(0xFF202020),
         startMenuAlpha = 0.98f,
-        startMenuShape = RectangleShape,
+        startMenuShape = RoundedCornerShape(8.dp),
         windowChrome = WindowChrome.FLAT,
-        windowTitleBarColor = Color(0xFF000000),
+        windowTitleBarColor = Color(0xFF2B2B2B),
         windowTitleBarTextColor = Color.White,
         windowBackgroundColor = Color(0xFF1F1F1F),
-        windowBorderColor = Color(0xFF0078D7),
+        windowBorderColor = Color(0xFF3A3A3A),
         windowBorderWidth = 1.dp,
-        windowCornerSize = 0.dp,
-        windowTitleBarHeight = 32.dp,
+        windowCornerSize = 8.dp,
+        windowTitleBarHeight = 36.dp,
         windowControlButtonsOnLeft = false,
+        windowShadowElevation = 14.dp,
+        windowTitleBarIconColor = Color(0xFF0078D7),
         buttonBackgroundColor = Color(0xFF2D2D2D),
         buttonTextColor = Color.White,
-        buttonCornerSize = 0.dp,
+        buttonCornerSize = 4.dp,
         accentColor = Color(0xFF0078D7),
+        linkColor = Color(0xFF66B2FF),
+        secondaryTextColor = Color(0xFFA0A0A0),
+        dividerColor = Color(0xFF3A3A3A),
+        cardBackgroundColor = Color(0xFF2D2D2D),
         fontFamily = FontFamily.SansSerif,
         fontSizeSmall = 12.sp,
-        fontSizeBody = 14.sp,
+        fontSizeBody = 13.sp,
         fontSizeTitle = 16.sp,
-        fontWeightTitle = FontWeight.Medium,
+        fontWeightTitle = FontWeight.SemiBold,
         startupSoundAsset = "sounds/win10.mp3",
         isDark = true
     )
@@ -308,33 +359,39 @@ object Themes {
         desktopIconTextColor = Color.White,
         desktopIconTextShadow = true,
         taskbarAlignment = TaskbarAlignment.CENTER,
-        taskbarColor = Color(0xFFF3F3F3),
+        taskbarColor = Color(0xFFEFEFEF),  // Mica 雾白
         taskbarAlpha = 0.78f,
         taskbarHeight = 48.dp,
         taskbarStartButtonColor = Color(0xFF0067C0),
         taskbarIconColor = Color(0xFF1F1F1F),
         taskbarClockColor = Color(0xFF1F1F1F),
         startButtonLabel = null,
-        startMenuWidth = 380.dp,
-        startMenuColor = Color(0xFFF5F5F5),
-        startMenuAlpha = 0.95f,
+        startMenuWidth = 440.dp,
+        startMenuColor = Color(0xFFF8F8F8),
+        startMenuAlpha = 0.96f,
         startMenuShape = RoundedCornerShape(12.dp),
         windowChrome = WindowChrome.MICA,
-        windowTitleBarColor = Color(0xFFEEEEEE),
+        windowTitleBarColor = Color(0xFFF5F5F5),   // Mica 浅色
         windowTitleBarTextColor = Color(0xFF1F1F1F),
         windowBackgroundColor = Color(0xFFFAFAFA),
         windowBorderColor = Color(0xFFE5E5E5),
         windowBorderWidth = 1.dp,
         windowCornerSize = 8.dp,
-        windowTitleBarHeight = 32.dp,
+        windowTitleBarHeight = 36.dp,
         windowControlButtonsOnLeft = false,
+        windowShadowElevation = 16.dp,
+        windowTitleBarIconColor = Color(0xFF0067C0),
         buttonBackgroundColor = Color(0xFFE9E9E9),
         buttonTextColor = Color(0xFF1F1F1F),
         buttonCornerSize = 4.dp,
         accentColor = Color(0xFF0067C0),
+        linkColor = Color(0xFF0067C0),
+        secondaryTextColor = Color(0xFF616161),
+        dividerColor = Color(0xFFE5E5E5),
+        cardBackgroundColor = Color(0xFFF0F0F0),
         fontFamily = FontFamily.SansSerif,
         fontSizeSmall = 12.sp,
-        fontSizeBody = 14.sp,
+        fontSizeBody = 13.sp,
         fontSizeTitle = 16.sp,
         fontWeightTitle = FontWeight.SemiBold,
         startupSoundAsset = "sounds/win11.mp3",

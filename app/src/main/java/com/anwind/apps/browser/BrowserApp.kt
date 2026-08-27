@@ -69,9 +69,9 @@ val BrowserApp = AppDef(
     id = "browser",
     displayName = "浏览器",
     iconAsset = "icons/browser.png",
-    launchMode = LaunchMode.FULLSCREEN,
-    defaultWidth = 1080.dp,
-    defaultHeight = 720.dp,
+    launchMode = LaunchMode.FLOATING,
+    defaultWidth = 980.dp,
+    defaultHeight = 640.dp,
     pinnedToTaskbar = true,
     pinnedToDesktop = true
 ) { scope ->
