@@ -74,7 +74,7 @@ private fun FileExplorerContent(scope: WindowContentScope) {
     // ===== 真实手机存储（SAF）浏览 =====
     // realStack 非空时浏览真实存储：栈底为根目录，越往后越深
     var realStack by remember { mutableStateOf<List<DocumentFile>>(emptyList()) }
-    val browsingReal get() = realStack.isNotEmpty()
+    val browsingReal = realStack.isNotEmpty()
     val storagePicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocumentTree()
     ) { uri: Uri? ->
