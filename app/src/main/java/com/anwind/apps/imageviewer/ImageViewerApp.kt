@@ -44,12 +44,21 @@ private fun ImageViewerContent(scope: WindowContentScope) {
 
     // 默认尝试加载主题壁纸
     val assetPath = scope.windowState.launchArgs["asset"]
-        ?: theme.wallpaperAsset
+    // 真实文件路径（来自 /storage/emulated/0/ 下的图片）
+    val realPath = scope.windowState.launchArgs["path"]
 
-    val bitmap = remember(assetPath) {
-        runCatching {
-            context.assets.open(assetPath).use { BitmapFactory.decodeStream(it) }
-        }.getOrNull()
+    val bitmap = remember(assetPath, realPath) {
+        when {
+            // 优先用真实路径
+            realPath != null -> runCatching {
+                BitmapFactory.decodeFile(realPath)
+            }.getOrNull()
+            // 回退到 assets
+            assetPath != null -> runCatching {
+                context.assets.open(assetPath).use { BitmapFactory.decodeStream(it) }
+            }.getOrNull()
+            else -> null
+        }
     }
 
     var scale by remember { mutableStateOf(1f) }
@@ -84,7 +93,7 @@ private fun ImageViewerContent(scope: WindowContentScope) {
                     Text("🖼️", fontSize = 48.sp)
                     Spacer(Modifier.height(12.dp))
                     Text(
-                        "无法加载图片\n路径: $assetPath",
+                        "无法加载图片\n路径: ${realPath ?: assetPath ?: "未指定"}",
                         color = Color.White,
                         fontSize = 12.sp
                     )

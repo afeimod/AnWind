@@ -42,12 +42,14 @@ class MainActivity : ComponentActivity() {
             val uiScale by settingsStore.uiScale.collectAsState(initial = 1f)
             val orientation by settingsStore.displayOrientation.collectAsState(initial = "auto")
 
-            // 应用显示方向设置
+            // 应用显示方向设置：
+            // - portrait / landscape: 锁定方向
+            // - auto: FULL_SENSOR，跟随重力传感器旋转，不受系统旋转锁定影响
             LaunchedEffect(orientation) {
                 requestedOrientation = when (orientation) {
                     "portrait" -> ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
                     "landscape" -> ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
-                    else -> ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+                    else -> ActivityInfo.SCREEN_ORIENTATION_FULL_SENSOR
                 }
             }
 

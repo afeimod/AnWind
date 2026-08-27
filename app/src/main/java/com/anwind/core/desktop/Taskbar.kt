@@ -61,12 +61,12 @@ fun Taskbar(
         }
     }
 
-    // 浮动任务栏：底边留 4dp 空隙，整体宽度 80% 居中
+    // 浮动任务栏：底边留 4dp 空隙，整体宽度 95% 居中
     BoxWithConstraints(
         modifier = modifier
     ) {
         val taskbarColor = theme.taskbarColor.copy(alpha = theme.taskbarAlpha)
-        val floatingWidth = maxWidth * 0.85f  // 居中浮动的宽度
+        val floatingWidth = maxWidth * 0.95f  // 居中浮动的宽度
         val bottomPadding = 4.dp
 
         Row(
@@ -105,14 +105,15 @@ private fun CenterAlignedTaskbar(
         // 中间区域：开始 + 固定应用 + 运行中
         Row(
             modifier = Modifier.align(Alignment.Center),
-            verticalAlignment = Alignment.CenterVertically
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
             StartButton(theme = theme, isOpen = startMenuOpen, onClick = onStartClick)
-            Spacer(Modifier.width(8.dp))
+            Spacer(Modifier.width(4.dp))
 
-            // 搜索框（仅 Win11/Win10 显示完整版，其他主题显示简化版）
-            SearchBox(theme = theme)
-            Spacer(Modifier.width(8.dp))
+            // 搜索按钮（替代原占 140dp 的 SearchBox，避免任务栏积压）
+            SearchButton(theme = theme)
+            Spacer(Modifier.width(4.dp))
 
             val pinnedApps = remember { AppRegistry.taskbarApps() }
             pinnedApps.forEach { app ->
@@ -134,7 +135,7 @@ private fun CenterAlignedTaskbar(
                         }
                     }
                 )
-                Spacer(Modifier.width(4.dp))
+                Spacer(Modifier.width(6.dp))
             }
 
             // 分隔线（仅在同时有运行中窗口时显示）
@@ -147,7 +148,7 @@ private fun CenterAlignedTaskbar(
                         .height(24.dp)
                         .background(theme.taskbarIconColor.copy(alpha = 0.2f))
                 )
-                Spacer(Modifier.width(4.dp))
+                Spacer(Modifier.width(6.dp))
             }
 
             runningOnly.forEach { w ->
@@ -160,7 +161,7 @@ private fun CenterAlignedTaskbar(
                         isActive = w.isVisible && wm.topWindow()?.id == w.id,
                         onClick = { wm.taskbarClick(w.id) }
                     )
-                    Spacer(Modifier.width(4.dp))
+                    Spacer(Modifier.width(6.dp))
                 }
             }
         }
@@ -224,27 +225,21 @@ private fun StartButton(theme: WinTheme, isOpen: Boolean, onClick: () -> Unit) {
 }
 
 @Composable
-private fun SearchBox(theme: WinTheme) {
-    Row(
+private fun SearchButton(theme: WinTheme) {
+    Box(
         modifier = Modifier
-            .height(theme.taskbarHeight - 14.dp)
-            .width(140.dp)
-            .clip(RoundedCornerShape(theme.taskbarHeight.value / 2f))
-            .background(theme.taskbarIconColor.copy(alpha = 0.08f))
-            .padding(horizontal = 10.dp),
-        verticalAlignment = Alignment.CenterVertically
+            .size(theme.taskbarHeight - 10.dp)
+            .clip(RoundedCornerShape(50))
+            .clickable {
+                // 搜索按钮：暂时只是视觉占位，未来可对接开始菜单搜索
+            },
+        contentAlignment = Alignment.Center
     ) {
         Icon(
             imageVector = Icons.Default.Search,
             contentDescription = "搜索",
             tint = theme.taskbarIconColor,
-            modifier = Modifier.size(14.dp)
-        )
-        Spacer(Modifier.width(6.dp))
-        Text(
-            text = "搜索",
-            color = theme.taskbarIconColor.copy(alpha = 0.6f),
-            fontSize = theme.fontSizeSmall
+            modifier = Modifier.size(16.dp)
         )
     }
 }

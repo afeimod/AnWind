@@ -21,6 +21,8 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -32,6 +34,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -226,6 +229,11 @@ private fun BrowserContent(scope: WindowContentScope) {
                                 }
                             }
                         },
+                        onUrlSync = { newUrl ->
+                            // 内部导航（后退/前进）触发的 URL 变化：只同步地址栏与 tab.url，不写历史
+                            addressInput = newUrl
+                            activeTab.url = newUrl
+                        },
                         onTitleChanged = { newTitle ->
                             activeTab.title = newTitle
                         },
@@ -271,6 +279,7 @@ private fun WebViewContainer(
     tab: BrowserTab,
     uaMode: String = "desktop",
     onUrlChanged: (String) -> Unit,
+    onUrlSync: (String) -> Unit = {},
     onTitleChanged: (String) -> Unit = {},
     onRetry: () -> Unit = {}
 ) {
@@ -310,6 +319,10 @@ private fun WebViewContainer(
                         builtInZoomControls = true
                         displayZoomControls = false
                         setSupportMultipleWindows(false)
+                        // 默认文本编码 UTF-8，避免中文乱码
+                        defaultTextEncodingName = "UTF-8"
+                        // 桌面模式强制 layout algorithm 以提高文本重排质量
+                        layoutAlgorithm = WebSettings.LayoutAlgorithm.TEXT_AUTOSIZING
                         // 应用 UA 模式
                         userAgentString = if (uaMode == "desktop") DESKTOP_UA else mobileUa
                     }
@@ -329,6 +342,26 @@ private fun WebViewContainer(
 
                         override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
                             errorMessage = null
+                            // 同步后退/前进可用性状态
+                            view?.let { v ->
+                                tab.canGoBack = v.canGoBack()
+                                tab.canGoForward = v.canGoForward()
+                            }
+                            // 如果 WebView 内部加载的 URL 与 tab.url 不同（典型场景：用户点了后退/前进），
+                            // 则同步 tab.url 和地址栏，避免 update 块重新 loadUrl 把页面又跳回原来的 URL
+                            if (url != null && url != tab.url) {
+                                tab.url = url
+                                onUrlSync(url)
+                            }
+                        }
+
+                        override fun onPageFinished(view: WebView?, url: String?) {
+                            super.onPageFinished(view, url)
+                            // 页面加载完成后同步状态，便于工具栏后退/前进按钮实时可用
+                            view?.let { v ->
+                                tab.canGoBack = v.canGoBack()
+                                tab.canGoForward = v.canGoForward()
+                            }
                         }
 
                         override fun onReceivedError(
@@ -395,15 +428,19 @@ private fun WebViewContainer(
             update = { webview ->
                 // 重新绑定当前标签到共享 WebView，切换标签后命令仍可用
                 tab.webView = webview
-                // UA 模式切换：立即切换 UA 并重载，让手机/桌面版页面生效
+                // 同步后退/前进可用性
+                tab.canGoBack = webview.canGoBack()
+                tab.canGoForward = webview.canGoForward()
+                // UA 模式切换：立即切换 UA 并重载，让手机/桌面模式页面生效
                 if (appliedUa != uaMode) {
                     appliedUa = uaMode
                     webview.settings.userAgentString =
                         if (uaMode == "desktop") DESKTOP_UA else (mobileUaHolder[0] ?: webview.settings.userAgentString)
                     webview.reload()
+                    return@update
                 }
-                // 仅当URL不同时才加载，避免无限循环
-                if (webview.url != url && !url.startsWith("anwind://")) {
+                // 仅当URL与WebView内部URL不同时才加载，避免重复 load 导致按钮迟钝
+                if (!url.startsWith("anwind://") && webview.url != url) {
                     errorMessage = null
                     webview.loadUrl(url)
                 }
@@ -500,6 +537,15 @@ private fun BrowserHomePage(onNavigate: (String) -> Unit) {
                     color = if (theme.isDark) Color.White else Color.Black,
                     fontSize = 14.sp
                 ),
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                keyboardActions = KeyboardActions(onSearch = {
+                    val q = searchText.trim()
+                    if (q.isNotEmpty()) {
+                        val url = if (q.startsWith("http")) q
+                                  else "https://www.bing.com/search?q=" + Uri.encode(q)
+                        onNavigate(url)
+                    }
+                }),
                 modifier = Modifier.weight(1f)
             )
             IconButton(onClick = {
@@ -700,6 +746,8 @@ private fun Toolbar(
                     color = if (theme.isDark) Color.White else Color.Black,
                     fontSize = 13.sp
                 ),
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
+                keyboardActions = KeyboardActions(onGo = { onGo() }),
                 modifier = Modifier.fillMaxWidth()
             )
         }
