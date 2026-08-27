@@ -325,8 +325,9 @@ private fun RealFileRow(file: DocumentFile, onClick: () -> Unit) {
             .padding(horizontal = 12.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
+        val extension = file.name?.substringAfterLast('.', "") ?: ""
         Text(
-            text = if (file.isDirectory) "📁" else iconForExtension(file.extension),
+            text = if (file.isDirectory) "📁" else iconForExtension(extension),
             fontSize = 16.sp
         )
         Spacer(Modifier.width(12.dp))
