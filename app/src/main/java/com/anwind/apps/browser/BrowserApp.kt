@@ -437,10 +437,8 @@ private fun WebViewContainer(
                     webview.settings.userAgentString =
                         if (uaMode == "desktop") DESKTOP_UA else (mobileUaHolder[0] ?: webview.settings.userAgentString)
                     webview.reload()
-                    return@update
-                }
-                // 仅当URL与WebView内部URL不同时才加载，避免重复 load 导致按钮迟钝
-                if (!url.startsWith("anwind://") && webview.url != url) {
+                } else if (!url.startsWith("anwind://") && webview.url != url) {
+                    // 仅当URL与WebView内部URL不同时才加载，避免重复 load 导致按钮迟钝
                     errorMessage = null
                     webview.loadUrl(url)
                 }

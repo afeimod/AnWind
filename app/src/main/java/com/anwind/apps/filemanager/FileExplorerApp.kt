@@ -99,13 +99,17 @@ private fun FileExplorerContent(scope: WindowContentScope) {
     }
     fun requestAllFilesAccess() {
         runCatching {
-            val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_AUTHORITY).apply {
+            // Android 11+ (API 30) 提供按应用授权的入口；旧版本会抛 NoSuchField，进入 fallback
+            val action = Settings::class.java
+                .getField("ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION")
+                .get(null) as String
+            val intent = Intent(action).apply {
                 data = Uri.parse("package:${context.packageName}")
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
             allFilesPermissionLauncher.launch(intent)
         }.onFailure {
-            // 某些旧机型不支持 ALL_FILES_AUTHORITY，回退到通用设置
+            // 回退到通用“所有文件访问权限”设置（API 26+）
             runCatching {
                 val intent = Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION).apply {
                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
