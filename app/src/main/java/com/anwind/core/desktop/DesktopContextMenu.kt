@@ -30,14 +30,15 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntRect
 import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Popup
@@ -344,16 +345,24 @@ private class ClampedMenuPositionProvider(
     private val anchorX: Float,
     private val anchorY: Float
 ) : PopupPositionProvider {
+    /**
+     * Compose UI 1.6（BOM 2024.06.00）的接口签名：
+     * (anchorBounds, windowSize, layoutDirection, popupContentSize) -> IntOffset
+     */
     override fun calculatePosition(
-        sourceBounds: IntRect,
+        anchorBounds: IntRect,
         windowSize: IntSize,
-        windowDensity: Density,
-        popupSize: IntSize
+        layoutDirection: LayoutDirection,
+        popupContentSize: IntSize
     ): IntOffset {
         var x = anchorX.roundToInt()
         var y = anchorY.roundToInt()
-        if (x + popupSize.width > windowSize.width) x = windowSize.width - popupSize.width
-        if (y + popupSize.height > windowSize.height) y = windowSize.height - popupSize.height
+        if (x + popupContentSize.width > windowSize.width) {
+            x = windowSize.width - popupContentSize.width
+        }
+        if (y + popupContentSize.height > windowSize.height) {
+            y = windowSize.height - popupContentSize.height
+        }
         if (x < 0) x = 0
         if (y < 0) y = 0
         return IntOffset(x, y)
