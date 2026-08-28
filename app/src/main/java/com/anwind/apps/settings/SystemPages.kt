@@ -37,6 +37,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.anwind.BuildConfig
+import com.anwind.core.theme.LocalWinTheme
 import com.anwind.core.window.LaunchMode
 import com.anwind.core.window.WindowManager
 import com.anwind.util.SystemControl
@@ -225,7 +226,7 @@ private fun printTestPage(context: Context) {
                 override fun onLayout(
                     oldAttributes: android.print.PrintAttributes?,
                     newAttributes: android.print.PrintAttributes,
-                    cancellationSignal: android.print.CancellationSignal?,
+                    cancellationSignal: android.os.CancellationSignal?,
                     callback: android.print.PrintDocumentAdapter.LayoutResultCallback,
                     extras: android.os.Bundle?
                 ) {
@@ -243,7 +244,7 @@ private fun printTestPage(context: Context) {
                 override fun onWrite(
                     pages: Array<out android.print.PageRange>?,
                     destination: android.os.ParcelFileDescriptor,
-                    cancellationSignal: android.print.CancellationSignal?,
+                    cancellationSignal: android.os.CancellationSignal?,
                     callback: android.print.PrintDocumentAdapter.WriteResultCallback
                 ) {
                     runCatching {
@@ -299,7 +300,7 @@ internal fun WirelessDisplayPage() {
     )
 
     fun readRoutes(): List<RouteRow> = runCatching {
-        val router = android.media.MediaRouter.getInstance(context)
+        val router = context.getSystemService(Context.MEDIA_ROUTER_SERVICE) as android.media.MediaRouter
         val selected = router.selectedRoute?.name
         router.routes.map { r ->
             RouteRow(

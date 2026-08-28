@@ -22,7 +22,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.anwind.core.input.keyboardAware
+import com.anwind.core.input.keyboardAwareEditor
 import com.anwind.core.theme.LocalWinTheme
 import com.anwind.core.window.AppDef
 import com.anwind.core.window.LaunchMode
@@ -132,7 +132,7 @@ private fun NotepadContent(scope: WindowContentScope) {
                 modifier = Modifier
                     .fillMaxSize()
                     .verticalScroll(rememberScrollState())
-                    .keyboardAware(
+                    .keyboardAwareEditor(
                         value = { text },
                         onValue = { text = it },
                         singleLine = false

@@ -4,12 +4,12 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.composed
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.composed
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.platform.ClipboardManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
@@ -294,8 +294,12 @@ fun Modifier.keyboardAware(
 
 /**
  * TextFieldValue 版（光标级编辑，记事本等多行编辑器用）。
+ *
+ * 注意：此变体独立命名为 keyboardAwareEditor 而非同名重载 —— 当 value 与
+ * onValue 均以 lambda 字面量传入时，Kotlin 无法在 () -> String 与
+ * () -> TextFieldValue 两个同名重载间消歧（Overload resolution ambiguity）。
  */
-fun Modifier.keyboardAware(
+fun Modifier.keyboardAwareEditor(
     value: () -> TextFieldValue,
     onValue: (TextFieldValue) -> Unit,
     singleLine: Boolean = false,

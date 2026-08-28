@@ -125,8 +125,8 @@ fun VirtualKeyboardOverlay() {
             KbAction.Delete -> t.deleteForward()
             KbAction.Tab -> t.insertText("\t")
             KbAction.Enter -> {
-                if (t.singleLine && t.onEnter != null) t.onEnter.invoke()
-                else if (!t.singleLine) t.insertText("\n")
+                if (t.singleLine) t.onEnter?.invoke()
+                else t.insertText("\n")
             }
             KbAction.Shift -> shiftState = (shiftState + 1) % 3
             KbAction.Caps -> capsOn = !capsOn
@@ -145,7 +145,7 @@ fun VirtualKeyboardOverlay() {
         }
     }
 
-    fun onTapKey() {
+    fun tapFeedback() {
         if (vibrate) haptic.performHapticFeedback(HapticFeedbackType.LongPress)
     }
 
@@ -238,7 +238,7 @@ fun VirtualKeyboardOverlay() {
                             "Esc", 1f, theme, keyH = funcH, scale = scale,
                             special = true, touchFeedback = touchFeedback,
                             haptic = haptic, vibrate = vibrate,
-                            onTapKey = onTapKey,
+                            onTapKey = { tapFeedback() },
                             onClick = { onKey(SPECIAL_KEYS.first { it.label == "Esc" }) },
                             modifier = Modifier.weight(1.1f)
                         )
@@ -247,7 +247,7 @@ fun VirtualKeyboardOverlay() {
                                 "F$i", 1f, theme, keyH = funcH, scale = scale,
                                 special = true, touchFeedback = touchFeedback,
                                 haptic = haptic, vibrate = vibrate,
-                                onTapKey = onTapKey,
+                                onTapKey = { tapFeedback() },
                                 onClick = { onKey(FN_KEY) },
                                 modifier = Modifier.weight(1f)
                             )
@@ -286,7 +286,7 @@ fun VirtualKeyboardOverlay() {
                                         shiftedLabel = k.shifted,
                                         touchFeedback = touchFeedback,
                                         haptic = haptic, vibrate = vibrate,
-                                        onTapKey = onTapKey,
+                                        onTapKey = { tapFeedback() },
                                         onClick = { onKey(k) },
                                         modifier = Modifier.weight(k.weight)
                                     )
@@ -311,7 +311,7 @@ fun VirtualKeyboardOverlay() {
                                             k.label, k.weight, theme, keyH = keyH, scale = scale,
                                             special = k.special, touchFeedback = touchFeedback,
                                             haptic = haptic, vibrate = vibrate,
-                                            onTapKey = onTapKey,
+                                            onTapKey = { tapFeedback() },
                                             onClick = { onKey(k) },
                                             modifier = Modifier.weight(k.weight)
                                         )
@@ -332,7 +332,7 @@ fun VirtualKeyboardOverlay() {
                                     label, 1f, theme, keyH = keyH, scale = scale,
                                     special = true, touchFeedback = touchFeedback,
                                     haptic = haptic, vibrate = vibrate,
-                                    onTapKey = onTapKey,
+                                    onTapKey = { tapFeedback() },
                                     onClick = { onKey(KbKey(label, null, 1f, true, action)) },
                                     modifier = Modifier.weight(1f)
                                 )

@@ -30,6 +30,7 @@ import androidx.compose.ui.unit.sp
 import com.anwind.AnWindApp
 import com.anwind.core.input.MouseCursorPreview
 import com.anwind.core.input.keyboardAware
+import com.anwind.core.input.keyboardAwareEditor
 import com.anwind.core.theme.LocalWinTheme
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
@@ -525,7 +526,7 @@ internal fun KeyboardSettingsPage(onBack: () -> Unit) {
                         .height(84.dp)
                         .clip(RoundedCornerShape(6.dp))
                         .background(theme.windowBackgroundColor)
-                        .keyboardAware(
+                        .keyboardAwareEditor(
                             value = { multiText },
                             onValue = { multiText = it },
                             singleLine = false
