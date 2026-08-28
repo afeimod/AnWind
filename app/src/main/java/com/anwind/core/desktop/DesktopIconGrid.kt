@@ -11,16 +11,21 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.snapshots.SnapshotStateMap
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.painter.BitmapPainter
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -45,10 +50,19 @@ import java.io.IOException
  * 数据来源：
  * 1. AppRegistry 中 pinnedToDesktop=true 的内置应用
  * 2. 数据库中保存的快捷方式
+ *
+ * v2.11：
+ * - sortMode：右键菜单"排序方式"（default 默认 / name 按名称 / type 按类型，
+ *   与设置中心共用 DataStore 持久化）；
+ * - iconBounds：上报每个图标的屏幕边界，供双指右键手势命中检测
+ *   （命中图标 → 图标菜单，否则 → 桌面菜单）。
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-fun DesktopIconGrid() {
+fun DesktopIconGrid(
+    sortMode: String = "default",
+    iconBounds: SnapshotStateMap<String, Pair<DesktopItem, Rect>>? = null
+) {
     val app = AnWindApp.get()
     val shortcuts by app.database.shortcutDao().observeAll().collectAsState(initial = emptyList())
     val builtinApps = remember { AppRegistry.desktopApps() }
@@ -84,6 +98,25 @@ fun DesktopIconGrid() {
         builtin + shortcutItems
     }
 
+    // 排序（v2.11 右键菜单"排序方式"）
+    val sortedItems = remember(items, sortMode) {
+        when (sortMode) {
+            "name" -> items.sortedWith(compareBy({ it.label }, { it.id }))
+            "type" -> items.sortedWith(compareBy({ it.type }, { it.label }))
+            else -> items   // 默认：内置应用 + 快捷方式原序
+        }
+    }
+
+    // 同步命中注册表：移除已从桌面消失的图标（删除快捷方式后）
+    if (iconBounds != null) {
+        LaunchedEffect(items) {
+            val ids = items.map { it.id }.toSet()
+            iconBounds.keys.toList().forEach { key ->
+                if (key !in ids) iconBounds.remove(key)
+            }
+        }
+    }
+
     // 使用 FlowColumn：先竖向（从上到下）填充，超出屏幕高度后自动换到下一列
     // （从左到右），完整还原 Windows 桌面图标的排列方式。
     // 外层 horizontalScroll 让超出屏幕右边界的列可水平滚动访问。
@@ -98,18 +131,65 @@ fun DesktopIconGrid() {
             verticalArrangement = Arrangement.spacedBy(8.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            items.forEach { item ->
-                DesktopIcon(item = item, iconSize = iconSize)
+            sortedItems.forEach { item ->
+                DesktopIcon(item = item, iconSize = iconSize, boundsRegistry = iconBounds)
+            }
+        }
+    }
+}
+
+/**
+ * 启动一个桌面项（图标双击 / 右键菜单"打开"共用同一入口，保证行为一致）。
+ */
+fun launchDesktopItem(item: DesktopItem, wm: WindowManager) {
+    when (item.type) {
+        DesktopItemType.BUILTIN_APP -> {
+            AppRegistry.get(item.target)?.let { a ->
+                wm.open(
+                    appId = a.id,
+                    title = a.displayName,
+                    launchMode = a.launchMode,
+                    initialWidth = a.defaultWidth.value.toInt(),
+                    initialHeight = a.defaultHeight.value.toInt()
+                )
+            }
+        }
+        DesktopItemType.SHORTCUT_URL,
+        DesktopItemType.SHORTCUT_FILE -> {
+            // 通过浏览器打开
+            wm.open(
+                appId = "browser",
+                title = "Browser",
+                launchMode = AppRegistry.get("browser")?.launchMode
+                    ?: com.anwind.core.window.LaunchMode.FLOATING,
+                launchArgs = mapOf(
+                    "url" to item.target,
+                    "type" to item.type.name
+                )
+            )
+        }
+        DesktopItemType.SHORTCUT_APP -> {
+            AppRegistry.get(item.target)?.let { a ->
+                wm.open(
+                    appId = a.id,
+                    title = a.displayName,
+                    launchMode = a.launchMode,
+                    initialWidth = a.defaultWidth.value.toInt(),
+                    initialHeight = a.defaultHeight.value.toInt()
+                )
             }
         }
     }
 }
 
 @Composable
-private fun DesktopIcon(item: DesktopItem, iconSize: Float) {
+private fun DesktopIcon(
+    item: DesktopItem,
+    iconSize: Float,
+    boundsRegistry: SnapshotStateMap<String, Pair<DesktopItem, Rect>>? = null
+) {
     val theme = LocalWinTheme.current
     val wm = remember { WindowManager.get() }
-    val app = AppRegistry.get(item.target) // 内置应用
     val iconPx = iconSize.dp
     val cellWidth = (iconSize + 24).dp
 
@@ -117,49 +197,22 @@ private fun DesktopIcon(item: DesktopItem, iconSize: Float) {
         horizontalAlignment = Alignment.CenterHorizontally,
         modifier = Modifier
             .width(cellWidth)
+            // 上报图标边界（根坐标）：供双指右键手势命中检测；
+            // 值未变化时不重复写入，避免无谓的快照失效。
+            .onGloballyPositioned { coords ->
+                if (boundsRegistry != null) {
+                    val rect = coords.boundsInRoot()
+                    val prev = boundsRegistry[item.id]
+                    if (prev == null || prev.first != item || prev.second != rect) {
+                        boundsRegistry[item.id] = item to rect
+                    }
+                }
+            }
             .pointerInput(item.id) {
                 detectTapGestures(
                     onDoubleTap = {
-                        // 双击启动
-                        when (item.type) {
-                            DesktopItemType.BUILTIN_APP -> {
-                                app?.let { a ->
-                                    wm.open(
-                                        appId = a.id,
-                                        title = a.displayName,
-                                        launchMode = a.launchMode,
-                                        initialWidth = a.defaultWidth.value.toInt(),
-                                        initialHeight = a.defaultHeight.value.toInt()
-                                    )
-                                }
-                            }
-                            DesktopItemType.SHORTCUT_URL,
-                            DesktopItemType.SHORTCUT_FILE -> {
-                                // 通过浏览器打开
-                                wm.open(
-                                    appId = "browser",
-                                    title = "Browser",
-                                    launchMode = AppRegistry.get("browser")?.launchMode
-                                        ?: com.anwind.core.window.LaunchMode.FLOATING,
-                                    launchArgs = mapOf(
-                                        "url" to item.target,
-                                        "type" to item.type.name
-                                    )
-                                )
-                            }
-                            DesktopItemType.SHORTCUT_APP -> {
-                                val targetApp = AppRegistry.get(item.target)
-                                targetApp?.let { a ->
-                                    wm.open(
-                                        appId = a.id,
-                                        title = a.displayName,
-                                        launchMode = a.launchMode,
-                                        initialWidth = a.defaultWidth.value.toInt(),
-                                        initialHeight = a.defaultHeight.value.toInt()
-                                    )
-                                }
-                            }
-                        }
+                        // 双击启动（与右键菜单"打开"共用同一入口）
+                        launchDesktopItem(item, wm)
                     }
                 )
             }

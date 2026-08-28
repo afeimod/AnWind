@@ -52,13 +52,13 @@ import kotlin.math.sin
 /**
  * 任务栏 - Win11 真实风格
  *
- * v2.10 更新：
- * - 系统托盘（无线/音量/电池/时间）固定在左侧（开始按钮旁），不再随任务数量移动；
- *   运行任务区移到右侧弹性区，任务增多时向右扩展（可横向滑动）
+ * v2.11 更新：
+ * - 系统托盘（无线/音量/电池/时间）固定在任务栏最右侧（Win11 标准布局）；
+ *   布局顺序：开始 → 搜索 → 固定图标 → 运行任务（中间弹性区）→ 系统托盘（最右）
  * - 时钟显示样式可自定义：长按任务栏时间 → 弹出样式设置
  *   （显示模式：数字/表盘/液晶；字号；是否显示日期；排版：两行/单行）
  *
- * v2.9 更新：
+ * v2.10 更新：
  * - 高度可调（个性化设置 36..80dp，通过 taskbarHeight 参数传入，图标随高度自动缩放）
  * - 时钟支持 12/24 小时制（跟随时间与语言设置）
  */
@@ -156,8 +156,8 @@ private fun CenteredTaskbar(
     val trayShowDate by app.settingsStore.trayShowDate.collectAsState(initial = true)
     val trayLayout by app.settingsStore.trayLayout.collectAsState(initial = "stacked")
 
-    // ===== 布局（v2.10）：开始 → 系统托盘(左固定) → 搜索 → 固定图标 → 运行任务(右侧弹性区) =====
-    // 托盘始终靠左固定，不随任务数量移动；运行任务向右扩展，超出后可横向滑动
+    // ===== 布局（v2.11）：开始 → 搜索 → 固定图标 → 运行任务(中间弹性区) → 系统托盘(最右) =====
+    // 托盘固定在最右端（Win11 标准），不随任务数量移动；运行任务在中间弹性区，任务多时可横向滑动
     Row(
         modifier = Modifier
             .fillMaxSize()
@@ -167,34 +167,6 @@ private fun CenteredTaskbar(
     ) {
         // Start 按钮（最左）
         StartButton(theme = theme, height = taskbarHeight, isOpen = startMenuOpen, onClick = onStartClick)
-
-        Spacer(Modifier.width(4.dp))
-
-        // ===== 系统托盘（v2.10：始终靠左固定，不随任务数量移动） =====
-        SystemTray(
-            theme = theme,
-            height = taskbarHeight,
-            tick = tick,
-            showSeconds = showSeconds,
-            timeFormat24h = timeFormat24h,
-            clockMode = clockMode,
-            clockFontSize = clockFontSize,
-            showDate = trayShowDate,
-            trayLayout = trayLayout,
-            onOpenCalendar = onOpenCalendar,
-            onOpenQuickSettings = onOpenQuickSettings,
-            onOpenClockStyle = onOpenClockStyle
-        )
-
-        Spacer(Modifier.width(4.dp))
-
-        // 紧凑分隔线（托盘与主簇之间）
-        Box(
-            modifier = Modifier
-                .width(1.dp)
-                .height(20.dp)
-                .background(theme.taskbarIconColor.copy(alpha = 0.15f))
-        )
 
         if (!isNarrow) {
             Spacer(Modifier.width(4.dp))
@@ -234,7 +206,7 @@ private fun CenteredTaskbar(
 
             Spacer(Modifier.width(4.dp))
 
-            // 紧凑分隔线
+            // 紧凑分隔线（搜索与固定图标之间）
             Box(
                 modifier = Modifier
                     .width(1.dp)
@@ -277,13 +249,14 @@ private fun CenteredTaskbar(
             )
         }
 
-        // ===== 运行中的窗口（非固定应用）：右侧弹性区，向右扩展，任务多时可横向滑动 =====
-        // weight(1f, fill=false)：任务少时只占内容实际宽度，任务增多时最多占据剩余全部空间并变为可滚动
+        // ===== 运行中的窗口（非固定应用）：中间弹性区，任务少时靠左，任务多时可横向滑动 =====
+        // weight(1f)：占满固定图标与系统托盘之间的全部剩余空间；图标在区内靠左排列，
+        // 超出宽度后变为可滚动 —— 托盘因此始终稳定贴在最右端。
         val pinnedIds = pinnedApps.map { it.id }.toSet()
         val runningOnly = runningWindows.filter { it.appId !in pinnedIds }
         Box(
             modifier = Modifier
-                .weight(1f, fill = false)
+                .weight(1f)
                 .horizontalScroll(rememberScrollState())
         ) {
             Row(
@@ -315,6 +288,32 @@ private fun CenteredTaskbar(
                 }
             }
         }
+
+        // ===== 系统托盘（v2.11：固定在最右端，不随任务数量移动） =====
+        // 紧凑分隔线（运行任务与托盘之间）
+        Box(
+            modifier = Modifier
+                .width(1.dp)
+                .height(20.dp)
+                .background(theme.taskbarIconColor.copy(alpha = 0.15f))
+        )
+
+        Spacer(Modifier.width(2.dp))
+
+        SystemTray(
+            theme = theme,
+            height = taskbarHeight,
+            tick = tick,
+            showSeconds = showSeconds,
+            timeFormat24h = timeFormat24h,
+            clockMode = clockMode,
+            clockFontSize = clockFontSize,
+            showDate = trayShowDate,
+            trayLayout = trayLayout,
+            onOpenCalendar = onOpenCalendar,
+            onOpenQuickSettings = onOpenQuickSettings,
+            onOpenClockStyle = onOpenClockStyle
+        )
     }
 }
 
@@ -475,7 +474,7 @@ private fun TaskbarAppIcon(
 }
 
 /**
- * 系统托盘（v2.10：固定在任务栏左侧）
+ * 系统托盘（v2.11：固定在任务栏最右侧，Win11 标准位置）
  * - 点击 wifi/音量/电池 图标组 → Quick Settings
  * - 点击时钟 → Calendar
  * - 长按时钟 → 托盘时钟样式设置（显示模式/字号/日期/排版）

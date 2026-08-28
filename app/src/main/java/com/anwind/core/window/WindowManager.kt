@@ -81,8 +81,12 @@ data class WindowState(
  * - 顶部窗口 zIndex 最大
  * - 任务栏点击最小化/还原
  * - 同一个 appId 可重复打开（允许多窗口）
- * - 新增 8 方向调整大小逻辑，支持从任意边缘/角落缩放
- * - 调整大小时遵循最小尺寸限制
+ *
+ * v2.11 拖拽/缩放流畅性重构：
+ * - 拖动/缩放期间 WindowChrome 在本地 Compose 状态中实时预览几何信息，
+ *   手势结束时才通过 setAbsolutePosition / setAbsoluteFrame 一次性提交到此处；
+ * - 因此不再提供逐帧 resize 接口（旧版每帧改 state 但不刷新，缩放不跟手）。
+ * - state.x / state.y 单位为像素；state.width / state.height 单位为 dp 数值。
  */
 class WindowManager {
 
@@ -186,15 +190,6 @@ class WindowManager {
     fun anyTrueFullscreen(): Boolean =
         _windows.any { it.isVisible && it.isTrueFullscreen }
 
-    /** 拖拽窗口标题栏：相对位移加到当前位置 */
-    fun move(windowId: String, dx: Int, dy: Int) {
-        _windows.firstOrNull { it.id == windowId && !it.isMaximized }?.let {
-            it.x += dx
-            it.y += dy
-            // 不直接 notifyChanged，拖拽中频繁通知会卡顿
-        }
-    }
-
     /**
      * 设置窗口的绝对位置（拖拽时直接设置，避免累加误差）
      * 配合 WindowChrome 的本地 dragOffset 使用：松手时把"窗口原位置 + dragOffset"作为绝对位置提交。
@@ -207,70 +202,33 @@ class WindowManager {
     }
 
     /**
-     * 调整大小：根据指定的边缘方向，应用 delta 到对应的边。
-     * 支持 8 个方向（4 边 + 4 角），自动遵守最小尺寸 280x180。
+     * 拖拽/缩放结束后调用，触发 UI 刷新
      */
-    fun resize(
-        windowId: String,
-        edge: ResizeEdge,
-        dx: Int,
-        dy: Int,
-        workAreaWidth: Int = Int.MAX_VALUE,
-        workAreaHeight: Int = Int.MAX_VALUE
-    ) {
-        _windows.firstOrNull { it.id == windowId && !it.isMaximized }?.let { w ->
-            val minWidth = 280
-            val minHeight = 180
-
-            // 处理左右边
-            if (edge.affectsLeft) {
-                // 左边移动：x 和 width 同时变化
-                val newWidth = w.width - dx
-                if (newWidth >= minWidth) {
-                    w.x += dx
-                    w.width = newWidth
-                } else {
-                    // 触底最小宽度：把 x 推到 width=minWidth 的位置
-                    val fixDx = w.width - minWidth
-                    w.x += fixDx
-                    w.width = minWidth
-                }
-            }
-            if (edge.affectsRight) {
-                val newWidth = w.width + dx
-                w.width = newWidth.coerceIn(minWidth, (workAreaWidth - w.x).coerceAtLeast(minWidth))
-            }
-            // 处理上下边
-            if (edge.affectsTop) {
-                val newHeight = w.height - dy
-                if (newHeight >= minHeight) {
-                    w.y += dy
-                    w.height = newHeight
-                } else {
-                    val fixDy = w.height - minHeight
-                    w.y += fixDy
-                    w.height = minHeight
-                }
-            }
-            if (edge.affectsBottom) {
-                val newHeight = w.height + dy
-                w.height = newHeight.coerceIn(minHeight, (workAreaHeight - w.y).coerceAtLeast(minHeight))
-            }
-            // 不立即 notifyChanged，避免调整大小时频繁重组
-        }
-    }
-
-    /** 设置窗口的绝对尺寸（备用接口） */
-    fun setAbsoluteSize(windowId: String, width: Int, height: Int) {
-        _windows.firstOrNull { it.id == windowId && !it.isMaximized }?.let {
-            it.width = width.coerceAtLeast(280)
-            it.height = height.coerceAtLeast(180)
-        }
-    }
-
-    /** 拖拽/调整大小结束后调用，触发 UI 刷新 */
     fun commitChanges() {
         notifyChanged()
+    }
+
+    /**
+     * 设置窗口的绝对尺寸（缩放结束一次性提交，v2.11）。
+     *
+     * 坐标单位：xPx/yPx 为像素（与手势事件一致）；
+     * widthDp/heightDp 为 dp 数值（与 WindowChrome 渲染一致）。
+     * 边界钳制（工作区范围、最小尺寸）由 WindowChrome 在手势端完成，
+     * 此处仅做最小尺寸兜底，防止异常数据。
+     */
+    fun setAbsoluteFrame(
+        windowId: String,
+        xPx: Int,
+        yPx: Int,
+        widthDp: Int,
+        heightDp: Int
+    ) {
+        _windows.firstOrNull { it.id == windowId && !it.isMaximized }?.let {
+            it.x = xPx.coerceAtLeast(0)
+            it.y = yPx.coerceAtLeast(0)
+            it.width = widthDp.coerceAtLeast(200)
+            it.height = heightDp.coerceAtLeast(140)
+        }
     }
 
     /** 任务栏点击某窗口的行为：可见则最小化，最小化则还原+聚焦 */

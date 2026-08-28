@@ -11,6 +11,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
@@ -22,6 +23,7 @@ import com.anwind.core.theme.LocalWinTheme
 import com.anwind.core.theme.WinTheme
 import com.anwind.core.window.WindowHost
 import com.anwind.core.window.WindowManager
+import com.anwind.data.model.DesktopItem
 import java.io.IOException
 
 /**
@@ -75,6 +77,15 @@ fun DesktopEnvironment(
     // 系统托盘弹窗：calendar / quickSettings / null
     var trayPopup by remember { mutableStateOf<TrayPopup?>(null) }
 
+    // v2.11 右键菜单配套状态：
+    // - refreshTick："刷新"计数器，key(refreshTick) 重建图标网格（重载图标位图）；
+    // - desktopSort：排序模式（与设置中心共用 DataStore）；
+    // - iconBounds：每个图标的屏幕边界注册表，双指右键时命中检测，
+    //   命中图标 → 图标菜单（打开/重命名/删除/属性），空白处 → 桌面菜单。
+    var refreshTick by remember { mutableStateOf(0) }
+    val desktopSort by app.settingsStore.desktopSort.collectAsState(initial = "default")
+    val iconBounds = remember { mutableStateMapOf<String, Pair<DesktopItem, Rect>>() }
+
     BoxWithConstraints(
         modifier = Modifier
             .fillMaxSize()
@@ -117,7 +128,7 @@ fun DesktopEnvironment(
         )
 
         // ===== 2. 桌面图标层（占据任务栏上方） =====
-        // v2.10 手势：双指轻点 = 桌面右键菜单（替代旧版长按）；单指轻点 = 关闭菜单
+        // v2.11 手势：双指轻点 = 右键菜单（命中图标 → 图标菜单，否则 → 桌面菜单）；单指轻点 = 关闭菜单
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -129,16 +140,25 @@ fun DesktopEnvironment(
                         contextMenu = null
                     },
                     onTwoFingerTap = { offset ->
-                        // 双指轻点：在双指中点弹出桌面右键菜单
+                        // 双指轻点：在双指中点弹出右键菜单。
+                        // 本层位于根 (0,0)，局部坐标与图标上报的 boundsInRoot 根坐标一致，可直接命中检测。
+                        val hit = iconBounds.entries.firstOrNull { it.value.second.contains(offset) }
                         startMenuOpen = false
                         contextMenu = DesktopContextMenuData(
                             x = offset.x,
-                            y = offset.y
+                            y = offset.y,
+                            iconItem = hit?.value?.first
                         )
                     }
                 )
         ) {
-            DesktopIconGrid()
+            // key(refreshTick)：右键菜单"刷新"时重建网格，重新加载图标位图
+            key(refreshTick) {
+                DesktopIconGrid(
+                    sortMode = desktopSort,
+                    iconBounds = iconBounds
+                )
+            }
         }
 
         // ===== 3. 浮动窗口层（覆盖在桌面图标之上，任务栏之下） =====
@@ -188,7 +208,9 @@ fun DesktopEnvironment(
         )
 
         // ===== 5.5. 系统托盘弹窗（Calendar / QuickSettings / ClockStyle）=====
-        // v2.10：托盘固定在任务栏左侧，弹窗相应从左下角弹出
+        // v2.11：托盘固定在任务栏最右侧，弹窗相应从右下角弹出；
+        // heightIn 限制弹窗总高度不超过（屏幕高度 - 任务栏），小屏幕上不再溢出屏幕顶部。
+        val maxPopupHeight = (fullHeight - taskbarHeight - 16.dp).coerceAtLeast(240.dp)
         trayPopup?.let { popup ->
             // 背景遮罩：点击关闭
             Box(
@@ -203,8 +225,9 @@ fun DesktopEnvironment(
                     theme = theme,
                     onDismiss = { trayPopup = null },
                     modifier = Modifier
-                        .align(Alignment.BottomStart)
-                        .padding(start = 8.dp, bottom = taskbarHeight + 8.dp)
+                        .align(Alignment.BottomEnd)
+                        .padding(end = 8.dp, bottom = taskbarHeight + 8.dp)
+                        .heightIn(max = maxPopupHeight)
                 )
                 TrayPopup.QUICK_SETTINGS -> QuickSettingsPanel(
                     theme = theme,
@@ -220,15 +243,17 @@ fun DesktopEnvironment(
                     },
                     onDismiss = { trayPopup = null },
                     modifier = Modifier
-                        .align(Alignment.BottomStart)
-                        .padding(start = 8.dp, bottom = taskbarHeight + 8.dp)
+                        .align(Alignment.BottomEnd)
+                        .padding(end = 8.dp, bottom = taskbarHeight + 8.dp)
+                        .heightIn(max = maxPopupHeight)
                 )
                 TrayPopup.CLOCK_STYLE -> TrayClockSettingsFlyout(
                     theme = theme,
                     onDismiss = { trayPopup = null },
                     modifier = Modifier
-                        .align(Alignment.BottomStart)
-                        .padding(start = 8.dp, bottom = taskbarHeight + 8.dp)
+                        .align(Alignment.BottomEnd)
+                        .padding(end = 8.dp, bottom = taskbarHeight + 8.dp)
+                        .heightIn(max = maxPopupHeight)
                 )
             }
         }
@@ -238,6 +263,7 @@ fun DesktopEnvironment(
             DesktopContextMenu(
                 data = data,
                 onDismiss = { contextMenu = null },
+                onRefresh = { refreshTick++ },
                 modifier = Modifier
                     .align(Alignment.TopStart)
             )

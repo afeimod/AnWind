@@ -50,6 +50,10 @@ class SettingsStore(private val context: Context) {
         // 排版：stacked 时间/日期两行 / inline 单行
         val TRAY_LAYOUT = stringPreferencesKey("tray_layout")
 
+        // === 桌面图标（v2.11 右键菜单"排序方式"） ===
+        // 排序模式：default 默认（内置应用 + 快捷方式原序）/ name 按名称 / type 按类型
+        val DESKTOP_SORT = stringPreferencesKey("desktop_sort")
+
         // === 蓝牙与设备 ===
         val BLUETOOTH_ENABLED = booleanPreferencesKey("bluetooth_enabled")
         val MOUSE_POINTER_SPEED = floatPreferencesKey("mouse_pointer_speed")
@@ -105,6 +109,9 @@ class SettingsStore(private val context: Context) {
     val trayClockFontSize: Flow<Float> = context.appPrefs.data.map { it[Keys.TRAY_CLOCK_FONT_SIZE] ?: 0f }
     val trayShowDate: Flow<Boolean> = context.appPrefs.data.map { it[Keys.TRAY_SHOW_DATE] ?: true }
     val trayLayout: Flow<String> = context.appPrefs.data.map { it[Keys.TRAY_LAYOUT] ?: "stacked" }
+
+    // === 桌面图标 ===
+    val desktopSort: Flow<String> = context.appPrefs.data.map { it[Keys.DESKTOP_SORT] ?: "default" }
 
     // === 蓝牙与设备 ===
     val bluetoothEnabled: Flow<Boolean> = context.appPrefs.data.map { it[Keys.BLUETOOTH_ENABLED] ?: false }
@@ -203,6 +210,12 @@ class SettingsStore(private val context: Context) {
 
     suspend fun setTrayLayout(layout: String) {
         context.appPrefs.edit { it[Keys.TRAY_LAYOUT] = layout }
+    }
+
+    // === 桌面图标 setter ===
+    suspend fun setDesktopSort(mode: String) {
+        val v = if (mode in setOf("default", "name", "type")) mode else "default"
+        context.appPrefs.edit { it[Keys.DESKTOP_SORT] = v }
     }
 
     // === 蓝牙与设备 setter ===

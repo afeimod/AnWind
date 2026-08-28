@@ -17,8 +17,10 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Accessibility
 import androidx.compose.material.icons.filled.AirplanemodeActive
@@ -692,13 +694,19 @@ private fun QuickToggleCell(
 // ============================================================
 
 /**
- * 时钟样式设置弹窗：
+ * 时钟样式设置弹窗（v2.11 重排）：
  * - 顶部实时预览（与任务栏时钟同款渲染）
  * - 显示模式：数字 / 表盘 / 液晶
  * - 字号：8..18sp 滑杆（含"自动"）
  * - 排版：两行 / 单行
  * - 显示日期 / 显示秒数 / 24 小时制开关
  * - 恢复默认 / 完成
+ *
+ * v2.11 修复"内容太紧凑/显示不完整"：
+ * - 去掉固定 320x434dp 尺寸（旧内容实际需要约 500dp 高，固定高度导致溢出被裁剪）；
+ * - 高度改为随内容自适应，并由外部通过 modifier.heightIn(max=…) 钳制在屏幕内；
+ * - 内容区加 verticalScroll，小屏幕上可滚动查看全部选项；
+ * - 加宽到 340dp，分组间距统一 14dp，开关行加高，滑杆加标签区。
  */
 @Composable
 fun TrayClockSettingsFlyout(
@@ -730,14 +738,17 @@ fun TrayClockSettingsFlyout(
 
     Box(
         modifier = modifier
-            .width(320.dp)
-            .height(434.dp)
+            .width(340.dp)
             .shadow(16.dp, RoundedCornerShape(8.dp))
             .clip(RoundedCornerShape(8.dp))
             .background(popupColor)
-            .padding(16.dp)
     ) {
-        Column(modifier = Modifier.fillMaxSize()) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .padding(16.dp)
+        ) {
             // 标题栏
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(Icons.Default.Schedule, null, tint = fg, modifier = Modifier.size(18.dp))
@@ -764,13 +775,13 @@ fun TrayClockSettingsFlyout(
                 )
             }
 
-            Spacer(Modifier.height(10.dp))
+            Spacer(Modifier.height(12.dp))
 
             // ===== 实时预览 =====
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(56.dp)
+                    .height(64.dp)
                     .clip(RoundedCornerShape(8.dp))
                     .background(
                         if (theme.isDark) Color(0xFF1E1E1E) else Color(0xFFE8E8E8)
@@ -789,7 +800,7 @@ fun TrayClockSettingsFlyout(
                 )
             }
 
-            Spacer(Modifier.height(12.dp))
+            Spacer(Modifier.height(14.dp))
 
             // ===== 显示模式 =====
             Text("显示模式", color = sub, fontSize = 11.sp)
@@ -806,7 +817,7 @@ fun TrayClockSettingsFlyout(
                 }
             }
 
-            Spacer(Modifier.height(10.dp))
+            Spacer(Modifier.height(14.dp))
 
             // ===== 字号 =====
             Text(
@@ -821,8 +832,21 @@ fun TrayClockSettingsFlyout(
                 },
                 valueRange = 8f..18f
             )
+            // 恢复"自动"字号：把滑杆拖到最左（8sp）后再点此处回到自适应
+            Text(
+                if (fontSize < 8f) "当前为自动字号" else "拖到最左端并点击可恢复自动",
+                color = sub.copy(alpha = 0.6f),
+                fontSize = 10.sp
+            )
+            if (fontSize >= 8f) {
+                TextButton(onClick = {
+                    scope.launch { app.settingsStore.setTrayClockFontSize(0f) }
+                }) {
+                    Text("恢复自动字号", fontSize = 11.sp)
+                }
+            }
 
-            Spacer(Modifier.height(6.dp))
+            Spacer(Modifier.height(14.dp))
 
             // ===== 排版 =====
             Text("排版", color = sub, fontSize = 11.sp)
@@ -836,7 +860,7 @@ fun TrayClockSettingsFlyout(
                 }
             }
 
-            Spacer(Modifier.height(6.dp))
+            Spacer(Modifier.height(10.dp))
 
             // ===== 开关组 =====
             ToggleRow("显示日期", showDate, theme) {
@@ -849,7 +873,7 @@ fun TrayClockSettingsFlyout(
                 scope.launch { app.settingsStore.setTimeFormat24h(it) }
             }
 
-            Spacer(Modifier.weight(1f))
+            Spacer(Modifier.height(8.dp))
 
             // ===== 底部按钮 =====
             Row(verticalAlignment = Alignment.CenterVertically) {
