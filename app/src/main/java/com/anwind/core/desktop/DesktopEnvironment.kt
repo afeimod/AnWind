@@ -129,7 +129,7 @@ fun DesktopEnvironment(
                             if (change != null) {
                                 MouseController.update(change.position.x, change.position.y)
                             }
-                            MouseController.setPressed(event.changes.any { it.pressed })
+                            MouseController.press(event.changes.any { it.pressed })
                         }
                     }
                 }

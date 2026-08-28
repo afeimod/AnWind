@@ -75,8 +75,12 @@ object MouseController {
     /**
      * 按压状态变化。
      * 抬起时若判定为"快速轻点"（<300ms 且位移 < 24px）则触发点击涟漪。
+     *
+     * 命名注意：不能叫 setPressed —— var pressed 属性的 setter 已生成
+     * 同签名的 setPressed(Z)V，再写 fun setPressed 会报 JVM 平台声明冲突
+     * （v2.13 CI 第三轮修复点）。
      */
-    fun setPressed(down: Boolean) {
+    fun press(down: Boolean) {
         if (down) {
             if (!lastDownHadPress) {
                 pressStartMs = System.currentTimeMillis()
