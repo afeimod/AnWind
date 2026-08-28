@@ -294,7 +294,10 @@ private fun Modifier.desktopGestures(
         var moved = false
         var expired = false
         var twoFingerCentroid: Offset? = null
-        val slop = viewConfiguration.pointerSlop
+        // 注意：Compose ViewConfiguration 没有 pointerSlop 公开属性（v2.10.0 编译错误根因）。
+        // PointerInputScope 本身实现 Density，直接用 dp 容差换算像素最稳妥；
+        // 双指轻点手势两指天然抖动大，18dp 比系统 touchSlop(约8dp) 更宽容。
+        val slop = 18.dp.toPx()
 
         while (true) {
             val event = awaitPointerEvent()

@@ -444,12 +444,11 @@ fun QuickSettingsPanel(
                     "飞行模式", if (airplaneOn) "开启" else "关闭",
                     Icons.Default.AirplanemodeActive, airplaneOn,
                     onClick = {
-                        // 系统限制无法直接切换，打开系统飞行模式面板
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                            openSystemPanel(AndroidSettings.Panel.ACTION_AIRPLANE_MODE, "飞行模式面板")
-                        } else {
-                            openSystemPanel(AndroidSettings.ACTION_AIRPLANE_MODE_SETTINGS, "飞行模式设置")
-                        }
+                        // 系统限制无法直接切换飞行模式；Settings.Panel 也没有飞行模式面板
+                        // （Panel 仅 WIFI / INTERNET_CONNECTIVITY / VOLUME / NFC 四个公开面板，
+                        //  v2.10.0 曾引用不存在的 Panel.ACTION_AIRPLANE_MODE 导致编译失败）。
+                        // ACTION_AIRPLANE_MODE_SETTINGS 是全版本公开 API，直接打开飞行模式设置页。
+                        openSystemPanel(AndroidSettings.ACTION_AIRPLANE_MODE_SETTINGS, "飞行模式设置")
                     }
                 ),
                 QuickToggle(
