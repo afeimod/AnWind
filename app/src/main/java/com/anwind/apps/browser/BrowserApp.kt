@@ -1,6 +1,9 @@
 package com.anwind.apps.browser
 
+import android.app.DownloadManager
+import android.content.Context
 import android.net.Uri
+import android.os.Environment
 import android.view.View
 import android.webkit.CookieManager
 import android.webkit.JsPromptResult
@@ -10,8 +13,10 @@ import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
+import android.webkit.WebStorage
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -330,7 +335,7 @@ private fun WebViewContainer(
                     // 捕获默认移动版 UA，供手机模式恢复
                     val mobileUa = settings.userAgentString
                     mobileUaHolder[0] = mobileUa
-                    // ===== WebSettings 完整配置 =====
+                    // ===== WebSettings 完整配置（参考 gamehtml 项目对游戏网页的兼容）=====
                     settings.apply {
                         javaScriptEnabled = true
                         domStorageEnabled = true
@@ -348,25 +353,79 @@ private fun WebViewContainer(
                         setSupportZoom(true)
                         builtInZoomControls = true
                         displayZoomControls = false
-                        setSupportMultipleWindows(false)
+                        // 多窗口支持：让 window.open() 能新建窗口（很多游戏/支付网页依赖）
+                        setSupportMultipleWindows(true)
                         // 默认文本编码 UTF-8，避免中文乱码
                         defaultTextEncodingName = "UTF-8"
                         // 桌面模式强制 layout algorithm 以提高文本重排质量
                         layoutAlgorithm = WebSettings.LayoutAlgorithm.TEXT_AUTOSIZING
+                        // 地理位置（部分地图/定位网页依赖）
+                        setGeolocationEnabled(true)
+                        // 启用 SafeBrowsing（API 26+）
+                        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                            safeBrowsingEnabled = true
+                        }
+                        // 最小字号（避免某些网页字号太小）
+                        textZoom = 100
                         // 应用 UA 模式
                         userAgentString = if (uaMode == "desktop") DESKTOP_UA else mobileUa
                     }
-                    // 硬件加速
+                    // 启用 WebView 内部数据库 (WebStorage) 自动管理
+                    WebStorage.getInstance()
+                    // 硬件加速（很多 HTML5 游戏/动画需要）
                     setLayerType(View.LAYER_TYPE_HARDWARE, null)
                     // Cookie（this 即当前 WebView）
                     val cookieManager = CookieManager.getInstance()
                     cookieManager.setAcceptCookie(true)
                     cookieManager.setAcceptThirdPartyCookies(this, true)
+                    cookieManager.flush()
+
+                    // 文件下载监听（很多站点提供 APK/ZIP/图片下载）
+                    setDownloadListener { url, userAgent, contentDisposition, mimetype, size ->
+                        try {
+                            val request = DownloadManager.Request(Uri.parse(url)).apply {
+                                setMimeType(mimetype)
+                                addRequestHeader("User-Agent", userAgent)
+                                setDestinationInExternalPublicDir(
+                                    Environment.DIRECTORY_DOWNLOADS,
+                                    contentDisposition?.let { java.net.URLDecoder.decode(it, "UTF-8") }
+                                        ?.substringAfter("filename=", "anwind_download")
+                                        ?.trim('"') ?: "anwind_download"
+                                )
+                                setTitle(contentDisposition ?: "下载")
+                                if (mimetype == "application/vnd.android.package-archive") {
+                                    allowScanningByMediaScanner()
+                                    setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+                                } else {
+                                    setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE)
+                                }
+                            }
+                            val dm = ctx.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+                            dm.enqueue(request)
+                            Toast.makeText(ctx, "开始下载到 Downloads/", Toast.LENGTH_SHORT).show()
+                        } catch (e: Exception) {
+                            Toast.makeText(ctx, "下载失败: ${e.message}", Toast.LENGTH_SHORT).show()
+                        }
+                    }
 
                     webViewClient = object : WebViewClient() {
                         override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
                             // 在当前 WebView 内继续加载，并同步地址栏
                             val newUrl = request.url.toString()
+                            // 处理特殊 scheme：intent://, weixin://, alipays://, mailto: 等
+                            val scheme = request.url.scheme ?: "http"
+                            if (scheme !in setOf("http", "https", "content", "file", "about", "javascript", "data")) {
+                                // 外部 scheme：尝试启动外部应用
+                                try {
+                                    val intent = android.content.Intent(android.content.Intent.ACTION_VIEW, request.url)
+                                    intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                                    ctx.startActivity(intent)
+                                } catch (_: Exception) {
+                                    Toast.makeText(ctx, "未安装可打开 $scheme 应用的程序", Toast.LENGTH_SHORT).show()
+                                }
+                                return true
+                            }
+                            // 在当前 WebView 内继续加载，并同步地址栏
                             // 标记 WebView 正在加载此 URL，避免 update 块重复 loadUrl
                             lastRequestedUrl = newUrl
                             onUrlChanged(newUrl)
@@ -437,6 +496,25 @@ private fun WebViewContainer(
                             if (!title.isNullOrEmpty()) onTitleChanged(title)
                         }
 
+                        // 处理 window.open() —— 4399/百度/微博等很多页面依赖
+                        // 直接复用当前 WebView：将 src WebView 通过 transport 返回给框架，
+                        // 框架会让 src 加载新 URL，随后 onPageStarted 触发地址栏同步。
+                        override fun onCreateWindow(
+                            view: WebView?,
+                            isDialog: Boolean,
+                            isUserGesture: Boolean,
+                            resultMsg: android.os.Message?
+                        ): Boolean {
+                            view?.let { src ->
+                                resultMsg?.let { msg ->
+                                    val transport = msg.obj as? WebView.WebViewTransport
+                                    transport?.webView = src
+                                    msg.target?.sendToTarget()
+                                }
+                            }
+                            return true
+                        }
+
                         // 自动确认 JS 弹窗，避免网页交互卡住
                         override fun onJsAlert(view: WebView?, url: String?, message: String?, result: JsResult?): Boolean {
                             result?.confirm()
@@ -453,6 +531,34 @@ private fun WebViewContainer(
                             defaultValue: String?, result: JsPromptResult?
                         ): Boolean {
                             result?.confirm(defaultValue)
+                            return true
+                        }
+
+                        // 隐藏 HTML5 全屏视频的默认控制器（让 ExoPlayer 或用户自处理）
+                        override fun onShowCustomView(view: View?, callback: WebChromeClient.CustomViewCallback?) {
+                            // 简单实现：交给 WebView 默认行为
+                            super.onShowCustomView(view, callback)
+                        }
+
+                        override fun onHideCustomView() {
+                            super.onHideCustomView()
+                        }
+
+                        // 文件上传回调（input[type=file]）
+                        private var filePathCallback: android.webkit.ValueCallback<Array<Uri>>? = null
+                        override fun onShowFileChooser(
+                            webView: WebView?,
+                            filePathCallback: android.webkit.ValueCallback<Array<Uri>>?,
+                            fileChooserParams: FileChooserParams?
+                        ): Boolean {
+                            this.filePathCallback = filePathCallback
+                            try {
+                                val intent = fileChooserParams?.createIntent()
+                                if (intent != null) {
+                                    intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                                    (ctx as? android.app.Activity)?.startActivityForResult(intent, 0)
+                                }
+                            } catch (_: Exception) {}
                             return true
                         }
                     }

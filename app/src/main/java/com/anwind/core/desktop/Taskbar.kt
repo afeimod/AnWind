@@ -6,11 +6,15 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.Wifi
-import androidx.compose.material.icons.filled.VolumeUp
+import androidx.compose.material.icons.filled.Apps
 import androidx.compose.material.icons.filled.BatteryFull
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.VolumeUp
+import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
@@ -19,8 +23,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.anwind.core.theme.LocalWinTheme
@@ -33,18 +39,18 @@ import java.util.Date
 import java.util.Locale
 
 /**
- * 任务栏 - Win11 风格
+ * 任务栏 - Win11 真实风格
  *
- * 视觉重构：
+ * 视觉重构（参考 hyperdroid APK 截图）：
  * - 浮动圆角矩形（与底部留 4dp 间距）
  * - Mica/Aero 半透明材质 + 阴影
- * - **左侧紧凑分布**：Start + 搜索 + 浏览器/文件管理器/设置 等固定应用
- * - 中间：其他运行中窗口
- * - 右侧系统托盘：wifi/音量/电池/时钟
+ * - **居中簇布局**：Start + 搜索条（药丸形）+ 浏览器/文件管理器/设置 + 运行中窗口
+ * - 右侧系统托盘：wifi/音量/电池/时钟（与左侧簇用空白 spacer 分开）
  *
- * 点击行为（用户要求 #5）：
+ * 点击行为：
  * - 点击时钟 → 打开 CalendarFlyout
  * - 点击 wifi/音量/电池 组 → 打开 QuickSettingsPanel
+ * - 点击搜索条 → 直接输入回车跳转浏览器
  */
 @Composable
 fun Taskbar(
@@ -70,7 +76,7 @@ fun Taskbar(
         modifier = modifier
     ) {
         val taskbarColor = theme.taskbarColor.copy(alpha = theme.taskbarAlpha)
-        val floatingWidth = maxWidth * 0.95f  // 居中浮动的宽度
+        val floatingWidth = maxWidth * 0.96f
         val bottomPadding = 4.dp
 
         Row(
@@ -88,7 +94,7 @@ fun Taskbar(
                     .clip(RoundedCornerShape(theme.taskbarHeight.value / 2f))
                     .background(taskbarColor)
             ) {
-                LeftAlignedTaskbar(
+                CenteredTaskbar(
                     theme = theme,
                     startMenuOpen = startMenuOpen,
                     onStartClick = onStartClick,
@@ -103,7 +109,7 @@ fun Taskbar(
 }
 
 @Composable
-private fun LeftAlignedTaskbar(
+private fun CenteredTaskbar(
     theme: WinTheme,
     startMenuOpen: Boolean,
     onStartClick: () -> Unit,
@@ -115,21 +121,66 @@ private fun LeftAlignedTaskbar(
     val wm = remember { WindowManager.get() }
     val runningWindows = remember(tick, theme) { wm.windows }
 
+    var searchText by remember { mutableStateOf("") }
+    var searchActive by remember { mutableStateOf(false) }
+    val keyboard = LocalSoftwareKeyboardController.current
+
     Box(modifier = Modifier.fillMaxSize()) {
-        // ===== 左侧：Start + 搜索 + 浏览器/文件管理器/设置 等固定应用 =====
+        // ===== 居中簇：Start + 搜索条 + 浏览器/文件管理器/设置 + 运行中窗口 =====
         Row(
-            modifier = Modifier.align(Alignment.CenterStart),
+            modifier = Modifier.align(Alignment.Center),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(4.dp)
         ) {
+            // Start 按钮
             StartButton(theme = theme, isOpen = startMenuOpen, onClick = onStartClick)
-            Spacer(Modifier.width(4.dp))
+            Spacer(Modifier.width(2.dp))
 
-            SearchButton(theme = theme)
-            Spacer(Modifier.width(4.dp))
+            // 搜索条（药丸形，未激活时显示图标 + "搜索"，激活时变宽接受输入）
+            PillSearchBar(
+                theme = theme,
+                text = searchText,
+                active = searchActive,
+                onActiveChange = { searchActive = it },
+                onTextChange = { searchText = it },
+                onSubmit = {
+                    val q = searchText.trim()
+                    if (q.isNotEmpty()) {
+                        // 用 normalizeUrl 处理：网址直接打开，搜索关键词走 Bing
+                        val target = if (q.contains(".") && !q.contains(" ")) {
+                            if (q.startsWith("http")) q else "https://$q"
+                        } else {
+                            "https://www.bing.com/search?q=" + android.net.Uri.encode(q)
+                        }
+                        // 直接打开新浏览器窗口，让 launchArgs["url"] 自动加载
+                        wm.open(
+                            appId = "browser",
+                            title = "浏览器",
+                            launchMode = com.anwind.core.window.LaunchMode.FLOATING,
+                            launchArgs = mapOf("url" to target),
+                            initialWidth = 980,
+                            initialHeight = 640
+                        )
+                        searchText = ""
+                        searchActive = false
+                        keyboard?.hide()
+                    }
+                }
+            )
+
+            Spacer(Modifier.width(2.dp))
+
+            // 紧凑分隔线
+            Box(
+                modifier = Modifier
+                    .width(1.dp)
+                    .height(20.dp)
+                    .background(theme.taskbarIconColor.copy(alpha = 0.15f))
+            )
+
+            Spacer(Modifier.width(2.dp))
 
             // 仅显示固定在任务栏的核心三件套：浏览器/文件管理器/设置
-            // 紧凑分布，符合 Win11 任务栏视觉
             val pinnedApps = remember {
                 AppRegistry.taskbarApps().filter { app ->
                     app.id in setOf("browser", "file_explorer", "settings")
@@ -160,32 +211,29 @@ private fun LeftAlignedTaskbar(
                 )
             }
 
-            // 分隔线（仅在同时有运行中非固定窗口时显示）
+            // 其他运行中的窗口（非固定应用）
             val pinnedIds = pinnedApps.map { it.id }.toSet()
             val runningOnly = runningWindows.filter { it.appId !in pinnedIds }
             if (runningOnly.isNotEmpty()) {
-                Spacer(Modifier.width(4.dp))
+                Spacer(Modifier.width(2.dp))
                 Box(
                     modifier = Modifier
                         .width(1.dp)
-                        .height(24.dp)
-                        .background(theme.taskbarIconColor.copy(alpha = 0.2f))
+                        .height(20.dp)
+                        .background(theme.taskbarIconColor.copy(alpha = 0.15f))
                 )
-                Spacer(Modifier.width(4.dp))
-            }
-
-            // 其他运行中的窗口（按打开顺序）
-            runningOnly.forEach { w ->
-                val app = AppRegistry.get(w.appId)
-                if (app != null) {
-                    TaskbarAppIcon(
-                        iconAsset = app.iconAsset,
-                        theme = theme,
-                        isRunning = true,
-                        isActive = w.isVisible && wm.topWindow()?.id == w.id,
-                        onClick = { wm.taskbarClick(w.id) }
-                    )
-                    Spacer(Modifier.width(4.dp))
+                Spacer(Modifier.width(2.dp))
+                runningOnly.forEach { w ->
+                    val app = AppRegistry.get(w.appId)
+                    if (app != null) {
+                        TaskbarAppIcon(
+                            iconAsset = app.iconAsset,
+                            theme = theme,
+                            isRunning = true,
+                            isActive = w.isVisible && wm.topWindow()?.id == w.id,
+                            onClick = { wm.taskbarClick(w.id) }
+                        )
+                    }
                 }
             }
         }
@@ -250,23 +298,71 @@ private fun StartButton(theme: WinTheme, isOpen: Boolean, onClick: () -> Unit) {
     }
 }
 
+/**
+ * 药丸形搜索条：未激活时宽 60dp（仅显示放大镜 + 文字），激活时宽 220dp 接受输入。
+ * 参考真实 Win11 任务栏搜索条视觉。
+ */
 @Composable
-private fun SearchButton(theme: WinTheme) {
-    Box(
+private fun PillSearchBar(
+    theme: WinTheme,
+    text: String,
+    active: Boolean,
+    onActiveChange: (Boolean) -> Unit,
+    onTextChange: (String) -> Unit,
+    onSubmit: () -> Unit
+) {
+    val width = if (active) 220.dp else 80.dp
+    Row(
         modifier = Modifier
-            .size(theme.taskbarHeight - 10.dp)
+            .width(width)
+            .height(theme.taskbarHeight - 12.dp)
             .clip(RoundedCornerShape(50))
-            .clickable {
-                // 搜索按钮：暂时只是视觉占位
-            },
-        contentAlignment = Alignment.Center
+            .background(theme.taskbarIconColor.copy(alpha = if (active) 0.12f else 0.06f))
+            .clickable(
+                interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                indication = null
+            ) {
+                onActiveChange(true)
+            }
+            .padding(horizontal = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp)
     ) {
         Icon(
             imageVector = Icons.Default.Search,
             contentDescription = "搜索",
             tint = theme.taskbarIconColor,
-            modifier = Modifier.size(16.dp)
+            modifier = Modifier.size(14.dp)
         )
+        if (active) {
+            BasicTextField(
+                value = text,
+                onValueChange = onTextChange,
+                singleLine = true,
+                textStyle = TextStyle(
+                    color = theme.taskbarClockColor,
+                    fontSize = 12.sp
+                ),
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                keyboardActions = KeyboardActions(onSearch = { onSubmit() }),
+                modifier = Modifier.weight(1f),
+                cursorBrush = androidx.compose.ui.graphics.SolidColor(theme.accentColor)
+            )
+            if (text.isEmpty()) {
+                Text(
+                    text = "搜索",
+                    color = theme.taskbarIconColor.copy(alpha = 0.6f),
+                    fontSize = 12.sp
+                )
+            }
+        } else {
+            Text(
+                text = "搜索",
+                color = theme.taskbarIconColor,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Normal
+            )
+        }
     }
 }
 
