@@ -265,6 +265,19 @@ private fun BrowserContent(scope: WindowContentScope) {
                         onTitleChanged = { newTitle ->
                             activeTab.title = newTitle
                         },
+                        onOpenInNewTab = { newUrl ->
+                            // window.open(url) 或 target="_blank" 链接 → 在新标签页打开
+                            val newTab = tabManager.openTab(newUrl)
+                            activeTabId = newTab.id
+                            addressInput = newUrl
+                            scope0.launch {
+                                withContext(Dispatchers.IO) {
+                                    app.database.historyDao().insert(
+                                        HistoryEntity(title = newUrl, url = newUrl)
+                                    )
+                                }
+                            }
+                        },
                         onRetry = { tabManager.getTab(activeTabId)?.refresh() }
                     )
                 }
@@ -309,6 +322,7 @@ private fun WebViewContainer(
     onUrlChanged: (String) -> Unit,
     onUrlSync: (String) -> Unit = {},
     onTitleChanged: (String) -> Unit = {},
+    onOpenInNewTab: (String) -> Unit = {},
     onRetry: () -> Unit = {}
 ) {
     val theme = LocalWinTheme.current
@@ -353,7 +367,11 @@ private fun WebViewContainer(
                         setSupportZoom(true)
                         builtInZoomControls = true
                         displayZoomControls = false
-                        // 多窗口支持：让 window.open() 能新建窗口（很多游戏/支付网页依赖）
+                        // 单窗口多标签模式：window.open(url) 会触发 onCreateWindow 回调，
+                        // 我们在 onCreateWindow 中创建【临时】WebView 拦截 URL，
+                        // 通过 onOpenInNewTab 回调在 TabManager 中新建标签页，
+                        // 然后销毁临时 WebView。绝不能把父 WebView 自身传给 transport，
+                        // 否则会抛 IllegalArgumentException: Parent WebView cannot host its own popup window
                         setSupportMultipleWindows(true)
                         // 默认文本编码 UTF-8，避免中文乱码
                         defaultTextEncodingName = "UTF-8"
@@ -496,25 +514,47 @@ private fun WebViewContainer(
                             if (!title.isNullOrEmpty()) onTitleChanged(title)
                         }
 
-                        // 处理 window.open() —— 4399/百度/微博等很多页面依赖
-                        // 直接复用当前 WebView：将 src WebView 通过 transport 返回给框架，
-                        // 框架会让 src 加载新 URL，随后 onPageStarted 触发地址栏同步。
+                        // 处理 window.open() —— 多标签浏览核心逻辑：
+                        // 1) 创建【临时】WebView（绝不复用父 WebView，否则会抛 IllegalArgumentException）
+                        // 2) 给临时 WebView 设置一个 WebViewClient，在 shouldOverrideUrlLoading
+                        //    里捕获目标 URL → 调用 onOpenInNewTab 在 TabManager 中新建标签 → 返回 true
+                        //    阻止临时 WebView 真正加载
+                        // 3) 把临时 WebView 通过 WebViewTransport 传给 Chromium 框架
+                        // 4) sendToTarget() 让框架执行
+                        // 5) 延迟销毁临时 WebView，避免内存泄漏
+                        // 这样 4399/百度/微博等依赖 window.open() 的网页会自然在新标签页打开
                         override fun onCreateWindow(
                             view: WebView?,
                             isDialog: Boolean,
                             isUserGesture: Boolean,
                             resultMsg: android.os.Message?
                         ): Boolean {
-                            view?.let { src ->
-                                resultMsg?.let { msg ->
-                                    val transport = msg.obj as? WebView.WebViewTransport
-                                    transport?.webView = src
-                                    // sendToTarget() 是 Message 的方法（内部调用 target.sendMessage(this)），
-                                    // 不能在 target (Handler) 上调用
-                                    msg.sendToTarget()
+                            if (resultMsg == null) return false
+                            // 创建临时 WebView —— 不需要完整配置，只需要能拦截 URL
+                            val tempWebView = WebView(ctx).apply {
+                                settings.javaScriptEnabled = true
+                                webViewClient = object : WebViewClient() {
+                                    override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
+                                        val newUrl = request.url.toString()
+                                        // 捕获 URL → 在新标签页打开
+                                        onOpenInNewTab(newUrl)
+                                        // 返回 true 阻止临时 WebView 实际加载此 URL
+                                        return true
+                                    }
                                 }
                             }
-                            return true
+                            // 通过 transport 将临时 WebView 传给框架
+                            val transport = resultMsg.obj as? WebView.WebViewTransport
+                            if (transport != null) {
+                                transport.webView = tempWebView
+                                resultMsg.sendToTarget()
+                                // 延迟销毁临时 WebView（让框架先完成 transport 传递）
+                                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                                    try { tempWebView.destroy() } catch (_: Exception) {}
+                                }, 5000)
+                                return true
+                            }
+                            return false
                         }
 
                         // 自动确认 JS 弹窗，避免网页交互卡住
