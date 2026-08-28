@@ -36,10 +36,6 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.input.key.Key
-import androidx.compose.ui.input.key.KeyEvent
-import androidx.compose.ui.input.key.KeyEventType
-import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -134,20 +130,13 @@ private fun BrowserContent(scope: WindowContentScope) {
         addressInput = if (initialUrl == "anwind://home") "" else initialUrl
     }
 
-    // F11 键盘快捷键：切换真全屏（隐藏任务栏+标题栏，浏览器占满整屏）
-    val windowId = scope.windowState.id
+    // 全屏切换由工具栏的 Fullscreen 按钮触发（onToggleFullscreen），
+    // 不再使用键盘 F11 —— Modifier.onKeyEvent 在当前 Compose BOM 下
+    // 类型推断有问题，CI 编译失败。
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(theme.windowBackgroundColor)
-            .onKeyEvent { event: KeyEvent ->
-                if (event.type == KeyEventType.KeyDown && event.key == Key.F11) {
-                    wm.toggleTrueFullscreen(windowId)
-                    true
-                } else {
-                    false
-                }
-            }
     ) {
     Column(modifier = Modifier.fillMaxSize().background(theme.windowBackgroundColor)) {
 
@@ -341,7 +330,7 @@ private fun BrowserContent(scope: WindowContentScope) {
             )
         }
     } // end Column
-    } // end Box (F11 keyboard handler)
+    } // end Box (browser root)
 }
 
 /**
