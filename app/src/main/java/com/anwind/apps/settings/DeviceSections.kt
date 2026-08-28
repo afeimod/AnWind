@@ -661,7 +661,9 @@ internal fun NetworkInternetSection() {
     }.getOrDefault(false)
 
     var wifiEnabled by remember {
-        mutableStateOf(runCatching { wifiManager?.isWifiEnabled }.getOrDefault(false))
+        // 注意 "== true"：wifiManager 可空，缺了它整个表达式会变成 Boolean?，
+        // 导致后续 !wifiEnabled / ToggleSwitch(wifiEnabled) 报可空类型错误
+        mutableStateOf(runCatching { wifiManager?.isWifiEnabled == true }.getOrDefault(false))
     }
     var netTypeName by remember { mutableStateOf(netType()) }
     var isOnline by remember { mutableStateOf(online()) }
@@ -670,7 +672,7 @@ internal fun NetworkInternetSection() {
     var ipAddress by remember { mutableStateOf("") }
 
     fun refreshWifi() {
-        wifiEnabled = runCatching { wifiManager?.isWifiEnabled }.getOrDefault(false)
+        wifiEnabled = runCatching { wifiManager?.isWifiEnabled == true }.getOrDefault(false)
         val info = runCatching { wifiManager?.connectionInfo }.getOrNull()
         val rawSsid = info?.ssid?.removeSurrounding("\"")
         ssid = rawSsid?.takeIf { it.isNotEmpty() && it != "<unknown ssid>" }

@@ -109,13 +109,18 @@ object SystemControl {
 
     /**
      * 切换系统省电模式。
-     * AOSP 对三方应用禁用（需要系统权限），部分定制 ROM 允许。
-     * @return true=成功切换；false=无权限（调用方应引导系统省电设置页）
+     *
+     * PowerManager#setPowerSaveMode 是 @SystemApi（需要系统级 DEVICE_POWER 权限），
+     * 不在公开 android.jar 中，直接调用会编译报 Unresolved reference，因此用反射；
+     * 绝大多数 ROM 上反射调用会因权限不足抛异常，部分定制 ROM 允许。
+     * @return true=成功切换；false=无权限/被系统拦截（调用方应引导系统省电设置页）
      */
     fun setPowerSaveMode(context: Context, enable: Boolean): Boolean = runCatching {
-        (context.getSystemService(Context.POWER_SERVICE) as PowerManager)
-            .setPowerSaveMode(enable)
-        true
+        val pm = context.getSystemService(Context.POWER_SERVICE) as PowerManager
+        val method = PowerManager::class.java
+            .getMethod("setPowerSaveMode", java.lang.Boolean.TYPE)
+        // 返回值：true=系统已切换；false 或抛异常=被拒绝
+        (method.invoke(pm, enable) as? Boolean) ?: true
     }.getOrDefault(false)
 
     // ============================================================
