@@ -156,7 +156,9 @@ class SettingsStore(private val context: Context) {
     val mouseRightClick: Flow<String> = context.appPrefs.data.map { it[Keys.MOUSE_RIGHT_CLICK] ?: "twofinger" }
 
     // === 虚拟键盘（v2.13） ===
-    val keyboardMaster: Flow<Boolean> = context.appPrefs.data.map { it[Keys.KEYBOARD_MASTER] ?: true }
+    // v2.13.2：keyboardMaster 默认关闭 —— 大多数场景手机系统输入法更顺手，
+    // 需要应用内全键盘的用户在 设置→键盘 里主动开启
+    val keyboardMaster: Flow<Boolean> = context.appPrefs.data.map { it[Keys.KEYBOARD_MASTER] ?: false }
     val keyboardFuncRow: Flow<Boolean> = context.appPrefs.data.map { it[Keys.KEYBOARD_FUNC_ROW] ?: true }
     val keyboardNumpad: Flow<Boolean> = context.appPrefs.data.map { it[Keys.KEYBOARD_NUMPAD] ?: true }
     val keyboardScale: Flow<Float> = context.appPrefs.data.map { it[Keys.KEYBOARD_SCALE] ?: 1.0f }

@@ -6,6 +6,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -52,6 +53,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.anwind.AnWindApp
 import kotlinx.coroutines.launch
+import kotlin.math.abs
 import kotlin.math.roundToInt
 
 /**
@@ -62,14 +64,16 @@ import kotlin.math.roundToInt
  * - 修饰键：Shift（单击一次性 / 双击大写锁定）、Caps、Ctrl（A/C/X/V 组合）、
  *   Win（呼出开始菜单）、Alt
  * - 主题：浅色 / 深色 / 蓝色 / 玻璃 四套
- * - 大小：0.75..1.35 缩放；位置：默认底部居中，可拖动（拖动开关可关）
+ * - 大小：0.75..1.35 缩放 —— 三种调节方式：设置滑杆 / 工具栏 -+ / 双指捏合（v2.13.2）；
+ *   位置：默认底部居中，可拖动（拖动开关可关）
  * - 键盘振动 / 触摸反馈设置真实生效（触觉 + 按压缩放高亮动画）
  * - 键体用 pointerInput 而非 clickable —— 不与编辑框抢焦点
  */
 @Composable
 fun VirtualKeyboardOverlay() {
     val app = AnWindApp.get()
-    val master by app.settingsStore.keyboardMaster.collectAsState(initial = true)
+    // v2.13.2：虚拟键盘默认关闭（大多数场景用手机输入法更顺手，需在设置中主动开启）
+    val master by app.settingsStore.keyboardMaster.collectAsState(initial = false)
     val funcRow by app.settingsStore.keyboardFuncRow.collectAsState(initial = true)
     val numpad by app.settingsStore.keyboardNumpad.collectAsState(initial = true)
     val scale by app.settingsStore.keyboardScale.collectAsState(initial = 1.0f)
@@ -154,6 +158,9 @@ fun VirtualKeyboardOverlay() {
     var dragOffset by remember { mutableStateOf(Offset.Zero) }
     var pos by remember { mutableStateOf(Offset(0.5f, 1f)) }
     var dragging by remember { mutableStateOf(false) }
+    // 双指捏合缩放（v2.13.2）：累计增量跨过阈值才落盘，避免捏合过程高频写 DataStore
+    var pinchZoom by remember { mutableStateOf(1f) }
+    val liveScale by rememberUpdatedState(scale)
     // 位置设置变化时同步（首次组合 + 设置页"重置位置"）
     LaunchedEffect(posX, posY) { if (!dragging) pos = Offset(posX, posY) }
 
@@ -165,6 +172,10 @@ fun VirtualKeyboardOverlay() {
         val keyH = (42 * scale).dp
         val funcH = (32 * scale).dp
         val gap = (3 * scale).dp
+
+        // v2.13.2 布局降级：可用宽度不足（竖屏）时收缩区域，保主键区可用
+        val showNumpad = numpad && maxWidth >= (620 * scale).dp
+        val compactArrows = maxWidth < (560 * scale).dp
 
         val freeW = (screenWpx - kbSize.width).coerceAtLeast(0f)
         val freeH = (screenHpx - kbSize.height).coerceAtLeast(0f)
@@ -188,6 +199,19 @@ fun VirtualKeyboardOverlay() {
             modifier = Modifier
                 .offset { IntOffset(x.roundToInt(), y.roundToInt()) }
                 .onGloballyPositioned { kbSize = it.size }
+                // 双指捏合缩放（v2.13.2）：放在键体修饰符之前 —— 单指事件仍由子级键优先消费
+                .pointerInput(Unit) {
+                    detectTransformGestures { _, _, zoom, _ ->
+                        if (abs(zoom - 1f) > 0.001f) {
+                            pinchZoom *= zoom
+                            if (abs(pinchZoom - 1f) >= 0.06f) {
+                                val target = (liveScale * pinchZoom).coerceIn(0.75f, 1.35f)
+                                scope.launch { app.settingsStore.setKeyboardScale(target) }
+                                pinchZoom = 1f
+                            }
+                        }
+                    }
+                }
                 .clip(RoundedCornerShape((10 * scale).dp))
                 .background(theme.bg)
                 .padding((5 * scale).dp)
@@ -217,6 +241,20 @@ fun VirtualKeyboardOverlay() {
                     })
                     ToolbarChip("小键盘", theme, scale, on = numpad, onTap = {
                         scope.launch { app.settingsStore.setKeyboardNumpad(!numpad) }
+                    })
+                    ToolbarChip("-", theme, scale, onTap = {
+                        scope.launch { app.settingsStore.setKeyboardScale(scale - 0.1f) }
+                    })
+                    BasicText(
+                        text = "${(scale * 100).roundToInt()}%",
+                        style = TextStyle(
+                            color = theme.toolbarText,
+                            fontSize = (9.5f * scale).sp
+                        ),
+                        maxLines = 1
+                    )
+                    ToolbarChip("+", theme, scale, onTap = {
+                        scope.launch { app.settingsStore.setKeyboardScale(scale + 0.1f) }
                     })
                     ToolbarChip("主题", theme, scale, onTap = {
                         val next = when (themeId) {
@@ -255,10 +293,13 @@ fun VirtualKeyboardOverlay() {
                     }
                 }
 
-                // ===== 主区 + 小键盘 =====
+                // ===== 主区 + 小键盘 + 方向键 =====
+                // v2.13.2：垂直 Bottom 对齐 —— 方向键组按内容高度沉底（Windows 习惯），
+                // 同时杜绝 v2.13.1 方向键列垂直 weight 拉伸占满屏幕的问题
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(gap)
+                    horizontalArrangement = Arrangement.spacedBy(gap),
+                    verticalAlignment = Alignment.Bottom
                 ) {
                     // 主键区
                     Column(
@@ -295,8 +336,8 @@ fun VirtualKeyboardOverlay() {
                         }
                     }
 
-                    // 小键盘 + 方向键列
-                    if (numpad) {
+                    // 小键盘（v2.13.2：窄屏强制隐藏，避免主键区被挤到不可用）
+                    if (showNumpad) {
                         Column(
                             modifier = Modifier.width((176 * scale).dp),
                             verticalArrangement = Arrangement.spacedBy(gap)
@@ -319,21 +360,81 @@ fun VirtualKeyboardOverlay() {
                                 }
                             }
                         }
+                    }
+
+                    // 方向键区（v2.13.2 重写：独立于小键盘开关 —— Windows 关小键盘后
+                    // 方向键仍在）。
+                    // ⚠️ 布局红线：本区所有键固定 height(keyH)，严禁垂直 weight ——
+                    // 这条链的 maxHeight 是"屏幕剩余高度"（有界但巨大），weight 默认
+                    // fill=true 会把键强制拉伸平分屏幕高度，整个键盘被撑到全屏
+                    // （v2.13.1 "上下左右键占满屏幕" 的根因）。
+                    if (compactArrows) {
+                        // 窄屏降级：单列竖排，每键固定高
                         Column(
                             modifier = Modifier.width((44 * scale).dp),
                             verticalArrangement = Arrangement.spacedBy(gap)
                         ) {
-                            val arrowKeys = listOf(
-                                "↑" to KbAction.Up, "←" to KbAction.Left,
-                                "↓" to KbAction.Down, "→" to KbAction.Right
-                            )
-                            arrowKeys.forEach { (label, action) ->
+                            listOf(
+                                "↑" to KbAction.Up, "↓" to KbAction.Down,
+                                "←" to KbAction.Left, "→" to KbAction.Right
+                            ).forEach { (label, action) ->
                                 KeyButton(
                                     label, 1f, theme, keyH = keyH, scale = scale,
                                     special = true, touchFeedback = touchFeedback,
                                     haptic = haptic, vibrate = vibrate,
                                     onTapKey = { tapFeedback() },
                                     onClick = { onKey(KbKey(label, null, 1f, true, action)) },
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                            }
+                        }
+                    } else {
+                        // 标准布局：↑ 居中一行 + ←↓→ 一行，随 Row 整体底部对齐
+                        Column(
+                            modifier = Modifier.width((136 * scale).dp),
+                            verticalArrangement = Arrangement.spacedBy(gap)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth().height(keyH),
+                                horizontalArrangement = Arrangement.spacedBy(gap)
+                            ) {
+                                Spacer(Modifier.weight(1f))
+                                KeyButton(
+                                    "↑", 1f, theme, keyH = keyH, scale = scale,
+                                    special = true, touchFeedback = touchFeedback,
+                                    haptic = haptic, vibrate = vibrate,
+                                    onTapKey = { tapFeedback() },
+                                    onClick = { onKey(KbKey("↑", null, 1f, true, KbAction.Up)) },
+                                    modifier = Modifier.weight(1f)
+                                )
+                                Spacer(Modifier.weight(1f))
+                            }
+                            Row(
+                                modifier = Modifier.fillMaxWidth().height(keyH),
+                                horizontalArrangement = Arrangement.spacedBy(gap)
+                            ) {
+                                KeyButton(
+                                    "←", 1f, theme, keyH = keyH, scale = scale,
+                                    special = true, touchFeedback = touchFeedback,
+                                    haptic = haptic, vibrate = vibrate,
+                                    onTapKey = { tapFeedback() },
+                                    onClick = { onKey(KbKey("←", null, 1f, true, KbAction.Left)) },
+                                    modifier = Modifier.weight(1f)
+                                )
+                                KeyButton(
+                                    "↓", 1f, theme, keyH = keyH, scale = scale,
+                                    special = true, touchFeedback = touchFeedback,
+                                    haptic = haptic, vibrate = vibrate,
+                                    onTapKey = { tapFeedback() },
+                                    onClick = { onKey(KbKey("↓", null, 1f, true, KbAction.Down)) },
+                                    modifier = Modifier.weight(1f)
+                                )
+                                KeyButton(
+                                    "→", 1f, theme, keyH = keyH, scale = scale,
+                                    special = true, touchFeedback = touchFeedback,
+                                    haptic = haptic, vibrate = vibrate,
+                                    onTapKey = { tapFeedback() },
+                                    onClick = { onKey(KbKey("→", null, 1f, true, KbAction.Right)) },
                                     modifier = Modifier.weight(1f)
                                 )
                             }

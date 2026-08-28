@@ -301,7 +301,7 @@ internal fun KeyboardSettingsPage(onBack: () -> Unit) {
     val theme = LocalWinTheme.current
     val scope = rememberCoroutineScope()
 
-    val master by app.settingsStore.keyboardMaster.collectAsState(initial = true)
+    val master by app.settingsStore.keyboardMaster.collectAsState(initial = false)
     val funcRow by app.settingsStore.keyboardFuncRow.collectAsState(initial = true)
     val numpad by app.settingsStore.keyboardNumpad.collectAsState(initial = true)
     val scale by app.settingsStore.keyboardScale.collectAsState(initial = 1.0f)
@@ -320,7 +320,8 @@ internal fun KeyboardSettingsPage(onBack: () -> Unit) {
             icon = Icons.Default.Keyboard,
             iconBackgroundColor = Color(0xFF8764B8),
             title = "使用 AnWind 虚拟键盘",
-            subtitle = if (master) "开启：文本框聚焦时呼出应用内全键盘" else "关闭：文本框使用系统输入法",
+            subtitle = if (master) "开启：文本框聚焦时呼出应用内全键盘"
+            else "关闭（默认）：文本框使用手机系统输入法",
             trailingContent = {
                 ToggleSwitch(master) { v ->
                     scope.launch { app.settingsStore.setKeyboardMaster(v) }
@@ -366,6 +367,12 @@ internal fun KeyboardSettingsPage(onBack: () -> Unit) {
                     scope.launch { app.settingsStore.setKeyboardScale(v) }
                 },
                 valueRange = 0.75f..1.35f
+            )
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "也可用键盘工具栏 - / + 按钮或双指捏合直接调节（75% - 135%）",
+                color = theme.secondaryTextColor,
+                fontSize = 11.sp
             )
         }
 

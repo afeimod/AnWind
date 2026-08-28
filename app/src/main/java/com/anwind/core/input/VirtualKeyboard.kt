@@ -13,6 +13,7 @@ import androidx.compose.ui.composed
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.platform.ClipboardManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
@@ -27,7 +28,7 @@ import com.anwind.AnWindApp
  *   [StringTarget]（追加式编辑：适配存量 String 状态的单行输入框）
  * - [VirtualKeyboardController]：全局单例，持有"当前聚焦的编辑会话"与键盘可见性
  * - [Modifier.keyboardAware]：文本框挂载的焦点钩子 —— 聚焦时注册会话并呼出键盘，
- *   失焦时注销；虚拟键盘总开关关闭时不介入（回退系统输入法）。
+ *   失焦时注销；虚拟键盘总开关（默认关闭）关闭时不介入（回退系统输入法）。
  */
 abstract class KeyboardTarget(val singleLine: Boolean) {
 
@@ -286,7 +287,8 @@ fun Modifier.keyboardAware(
     onEnter: (() -> Unit)? = null
 ): Modifier = composed {
     val app = AnWindApp.get()
-    val master by app.settingsStore.keyboardMaster.collectAsState(initial = true)
+    // v2.13.2：默认关闭（与 SettingsStore 默认值一致，避免首帧闪现键盘）
+    val master by app.settingsStore.keyboardMaster.collectAsState(initial = false)
     val target = remember { StringTarget(value, onValue, singleLine) }
     SideEffect { target.update(value, onValue) }
     wireKeyboardAware(target, onEnter, master)
@@ -306,7 +308,8 @@ fun Modifier.keyboardAwareEditor(
     onEnter: (() -> Unit)? = null
 ): Modifier = composed {
     val app = AnWindApp.get()
-    val master by app.settingsStore.keyboardMaster.collectAsState(initial = true)
+    // v2.13.2：默认关闭（与 SettingsStore 默认值一致）
+    val master by app.settingsStore.keyboardMaster.collectAsState(initial = false)
     val target = remember { TextFieldValueTarget(value, onValue, singleLine) }
     SideEffect { target.update(value, onValue) }
     wireKeyboardAware(target, onEnter, master)
@@ -323,6 +326,10 @@ private fun Modifier.wireKeyboardAware(
     master: Boolean
 ): Modifier {
     val kb = LocalSoftwareKeyboardController.current
+    // v2.13.2：View 级 post 三连压制系统 IME —— Compose 在焦点回调之后才会请求
+    // 显示系统输入法（TextInputSession），单次同步 hide 必然跑输竞态，这是
+    // “虚拟键盘开着却偶尔弹手机输入法”的根因；post 到队列后面在 show 之后补刀
+    val view = LocalView.current
     target.onEnter = onEnter
     DisposableEffect(target) {
         onDispose { VirtualKeyboardController.detach(target) }
@@ -334,7 +341,10 @@ private fun Modifier.wireKeyboardAware(
     return this.onFocusChanged { st ->
         if (master) {
             if (st.isFocused) {
-                kb?.hide() // 阻止系统输入法弹出（可能有短暂闪现，属平台限制）
+                kb?.hide()
+                view.post { kb?.hide() }
+                view.postDelayed({ kb?.hide() }, 120L)
+                view.postDelayed({ kb?.hide() }, 300L)
                 VirtualKeyboardController.attach(target)
             } else {
                 VirtualKeyboardController.detach(target)
