@@ -4,10 +4,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Keyboard
@@ -153,7 +151,10 @@ internal fun MouseSettingsPage(onBack: () -> Unit) {
 
     SubPageHeader("鼠标设置", onBack)
 
-    Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+    // 注意：宿主（SettingsApp 右侧内容区）已是 verticalScroll 滚动容器，
+    // 子页禁止再套 verticalScroll —— 嵌套会被以无限高度约束测量并抛
+    // IllegalStateException（v2.13.1 修复的运行时崩溃），滚动由宿主统一负责。
+    Column(modifier = Modifier.fillMaxWidth()) {
 
         // ===== 指针显示 =====
         SettingsCard(
@@ -311,7 +312,8 @@ internal fun KeyboardSettingsPage(onBack: () -> Unit) {
 
     SubPageHeader("键盘设置", onBack)
 
-    Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+    // 同 MouseSettingsPage：不可加 verticalScroll（宿主已有滚动层，嵌套必崩）。
+    Column(modifier = Modifier.fillMaxWidth()) {
 
         // ===== 总开关 =====
         SettingsCard(
