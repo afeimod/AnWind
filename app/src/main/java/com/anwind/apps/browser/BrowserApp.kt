@@ -1,25 +1,12 @@
 package com.anwind.apps.browser
 
-import android.app.DownloadManager
-import android.content.Context
-import android.net.Uri
-import android.os.Environment
-import android.view.View
-import android.webkit.CookieManager
-import android.webkit.JsPromptResult
-import android.webkit.JsResult
-import android.webkit.WebChromeClient
-import android.webkit.WebResourceError
-import android.webkit.WebResourceRequest
-import android.webkit.WebResourceResponse
-import android.webkit.WebSettings
-import android.webkit.WebStorage
-import android.webkit.WebView
-import android.webkit.WebViewClient
-import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -35,7 +22,10 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -44,34 +34,30 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.anwind.AnWindApp
-import com.anwind.core.desktop.IconPainter
 import com.anwind.core.theme.LocalWinTheme
 import com.anwind.core.window.LaunchMode
 import com.anwind.core.window.WindowContentScope
 import com.anwind.core.window.AppDef
 import com.anwind.core.window.WindowManager
-import com.anwind.data.db.entity.HistoryEntity
+import com.anwind.data.db.entity.BookmarkEntity
 import com.anwind.data.model.DesktopItemType
-import kotlinx.coroutines.Dispatchers
+import com.anwind.util.ImmersiveMode
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import java.io.ByteArrayInputStream
-
-/** 桌面版 Chrome UA（不含 Mobile/Android，让服务器返回 PC 版页面） */
-private const val DESKTOP_UA =
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 
 /**
  * 浏览器应用定义。
  *
- * 功能清单：
- * - 多标签页（TabManager）
+ * v2.8 功能清单：
+ * - 多标签页（TabManager，标签专属 WebView 常驻缓存，切换不重建）
  * - 前进/后退/刷新/主页
  * - 地址栏（自动补全 https://）
  * - 本地 HTML 文件读取（通过 SAF 选择文件）
  * - 书签管理（持久化到 Room）
  * - 历史记录（持久化到 Room）
  * - 首页快捷导航（百度/B站/GitHub/必应等）
+ * - window.open / target=_blank / 表单弹窗 → 真实新标签
+ * - 真全屏（隐藏状态栏/导航键/任务栏/标签栏/工具栏，双击或返回键恢复窗口）
+ * - HTML5 视频全屏（DecorView 覆盖层，满屏播放）
  */
 val BrowserApp = AppDef(
     id = "browser",
@@ -96,587 +82,337 @@ private fun BrowserContent(scope: WindowContentScope) {
     // 监听 WindowManager 变化（用于 isTrueFullscreen 状态切换时工具栏图标立即更新）
     var wmRevision by remember { mutableStateOf(0) }
     LaunchedEffect(Unit) { wm.observe { wmRevision++ } }
-    // 用 remember(wmRevision) 让 Compose 订阅 wmRevision 变化，自动重新读取 isTrueFullscreen
     val isFullscreen = remember(wmRevision) { scope.windowState.isTrueFullscreen }
 
-    // 启动参数：URL / 本地文件
     val launchUrl = scope.windowState.launchArgs["url"]
     val launchType = scope.windowState.launchArgs["type"]
 
-    // 标签管理器
-    val tabManager = remember { TabManager() }
-    var activeTabId by remember { mutableStateOf<String?>(null) }
-    var addressInput by remember { mutableStateOf("") }
-    var showBookmarks by remember { mutableStateOf(false) }
-    var showHistory by remember { mutableStateOf(false) }
+    // ===== 会话（TabManager 挂在 BrowserSessions 注册表，跨最小化存活）=====
+    val tabManager = remember(scope.windowState.id) {
+        BrowserSessions.getOrCreate(scope.windowState.id)
+    }
+    // 窗口真正关闭时销毁全部 WebView（修复"关了浏览器还在响"复发）；
+    // 注意不能挂在 onDispose 上 —— 最小化也会触发 onDispose
+    DisposableEffect(scope.windowState.id) {
+        scope.windowState.onClose = { BrowserSessions.destroy(scope.windowState.id) }
+        onDispose { }
+    }
+
     // 桌面/手机模式（持久化，切换后立即重载当前页生效）
     val uaMode by app.settingsStore.browserUaMode.collectAsState(initial = "desktop")
+    SideEffect { tabManager.uaMode = uaMode }
     fun toggleUaMode() {
         val next = if (uaMode == "desktop") "mobile" else "desktop"
         scope0.launch { app.settingsStore.setBrowserUaMode(next) }
     }
-    // 用户设置的主页（默认 AnWind 速度页 anwind://home，符合用户截图 1 的预期）
+
+    // 用户设置的主页（默认 AnWind 速度页 anwind://home）
     val defaultHome by app.settingsStore.defaultBrowserHome.collectAsState(initial = "anwind://home")
 
-    // 启动时打开初始标签
+    var showBookmarks by remember { mutableStateOf(false) }
+    var showHistory by remember { mutableStateOf(false) }
+
+    // 启动时打开初始标签（会话已存在标签时跳过 —— 最小化恢复不重开）
     LaunchedEffect(Unit) {
-        val initialUrl = when {
-            launchUrl.isNullOrEmpty() -> defaultHome
-            launchType == DesktopItemType.SHORTCUT_FILE.name && launchUrl.startsWith("content://") -> launchUrl
-            else -> normalizeUrl(launchUrl)
+        if (tabManager.tabs.isEmpty()) {
+            val initialUrl = when {
+                launchUrl.isNullOrEmpty() -> defaultHome
+                launchType == DesktopItemType.SHORTCUT_FILE.name && launchUrl.startsWith("content://") -> launchUrl
+                else -> normalizeUrl(launchUrl)
+            }
+            tabManager.openTab(initialUrl)
         }
-        val tab = tabManager.openTab(initialUrl)
-        activeTabId = tab.id
-        addressInput = if (initialUrl == "anwind://home") "" else initialUrl
     }
 
-    // 全屏切换由工具栏的 Fullscreen 按钮触发（onToggleFullscreen），
-    // 不再使用键盘 F11 —— Modifier.onKeyEvent 在当前 Compose BOM 下
-    // 类型推断有问题，CI 编译失败。
+    // 进入真全屏时重新断言隐藏系统状态栏/导航键（部分系统会重新显示系统栏）
+    LaunchedEffect(isFullscreen) {
+        if (isFullscreen) {
+            ImmersiveMode.applyTo(context)
+        }
+    }
+    // 视频全屏（DecorView 覆盖层）显示期间同样隐藏系统栏
+    val inVideoFullscreen = tabManager.customView != null
+    LaunchedEffect(inVideoFullscreen) {
+        if (inVideoFullscreen) {
+            ImmersiveMode.applyTo(context)
+        }
+    }
+
+    // 真全屏时的返回键 → 退出全屏恢复窗口（双击页面同样恢复，见内容区手势）
+    BackHandler(enabled = isFullscreen) {
+        wm.toggleTrueFullscreen(scope.windowState.id)
+    }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(theme.windowBackgroundColor)
     ) {
-    Column(modifier = Modifier.fillMaxSize().background(theme.windowBackgroundColor)) {
+        Column(modifier = Modifier.fillMaxSize().background(theme.windowBackgroundColor)) {
 
-        // ===== 标签栏 =====
-        TabBar(
-            tabs = tabManager.tabs,
-            activeTabId = activeTabId,
-            onTabClick = { id ->
-                activeTabId = id
-                addressInput = tabManager.getTab(id)?.url ?: ""
-            },
-            onCloseTab = { id ->
-                tabManager.closeTab(id)
-                if (activeTabId == id) {
-                    activeTabId = tabManager.tabs.firstOrNull()?.id
-                    addressInput = tabManager.tabs.firstOrNull()?.url ?: ""
-                }
-            },
-            onNewTab = {
-                val tab = tabManager.openTab("anwind://home")
-                activeTabId = tab.id
-                addressInput = ""
+            // ===== 标签栏（真全屏时隐藏，F11 风格纯页面） =====
+            if (!isFullscreen) {
+                TabBar(
+                    tabs = tabManager.tabs,
+                    activeTabId = tabManager.activeTabId,
+                    onTabClick = { id -> tabManager.switchTo(id) },
+                    onCloseTab = { id -> tabManager.closeTab(id) },
+                    onNewTab = { tabManager.openTab("anwind://home") }
+                )
             }
-        )
 
-        // ===== 工具栏 =====
-        Toolbar(
-            address = addressInput,
-            onAddressChange = { addressInput = it },
-            onBack = { tabManager.getTab(activeTabId)?.goBack() },
-            onForward = { tabManager.getTab(activeTabId)?.goForward() },
-            onRefresh = { tabManager.getTab(activeTabId)?.refresh() },
-            onHome = {
-                // 返回用户设置的主页（默认 anwind://home 速度页）
-                tabManager.getTab(activeTabId)?.loadUrl(defaultHome)
-                addressInput = if (defaultHome == "anwind://home") "" else defaultHome
-            },
-            onGo = {
-                val url = normalizeUrl(addressInput)
-                val tab = tabManager.getTab(activeTabId)
-                if (tab != null) {
-                    // 关键修复：不再直接调用 tab.webView?.loadUrl(url)。
-                    // 原因：如果在这里直接 loadUrl，update 块在重组时还会因为
-                    // url != lastRequestedUrl 再次 loadUrl，导致正在进行的加载被取消重试，
-                    // 最终页面无法加载完成。现在让 update 块统一负责 loadUrl，并
-                    // 通过 lastRequestedUrl 保证只加载一次。
-                    // 对于 home → real URL 跳转：tab.webView 为 null，update 块不会
-                    // loadUrl；但条件分支会切换到 WebViewContainer，AndroidView factory
-                    // 块会创建新 WebView 并 loadUrl(url)。
-                    tab.url = url
-                    tab.title = url
-                    addressInput = url
-                    scope0.launch {
-                        withContext(Dispatchers.IO) {
-                            app.database.historyDao().insert(
-                                HistoryEntity(title = url, url = url)
+            // ===== 工具栏（真全屏时隐藏；双击页面或按返回键恢复窗口） =====
+            if (!isFullscreen) {
+                Toolbar(
+                    address = tabManager.addressInput,
+                    onAddressChange = { tabManager.addressInput = it },
+                    onBack = { tabManager.getTab(tabManager.activeTabId)?.goBack() },
+                    onForward = { tabManager.getTab(tabManager.activeTabId)?.goForward() },
+                    onRefresh = { tabManager.getTab(tabManager.activeTabId)?.refresh() },
+                    onHome = {
+                        tabManager.getTab(tabManager.activeTabId)?.loadUrl(defaultHome)
+                        tabManager.addressInput = if (defaultHome == "anwind://home") "" else defaultHome
+                    },
+                    onGo = {
+                        val url = normalizeUrl(tabManager.addressInput)
+                        val tab = tabManager.getTab(tabManager.activeTabId)
+                        if (tab != null && url.isNotEmpty()) {
+                            // 只更新 tab.url，由 WebViewContainer 的 update 块统一 loadUrl
+                            //（历史记录由引擎在 onPageStarted 统一写入）
+                            tab.url = url
+                            tab.title = url
+                            tabManager.addressInput = url
+                        }
+                    },
+                    onBookmark = {
+                        val url = tabManager.addressInput
+                        if (url.isNotEmpty()) {
+                            scope0.launch {
+                                val dao = app.database.bookmarkDao()
+                                val existing = dao.findByUrl(url)
+                                if (existing == null) {
+                                    dao.insert(BookmarkEntity(title = url, url = url))
+                                } else {
+                                    dao.delete(existing)
+                                }
+                            }
+                        }
+                    },
+                    onShowBookmarks = { showBookmarks = !showBookmarks },
+                    onShowHistory = { showHistory = !showHistory },
+                    uaMode = uaMode,
+                    onToggleUaMode = { toggleUaMode() },
+                    isFullscreen = isFullscreen,
+                    onToggleFullscreen = { wm.toggleTrueFullscreen(scope.windowState.id) }
+                )
+            }
+
+            // ===== 内容区 =====
+            // 真全屏时：双击内容区恢复窗口（Initial pass 只观察不消费，
+            // 不影响网页的正常触摸/滚动/点击）
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .pointerInput(isFullscreen) {
+                        if (!isFullscreen) return@pointerInput
+                        var lastTapUptime = 0L
+                        var lastTapPos = Offset.Zero
+                        awaitEachGesture {
+                            val down = awaitFirstDown(
+                                requireUnconsumed = false,
+                                pass = PointerEventPass.Initial
+                            )
+                            val downTime = down.uptimeMillis
+                            val downPos = down.position
+                            val up = waitForUpOrCancellation(pass = PointerEventPass.Initial)
+                            if (up != null) {
+                                val dt = downTime - lastTapUptime
+                                if (dt in 0..350 && (downPos - lastTapPos).getDistance() < 120f) {
+                                    lastTapUptime = 0L
+                                    // 视频全屏覆盖层在前台时把双击留给视频自身处理
+                                    if (tabManager.customView == null) {
+                                        wm.toggleTrueFullscreen(scope.windowState.id)
+                                    }
+                                } else {
+                                    lastTapUptime = downTime
+                                    lastTapPos = downPos
+                                }
+                            }
+                        }
+                    }
+            ) {
+                val activeTab = tabManager.getTab(tabManager.activeTabId)
+                if (activeTab != null) {
+                    val url = activeTab.url
+                    if (url == "anwind://home" || url.isEmpty()) {
+                        BrowserHomePage(
+                            onNavigate = { target ->
+                                val finalUrl = normalizeUrl(target)
+                                val tab = tabManager.getTab(tabManager.activeTabId)
+                                if (tab != null) {
+                                    // home → 真实 URL：tab.webView 为空时 factory 创建并延迟加载；
+                                    // 已有 WebView 时 update 块负责 loadUrl
+                                    tab.url = finalUrl
+                                    tab.title = finalUrl
+                                    tabManager.addressInput = finalUrl
+                                }
+                            }
+                        )
+                    } else {
+                        // key(activeTab.id)：每个标签独立的组合位置 → 各自的 AndroidView。
+                        // WebView 本身常驻缓存（切换标签不销毁），切回时原样恢复。
+                        key(activeTab.id) {
+                            WebViewContainer(
+                                tab = activeTab,
+                                tabManager = tabManager,
+                                uaMode = uaMode,
+                                onRetry = { tabManager.getTab(tabManager.activeTabId)?.refresh() }
                             )
                         }
                     }
                 }
-            },
-            onBookmark = {
-                val url = addressInput
-                if (url.isNotEmpty()) {
-                    scope0.launch {
-                        withContext(Dispatchers.IO) {
-                            val existing = app.database.bookmarkDao().findByUrl(url)
-                            if (existing == null) {
-                                app.database.bookmarkDao().insert(
-                                    com.anwind.data.db.entity.BookmarkEntity(
-                                        title = url,
-                                        url = url
-                                    )
-                                )
-                            } else {
-                                app.database.bookmarkDao().delete(existing)
-                            }
-                        }
-                    }
-                }
-            },
-            onShowBookmarks = { showBookmarks = !showBookmarks },
-            onShowHistory = { showHistory = !showHistory },
-            uaMode = uaMode,
-            onToggleUaMode = { toggleUaMode() },
-            isFullscreen = isFullscreen,
-            onToggleFullscreen = { wm.toggleTrueFullscreen(scope.windowState.id) }
-        )
-
-        // ===== 内容区 =====
-        Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
-            val activeTab = tabManager.getTab(activeTabId)
-            if (activeTab != null) {
-                val url = activeTab.url
-                if (url == "anwind://home" || url.isEmpty()) {
-                    BrowserHomePage(
-                        onNavigate = { target ->
-                            val finalUrl = normalizeUrl(target)
-                            val tab = tabManager.getTab(activeTabId)
-                            if (tab != null) {
-                                // 关键修复：与 onGo 同理，不直接调用 tab.webView?.loadUrl。
-                                // 更新 tab.url + addressInput 触发重组：
-                                // - 若原先在 home 页（无 WebView），条件分支切换到 WebViewContainer，
-                                //   AndroidView factory 会创建新 WebView 并 loadUrl(url)。
-                                // - 若原先已有 WebView，update 块会调用 loadUrl(url) 并更新
-                                //   lastRequestedUrl，保证只加载一次。
-                                tab.url = finalUrl
-                                tab.title = finalUrl
-                                addressInput = finalUrl
-                                scope0.launch {
-                                    withContext(Dispatchers.IO) {
-                                        app.database.historyDao().insert(
-                                            HistoryEntity(title = finalUrl, url = finalUrl)
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    )
-                } else {
-                    // 关键修复：用 key(activeTab.id) 包裹 WebViewContainer，
-                    // 让每个标签都有独立的 Composable 位置 → 独立的 AndroidView 实例
-                    // → 独立的 WebView → 独立的 lastRequestedUrl 状态。
-                    // 否则切换标签时，update 块看到新 tab.url 与旧 lastRequestedUrl 不同，
-                    // 会调用 loadUrl 把当前 WebView 跳到新标签的 URL —— 即"一直刷新"Bug。
-                    // 同时也修复"切回旧标签后旧标签 WebView 状态错乱"导致点击没反应的问题。
-                    key(activeTab.id) {
-                    WebViewContainer(
-                        url = url,
-                        tab = activeTab,
-                        uaMode = uaMode,
-                        onUrlChanged = { newUrl ->
-                            addressInput = newUrl
-                            activeTab.url = newUrl
-                            activeTab.title = newUrl
-                            scope0.launch {
-                                withContext(Dispatchers.IO) {
-                                    app.database.historyDao().insert(
-                                        HistoryEntity(title = newUrl, url = newUrl)
-                                    )
-                                }
-                            }
-                        },
-                        onUrlSync = { newUrl ->
-                            // 内部导航（后退/前进）触发的 URL 变化：只同步地址栏与 tab.url，不写历史
-                            addressInput = newUrl
-                            activeTab.url = newUrl
-                        },
-                        onTitleChanged = { newTitle ->
-                            activeTab.title = newTitle
-                        },
-                        onOpenInNewTab = { newUrl ->
-                            // window.open(url) 或 target="_blank" 链接 → 在新标签页打开
-                            val newTab = tabManager.openTab(newUrl)
-                            activeTabId = newTab.id
-                            addressInput = newUrl
-                            scope0.launch {
-                                withContext(Dispatchers.IO) {
-                                    app.database.historyDao().insert(
-                                        HistoryEntity(title = newUrl, url = newUrl)
-                                    )
-                                }
-                            }
-                        },
-                        onRetry = { tabManager.getTab(activeTabId)?.refresh() }
-                    )
-                    } // end key(activeTab.id)
-                }
             }
-        }
 
-        // ===== 书签/历史侧边面板 =====
-        if (showBookmarks) {
-            BookmarksPanel(
-                onSelect = { url ->
-                    addressInput = url
-                    tabManager.getTab(activeTabId)?.loadUrl(url)
-                    showBookmarks = false
-                },
-                onClose = { showBookmarks = false }
-            )
-        }
-        if (showHistory) {
-            HistoryPanel(
-                onSelect = { url ->
-                    addressInput = url
-                    tabManager.getTab(activeTabId)?.loadUrl(url)
-                    showHistory = false
-                },
-                onClose = { showHistory = false }
-            )
-        }
-    } // end Column
+            // ===== 书签/历史侧边面板 =====
+            if (showBookmarks) {
+                BookmarksPanel(
+                    onSelect = { url ->
+                        tabManager.addressInput = url
+                        tabManager.getTab(tabManager.activeTabId)?.loadUrl(url)
+                        showBookmarks = false
+                    },
+                    onClose = { showBookmarks = false }
+                )
+            }
+            if (showHistory) {
+                HistoryPanel(
+                    onSelect = { url ->
+                        tabManager.addressInput = url
+                        tabManager.getTab(tabManager.activeTabId)?.loadUrl(url)
+                        showHistory = false
+                    },
+                    onClose = { showHistory = false }
+                )
+            }
+        } // end Column
     } // end Box (browser root)
 }
 
 /**
  * WebView 容器：渲染网页。
  *
- * 同时支持 http(s):// 和 content:// (本地 HTML 文件)。
- * 配置了完整的 WebSettings、加载进度、错误提示、JS 弹窗自动确认、标题同步。
+ * v2.8 关键设计：
+ * - WebView 由 [BrowserEngine.ensureWebView] 按【标签】缓存 —— 切换标签只是
+ *   attach/detach；onRelease 仅在标签关闭（destroyPending）时销毁。
+ * - 首次加载通过 view.post{} 推迟到 attach/layout 之后执行，修复
+ *   "页面加载完成但 WebView 永不绘制（黑屏）"的首帧竞态。
+ * - client 由引擎一次性创建，UI 回调经 TabManager.ui 路由到当前组合。
+ * - HTML5 视频全屏时，返回键退出全屏。
  */
 @Composable
 private fun WebViewContainer(
-    url: String,
     tab: BrowserTab,
-    uaMode: String = "desktop",
-    onUrlChanged: (String) -> Unit,
-    onUrlSync: (String) -> Unit = {},
-    onTitleChanged: (String) -> Unit = {},
-    onOpenInNewTab: (String) -> Unit = {},
+    tabManager: TabManager,
+    uaMode: String,
     onRetry: () -> Unit = {}
 ) {
     val theme = LocalWinTheme.current
-    var progress by remember { mutableStateOf(0) }
+    var progress by remember { mutableStateOf(if (tab.webView == null) 0 else 100) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
-    // 记录已应用的 UA，切换模式时重载当前页
-    var appliedUa by remember { mutableStateOf(uaMode) }
-    // 保存默认移动版 UA，供手机模式恢复（用 holder 避免在 factory 内写 state）
-    val mobileUaHolder = remember { arrayOfNulls<String>(1) }
-    // 关键修复：跟踪"最后一次请求 WebView 加载的 URL"，避免 update 块在每次重组时
-    // 都调用 loadUrl，导致正在进行的加载被反复取消重试，最终页面无法加载完成
-    // （"浏览器输入搜索/网址不跳转"Bug）。
-    // 该状态在以下时机更新：factory 初始加载 / shouldOverrideUrlLoading / onPageStarted /
-    // update 块自身调用 loadUrl 时。这样 update 块只在 URL 确实变化且与最近一次请求不同时
-    // 才会真正调用 loadUrl。
-    var lastRequestedUrl by remember { mutableStateOf(url) }
+
+    // 注册 UI 回调（带属主令牌：切换标签时只有仍持有路由的一方才清理，
+    // 避免新标签的注册被旧标签的 onDispose 误清）
+    val uiToken = remember { Any() }
+    DisposableEffect(tab.id) {
+        tabManager.ui = object : TabUiCallbacks {
+            override fun onUrlChanged(url: String) {
+                tabManager.addressInput = url
+            }
+
+            override fun onUrlSync(url: String) {
+                tabManager.addressInput = url
+            }
+
+            override fun onTitleChanged(title: String) {
+                // 标题经 tab.title 反映到标签栏
+            }
+
+            override fun onProgressChanged(p: Int) {
+                progress = p
+            }
+
+            override fun onError(message: String?) {
+                errorMessage = message
+            }
+        }
+        tabManager.uiOwner = uiToken
+        onDispose {
+            if (tabManager.uiOwner === uiToken) {
+                tabManager.ui = null
+                tabManager.uiOwner = null
+            }
+        }
+    }
+
+    // 视频全屏（DecorView 覆盖层）期间：返回键退出视频全屏
+    val inVideoFullscreen = tabManager.customView != null
+    BackHandler(enabled = inVideoFullscreen) {
+        tabManager.hideCustomView()
+    }
 
     Box(modifier = Modifier.fillMaxSize().background(theme.windowBackgroundColor)) {
         AndroidView(
             factory = { ctx ->
-                WebView(ctx).apply {
-                    // 绑定到标签，让工具栏命令（后退/前进/刷新/加载）能操作真实 WebView
-                    tab.webView = this
-                    // 捕获默认移动版 UA，供手机模式恢复
-                    val mobileUa = settings.userAgentString
-                    mobileUaHolder[0] = mobileUa
-                    // ===== WebSettings 完整配置（参考 gamehtml 项目对游戏网页的兼容）=====
-                    settings.apply {
-                        javaScriptEnabled = true
-                        domStorageEnabled = true
-                        databaseEnabled = true
-                        allowFileAccess = true
-                        allowContentAccess = true
-                        allowFileAccessFromFileURLs = true
-                        allowUniversalAccessFromFileURLs = true
-                        loadWithOverviewMode = true
-                        useWideViewPort = true
-                        mediaPlaybackRequiresUserGesture = false
-                        javaScriptCanOpenWindowsAutomatically = true
-                        cacheMode = WebSettings.LOAD_DEFAULT
-                        mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
-                        setSupportZoom(true)
-                        builtInZoomControls = true
-                        displayZoomControls = false
-                        // 单窗口多标签模式：window.open(url) 会触发 onCreateWindow 回调，
-                        // 我们在 onCreateWindow 中创建【临时】WebView 拦截 URL，
-                        // 通过 onOpenInNewTab 回调在 TabManager 中新建标签页，
-                        // 然后销毁临时 WebView。绝不能把父 WebView 自身传给 transport，
-                        // 否则会抛 IllegalArgumentException: Parent WebView cannot host its own popup window
-                        setSupportMultipleWindows(true)
-                        // 默认文本编码 UTF-8，避免中文乱码
-                        defaultTextEncodingName = "UTF-8"
-                        // 桌面模式强制 layout algorithm 以提高文本重排质量
-                        layoutAlgorithm = WebSettings.LayoutAlgorithm.TEXT_AUTOSIZING
-                        // 地理位置（部分地图/定位网页依赖）
-                        setGeolocationEnabled(true)
-                        // 启用 SafeBrowsing（API 26+）
-                        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-                            safeBrowsingEnabled = true
-                        }
-                        // 最小字号（避免某些网页字号太小）
-                        textZoom = 100
-                        // 应用 UA 模式
-                        userAgentString = if (uaMode == "desktop") DESKTOP_UA else mobileUa
-                    }
-                    // 启用 WebView 内部数据库 (WebStorage) 自动管理
-                    WebStorage.getInstance()
-                    // 硬件加速（很多 HTML5 游戏/动画需要）
-                    setLayerType(View.LAYER_TYPE_HARDWARE, null)
-                    // Cookie（this 即当前 WebView）
-                    val cookieManager = CookieManager.getInstance()
-                    cookieManager.setAcceptCookie(true)
-                    cookieManager.setAcceptThirdPartyCookies(this, true)
-                    cookieManager.flush()
-
-                    // 文件下载监听（很多站点提供 APK/ZIP/图片下载）
-                    setDownloadListener { url, userAgent, contentDisposition, mimetype, size ->
-                        try {
-                            val request = DownloadManager.Request(Uri.parse(url)).apply {
-                                setMimeType(mimetype)
-                                addRequestHeader("User-Agent", userAgent)
-                                setDestinationInExternalPublicDir(
-                                    Environment.DIRECTORY_DOWNLOADS,
-                                    contentDisposition?.let { java.net.URLDecoder.decode(it, "UTF-8") }
-                                        ?.substringAfter("filename=", "anwind_download")
-                                        ?.trim('"') ?: "anwind_download"
-                                )
-                                setTitle(contentDisposition ?: "下载")
-                                if (mimetype == "application/vnd.android.package-archive") {
-                                    allowScanningByMediaScanner()
-                                    setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-                                } else {
-                                    setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE)
-                                }
+                val wv = BrowserEngine.ensureWebView(ctx, tab, tabManager)
+                // 首次加载：推迟到 attach/layout 之后（view.post），
+                // 避免 Chromium 以 0x0 surface 开始加载导致首帧黑屏
+                if (!tab.hasLoadedOnce) {
+                    val target = tab.url
+                    if (target.isNotEmpty() && !target.startsWith("anwind://") && !target.startsWith("about:")) {
+                        tab.hasLoadedOnce = true
+                        tab.lastRequestedUrl = target
+                        wv.post {
+                            if (tab.webView === wv) {
+                                wv.loadUrl(target)
                             }
-                            val dm = ctx.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
-                            dm.enqueue(request)
-                            Toast.makeText(ctx, "开始下载到 Downloads/", Toast.LENGTH_SHORT).show()
-                        } catch (e: Exception) {
-                            Toast.makeText(ctx, "下载失败: ${e.message}", Toast.LENGTH_SHORT).show()
                         }
                     }
-
-                    webViewClient = object : WebViewClient() {
-                        override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
-                            // 在当前 WebView 内继续加载，并同步地址栏
-                            val newUrl = request.url.toString()
-                            // 处理特殊 scheme：intent://, weixin://, alipays://, mailto: 等
-                            val scheme = request.url.scheme ?: "http"
-                            if (scheme !in setOf("http", "https", "content", "file", "about", "javascript", "data")) {
-                                // 外部 scheme：尝试启动外部应用
-                                try {
-                                    val intent = android.content.Intent(android.content.Intent.ACTION_VIEW, request.url)
-                                    intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
-                                    ctx.startActivity(intent)
-                                } catch (_: Exception) {
-                                    Toast.makeText(ctx, "未安装可打开 $scheme 应用的程序", Toast.LENGTH_SHORT).show()
-                                }
-                                return true
-                            }
-                            // 在当前 WebView 内继续加载，并同步地址栏
-                            // 标记 WebView 正在加载此 URL，避免 update 块重复 loadUrl
-                            lastRequestedUrl = newUrl
-                            onUrlChanged(newUrl)
-                            return false
-                        }
-
-                        override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
-                            errorMessage = null
-                            // 标记 WebView 已开始加载此 URL，避免 update 块重复 loadUrl
-                            if (url != null) lastRequestedUrl = url
-                            // 同步后退/前进可用性状态
-                            view?.let { v ->
-                                tab.canGoBack = v.canGoBack()
-                                tab.canGoForward = v.canGoForward()
-                            }
-                            // 如果 WebView 内部加载的 URL 与 tab.url 不同（典型场景：用户点了后退/前进），
-                            // 则同步 tab.url 和地址栏，避免 update 块重新 loadUrl 把页面又跳回原来的 URL
-                            if (url != null && url != tab.url) {
-                                tab.url = url
-                                onUrlSync(url)
-                            }
-                        }
-
-                        override fun onPageFinished(view: WebView?, url: String?) {
-                            super.onPageFinished(view, url)
-                            // 页面加载完成后同步状态，便于工具栏后退/前进按钮实时可用
-                            view?.let { v ->
-                                tab.canGoBack = v.canGoBack()
-                                tab.canGoForward = v.canGoForward()
-                            }
-                        }
-
-                        override fun onReceivedError(
-                            view: WebView?,
-                            request: WebResourceRequest?,
-                            error: WebResourceError?
-                        ) {
-                            super.onReceivedError(view, request, error)
-                            // 仅主框架错误才提示；忽略 -1（未知/取消）与 DNS 解析失败（WebView 会自行重试）
-                            if (request?.isForMainFrame == true) {
-                                val code = error?.errorCode ?: -1
-                                if (code != -1 && code != WebViewClient.ERROR_HOST_LOOKUP) {
-                                    errorMessage = error?.description?.toString() ?: "加载失败"
-                                }
-                            }
-                        }
-
-                        override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
-                            // 支持本地 content:// URI 的 HTML 文件读取
-                            val uri = request.url
-                            if (uri.scheme == "content") {
-                                return try {
-                                    val mime = ctx.contentResolver.getType(uri) ?: "text/html"
-                                    val stream = ctx.contentResolver.openInputStream(uri)
-                                    WebResourceResponse(mime, "UTF-8", stream)
-                                } catch (_: Exception) { null }
-                            }
-                            return super.shouldInterceptRequest(view, request)
-                        }
-                    }
-
-                    webChromeClient = object : WebChromeClient() {
-                        override fun onProgressChanged(view: WebView?, newProgress: Int) {
-                            progress = newProgress
-                        }
-
-                        override fun onReceivedTitle(view: WebView?, title: String?) {
-                            if (!title.isNullOrEmpty()) onTitleChanged(title)
-                        }
-
-                        // 处理 window.open() —— 多标签浏览核心逻辑：
-                        // 1) 创建【临时】WebView（绝不复用父 WebView，否则会抛 IllegalArgumentException）
-                        // 2) 给临时 WebView 设置一个 WebViewClient，在 shouldOverrideUrlLoading
-                        //    里捕获目标 URL → 调用 onOpenInNewTab 在 TabManager 中新建标签 → 返回 true
-                        //    阻止临时 WebView 真正加载
-                        // 3) 把临时 WebView 通过 WebViewTransport 传给 Chromium 框架
-                        // 4) sendToTarget() 让框架执行
-                        // 5) 延迟销毁临时 WebView，避免内存泄漏
-                        // 这样 4399/百度/微博等依赖 window.open() 的网页会自然在新标签页打开
-                        override fun onCreateWindow(
-                            view: WebView?,
-                            isDialog: Boolean,
-                            isUserGesture: Boolean,
-                            resultMsg: android.os.Message?
-                        ): Boolean {
-                            if (resultMsg == null) return false
-                            // 创建临时 WebView —— 不需要完整配置，只需要能拦截 URL
-                            val tempWebView = WebView(ctx).apply {
-                                settings.javaScriptEnabled = true
-                                webViewClient = object : WebViewClient() {
-                                    override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
-                                        val newUrl = request.url.toString()
-                                        // 捕获 URL → 在新标签页打开
-                                        onOpenInNewTab(newUrl)
-                                        // 返回 true 阻止临时 WebView 实际加载此 URL
-                                        return true
-                                    }
-                                }
-                            }
-                            // 通过 transport 将临时 WebView 传给框架
-                            val transport = resultMsg.obj as? WebView.WebViewTransport
-                            if (transport != null) {
-                                transport.webView = tempWebView
-                                resultMsg.sendToTarget()
-                                // 延迟销毁临时 WebView（让框架先完成 transport 传递）
-                                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                                    try { tempWebView.destroy() } catch (_: Exception) {}
-                                }, 5000)
-                                return true
-                            }
-                            return false
-                        }
-
-                        // 自动确认 JS 弹窗，避免网页交互卡住
-                        override fun onJsAlert(view: WebView?, url: String?, message: String?, result: JsResult?): Boolean {
-                            result?.confirm()
-                            return true
-                        }
-
-                        override fun onJsConfirm(view: WebView?, url: String?, message: String?, result: JsResult?): Boolean {
-                            result?.confirm()
-                            return true
-                        }
-
-                        override fun onJsPrompt(
-                            view: WebView?, url: String?, message: String?,
-                            defaultValue: String?, result: JsPromptResult?
-                        ): Boolean {
-                            result?.confirm(defaultValue)
-                            return true
-                        }
-
-                        // 隐藏 HTML5 全屏视频的默认控制器（让 ExoPlayer 或用户自处理）
-                        override fun onShowCustomView(view: View?, callback: WebChromeClient.CustomViewCallback?) {
-                            // 简单实现：交给 WebView 默认行为
-                            super.onShowCustomView(view, callback)
-                        }
-
-                        override fun onHideCustomView() {
-                            super.onHideCustomView()
-                        }
-
-                        // 文件上传回调（input[type=file]）
-                        private var filePathCallback: android.webkit.ValueCallback<Array<Uri>>? = null
-                        override fun onShowFileChooser(
-                            webView: WebView?,
-                            filePathCallback: android.webkit.ValueCallback<Array<Uri>>?,
-                            fileChooserParams: FileChooserParams?
-                        ): Boolean {
-                            this.filePathCallback = filePathCallback
-                            try {
-                                val intent = fileChooserParams?.createIntent()
-                                if (intent != null) {
-                                    intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
-                                    (ctx as? android.app.Activity)?.startActivityForResult(intent, 0)
-                                }
-                            } catch (_: Exception) {}
-                            return true
-                        }
-                    }
-
-                    loadUrl(url)
-                    // 标记 factory 已请求加载此 URL
-                    lastRequestedUrl = url
                 }
+                wv
             },
             update = { webview ->
-                // 重新绑定当前标签到共享 WebView，切换标签后命令仍可用
+                // 重新绑定（tab.webView 在 onRelease 后可能被置空）
                 tab.webView = webview
-                // 同步后退/前进可用性
-                tab.canGoBack = webview.canGoBack()
-                tab.canGoForward = webview.canGoForward()
-                // UA 模式切换：立即切换 UA 并重载，让手机/桌面模式页面生效
-                if (appliedUa != uaMode) {
-                    appliedUa = uaMode
-                    webview.settings.userAgentString =
-                        if (uaMode == "desktop") DESKTOP_UA else (mobileUaHolder[0] ?: webview.settings.userAgentString)
-                    webview.reload()
-                    lastRequestedUrl = url
-                } else if (!url.startsWith("anwind://") && url != lastRequestedUrl) {
-                    // 关键修复：只在"我们请求加载的 URL"与"当前要显示的 URL"不同时才调用 loadUrl。
-                    // 之前的判断 webview.url != url 在 WebView 异步加载期间会一直为 true
-                    // （webview.url 落后于实际正在加载的 URL），导致每次重组都 loadUrl，
-                    // 反复取消正在进行的加载，最终页面加载不完。
-                    // 新判断 url != lastRequestedUrl 保证了：只要我们已经请求过加载此 URL
-                    // （无论是 factory、shouldOverrideUrlLoading、onPageStarted 还是这里），
-                    // 就不会再次 loadUrl，让 WebView 安心完成加载。
+                // UA 模式切换（当前激活标签实时生效）：设置后立即重载
+                val desiredUa = BrowserEngine.desiredUa(uaMode)
+                if (webview.settings.userAgentString != desiredUa) {
+                    try {
+                        webview.settings.userAgentString = desiredUa
+                        webview.reload()
+                    } catch (_: Exception) {
+                    }
+                }
+                // 地址栏/首页/书签导航：目标 URL 变化且与最近请求不同时才加载，
+                // 且同样通过 post{} 确保视图已 attach
+                val target = tab.url
+                if (target.isNotEmpty() && !target.startsWith("anwind://") && target != tab.lastRequestedUrl) {
                     errorMessage = null
-                    webview.loadUrl(url)
-                    lastRequestedUrl = url
+                    tab.hasLoadedOnce = true
+                    tab.lastRequestedUrl = target
+                    webview.post {
+                        if (tab.webView === webview) {
+                            webview.loadUrl(target)
+                        }
+                    }
                 }
             },
             onRelease = { webview ->
-                // 关键修复：关闭标签页 / 关闭浏览器窗口时，必须显式销毁 WebView，
-                // 否则网页内的音频/视频会继续在后台播放（"浏览器关了还在响"Bug）。
-                // 1) onPause() 暂停视频/音频播放
-                // 2) pauseTimers() 停止 WebView 内部定时器
-                // 3) stopLoading() 中止当前加载
-                // 4) destroy() 彻底释放 native 资源并断开与 JS 通信
-                try {
-                    webview.onPause()
-                    webview.pauseTimers()
-                    webview.stopLoading()
-                    webview.destroy()
-                } catch (_: Exception) {
-                    // 某些设备上 destroy() 可能抛 IllegalStateException，吞掉即可
+                // 仅当标签被关闭时销毁 WebView；
+                // 普通切换标签保留（缓存复用，切回即恢复原状态）
+                if (tab.destroyPending) {
+                    BrowserEngine.destroyWebView(webview)
                 }
-                tab.webView = null
             },
             modifier = Modifier.fillMaxSize()
         )
@@ -987,7 +723,6 @@ private fun Toolbar(
         }
 
         // 显眼 Go/搜索按钮：带主题背景色，确保用户能发现"如何前往"
-        // 之前只是 36dp 的图标按钮，与后退/前进等按钮视觉权重一致，用户不易发现。
         Box(
             modifier = Modifier
                 .height(30.dp)
@@ -1032,7 +767,8 @@ private fun Toolbar(
                 tint = if (theme.isDark) Color.White else Color.Black
             )
         }
-        // 真全屏切换（F11 风格）：隐藏任务栏+标题栏，浏览器占满整屏
+        // 真全屏切换（F11 风格）：隐藏状态栏/导航键/任务栏/标签栏/工具栏，浏览器占满整屏；
+        // 全屏中双击页面或按返回键恢复窗口
         IconButton(onClick = onToggleFullscreen, modifier = Modifier.size(36.dp)) {
             Icon(
                 imageVector = if (isFullscreen) Icons.Default.FullscreenExit else Icons.Default.Fullscreen,

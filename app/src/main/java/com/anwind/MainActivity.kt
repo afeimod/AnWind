@@ -11,12 +11,10 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Density
-import androidx.core.view.WindowCompat
-import androidx.core.view.WindowInsetsCompat
-import androidx.core.view.WindowInsetsControllerCompat
 import com.anwind.core.theme.WinThemeScope
 import com.anwind.core.desktop.DesktopEnvironment
 import com.anwind.data.prefs.SettingsStore
+import com.anwind.util.ImmersiveMode
 
 class MainActivity : ComponentActivity() {
 
@@ -24,11 +22,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
 
         // 全面屏沉浸式：内容绘制到状态栏/导航栏下方，并隐藏系统栏
-        WindowCompat.setDecorFitsSystemWindows(window, false)
-        WindowInsetsControllerCompat(window, window.decorView).apply {
-            hide(WindowInsetsCompat.Type.systemBars())
-            systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-        }
+        ImmersiveMode.applyTo(window)
 
         val app = AnWindApp.get(this)
         setContent {
@@ -69,6 +63,18 @@ class MainActivity : ComponentActivity() {
                     )
                 }
             }
+        }
+    }
+
+    /**
+     * 沉浸式防失效（v2.8 修复“全屏时上方还有状态栏和功能键”）：
+     * MIUI / 部分系统在窗口焦点变化（弹输入法、视频全屏切换等）后会重新显示系统栏，
+     * 每次重新获得焦点时重新断言隐藏，保证状态栏 + 功能键（导航键）不再常驻。
+     */
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) {
+            ImmersiveMode.applyTo(window)
         }
     }
 
