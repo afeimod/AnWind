@@ -50,6 +50,12 @@ fun DesktopEnvironment(
     var taskbarShown by remember { mutableStateOf(true) }
     var bottomThresholdPx by remember { mutableStateOf(0f) }
 
+    // 监听 WindowManager 变化：用于检测是否有窗口进入真全屏（F11），
+    // 真全屏时隐藏任务栏 + 让浮动窗口层占满整屏
+    var wmRevision by remember { mutableStateOf(0) }
+    LaunchedEffect(Unit) { wm.observe { wmRevision++ } }
+    val anyTrueFullscreen = remember(wmRevision) { wm.anyTrueFullscreen() }
+
     // 启动音效
     LaunchedEffect(theme.variant) {
         if (soundEnabled) {
@@ -84,15 +90,16 @@ fun DesktopEnvironment(
         val fullHeight = maxHeight
         val taskbarHeight = theme.taskbarHeight
         // 工作区高度 = 全屏高度 - 任务栏高度 - 任务栏底部 4dp - 任务栏顶部 4dp 空隙
-        val workAreaHeight = fullHeight - taskbarHeight - 8.dp
+        // 真全屏（F11）时浮动窗口层占满整屏，隐藏任务栏
+        val workAreaHeight = if (anyTrueFullscreen) fullHeight else fullHeight - taskbarHeight - 8.dp
 
         // 计算底部边缘呼出阈值（屏幕高度 - 28dp），供指针监听协程读取
         SideEffect {
             bottomThresholdPx = with(density) { fullHeight.toPx() } - with(density) { 28.dp.toPx() }
         }
 
-        // 任务栏可见性：未开启自动隐藏时始终显示；开启时指针靠近底部或开始菜单打开才显示
-        val taskbarVisible = !taskbarAutohide || taskbarShown || startMenuOpen
+        // 任务栏可见性：真全屏时彻底隐藏；否则按自动隐藏策略
+        val taskbarVisible = !anyTrueFullscreen && (!taskbarAutohide || taskbarShown || startMenuOpen)
         val taskbarOffsetY = if (taskbarVisible) 0 else with(density) { taskbarHeight.toPx() }.toInt()
 
         // ===== 1. 壁纸层 =====

@@ -55,12 +55,13 @@ fun WindowChrome(
     val theme = LocalWinTheme.current
     val wm = remember { WindowManager.get() }
 
-    // 根据是否最大化决定尺寸/位置（FULLSCREEN 模式也占满工作区）
+    // 根据是否最大化决定尺寸/位置（FULLSCREEN 模式也占满工作区；真全屏占满整屏）
     val isMaximized = state.isMaximized || state.launchMode == LaunchMode.FULLSCREEN
-    val finalX = if (isMaximized) 0 else state.x
-    val finalY = if (isMaximized) 0 else state.y
-    val finalW = if (isMaximized) workAreaWidth else state.width
-    val finalH = if (isMaximized) workAreaHeight else state.height
+    val isTrueFs = state.isTrueFullscreen
+    val finalX = if (isMaximized || isTrueFs) 0 else state.x
+    val finalY = if (isMaximized || isTrueFs) 0 else state.y
+    val finalW = if (isMaximized || isTrueFs) workAreaWidth else state.width
+    val finalH = if (isMaximized || isTrueFs) workAreaHeight else state.height
 
     // 拖拽偏移：只在本地 Compose 状态中累加，避免拖拽中每帧触发全局重组导致卡顿。
     // 松手时一次性提交给 WindowManager。
@@ -71,7 +72,7 @@ fun WindowChrome(
     var resizeOffset by remember { mutableStateOf(Offset.Zero) }
 
     // 最大化状态下不显示阴影，因为窗口已经贴边
-    val shadowElevation = if (isMaximized) 0.dp else theme.windowShadowElevation
+    val shadowElevation = if (isMaximized || isTrueFs) 0.dp else theme.windowShadowElevation
 
     Box(
         modifier = Modifier
@@ -87,10 +88,11 @@ fun WindowChrome(
             .shadow(shadowElevation, theme.windowShape, clip = false)
             .clip(theme.windowShape)
             .background(theme.windowBackgroundColor)
-            .border(theme.windowBorderWidth, theme.windowBorderColor, theme.windowShape)
+            .border(if (isTrueFs) 0.dp else theme.windowBorderWidth, theme.windowBorderColor, theme.windowShape)
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
-            // ===== 标题栏 =====
+            // ===== 标题栏（真全屏时隐藏） =====
+            if (!isTrueFs) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -174,6 +176,7 @@ fun WindowChrome(
                 }
                 ControlButton(icon = Icons.Default.Close, theme = theme, isClose = true) { wm.close(state.id) }
             }
+            } // end if (!isTrueFs) — 真全屏时不渲染标题栏
 
             // ===== 内容区 =====
             Box(
@@ -182,8 +185,8 @@ fun WindowChrome(
             )
         }
 
-        // ===== 8 方向调整大小手柄（覆盖在窗口最上层，仅在 FLOATING 模式且未最大化时） =====
-        if (state.launchMode == LaunchMode.FLOATING && !state.isMaximized) {
+        // ===== 8 方向调整大小手柄（覆盖在窗口最上层，仅在 FLOATING 模式且未最大化且未真全屏时） =====
+        if (state.launchMode == LaunchMode.FLOATING && !state.isMaximized && !isTrueFs) {
             ResizeHandles(
                 state = state,
                 workAreaWidth = workAreaWidth,

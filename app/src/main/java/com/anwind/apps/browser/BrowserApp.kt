@@ -36,6 +36,9 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -92,6 +95,12 @@ private fun BrowserContent(scope: WindowContentScope) {
     val context = LocalContext.current
     val app = AnWindApp.get()
     val scope0 = rememberCoroutineScope()
+    val wm = remember { WindowManager.get() }
+    // 监听 WindowManager 变化（用于 isTrueFullscreen 状态切换时工具栏图标立即更新）
+    var wmRevision by remember { mutableStateOf(0) }
+    LaunchedEffect(Unit) { wm.observe { wmRevision++ } }
+    // 用 remember(wmRevision) 让 Compose 订阅 wmRevision 变化，自动重新读取 isTrueFullscreen
+    val isFullscreen = remember(wmRevision) { scope.windowState.isTrueFullscreen }
 
     // 启动参数：URL / 本地文件
     val launchUrl = scope.windowState.launchArgs["url"]
@@ -124,6 +133,21 @@ private fun BrowserContent(scope: WindowContentScope) {
         addressInput = if (initialUrl == "anwind://home") "" else initialUrl
     }
 
+    // F11 键盘快捷键：切换真全屏（隐藏任务栏+标题栏，浏览器占满整屏）
+    val windowId = scope.windowState.id
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(theme.windowBackgroundColor)
+            .onKeyEvent { event ->
+                if (event.type == KeyEventType.KeyDown && event.key == Key.F11) {
+                    wm.toggleTrueFullscreen(windowId)
+                    true
+                } else {
+                    false
+                }
+            }
+    ) {
     Column(modifier = Modifier.fillMaxSize().background(theme.windowBackgroundColor)) {
 
         // ===== 标签栏 =====
@@ -207,7 +231,9 @@ private fun BrowserContent(scope: WindowContentScope) {
             onShowBookmarks = { showBookmarks = !showBookmarks },
             onShowHistory = { showHistory = !showHistory },
             uaMode = uaMode,
-            onToggleUaMode = { toggleUaMode() }
+            onToggleUaMode = { toggleUaMode() },
+            isFullscreen = isFullscreen,
+            onToggleFullscreen = { wm.toggleTrueFullscreen(scope.windowState.id) }
         )
 
         // ===== 内容区 =====
@@ -241,6 +267,13 @@ private fun BrowserContent(scope: WindowContentScope) {
                         }
                     )
                 } else {
+                    // 关键修复：用 key(activeTab.id) 包裹 WebViewContainer，
+                    // 让每个标签都有独立的 Composable 位置 → 独立的 AndroidView 实例
+                    // → 独立的 WebView → 独立的 lastRequestedUrl 状态。
+                    // 否则切换标签时，update 块看到新 tab.url 与旧 lastRequestedUrl 不同，
+                    // 会调用 loadUrl 把当前 WebView 跳到新标签的 URL —— 即"一直刷新"Bug。
+                    // 同时也修复"切回旧标签后旧标签 WebView 状态错乱"导致点击没反应的问题。
+                    key(activeTab.id) {
                     WebViewContainer(
                         url = url,
                         tab = activeTab,
@@ -280,6 +313,7 @@ private fun BrowserContent(scope: WindowContentScope) {
                         },
                         onRetry = { tabManager.getTab(activeTabId)?.refresh() }
                     )
+                    } // end key(activeTab.id)
                 }
             }
         }
@@ -305,7 +339,8 @@ private fun BrowserContent(scope: WindowContentScope) {
                 onClose = { showHistory = false }
             )
         }
-    }
+    } // end Column
+    } // end Box (F11 keyboard handler)
 }
 
 /**
@@ -885,7 +920,9 @@ private fun Toolbar(
     onShowBookmarks: () -> Unit,
     onShowHistory: () -> Unit,
     uaMode: String = "desktop",
-    onToggleUaMode: () -> Unit = {}
+    onToggleUaMode: () -> Unit = {},
+    isFullscreen: Boolean = false,
+    onToggleFullscreen: () -> Unit = {}
 ) {
     val theme = LocalWinTheme.current
     Row(
@@ -986,6 +1023,14 @@ private fun Toolbar(
             Icon(
                 imageVector = if (uaMode == "desktop") Icons.Default.Computer else Icons.Default.Smartphone,
                 contentDescription = if (uaMode == "desktop") "桌面模式" else "手机模式",
+                tint = if (theme.isDark) Color.White else Color.Black
+            )
+        }
+        // 真全屏切换（F11 风格）：隐藏任务栏+标题栏，浏览器占满整屏
+        IconButton(onClick = onToggleFullscreen, modifier = Modifier.size(36.dp)) {
+            Icon(
+                imageVector = if (isFullscreen) Icons.Default.FullscreenExit else Icons.Default.Fullscreen,
+                contentDescription = if (isFullscreen) "退出全屏" else "全屏",
                 tint = if (theme.isDark) Color.White else Color.Black
             )
         }

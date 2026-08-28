@@ -56,6 +56,8 @@ data class WindowState(
     var height: Int = 520,
     var isMinimized: Boolean = false,
     var isMaximized: Boolean = false,
+    // 真正的全屏（F11 风格）：隐藏标题栏 + 隐藏任务栏 + 占满整个屏幕
+    var isTrueFullscreen: Boolean = false,
     // 保存最大化前的位置，用于还原
     var prevX: Int = x,
     var prevY: Int = y,
@@ -166,6 +168,23 @@ class WindowManager {
             notifyChanged()
         }
     }
+
+    /**
+     * 切换真正的全屏（F11 风格）：
+     * - 隐藏窗口标题栏与调整大小手柄
+     * - 让 DesktopEnvironment 隐藏任务栏并把浮动窗口层占满整屏
+     * 不影响 isMaximized —— 退出全屏后回到原状态
+     */
+    fun toggleTrueFullscreen(windowId: String) {
+        _windows.firstOrNull { it.id == windowId }?.let { w ->
+            w.isTrueFullscreen = !w.isTrueFullscreen
+            notifyChanged()
+        }
+    }
+
+    /** 是否有窗口正处于真全屏状态（用于 DesktopEnvironment 隐藏任务栏） */
+    fun anyTrueFullscreen(): Boolean =
+        _windows.any { it.isVisible && it.isTrueFullscreen }
 
     /** 拖拽窗口标题栏：相对位移加到当前位置 */
     fun move(windowId: String, dx: Int, dy: Int) {
