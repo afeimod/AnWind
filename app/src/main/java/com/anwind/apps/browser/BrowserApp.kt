@@ -37,6 +37,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEvent
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.platform.LocalContext
@@ -139,7 +140,7 @@ private fun BrowserContent(scope: WindowContentScope) {
         modifier = Modifier
             .fillMaxSize()
             .background(theme.windowBackgroundColor)
-            .onKeyEvent { event ->
+            .onKeyEvent { event: KeyEvent ->
                 if (event.type == KeyEventType.KeyDown && event.key == Key.F11) {
                     wm.toggleTrueFullscreen(windowId)
                     true
