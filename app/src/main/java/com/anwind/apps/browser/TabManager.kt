@@ -50,11 +50,17 @@ class TabManager {
 
 /**
  * WebView 操作扩展：通过 command API 触发
+ *
+ * 注意：loadUrl 扩展不再直接调用 webView?.loadUrl。
+ * 原因：直接调用会与 WebViewContainer 的 update 块的 lastRequestedUrl 检查冲突，
+ * 导致正在进行的加载被取消重试。现在只更新 tab.url + tab.title，
+ * 由调用方设置 addressInput 触发重组，让 update 块统一负责 loadUrl。
+ * 对于 home → real URL 跳转，条件分支切换会触发 AndroidView factory 创建新 WebView 并 loadUrl。
  */
 fun BrowserTab.loadUrl(url: String) {
     this.url = url
     this.title = url
-    webView?.loadUrl(url)
+    // 实际 loadUrl 由 WebViewContainer 的 update 块 / factory 块负责
 }
 
 fun BrowserTab.goBack() {

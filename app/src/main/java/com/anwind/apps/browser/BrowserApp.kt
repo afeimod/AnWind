@@ -159,11 +159,16 @@ private fun BrowserContent(scope: WindowContentScope) {
                 val url = normalizeUrl(addressInput)
                 val tab = tabManager.getTab(activeTabId)
                 if (tab != null) {
-                    // 关键：更新 tab.url 会让条件分支切换到 WebViewContainer，AndroidView 重建并加载新 URL
+                    // 关键修复：不再直接调用 tab.webView?.loadUrl(url)。
+                    // 原因：如果在这里直接 loadUrl，update 块在重组时还会因为
+                    // url != lastRequestedUrl 再次 loadUrl，导致正在进行的加载被取消重试，
+                    // 最终页面无法加载完成。现在让 update 块统一负责 loadUrl，并
+                    // 通过 lastRequestedUrl 保证只加载一次。
+                    // 对于 home → real URL 跳转：tab.webView 为 null，update 块不会
+                    // loadUrl；但条件分支会切换到 WebViewContainer，AndroidView factory
+                    // 块会创建新 WebView 并 loadUrl(url)。
                     tab.url = url
                     tab.title = url
-                    // 如果 WebView 已存在，直接命令其加载；否则切换到 WebViewContainer 后由 factory 块加载
-                    tab.webView?.loadUrl(url)
                     addressInput = url
                     scope0.launch {
                         withContext(Dispatchers.IO) {
@@ -211,11 +216,14 @@ private fun BrowserContent(scope: WindowContentScope) {
                             val finalUrl = normalizeUrl(target)
                             val tab = tabManager.getTab(activeTabId)
                             if (tab != null) {
-                                // 关键：从速度页跳到真实 URL，更新 tab.url 触发条件分支切换，
-                                // AndroidView factory 块会创建新 WebView 并调用 loadUrl(url)。
+                                // 关键修复：与 onGo 同理，不直接调用 tab.webView?.loadUrl。
+                                // 更新 tab.url + addressInput 触发重组：
+                                // - 若原先在 home 页（无 WebView），条件分支切换到 WebViewContainer，
+                                //   AndroidView factory 会创建新 WebView 并 loadUrl(url)。
+                                // - 若原先已有 WebView，update 块会调用 loadUrl(url) 并更新
+                                //   lastRequestedUrl，保证只加载一次。
                                 tab.url = finalUrl
                                 tab.title = finalUrl
-                                tab.webView?.loadUrl(finalUrl)
                                 addressInput = finalUrl
                                 scope0.launch {
                                     withContext(Dispatchers.IO) {
@@ -305,6 +313,13 @@ private fun WebViewContainer(
     var appliedUa by remember { mutableStateOf(uaMode) }
     // 保存默认移动版 UA，供手机模式恢复（用 holder 避免在 factory 内写 state）
     val mobileUaHolder = remember { arrayOfNulls<String>(1) }
+    // 关键修复：跟踪"最后一次请求 WebView 加载的 URL"，避免 update 块在每次重组时
+    // 都调用 loadUrl，导致正在进行的加载被反复取消重试，最终页面无法加载完成
+    // （"浏览器输入搜索/网址不跳转"Bug）。
+    // 该状态在以下时机更新：factory 初始加载 / shouldOverrideUrlLoading / onPageStarted /
+    // update 块自身调用 loadUrl 时。这样 update 块只在 URL 确实变化且与最近一次请求不同时
+    // 才会真正调用 loadUrl。
+    var lastRequestedUrl by remember { mutableStateOf(url) }
 
     Box(modifier = Modifier.fillMaxSize().background(theme.windowBackgroundColor)) {
         AndroidView(
@@ -351,12 +366,17 @@ private fun WebViewContainer(
                     webViewClient = object : WebViewClient() {
                         override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
                             // 在当前 WebView 内继续加载，并同步地址栏
-                            onUrlChanged(request.url.toString())
+                            val newUrl = request.url.toString()
+                            // 标记 WebView 正在加载此 URL，避免 update 块重复 loadUrl
+                            lastRequestedUrl = newUrl
+                            onUrlChanged(newUrl)
                             return false
                         }
 
                         override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
                             errorMessage = null
+                            // 标记 WebView 已开始加载此 URL，避免 update 块重复 loadUrl
+                            if (url != null) lastRequestedUrl = url
                             // 同步后退/前进可用性状态
                             view?.let { v ->
                                 tab.canGoBack = v.canGoBack()
@@ -438,6 +458,8 @@ private fun WebViewContainer(
                     }
 
                     loadUrl(url)
+                    // 标记 factory 已请求加载此 URL
+                    lastRequestedUrl = url
                 }
             },
             update = { webview ->
@@ -452,10 +474,18 @@ private fun WebViewContainer(
                     webview.settings.userAgentString =
                         if (uaMode == "desktop") DESKTOP_UA else (mobileUaHolder[0] ?: webview.settings.userAgentString)
                     webview.reload()
-                } else if (!url.startsWith("anwind://") && webview.url != url) {
-                    // 仅当URL与WebView内部URL不同时才加载，避免重复 load 导致按钮迟钝
+                    lastRequestedUrl = url
+                } else if (!url.startsWith("anwind://") && url != lastRequestedUrl) {
+                    // 关键修复：只在"我们请求加载的 URL"与"当前要显示的 URL"不同时才调用 loadUrl。
+                    // 之前的判断 webview.url != url 在 WebView 异步加载期间会一直为 true
+                    // （webview.url 落后于实际正在加载的 URL），导致每次重组都 loadUrl，
+                    // 反复取消正在进行的加载，最终页面加载不完。
+                    // 新判断 url != lastRequestedUrl 保证了：只要我们已经请求过加载此 URL
+                    // （无论是 factory、shouldOverrideUrlLoading、onPageStarted 还是这里），
+                    // 就不会再次 loadUrl，让 WebView 安心完成加载。
                     errorMessage = null
                     webview.loadUrl(url)
+                    lastRequestedUrl = url
                 }
             },
             onRelease = { tab.webView = null },
@@ -554,9 +584,10 @@ private fun BrowserHomePage(onNavigate: (String) -> Unit) {
                 keyboardActions = KeyboardActions(onSearch = {
                     val q = searchText.trim()
                     if (q.isNotEmpty()) {
-                        val url = if (q.startsWith("http")) q
-                                  else "https://www.bing.com/search?q=" + Uri.encode(q)
-                        onNavigate(url)
+                        // 直接把用户输入交给 onNavigate，由 normalizeUrl 判断：
+                        // - 含 . 的视为网址 (例如 baidu.com → https://baidu.com)
+                        // - 否则视为搜索关键词 (例如 你好 → Bing 搜索)
+                        onNavigate(q)
                     }
                 }),
                 modifier = Modifier.weight(1f)
@@ -564,9 +595,8 @@ private fun BrowserHomePage(onNavigate: (String) -> Unit) {
             IconButton(onClick = {
                 val q = searchText.trim()
                 if (q.isNotEmpty()) {
-                    val url = if (q.startsWith("http")) q
-                              else "https://www.bing.com/search?q=" + Uri.encode(q)
-                    onNavigate(url)
+                    // 与 IME 搜索回调保持一致：交给 onNavigate + normalizeUrl 判断
+                    onNavigate(q)
                 }
             }) {
                 Icon(Icons.Default.Search, contentDescription = "搜索")
@@ -765,9 +795,31 @@ private fun Toolbar(
             )
         }
 
-        IconButton(onClick = onGo, modifier = Modifier.size(36.dp)) {
-            Icon(Icons.Default.NavigateNext, contentDescription = "Go",
-                tint = if (theme.isDark) Color.White else Color.Black)
+        // 显眼 Go/搜索按钮：带主题背景色，确保用户能发现"如何前往"
+        // 之前只是 36dp 的图标按钮，与后退/前进等按钮视觉权重一致，用户不易发现。
+        Box(
+            modifier = Modifier
+                .height(30.dp)
+                .background(theme.accentColor, RoundedCornerShape(15.dp))
+                .clickable(onClick = onGo)
+                .padding(horizontal = 14.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    Icons.Default.Search,
+                    contentDescription = "前往",
+                    tint = Color.White,
+                    modifier = Modifier.size(16.dp)
+                )
+                Spacer(Modifier.width(4.dp))
+                Text(
+                    "前往",
+                    color = Color.White,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Medium
+                )
+            }
         }
         IconButton(onClick = onBookmark, modifier = Modifier.size(36.dp)) {
             Icon(Icons.Default.StarBorder, contentDescription = "Bookmark",

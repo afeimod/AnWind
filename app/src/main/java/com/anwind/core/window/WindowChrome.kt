@@ -104,11 +104,18 @@ fun WindowChrome(
                             },
                             onDragEnd = {
                                 // 拖拽结束，把累计位移一次性提交，触发一次全局刷新
+                                // 关键修复：必须直接读取 state.x/state.y（最新值），不能用
+                                // composition 期捕获的 finalX/finalY —— 因为 pointerInput(state.id)
+                                // 只在 state.id 变化时才重新执行 lambda，所以捕获的 finalX
+                                // 永远停留在窗口首次创建时的初始值，会导致后续每次拖拽松手后
+                                // 窗口跳回到错误的位置（"松手后乱跑"Bug）。
                                 if (dragOffset != Offset.Zero) {
+                                    val baseX = if (state.isMaximized) 0 else state.x
+                                    val baseY = if (state.isMaximized) 0 else state.y
                                     wm.setAbsolutePosition(
                                         state.id,
-                                        finalX + dragOffset.x.roundToInt(),
-                                        finalY + dragOffset.y.roundToInt()
+                                        baseX + dragOffset.x.roundToInt(),
+                                        baseY + dragOffset.y.roundToInt()
                                     )
                                     wm.commitChanges()
                                 }
