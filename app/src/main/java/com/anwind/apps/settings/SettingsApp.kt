@@ -61,11 +61,25 @@ val SettingsApp = AppDef(
 }
 
 /** 打开系统设置面板（v2.9：真实逻辑，失败时 Toast 提示） */
-private fun openSystemPanel(context: Context, action: String, name: String) {
-    runCatching {
+private fun openSystemPanel(
+    context: Context,
+    action: String,
+    name: String,
+    fallbackAction: String? = null
+) {
+    val opened = runCatching {
         context.startActivity(Intent(action).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-    }.onFailure {
-        Toast.makeText(context, "无法打开$name", Toast.LENGTH_SHORT).show()
+    }.isSuccess
+    if (!opened) {
+        // 设备不支持该 action（如部分定制 ROM）时，回退到备用设置页
+        val fallbackOpened = fallbackAction?.let { fb ->
+            runCatching {
+                context.startActivity(Intent(fb).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            }.isSuccess
+        } == true
+        if (!fallbackOpened) {
+            Toast.makeText(context, "无法打开$name", Toast.LENGTH_SHORT).show()
+        }
     }
 }
 
@@ -1166,7 +1180,14 @@ private fun AccountsSection() {
         title = "电子邮件和账户",
         subtitle = "添加系统账户（邮箱、Exchange 等）",
         onClick = {
-            openSystemPanel(context, AndroidSettings.ACTION_ADD_ACCOUNT_SETTINGS, "添加账户")
+            // ACTION_ADD_ACCOUNT_SETTINGS 常量是 AOSP 隐藏 API，不在公开 android.jar 中，
+            // 直接使用官方 action 字符串（系统设置均支持）；不支持时回退主设置页
+            openSystemPanel(
+                context,
+                "android.settings.ADD_ACCOUNT_SETTINGS",
+                "添加账户",
+                fallbackAction = AndroidSettings.ACTION_SETTINGS
+            )
         }
     )
     Spacer(Modifier.height(8.dp))
@@ -1188,7 +1209,14 @@ private fun AccountsSection() {
         title = "家庭和家庭安全",
         subtitle = "管理家庭成员、儿童安全设置",
         onClick = {
-            openSystemPanel(context, AndroidSettings.ACTION_USER_SETTINGS, "用户管理")
+            // ACTION_USER_SETTINGS 常量是 AOSP 隐藏 API，直接使用官方 action 字符串；
+            // 不支持时回退主设置页
+            openSystemPanel(
+                context,
+                "android.settings.USER_SETTINGS",
+                "用户管理",
+                fallbackAction = AndroidSettings.ACTION_SETTINGS
+            )
         }
     )
     Spacer(Modifier.height(8.dp))
