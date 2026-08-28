@@ -241,7 +241,8 @@ class SettingsStore(private val context: Context) {
     }
 
     suspend fun setBrightness(value: Float) {
-        context.appPrefs.edit { it[Keys.BRIGHTNESS] = value.coerceIn(0.2f, 1.0f) }
+        // v2.12：下限放宽到 0.05（跟随设置中心/快速面板的真实滑块范围）
+        context.appPrefs.edit { it[Keys.BRIGHTNESS] = value.coerceIn(0.05f, 1.0f) }
     }
 
     suspend fun setNotificationsEnabled(enabled: Boolean) {

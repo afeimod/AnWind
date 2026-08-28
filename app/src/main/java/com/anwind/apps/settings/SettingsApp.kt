@@ -28,9 +28,13 @@ import androidx.activity.result.contract.ActivityResultContracts
 import android.content.Context
 import android.content.Intent
 import android.media.AudioManager
+import android.os.Build
 import android.provider.Settings as AndroidSettings
 import android.widget.Toast
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import com.anwind.AnWindApp
 import com.anwind.BuildConfig
 import com.anwind.core.desktop.IconPainter
@@ -43,6 +47,7 @@ import com.anwind.core.window.LaunchMode
 import com.anwind.core.window.WindowManager
 import com.anwind.core.window.WindowContentScope
 import com.anwind.util.ImmersiveMode
+import com.anwind.util.SystemControl
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 import java.io.File
@@ -206,8 +211,8 @@ private fun SettingsContent(scope: WindowContentScope) {
             Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
                 when (activeSection) {
                     "system" -> SystemSection()
-                    "bluetooth" -> BluetoothSection()
-                    "network" -> NetworkSection()
+                    "bluetooth" -> BluetoothDevicesSection()
+                    "network" -> NetworkInternetSection()
                     "personalization" -> PersonalizationSection()
                     "apps" -> AppsSection()
                     "accounts" -> AccountsSection()
@@ -257,7 +262,7 @@ private fun SettingsNavItem(label: String, icon: ImageVector, active: Boolean, o
 // === 内容区头部组件 ===
 
 @Composable
-private fun SectionHeader(title: String, description: String? = null) {
+internal fun SectionHeader(title: String, description: String? = null) {
     val theme = LocalWinTheme.current
     Text(
         title,
@@ -280,7 +285,7 @@ private fun SectionHeader(title: String, description: String? = null) {
  * Win11 风格设置卡片：行布局，左侧图标 + 标题/副标题，右侧控件
  */
 @Composable
-private fun SettingsCard(
+internal fun SettingsCard(
     icon: ImageVector,
     iconBackgroundColor: Color,
     title: String,
@@ -334,7 +339,7 @@ private fun SettingsCard(
 }
 
 @Composable
-private fun ToggleSwitch(checked: Boolean, onCheckedChange: (Boolean) -> Unit) {
+internal fun ToggleSwitch(checked: Boolean, onCheckedChange: (Boolean) -> Unit) {
     Switch(checked = checked, onCheckedChange = onCheckedChange)
 }
 
@@ -346,15 +351,22 @@ private fun SystemSection() {
     val app = AnWindApp.get()
     val context = LocalContext.current
     val scope0 = rememberCoroutineScope()
-    val iconSize by app.settingsStore.iconSize.collectAsState(initial = 48f)
     val showSeconds by app.settingsStore.showSeconds.collectAsState(initial = false)
     val taskbarAutohide by app.settingsStore.taskbarAutohide.collectAsState(initial = false)
-    val uiScale by app.settingsStore.uiScale.collectAsState(initial = 1f)
-    val orientation by app.settingsStore.displayOrientation.collectAsState(initial = "auto")
-    val brightness by app.settingsStore.brightness.collectAsState(initial = 0.8f)
-    val powerSaver by app.settingsStore.powerSaver.collectAsState(initial = false)
     val notificationsEnabled by app.settingsStore.notificationsEnabled.collectAsState(initial = true)
     val doNotDisturb by app.settingsStore.doNotDisturb.collectAsState(initial = false)
+
+    // v2.12：真实系统状态（电池 / 省电模式）
+    val battery = remember { SystemControl.readBattery(context) }
+    var powerSaverReal by remember { mutableStateOf(SystemControl.isPowerSaveMode(context)) }
+
+    // v2.12：应用内显示设置子页 + 系统信息弹窗
+    var showDisplayPage by remember { mutableStateOf(false) }
+    var showDeviceInfo by remember { mutableStateOf(false) }
+    if (showDisplayPage) {
+        DisplaySettingsPage(onBack = { showDisplayPage = false })
+        return
+    }
 
     // 音量控制（真实 AudioManager STREAM_MUSIC，v2.9）
     val audioManager = remember {
@@ -374,56 +386,38 @@ private fun SystemSection() {
 
     SectionHeader("系统", "显示、声音、通知、电源")
 
-    // 顶部系统信息卡片
+    // AnWind 设备（真实设备信息，点击查看系统信息）
     SettingsCard(
         icon = Icons.Default.Computer,
         iconBackgroundColor = Color(0xFF0078D7),
         title = "AnWind 设备",
-        subtitle = "Android 模拟 Windows · 处理器 8 核 · 内存 4 GB"
+        subtitle = buildString {
+            append(Build.MODEL ?: "Android 设备")
+            append(" · Android ${Build.VERSION.RELEASE}")
+            if (battery.percent >= 0) {
+                append(" · 电量 ${battery.percent}%")
+                if (battery.charging) append(" · 充电中")
+            }
+        },
+        onClick = { showDeviceInfo = true }
     )
+    if (showDeviceInfo) {
+        SystemInfoDialog(onDismiss = { showDeviceInfo = false })
+    }
     Spacer(Modifier.height(8.dp))
 
-    // 显示设置卡片（打开系统显示设置）
+    // 显示（v2.12：应用内显示设置子页，不再跳转手机系统设置）
     SettingsCard(
         icon = Icons.Default.BrightnessMedium,
         iconBackgroundColor = Color(0xFF0067C0),
         title = "显示",
-        subtitle = "显示器、亮度、夜间模式、显示配置文件",
-        onClick = {
-            openSystemPanel(context, AndroidSettings.ACTION_DISPLAY_SETTINGS, "系统显示设置")
-        }
+        subtitle = "缩放、亮度、图标大小、方向、任务栏",
+        onClick = { showDisplayPage = true }
     )
     Spacer(Modifier.height(8.dp))
 
-    // 亮度滑块（直接展开，实时应用到本窗口）
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(6.dp))
-            .background(theme.cardBackgroundColor)
-            .padding(12.dp)
-    ) {
-        Column {
-            Text("亮度", color = if (theme.isDark) Color.White else Color.Black, fontSize = 13.sp, fontWeight = FontWeight.Medium)
-            Spacer(Modifier.height(8.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Default.BrightnessMedium, null, tint = theme.secondaryTextColor, modifier = Modifier.size(16.dp))
-                Spacer(Modifier.width(12.dp))
-                Slider(
-                    value = brightness,
-                    onValueChange = {
-                        scope0.launch { app.settingsStore.setBrightness(it) }
-                        // v2.9：亮度实时生效（本应用窗口）
-                        applyWindowBrightness(context, it)
-                    },
-                    valueRange = 0.2f..1.0f,
-                    modifier = Modifier.weight(1f)
-                )
-                Spacer(Modifier.width(12.dp))
-                Text("${(brightness * 100).roundToInt()}%", color = theme.secondaryTextColor, fontSize = 11.sp)
-            }
-        }
-    }
+    // 亮度（v2.12：真实系统亮度，未授权时回退窗口亮度）
+    BrightnessSliderCard()
     Spacer(Modifier.height(8.dp))
 
     // 声音（展开真实音量滑块，v2.9）
@@ -483,14 +477,46 @@ private fun SystemSection() {
     )
     Spacer(Modifier.height(8.dp))
 
-    // 电源
+    // 电源和电池（v2.12：真实省电模式 + 真实电量）
     SettingsCard(
         icon = Icons.Default.PowerSettingsNew,
         iconBackgroundColor = Color(0xFFF7630C),
         title = "电源和电池",
-        subtitle = if (powerSaver) "节能模式 · 电池使用时间延长" else "电池 · 节能模式",
+        subtitle = buildString {
+            if (battery.percent >= 0) {
+                append("电量 ${battery.percent}%")
+                append(
+                    when {
+                        battery.charging -> " · 充电中"
+                        battery.full -> " · 已充满"
+                        else -> ""
+                    }
+                )
+                append(" · ")
+            }
+            append(if (powerSaverReal) "系统省电模式已开启" else "系统省电模式已关闭")
+        },
         trailingContent = {
-            ToggleSwitch(powerSaver) { v -> scope0.launch { app.settingsStore.setPowerSaver(v) } }
+            ToggleSwitch(powerSaverReal) { v ->
+                val ok = SystemControl.setPowerSaveMode(context, v)
+                if (ok) {
+                    powerSaverReal = v
+                    Toast.makeText(
+                        context,
+                        if (v) "已开启系统省电模式" else "已关闭系统省电模式",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                } else {
+                    // 原生 Android 禁止三方直接切换省电模式 → 引导系统省电设置页
+                    Toast.makeText(
+                        context,
+                        "此设备需要系统权限，已打开系统省电设置",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                    openSystemPanel(context, AndroidSettings.ACTION_BATTERY_SAVER_SETTINGS, "省电模式设置")
+                }
+                scope0.launch { app.settingsStore.setPowerSaver(v) }
+            }
         }
     )
     Spacer(Modifier.height(8.dp))
@@ -539,29 +565,80 @@ private fun SystemSection() {
     )
     Spacer(Modifier.height(8.dp))
 
-    // 桌面图标大小（嵌入卡片）
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(6.dp))
-            .background(theme.cardBackgroundColor)
-            .padding(12.dp)
-    ) {
+    // 时钟显示秒（图标大小/缩放/方向已移入“显示”子页）
+    SettingsCard(
+        icon = Icons.Default.Schedule,
+        iconBackgroundColor = Color(0xFF00B7C3),
+        title = "时钟显示秒",
+        subtitle = "在任务栏时钟中显示秒数",
+        trailingContent = { ToggleSwitch(showSeconds) { v -> scope0.launch { app.settingsStore.setShowSeconds(v) } } }
+    )
+    Spacer(Modifier.height(8.dp))
+
+    // 任务栏自动隐藏
+    SettingsCard(
+        icon = Icons.Default.ViewDay,
+        iconBackgroundColor = Color(0xFF8764B8),
+        title = "任务栏自动隐藏",
+        subtitle = "指针移到底部边缘时任务栏自动出现",
+        trailingContent = { ToggleSwitch(taskbarAutohide) { v -> scope0.launch { app.settingsStore.setTaskbarAutohide(v) } } }
+    )
+}
+
+/**
+ * 应用内显示设置子页（v2.12）。
+ * 集合桌面全部显示相关设置：亮度（真实系统亮度）、UI 缩放、图标大小、
+ * 显示方向、任务栏高度、占用刘海屏、显示器信息。不再跳转手机系统设置。
+ */
+@Composable
+private fun DisplaySettingsPage(onBack: () -> Unit) {
+    val theme = LocalWinTheme.current
+    val app = AnWindApp.get()
+    val context = LocalContext.current
+    val scope0 = rememberCoroutineScope()
+    val iconSize by app.settingsStore.iconSize.collectAsState(initial = 48f)
+    val uiScale by app.settingsStore.uiScale.collectAsState(initial = 1f)
+    val orientation by app.settingsStore.displayOrientation.collectAsState(initial = "auto")
+    val taskbarHeightPref by app.settingsStore.taskbarHeight.collectAsState(initial = 0f)
+    val useCutout by app.settingsStore.useCutout.collectAsState(initial = true)
+
+    // 返回 + 标题
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        IconButton(onClick = onBack) {
+            Icon(
+                Icons.Default.ArrowBack, "返回",
+                tint = if (theme.isDark) Color.White else Color.Black
+            )
+        }
         Column {
-            Text("桌面图标大小", color = if (theme.isDark) Color.White else Color.Black, fontSize = 13.sp, fontWeight = FontWeight.Medium)
-            Spacer(Modifier.height(8.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Slider(
-                    value = iconSize,
-                    onValueChange = { scope0.launch { app.settingsStore.setIconSize(it) } },
-                    valueRange = 28f..72f,
-                    modifier = Modifier.weight(1f)
-                )
-                Spacer(Modifier.width(12.dp))
-                Text("${iconSize.roundToInt()}dp", color = theme.secondaryTextColor, fontSize = 11.sp)
-            }
+            Text(
+                "显示",
+                color = if (theme.isDark) Color.White else Color.Black,
+                fontSize = 22.sp,
+                fontWeight = FontWeight.Bold
+            )
+            Text(
+                "缩放、亮度、图标大小、方向、任务栏",
+                color = theme.secondaryTextColor,
+                fontSize = 12.sp
+            )
         }
     }
+    Spacer(Modifier.height(20.dp))
+
+    // 显示器信息（真实分辨率/密度/刷新率）
+    val displayInfo = remember { SystemControl.readDeviceInfo(context) }
+    SettingsCard(
+        icon = Icons.Default.Monitor,
+        iconBackgroundColor = Color(0xFF0067C0),
+        title = "显示器",
+        subtitle = "${displayInfo.screenWidthPx} × ${displayInfo.screenHeightPx} · " +
+            "${displayInfo.densityDpi}dpi · " + String.format("%.1f", displayInfo.refreshRateHz) + "Hz"
+    )
+    Spacer(Modifier.height(8.dp))
+
+    // 亮度（真实系统亮度）
+    BrightnessSliderCard()
     Spacer(Modifier.height(8.dp))
 
     // UI 缩放
@@ -586,7 +663,32 @@ private fun SystemSection() {
                 Text("${(uiScale * 100).roundToInt()}%", color = theme.secondaryTextColor, fontSize = 11.sp)
             }
             Spacer(Modifier.height(4.dp))
-            Text("缩放整个桌面的图标、文字和窗口大小。", color = theme.secondaryTextColor, fontSize = 11.sp)
+            Text("缩放整个桌面的图标、文字和窗口大小，立即生效。", color = theme.secondaryTextColor, fontSize = 11.sp)
+        }
+    }
+    Spacer(Modifier.height(8.dp))
+
+    // 桌面图标大小
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(6.dp))
+            .background(theme.cardBackgroundColor)
+            .padding(12.dp)
+    ) {
+        Column {
+            Text("桌面图标大小", color = if (theme.isDark) Color.White else Color.Black, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+            Spacer(Modifier.height(8.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Slider(
+                    value = iconSize,
+                    onValueChange = { scope0.launch { app.settingsStore.setIconSize(it) } },
+                    valueRange = 28f..72f,
+                    modifier = Modifier.weight(1f)
+                )
+                Spacer(Modifier.width(12.dp))
+                Text("${iconSize.roundToInt()}dp", color = theme.secondaryTextColor, fontSize = 11.sp)
+            }
         }
     }
     Spacer(Modifier.height(8.dp))
@@ -611,72 +713,7 @@ private fun SystemSection() {
     }
     Spacer(Modifier.height(8.dp))
 
-    // 时钟显示秒
-    SettingsCard(
-        icon = Icons.Default.Schedule,
-        iconBackgroundColor = Color(0xFF00B7C3),
-        title = "时钟显示秒",
-        subtitle = "在任务栏时钟中显示秒数",
-        trailingContent = { ToggleSwitch(showSeconds) { v -> scope0.launch { app.settingsStore.setShowSeconds(v) } } }
-    )
-    Spacer(Modifier.height(8.dp))
-
-    // 任务栏自动隐藏
-    SettingsCard(
-        icon = Icons.Default.ViewDay,
-        iconBackgroundColor = Color(0xFF8764B8),
-        title = "任务栏自动隐藏",
-        subtitle = "指针移到底部边缘时任务栏自动出现",
-        trailingContent = { ToggleSwitch(taskbarAutohide) { v -> scope0.launch { app.settingsStore.setTaskbarAutohide(v) } } }
-    )
-}
-
-@Composable
-private fun BluetoothSection() {
-    val app = AnWindApp.get()
-    val context = LocalContext.current
-    val scope0 = rememberCoroutineScope()
-    val bluetooth by app.settingsStore.bluetoothEnabled.collectAsState(initial = false)
-    val mouseSpeed by app.settingsStore.mousePointerSpeed.collectAsState(initial = 1f)
-    val keyboardVib by app.settingsStore.keyboardVibration.collectAsState(initial = true)
-    val touchFeedback by app.settingsStore.touchFeedback.collectAsState(initial = false)
-
-    SectionHeader("蓝牙和设备", "设备管理、鼠标、键盘、触摸")
-
-    // 添加设备（打开系统蓝牙设置面板配对，v2.9）
-    SettingsCard(
-        icon = Icons.Default.Add,
-        iconBackgroundColor = Color(0xFF0078D7),
-        title = "添加设备",
-        subtitle = "搜索并配对附近的蓝牙设备",
-        onClick = {
-            openSystemPanel(context, AndroidSettings.ACTION_BLUETOOTH_SETTINGS, "系统蓝牙设置")
-        }
-    )
-    Spacer(Modifier.height(8.dp))
-
-    SettingsCard(
-        icon = Icons.Default.Bluetooth,
-        iconBackgroundColor = Color(0xFF0078D7),
-        title = "蓝牙",
-        subtitle = if (bluetooth) "已开启 · 可被发现" else "关闭",
-        trailingContent = { ToggleSwitch(bluetooth) { v -> scope0.launch { app.settingsStore.setBluetoothEnabled(v) } } },
-        onClick = {
-            openSystemPanel(context, AndroidSettings.ACTION_BLUETOOTH_SETTINGS, "系统蓝牙设置")
-        }
-    )
-    Spacer(Modifier.height(8.dp))
-
-    SettingsCard(
-        icon = Icons.Default.Mouse,
-        iconBackgroundColor = Color(0xFF00B294),
-        title = "鼠标",
-        subtitle = "鼠标光标速度、点击操作"
-    )
-    Spacer(Modifier.height(8.dp))
-
-    // 鼠标光标速度滑块
-    val theme = LocalWinTheme.current
+    // 任务栏高度
     Box(
         modifier = Modifier
             .fillMaxWidth()
@@ -685,141 +722,169 @@ private fun BluetoothSection() {
             .padding(12.dp)
     ) {
         Column {
-            Text("鼠标光标速度", color = if (theme.isDark) Color.White else Color.Black, fontSize = 13.sp, fontWeight = FontWeight.Medium)
-            Spacer(Modifier.height(8.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Slider(
-                    value = mouseSpeed,
-                    onValueChange = { scope0.launch { app.settingsStore.setMousePointerSpeed(it) } },
-                    valueRange = 0.5f..2.0f,
+                Text(
+                    "任务栏高度",
+                    color = if (theme.isDark) Color.White else Color.Black,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Medium,
                     modifier = Modifier.weight(1f)
                 )
-                Spacer(Modifier.width(12.dp))
-                Text("${(mouseSpeed * 100).roundToInt()}%", color = theme.secondaryTextColor, fontSize = 11.sp)
+                Text(
+                    if (taskbarHeightPref >= 36f) "${taskbarHeightPref.roundToInt()}dp" else "默认 (${theme.taskbarHeight.value.roundToInt()}dp)",
+                    color = theme.secondaryTextColor,
+                    fontSize = 11.sp
+                )
+                Spacer(Modifier.width(8.dp))
+                TextButton(
+                    onClick = { scope0.launch { app.settingsStore.setTaskbarHeight(0f) } },
+                    contentPadding = PaddingValues(horizontal = 8.dp)
+                ) { Text("重置", fontSize = 11.sp) }
             }
+            Spacer(Modifier.height(4.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.ViewDay, null, tint = theme.secondaryTextColor, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(12.dp))
+                Slider(
+                    value = if (taskbarHeightPref >= 36f) taskbarHeightPref else theme.taskbarHeight.value,
+                    onValueChange = { scope0.launch { app.settingsStore.setTaskbarHeight(it) } },
+                    valueRange = 36f..80f,
+                    modifier = Modifier.weight(1f)
+                )
+            }
+            Text(
+                "调节任务栏高度，图标会随高度自动缩放；点击“重置”恢复主题默认。",
+                color = theme.secondaryTextColor,
+                fontSize = 11.sp
+            )
         }
     }
     Spacer(Modifier.height(8.dp))
 
+    // 占用刘海屏
     SettingsCard(
-        icon = Icons.Default.Keyboard,
-        iconBackgroundColor = Color(0xFF8764B8),
-        title = "键盘",
-        subtitle = "键盘振动、布局、输入法"
-    )
-    Spacer(Modifier.height(8.dp))
-
-    SettingsCard(
-        icon = Icons.Default.Vibration,
-        iconBackgroundColor = Color(0xFFCA5010),
-        title = "键盘振动",
-        subtitle = "按键时振动反馈",
-        trailingContent = { ToggleSwitch(keyboardVib) { v -> scope0.launch { app.settingsStore.setKeyboardVibration(v) } } }
-    )
-    Spacer(Modifier.height(8.dp))
-
-    SettingsCard(
-        icon = Icons.Default.TouchApp,
-        iconBackgroundColor = Color(0xFF00B7C3),
-        title = "触摸反馈",
-        subtitle = "触摸屏幕时振动",
-        trailingContent = { ToggleSwitch(touchFeedback) { v -> scope0.launch { app.settingsStore.setTouchFeedback(v) } } }
-    )
-    Spacer(Modifier.height(8.dp))
-
-    SettingsCard(
-        icon = Icons.Default.Print,
-        iconBackgroundColor = Color(0xFF6B69D6),
-        title = "打印机和扫描仪",
-        subtitle = "添加、管理或连接打印机和扫描仪",
-        onClick = {
-            openSystemPanel(context, AndroidSettings.ACTION_PRINT_SETTINGS, "系统打印设置")
-        }
-    )
-    Spacer(Modifier.height(8.dp))
-
-    SettingsCard(
-        icon = Icons.Default.Cast,
-        iconBackgroundColor = Color(0xFF8E8CD8),
-        title = "无线显示器",
-        subtitle = "将设备连接到无线显示器",
-        onClick = {
-            openSystemPanel(context, AndroidSettings.ACTION_CAST_SETTINGS, "投屏设置")
+        icon = Icons.Default.Smartphone,
+        iconBackgroundColor = Color(0xFF0078D7),
+        title = "占用刘海屏",
+        subtitle = if (useCutout) "已开启 · 桌面延伸绘制到刘海/挖孔区域" else "关闭 · 刘海区域不显示内容",
+        trailingContent = {
+            ToggleSwitch(useCutout) { v -> scope0.launch { app.settingsStore.setUseCutout(v) } }
         }
     )
 }
 
+/**
+ * 亮度卡片（v2.12）：真实读写系统亮度。
+ * 已授予“修改系统设置”权限 → 写 Settings.System.SCREEN_BRIGHTNESS（影响整个系统）；
+ * 未授权 → 回退为窗口亮度，并显示“去授权”入口。
+ */
 @Composable
-private fun NetworkSection() {
+private fun BrightnessSliderCard() {
+    val theme = LocalWinTheme.current
+    val app = AnWindApp.get()
     val context = LocalContext.current
+    val scope0 = rememberCoroutineScope()
 
-    SectionHeader("网络和 Internet", "Wi-Fi、飞行模式、VPN、数据使用量")
+    var canWrite by remember { mutableStateOf(SystemControl.canWriteSystemSettings(context)) }
+    var autoMode by remember { mutableStateOf(SystemControl.isBrightnessAuto(context)) }
+    var sliderValue by remember {
+        val sys = SystemControl.getSystemBrightness(context)
+        mutableStateOf(if (sys >= 0) sys / 255f else 0.8f)
+    }
 
-    SettingsCard(
-        icon = Icons.Default.Wifi,
-        iconBackgroundColor = Color(0xFF0078D7),
-        title = "Wi-Fi",
-        subtitle = "点击管理 Wi-Fi 连接",
-        onClick = {
-            // Android 10+ 用系统联网面板，旧版本回退到 Wi-Fi 设置
-            openSystemPanel(context, AndroidSettings.ACTION_WIFI_SETTINGS, "Wi-Fi 设置")
+    // 从系统授权页返回时刷新权限与亮度状态
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                canWrite = SystemControl.canWriteSystemSettings(context)
+                autoMode = SystemControl.isBrightnessAuto(context)
+                val sys = SystemControl.getSystemBrightness(context)
+                if (sys >= 0 && !autoMode) sliderValue = sys / 255f
+            }
         }
-    )
-    Spacer(Modifier.height(8.dp))
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
 
-    SettingsCard(
-        icon = Icons.Default.NetworkCell,
-        iconBackgroundColor = Color(0xFF00B294),
-        title = "以太网",
-        subtitle = "点击打开系统网络设置",
-        onClick = {
-            openSystemPanel(context, AndroidSettings.ACTION_WIRELESS_SETTINGS, "网络设置")
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(6.dp))
+            .background(theme.cardBackgroundColor)
+            .padding(12.dp)
+    ) {
+        Column {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "亮度",
+                    color = if (theme.isDark) Color.White else Color.Black,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Medium,
+                    modifier = Modifier.weight(1f)
+                )
+                Text(
+                    if (autoMode) "自动" else "${(sliderValue * 100).roundToInt()}%",
+                    color = theme.secondaryTextColor,
+                    fontSize = 11.sp
+                )
+            }
+            Spacer(Modifier.height(8.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.BrightnessMedium, null, tint = theme.secondaryTextColor, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(12.dp))
+                Slider(
+                    value = sliderValue,
+                    onValueChange = {
+                        sliderValue = it
+                        val ok = SystemControl.setSystemBrightness(context, it)
+                        if (!ok) applyWindowBrightness(context, it)
+                        scope0.launch { app.settingsStore.setBrightness(it) }
+                    },
+                    valueRange = 0.05f..1.0f,
+                    modifier = Modifier.weight(1f)
+                )
+            }
+            if (!canWrite) {
+                Spacer(Modifier.height(4.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "未授予“修改系统设置”权限，当前仅调整本应用亮度",
+                        color = theme.secondaryTextColor,
+                        fontSize = 11.sp,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    TextButton(
+                        onClick = { SystemControl.openWriteSettingsPage(context) },
+                        contentPadding = PaddingValues(horizontal = 8.dp)
+                    ) { Text("去授权", fontSize = 11.sp) }
+                }
+            }
+            Spacer(Modifier.height(4.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "自动调整亮度",
+                    color = if (theme.isDark) Color.White else Color.Black,
+                    fontSize = 13.sp,
+                    modifier = Modifier.weight(1f)
+                )
+                ToggleSwitch(autoMode) { v ->
+                    val ok = SystemControl.setBrightnessAuto(context, v)
+                    if (ok) {
+                        autoMode = v
+                        if (!v) {
+                            val sys = SystemControl.getSystemBrightness(context)
+                            if (sys >= 0) sliderValue = sys / 255f
+                        }
+                    } else {
+                        Toast.makeText(context, "需要“修改系统设置”权限", Toast.LENGTH_SHORT).show()
+                        SystemControl.openWriteSettingsPage(context)
+                    }
+                }
+            }
         }
-    )
-    Spacer(Modifier.height(8.dp))
-
-    SettingsCard(
-        icon = Icons.Default.VpnKey,
-        iconBackgroundColor = Color(0xFF8764B8),
-        title = "VPN",
-        subtitle = "添加或连接 VPN",
-        onClick = {
-            openSystemPanel(context, AndroidSettings.ACTION_VPN_SETTINGS, "VPN 设置")
-        }
-    )
-    Spacer(Modifier.height(8.dp))
-
-    SettingsCard(
-        icon = Icons.Default.MobileFriendly,
-        iconBackgroundColor = Color(0xFFCA5010),
-        title = "移动热点",
-        subtitle = "与其他设备共享 Internet 连接",
-        onClick = {
-            openSystemPanel(context, AndroidSettings.ACTION_WIRELESS_SETTINGS, "网络设置")
-        }
-    )
-    Spacer(Modifier.height(8.dp))
-
-    SettingsCard(
-        icon = Icons.Default.AirplanemodeActive,
-        iconBackgroundColor = Color(0xFF6B69D6),
-        title = "飞行模式",
-        subtitle = "停止所有无线通信",
-        onClick = {
-            openSystemPanel(context, AndroidSettings.ACTION_AIRPLANE_MODE_SETTINGS, "飞行模式设置")
-        }
-    )
-    Spacer(Modifier.height(8.dp))
-
-    SettingsCard(
-        icon = Icons.Default.DataUsage,
-        iconBackgroundColor = Color(0xFF00B7C3),
-        title = "数据使用量",
-        subtitle = "点击查看系统流量统计",
-        onClick = {
-            openSystemPanel(context, AndroidSettings.ACTION_DATA_USAGE_SETTINGS, "流量使用设置")
-        }
-    )
+    }
 }
 
 @Composable
@@ -829,9 +894,6 @@ private fun PersonalizationSection() {
     val scope0 = rememberCoroutineScope()
     var currentVariant by remember { mutableStateOf(theme.variant) }
     val customWallpaper by app.settingsStore.customWallpaper.collectAsState(initial = null)
-    // v2.9：刘海屏占用 + 任务栏高度
-    val useCutout by app.settingsStore.useCutout.collectAsState(initial = true)
-    val taskbarHeightPref by app.settingsStore.taskbarHeight.collectAsState(initial = 0f)
     val pickWallpaper = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument()
     ) { uri ->
@@ -896,65 +958,7 @@ private fun PersonalizationSection() {
     )
     Spacer(Modifier.height(8.dp))
 
-    // ===== 刘海屏占用（v2.9 新增，默认开启） =====
-    SettingsCard(
-        icon = Icons.Default.Smartphone,
-        iconBackgroundColor = Color(0xFF0078D7),
-        title = "占用刘海屏",
-        subtitle = if (useCutout) "已开启 · 桌面延伸绘制到刘海/挖孔区域" else "关闭 · 刘海区域不显示内容",
-        trailingContent = {
-            ToggleSwitch(useCutout) { v -> scope0.launch { app.settingsStore.setUseCutout(v) } }
-        }
-    )
-    Spacer(Modifier.height(8.dp))
-
-    // ===== 任务栏高度调节（v2.9 新增） =====
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(6.dp))
-            .background(theme.cardBackgroundColor)
-            .padding(12.dp)
-    ) {
-        Column {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    "任务栏高度",
-                    color = if (theme.isDark) Color.White else Color.Black,
-                    fontSize = 13.sp,
-                    fontWeight = FontWeight.Medium,
-                    modifier = Modifier.weight(1f)
-                )
-                Text(
-                    if (taskbarHeightPref >= 36f) "${taskbarHeightPref.roundToInt()}dp" else "默认 (${theme.taskbarHeight.value.roundToInt()}dp)",
-                    color = theme.secondaryTextColor,
-                    fontSize = 11.sp
-                )
-                Spacer(Modifier.width(8.dp))
-                TextButton(
-                    onClick = { scope0.launch { app.settingsStore.setTaskbarHeight(0f) } },
-                    contentPadding = PaddingValues(horizontal = 8.dp)
-                ) { Text("重置", fontSize = 11.sp) }
-            }
-            Spacer(Modifier.height(4.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Default.ViewDay, null, tint = theme.secondaryTextColor, modifier = Modifier.size(16.dp))
-                Spacer(Modifier.width(12.dp))
-                Slider(
-                    value = if (taskbarHeightPref >= 36f) taskbarHeightPref else theme.taskbarHeight.value,
-                    onValueChange = { scope0.launch { app.settingsStore.setTaskbarHeight(it) } },
-                    valueRange = 36f..80f,
-                    modifier = Modifier.weight(1f)
-                )
-            }
-            Text(
-                "调节任务栏高度，图标会随高度自动缩放；点击“重置”恢复主题默认。",
-                color = theme.secondaryTextColor,
-                fontSize = 11.sp
-            )
-        }
-    }
-    Spacer(Modifier.height(8.dp))
+    // （刘海屏占用与任务栏高度已移至“系统-显示”子页，v2.12）
 
     // 锁屏界面
     SettingsCard(
@@ -1588,15 +1592,22 @@ private fun AboutSection() {
     )
     Spacer(Modifier.height(8.dp))
 
-    AboutRow("设备名称", "AnWind 设备")
-    AboutRow("处理器", "Snapdragon 8 Gen X · 8 核")
-    AboutRow("已安装的 RAM", "4.00 GB")
-    AboutRow("设备 ID", "ANWIND-${System.currentTimeMillis().toString().takeLast(8)}")
+    // v2.12：真实设备信息（替换硬编码假数据）
+    val context = LocalContext.current
+    val info = remember { SystemControl.readDeviceInfo(context) }
+    AboutRow("设备名称", info.deviceName)
+    AboutRow("品牌", info.brand)
+    AboutRow("处理器", "${info.cpuCores} 核 · ${info.cpuAbis}")
+    AboutRow("已安装的 RAM", SystemControl.formatBytes(info.totalRamBytes))
+    AboutRow("可用 RAM", SystemControl.formatBytes(info.availRamBytes))
+    AboutRow("存储", "${SystemControl.formatBytes(info.storageTotalBytes - info.storageAvailBytes)} 已用 / ${SystemControl.formatBytes(info.storageTotalBytes)}")
+    AboutRow("设备 ID", "ANWIND-${SystemControl.deviceId(context)}")
     AboutRow("产品 ID", "00ANWIND-00000-00000-00000")
-    AboutRow("系统类型", "ARM64 Android")
+    AboutRow("系统类型", "${info.cpuAbis} · Android ${info.androidVersion} (API ${info.sdkInt})")
+    AboutRow("屏幕", "${info.screenWidthPx} × ${info.screenHeightPx} · ${info.densityDpi}dpi")
     AboutRow("应用名称", "AnWind")
-    AboutRow("版本", "1.0.0")
-    AboutRow("包名", "com.anwind")
+    AboutRow("版本", BuildConfig.VERSION_NAME)
+    AboutRow("包名", context.packageName)
     AboutRow("当前主题", theme.displayName)
     AboutRow("minSdk", "24 (Android 7.0)")
     AboutRow("targetSdk", "34 (Android 14)")
@@ -1630,7 +1641,7 @@ private fun AboutSection() {
 }
 
 @Composable
-private fun AboutRow(label: String, value: String) {
+internal fun AboutRow(label: String, value: String) {
     val theme = LocalWinTheme.current
     Row(
         modifier = Modifier
@@ -1651,7 +1662,7 @@ private fun AboutRow(label: String, value: String) {
  * Win11 风格的分段选项按钮
  */
 @Composable
-private fun SegmentedOption(label: String, selected: Boolean, onClick: () -> Unit) {
+internal fun SegmentedOption(label: String, selected: Boolean, onClick: () -> Unit) {
     val theme = LocalWinTheme.current
     Box(
         modifier = Modifier

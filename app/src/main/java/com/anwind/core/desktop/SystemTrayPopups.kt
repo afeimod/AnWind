@@ -62,6 +62,7 @@ import androidx.core.content.ContextCompat
 import com.anwind.AnWindApp
 import com.anwind.core.theme.WinTheme
 import com.anwind.util.ImmersiveMode
+import com.anwind.util.SystemControl
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
@@ -403,8 +404,15 @@ fun QuickSettingsPanel(
     }
     var volumeBeforeMute by remember { mutableStateOf(-1) }
 
-    // ===== 亮度（与设置中心偏好联动，实时作用于本应用窗口） =====
-    val brightness by app.settingsStore.brightness.collectAsState(initial = 0.8f)
+    // ===== 亮度（v2.12：优先真实系统亮度；未授权时回退窗口亮度） =====
+    var brightnessValue by remember {
+        mutableStateOf(
+            runCatching {
+                val sys = SystemControl.getSystemBrightness(context)
+                if (sys >= 0 && SystemControl.canWriteSystemSettings(context)) sys / 255f else 0.8f
+            }.getOrDefault(0.8f)
+        )
+    }
 
     // ===== 电池（真实电量 + 充电状态） =====
     val batteryInfo = remember {
@@ -549,7 +557,7 @@ fun QuickSettingsPanel(
 
             Spacer(Modifier.height(8.dp))
 
-            // ===== 亮度滑块（实时作用于本应用窗口） =====
+            // ===== 亮度滑块（v2.12：优先调节真实系统亮度） =====
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -561,17 +569,20 @@ fun QuickSettingsPanel(
                 Icon(Icons.Default.BrightnessMedium, "亮度", tint = fg, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(8.dp))
                 Slider(
-                    value = brightness,
+                    value = brightnessValue,
                     onValueChange = {
+                        brightnessValue = it
+                        // v2.12：优先写系统亮度；未授权时回退窗口亮度
+                        val ok = SystemControl.setSystemBrightness(context, it)
+                        if (!ok) applyPanelBrightness(context, it)
                         scope.launch { app.settingsStore.setBrightness(it) }
-                        applyPanelBrightness(context, it)
                     },
-                    valueRange = 0.2f..1.0f,
+                    valueRange = 0.05f..1.0f,
                     modifier = Modifier.weight(1f)
                 )
                 Spacer(Modifier.width(8.dp))
                 Text(
-                    text = "${(brightness * 100).roundToInt()}%",
+                    text = "${(brightnessValue * 100).roundToInt()}%",
                     color = fg.copy(alpha = 0.7f),
                     fontSize = 11.sp,
                     modifier = Modifier.width(30.dp),
