@@ -60,6 +60,8 @@ fun DesktopEnvironment(
     // 上下文菜单状态
     var contextMenu by remember { mutableStateOf<DesktopContextMenuData?>(null) }
     var startMenuOpen by remember { mutableStateOf(false) }
+    // 系统托盘弹窗：calendar / quickSettings / null
+    var trayPopup by remember { mutableStateOf<TrayPopup?>(null) }
 
     BoxWithConstraints(
         modifier = Modifier
@@ -158,6 +160,8 @@ fun DesktopEnvironment(
             theme = theme,
             startMenuOpen = startMenuOpen,
             onStartClick = { startMenuOpen = !startMenuOpen },
+            onOpenCalendar = { trayPopup = TrayPopup.CALENDAR },
+            onOpenQuickSettings = { trayPopup = TrayPopup.QUICK_SETTINGS },
             showSeconds = showSeconds,
             modifier = Modifier
                 .align(Alignment.BottomCenter)
@@ -165,6 +169,44 @@ fun DesktopEnvironment(
                 .height(taskbarHeight)
                 .offset { IntOffset(0, taskbarOffsetY) }
         )
+
+        // ===== 5.5. 系统托盘弹窗（Calendar / QuickSettings） =====
+        trayPopup?.let { popup ->
+            // 背景遮罩：点击关闭
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .pointerInput(Unit) {
+                        detectTapGestures(onTap = { trayPopup = null })
+                    }
+            )
+            when (popup) {
+                TrayPopup.CALENDAR -> CalendarFlyout(
+                    theme = theme,
+                    onDismiss = { trayPopup = null },
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(end = 8.dp, bottom = taskbarHeight + 8.dp)
+                )
+                TrayPopup.QUICK_SETTINGS -> QuickSettingsPanel(
+                    theme = theme,
+                    onOpenSettings = {
+                        trayPopup = null
+                        wm.open(
+                            appId = "settings",
+                            title = "设置",
+                            launchMode = com.anwind.core.window.LaunchMode.FLOATING,
+                            initialWidth = 720,
+                            initialHeight = 520
+                        )
+                    },
+                    onDismiss = { trayPopup = null },
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(end = 8.dp, bottom = taskbarHeight + 8.dp)
+                )
+            }
+        }
 
         // ===== 6. 右键上下文菜单 =====
         contextMenu?.let { data ->
@@ -197,3 +239,10 @@ private fun playStartupSound(context: Context, assetPath: String) {
         // 其他异常同样跳过
     }
 }
+
+/**
+ * 系统托盘弹窗类型：
+ * - CALENDAR：点击时钟后显示的 Win11 风格日历
+ * - QUICK_SETTINGS：点击 wifi/电池/音量后显示的 Win11 风格快速设置面板
+ */
+private enum class TrayPopup { CALENDAR, QUICK_SETTINGS }

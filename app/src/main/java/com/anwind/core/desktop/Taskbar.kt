@@ -8,7 +8,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material.icons.filled.BatteryFull
@@ -34,20 +33,26 @@ import java.util.Date
 import java.util.Locale
 
 /**
- * 任务栏：开始按钮 + 搜索 + 固定应用 + 运行中窗口 + 系统托盘 + 时钟。
+ * 任务栏 - Win11 风格
  *
- * 视觉重构后所有主题统一采用 Win11 风格：
- * - 居中布局
+ * 视觉重构：
  * - 浮动圆角矩形（与底部留 4dp 间距）
- * - Mica/Aero 半透明材质
- * - 阴影
- * - 应用图标带运行中下划线指示
+ * - Mica/Aero 半透明材质 + 阴影
+ * - **左侧紧凑分布**：Start + 搜索 + 浏览器/文件管理器/设置 等固定应用
+ * - 中间：其他运行中窗口
+ * - 右侧系统托盘：wifi/音量/电池/时钟
+ *
+ * 点击行为（用户要求 #5）：
+ * - 点击时钟 → 打开 CalendarFlyout
+ * - 点击 wifi/音量/电池 组 → 打开 QuickSettingsPanel
  */
 @Composable
 fun Taskbar(
     theme: WinTheme,
     startMenuOpen: Boolean,
     onStartClick: () -> Unit,
+    onOpenCalendar: () -> Unit,
+    onOpenQuickSettings: () -> Unit,
     showSeconds: Boolean = false,
     modifier: Modifier = Modifier
 ) {
@@ -61,7 +66,6 @@ fun Taskbar(
         }
     }
 
-    // 浮动任务栏：底边留 4dp 空隙，整体宽度 95% 居中
     BoxWithConstraints(
         modifier = modifier
     ) {
@@ -84,17 +88,27 @@ fun Taskbar(
                     .clip(RoundedCornerShape(theme.taskbarHeight.value / 2f))
                     .background(taskbarColor)
             ) {
-                CenterAlignedTaskbar(theme, startMenuOpen, onStartClick, tick, showSeconds)
+                LeftAlignedTaskbar(
+                    theme = theme,
+                    startMenuOpen = startMenuOpen,
+                    onStartClick = onStartClick,
+                    onOpenCalendar = onOpenCalendar,
+                    onOpenQuickSettings = onOpenQuickSettings,
+                    tick = tick,
+                    showSeconds = showSeconds
+                )
             }
         }
     }
 }
 
 @Composable
-private fun CenterAlignedTaskbar(
+private fun LeftAlignedTaskbar(
     theme: WinTheme,
     startMenuOpen: Boolean,
     onStartClick: () -> Unit,
+    onOpenCalendar: () -> Unit,
+    onOpenQuickSettings: () -> Unit,
     tick: Long,
     showSeconds: Boolean
 ) {
@@ -102,24 +116,33 @@ private fun CenterAlignedTaskbar(
     val runningWindows = remember(tick, theme) { wm.windows }
 
     Box(modifier = Modifier.fillMaxSize()) {
-        // 中间区域：开始 + 固定应用 + 运行中
+        // ===== 左侧：Start + 搜索 + 浏览器/文件管理器/设置 等固定应用 =====
         Row(
-            modifier = Modifier.align(Alignment.Center),
+            modifier = Modifier.align(Alignment.CenterStart),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
         ) {
             StartButton(theme = theme, isOpen = startMenuOpen, onClick = onStartClick)
             Spacer(Modifier.width(4.dp))
 
-            // 搜索按钮（替代原占 140dp 的 SearchBox，避免任务栏积压）
             SearchButton(theme = theme)
             Spacer(Modifier.width(4.dp))
 
-            val pinnedApps = remember { AppRegistry.taskbarApps() }
+            // 仅显示固定在任务栏的核心三件套：浏览器/文件管理器/设置
+            // 紧凑分布，符合 Win11 任务栏视觉
+            val pinnedApps = remember {
+                AppRegistry.taskbarApps().filter { app ->
+                    app.id in setOf("browser", "file_explorer", "settings")
+                }
+            }
             pinnedApps.forEach { app ->
+                val isRunning = wm.windowsForApp(app.id).isNotEmpty()
+                val isActive = isRunning && wm.topWindow()?.let { it.appId == app.id && it.isVisible } == true
                 TaskbarAppIcon(
                     iconAsset = app.iconAsset,
                     theme = theme,
+                    isRunning = isRunning,
+                    isActive = isActive,
                     onClick = {
                         val existing = wm.windowsForApp(app.id)
                         if (existing.isEmpty()) {
@@ -135,22 +158,23 @@ private fun CenterAlignedTaskbar(
                         }
                     }
                 )
-                Spacer(Modifier.width(6.dp))
             }
 
-            // 分隔线（仅在同时有运行中窗口时显示）
+            // 分隔线（仅在同时有运行中非固定窗口时显示）
             val pinnedIds = pinnedApps.map { it.id }.toSet()
             val runningOnly = runningWindows.filter { it.appId !in pinnedIds }
             if (runningOnly.isNotEmpty()) {
+                Spacer(Modifier.width(4.dp))
                 Box(
                     modifier = Modifier
                         .width(1.dp)
                         .height(24.dp)
                         .background(theme.taskbarIconColor.copy(alpha = 0.2f))
                 )
-                Spacer(Modifier.width(6.dp))
+                Spacer(Modifier.width(4.dp))
             }
 
+            // 其他运行中的窗口（按打开顺序）
             runningOnly.forEach { w ->
                 val app = AppRegistry.get(w.appId)
                 if (app != null) {
@@ -161,16 +185,18 @@ private fun CenterAlignedTaskbar(
                         isActive = w.isVisible && wm.topWindow()?.id == w.id,
                         onClick = { wm.taskbarClick(w.id) }
                     )
-                    Spacer(Modifier.width(6.dp))
+                    Spacer(Modifier.width(4.dp))
                 }
             }
         }
 
-        // 右侧系统托盘
+        // ===== 右侧系统托盘（可点击打开 flyout） =====
         SystemTray(
             theme = theme,
             tick = tick,
             showSeconds = showSeconds,
+            onOpenCalendar = onOpenCalendar,
+            onOpenQuickSettings = onOpenQuickSettings,
             modifier = Modifier.align(Alignment.CenterEnd)
         )
     }
@@ -187,7 +213,7 @@ private fun StartButton(theme: WinTheme, isOpen: Boolean, onClick: () -> Unit) {
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center
     ) {
-        // Win 徽标：4 个色块（现代化的圆角设计）
+        // Win 徽标：4 个色块
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(1.dp)
@@ -231,7 +257,7 @@ private fun SearchButton(theme: WinTheme) {
             .size(theme.taskbarHeight - 10.dp)
             .clip(RoundedCornerShape(50))
             .clickable {
-                // 搜索按钮：暂时只是视觉占位，未来可对接开始菜单搜索
+                // 搜索按钮：暂时只是视觉占位
             },
         contentAlignment = Alignment.Center
     ) {
@@ -264,7 +290,7 @@ private fun TaskbarAppIcon(
         contentAlignment = Alignment.Center
     ) {
         IconPainter(iconAsset, size = 22.dp)
-        // 运行中标记：底部圆点指示器（Win11 风格）
+        // 运行中标记：底部圆点指示器
         if (isRunning) {
             Box(
                 modifier = Modifier
@@ -278,25 +304,63 @@ private fun TaskbarAppIcon(
     }
 }
 
+/**
+ * 系统托盘 - 点击 wifi/电池 组合打开 Quick Settings，点击时钟打开 Calendar
+ */
 @Composable
-private fun SystemTray(theme: WinTheme, tick: Long, showSeconds: Boolean, modifier: Modifier = Modifier) {
+private fun SystemTray(
+    theme: WinTheme,
+    tick: Long,
+    showSeconds: Boolean,
+    onOpenCalendar: () -> Unit,
+    onOpenQuickSettings: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val quickInteraction = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+    val calendarInteraction = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+
     Row(
         modifier = modifier
             .padding(end = 12.dp, start = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        // 系统图标组
-        Icon(Icons.Default.Wifi, contentDescription = "WiFi", tint = theme.taskbarClockColor, modifier = Modifier.size(15.dp))
-        Icon(Icons.Default.VolumeUp, contentDescription = "音量", tint = theme.taskbarClockColor, modifier = Modifier.size(15.dp))
-        Icon(Icons.Default.BatteryFull, contentDescription = "电池", tint = theme.taskbarClockColor, modifier = Modifier.size(15.dp))
+        // 系统图标组（点击触发 QuickSettings）
+        Row(
+            modifier = Modifier
+                .clip(RoundedCornerShape(4.dp))
+                .clickable(
+                    interactionSource = quickInteraction,
+                    indication = null,
+                    onClick = onOpenQuickSettings
+                )
+                .padding(horizontal = 4.dp, vertical = 2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Icon(Icons.Default.Wifi, contentDescription = "WiFi", tint = theme.taskbarClockColor, modifier = Modifier.size(15.dp))
+            Icon(Icons.Default.VolumeUp, contentDescription = "音量", tint = theme.taskbarClockColor, modifier = Modifier.size(15.dp))
+            Icon(Icons.Default.BatteryFull, contentDescription = "电池", tint = theme.taskbarClockColor, modifier = Modifier.size(15.dp))
+        }
 
-        // 时钟
-        val timeFormat = SimpleDateFormat(if (showSeconds) "HH:mm:ss" else "HH:mm", Locale.getDefault())
-        val dateFormat = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
-        val timeStr = timeFormat.format(Date(tick))
-        val dateStr = dateFormat.format(Date(tick))
-        Column(horizontalAlignment = Alignment.End) {
+        Spacer(Modifier.width(2.dp))
+
+        // 时钟组（点击触发 Calendar）
+        Column(
+            horizontalAlignment = Alignment.End,
+            modifier = Modifier
+                .clip(RoundedCornerShape(4.dp))
+                .clickable(
+                    interactionSource = calendarInteraction,
+                    indication = null,
+                    onClick = onOpenCalendar
+                )
+                .padding(horizontal = 4.dp, vertical = 2.dp)
+        ) {
+            val timeFormat = SimpleDateFormat(if (showSeconds) "HH:mm:ss" else "HH:mm", Locale.getDefault())
+            val dateFormat = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
+            val timeStr = timeFormat.format(Date(tick))
+            val dateStr = dateFormat.format(Date(tick))
             Text(
                 text = timeStr,
                 color = theme.taskbarClockColor,

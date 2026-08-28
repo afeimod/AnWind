@@ -4,13 +4,14 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Environment
+import android.os.StatFs
 import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.core.content.FileProvider
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
@@ -18,6 +19,7 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -34,6 +36,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.FileProvider
 import com.anwind.core.theme.LocalWinTheme
 import com.anwind.core.window.AppDef
 import com.anwind.core.window.LaunchMode
@@ -57,46 +60,44 @@ val FileExplorerApp = AppDef(
 }
 
 /**
- * 文件资源管理器 - Win11 风格重构
+ * 文件资源管理器 - Win11 风格
  *
- * - 直接访问真实文件系统 /storage/emulated/0/，不再调用 SAF 文件选择器
- * - 侧边栏：图片/音乐/视频/文档/下载/内部存储 等常用目录快捷入口
- * - 顶部：后退/前进/向上/刷新 + 地址栏 + 视图切换 + 安装 APK
- * - 主体：左侧导航栏 + 文件网格/列表
- * - 需 MANAGE_EXTERNAL_STORAGE 权限
+ * - 不再有虚拟 C:\ 演示盘 — 启动后默认进入「此电脑」首页
+ * - 「此电脑」首页：5 个快捷文件夹（文档/下载/音乐/图片/视频） + 内部存储驱动器条目（含容量条）
+ * - 侧边栏：快速访问（下载/文档/图片/音乐/视频） + 此电脑 > 内部存储
+ * - 顶部工具栏：后退/前进/向上/刷新 + 面包屑地址栏 + 视图切换 + 安装 APK
+ * - 主体：左侧导航栏 + 文件网格/列表（黄色文件夹图标网格，符合 Win11 视觉）
+ * - 需 MANAGE_EXTERNAL_STORAGE 权限；未授权时显示授权提示
+ * - 直接读取 /storage/emulated/0，不调用系统文件管理器
  */
 @Composable
 private fun FileExplorerContent(scope: WindowContentScope) {
     val theme = LocalWinTheme.current
     val context = LocalContext.current
-    val vfs = remember { VirtualFileSystem(context) }
 
-    // 虚拟 C:\ 路径
-    var currentPath by remember { mutableStateOf("C:\\") }
-    // 真实路径栈：用于后退/前进
+    // 真实存储根：/storage/emulated/0
+    val storageRoot = remember { File("/storage/emulated/0/") }
+
+    // "此电脑" 首页标志 —— true 时显示 5 个快捷文件夹 + 驱动器
+    var isThisPcHome by remember { mutableStateOf(true) }
+    // 当前真实目录（仅在 isThisPcHome = false 时使用）
+    var currentRealDir by remember { mutableStateOf<File?>(null) }
+    // 后退 / 前进 栈
     var backStack by remember { mutableStateOf<List<File>>(emptyList()) }
     var forwardStack by remember { mutableStateOf<List<File>>(emptyList()) }
-    // 当前真实路径（null = 浏览虚拟 C:\）
-    var currentRealDir by remember { mutableStateOf<File?>(null) }
-    val browsingReal = currentRealDir != null
 
     var isGridView by remember { mutableStateOf(true) }
+    var tick by remember { mutableStateOf(0) } // 手动触发刷新
 
     // MANAGE_EXTERNAL_STORAGE 权限检查
     var hasAllFilesAccess by remember { mutableStateOf(Environment.isExternalStorageManager()) }
     val allFilesPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
     ) {
-        // 用户从系统设置返回后重新检查权限
         hasAllFilesAccess = Environment.isExternalStorageManager()
-        if (hasAllFilesAccess && currentRealDir == null) {
-            // 授权后直接进入内部存储
-            val root = File("/storage/emulated/0/")
-            backStack = emptyList()
-            forwardStack = emptyList()
-            currentRealDir = root
-        }
     }
+
+    @Suppress("UNUSED_PARAMETER")
     fun requestAllFilesAccess() {
         runCatching {
             // Android 11+ (API 30) 提供按应用授权的入口；旧版本会抛 NoSuchField，进入 fallback
@@ -109,7 +110,6 @@ private fun FileExplorerContent(scope: WindowContentScope) {
             }
             allFilesPermissionLauncher.launch(intent)
         }.onFailure {
-            // 回退到通用“所有文件访问权限”设置（API 26+）
             runCatching {
                 val intent = Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION).apply {
                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -121,12 +121,12 @@ private fun FileExplorerContent(scope: WindowContentScope) {
         }
     }
 
-    // 虚拟文件系统列表
-    val virtualItems by produceState(initialValue = emptyList<VirtualFile>(), currentPath) {
-        value = withContext(Dispatchers.IO) { vfs.list(currentPath) }
-    }
-    // 真实文件列表
-    val realItems by produceState(initialValue = emptyList<File>(), currentRealDir) {
+    // 当前目录的文件列表（只在浏览真实目录时计算）
+    val realItems by produceState(initialValue = emptyList<File>(), currentRealDir, tick, isThisPcHome) {
+        if (isThisPcHome) {
+            value = emptyList()
+            return@produceState
+        }
         val dir = currentRealDir ?: return@produceState
         value = withContext(Dispatchers.IO) {
             runCatching { dir.listFiles()?.toList() ?: emptyList() }.getOrDefault(emptyList())
@@ -134,115 +134,87 @@ private fun FileExplorerContent(scope: WindowContentScope) {
         }
     }
 
-    // APK 文件选择器（用于安装）
+    // APK 文件选择器（手动安装）
     val apkPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri: Uri? ->
         if (uri != null) installApk(context, uri)
     }
 
-    fun navigateToReal(target: File) {
-        val current = currentRealDir
-        if (current != null) backStack = backStack + current
-        else backStack = backStack // 跳过虚拟到真实的过渡
+    // ===== 导航 =====
+    fun openFolder(target: File) {
+        if (!hasAllFilesAccess) { requestAllFilesAccess(); return }
+        if (!target.exists() || !target.isDirectory) {
+            Toast.makeText(context, "目录不存在: ${target.absolutePath}", Toast.LENGTH_SHORT).show()
+            return
+        }
+        backStack = backStack + listOfNotNull(currentRealDir)
         forwardStack = emptyList()
         currentRealDir = target
+        isThisPcHome = false
     }
 
-    fun navigateToVirtual(path: String) {
-        // 切换到虚拟路径前清空真实栈
-        currentRealDir?.let { backStack = backStack + it }
-        forwardStack = emptyList()
+    fun goHome() {
+        if (!isThisPcHome) {
+            backStack = backStack + listOfNotNull(currentRealDir)
+            forwardStack = emptyList()
+        }
+        isThisPcHome = true
         currentRealDir = null
-        currentPath = path
     }
 
     fun goBack() {
-        if (backStack.isEmpty()) {
-            // 在真实路径但没有后退历史，回到虚拟 C:\
-            if (browsingReal) {
-                forwardStack = forwardStack + (currentRealDir ?: return)
-                currentRealDir = null
-                currentPath = "C:\\"
-            }
-            return
-        }
-        val current = currentRealDir
-        if (current != null) forwardStack = forwardStack + current
+        if (backStack.isEmpty()) return
+        forwardStack = forwardStack + listOfNotNull(currentRealDir)
         val prev = backStack.last()
         backStack = backStack.dropLast(1)
-        currentRealDir = prev
-        if (prev.parentFile == null || backStack.isEmpty()) {
-            // 退到根路径
+        if (prev == null) {
+            // 退到首页
+            isThisPcHome = true
+            currentRealDir = null
+        } else {
+            isThisPcHome = false
+            currentRealDir = prev
         }
     }
 
     fun goForward() {
         if (forwardStack.isEmpty()) return
-        val current = currentRealDir
-        if (current != null) backStack = backStack + current
+        backStack = backStack + listOfNotNull(currentRealDir)
         val next = forwardStack.last()
         forwardStack = forwardStack.dropLast(1)
-        currentRealDir = next
+        if (next == null) {
+            isThisPcHome = true
+            currentRealDir = null
+        } else {
+            isThisPcHome = false
+            currentRealDir = next
+        }
     }
 
     fun goUp() {
-        val current = currentRealDir
-        if (current != null) {
-            val parent = current.parentFile
-            if (parent != null && parent.canRead()) {
-                backStack = backStack + current
-                forwardStack = emptyList()
-                currentRealDir = parent
-            } else if (parent == null || !parent.exists()) {
-                // 已经在根，回到虚拟 C:\
-                backStack = backStack + current
-                forwardStack = emptyList()
-                currentRealDir = null
-                currentPath = "C:\\"
-            }
+        if (isThisPcHome) return
+        val current = currentRealDir ?: run { goHome(); return }
+        // /storage/emulated/0 的父级不算可读目录；退到首页
+        val parent = current.parentFile
+        if (parent == null || !parent.canRead() || parent.absolutePath == "/storage/emulated") {
+            goHome()
         } else {
-            vfs.parent(currentPath)?.let { navigateToVirtual(it) }
+            backStack = backStack + current
+            forwardStack = emptyList()
+            currentRealDir = parent
+            isThisPcHome = false
         }
     }
 
     fun refresh() {
-        // 触发 produceState 重计算
-        val cur = currentRealDir
-        currentRealDir = null
-        currentRealDir = cur
-        val p = currentPath
-        currentPath = ""
-        currentPath = p
+        tick++
     }
 
-    // 内部存储根目录
-    val storageRoot = remember { File("/storage/emulated/0/") }
-    fun tryEnterRealStorage() {
-        if (!hasAllFilesAccess) {
-            requestAllFilesAccess()
-            return
-        }
-        backStack = if (currentRealDir != null) backStack + currentRealDir!! else backStack
-        forwardStack = emptyList()
-        currentRealDir = storageRoot
-    }
-
-    fun browseRealDir(target: File) {
-        if (!hasAllFilesAccess) {
-            requestAllFilesAccess()
-            return
-        }
-        if (target.exists() && target.isDirectory) {
-            navigateToReal(target)
-        } else {
-            Toast.makeText(context, "目录不存在: ${target.absolutePath}", Toast.LENGTH_SHORT).show()
-        }
-    }
-
+    // ===== 布局 =====
     Column(modifier = Modifier.fillMaxSize().background(theme.windowBackgroundColor)) {
 
-        // ===== 顶部工具栏（Win11 风格） =====
+        // ===== 顶部工具栏 =====
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -251,14 +223,14 @@ private fun FileExplorerContent(scope: WindowContentScope) {
                 .padding(horizontal = 8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            ToolbarIconButton(Icons.Default.ArrowBack, "后退", theme) { goBack() }
-            ToolbarIconButton(Icons.Default.ArrowForward, "前进", theme) { goForward() }
-            ToolbarIconButton(Icons.Default.KeyboardArrowUp, "向上", theme) { goUp() }
+            ToolbarIconButton(Icons.Default.ArrowBack, "后退", theme, enabled = backStack.isNotEmpty()) { goBack() }
+            ToolbarIconButton(Icons.Default.ArrowForward, "前进", theme, enabled = forwardStack.isNotEmpty()) { goForward() }
+            ToolbarIconButton(Icons.Default.KeyboardArrowUp, "向上", theme, enabled = !isThisPcHome) { goUp() }
             ToolbarIconButton(Icons.Default.Refresh, "刷新", theme) { refresh() }
 
             Spacer(Modifier.width(8.dp))
 
-            // 地址栏（Win11 风格面包屑导航）
+            // 地址栏（面包屑）
             Box(
                 modifier = Modifier
                     .weight(1f)
@@ -270,13 +242,16 @@ private fun FileExplorerContent(scope: WindowContentScope) {
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(
-                        Icons.Default.Computer,
-                        null,
-                        tint = theme.accentColor,
-                        modifier = Modifier.size(14.dp)
+                        Icons.Default.Computer, null,
+                        tint = theme.accentColor, modifier = Modifier.size(14.dp)
                     )
                     Spacer(Modifier.width(6.dp))
-                    val displayPath = currentRealDir?.absolutePath ?: currentPath
+                    val displayPath = if (isThisPcHome) {
+                        "此电脑"
+                    } else {
+                        "此电脑 > 内部存储" +
+                                (currentRealDir?.absolutePath?.removePrefix("/storage/emulated/0") ?: "")
+                    }
                     Text(
                         text = displayPath,
                         color = if (theme.isDark) Color.White else Color.Black,
@@ -289,12 +264,29 @@ private fun FileExplorerContent(scope: WindowContentScope) {
 
             Spacer(Modifier.width(8.dp))
 
-            // 视图切换：网格 / 列表
+            // 搜索框（占位，暂时不可输入）
+            Box(
+                modifier = Modifier
+                    .width(160.dp)
+                    .height(30.dp)
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(theme.cardBackgroundColor)
+                    .padding(horizontal = 10.dp),
+                contentAlignment = Alignment.CenterStart
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Search, null, tint = theme.secondaryTextColor, modifier = Modifier.size(14.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("搜索", color = theme.secondaryTextColor, fontSize = 12.sp)
+                }
+            }
+
+            Spacer(Modifier.width(8.dp))
+
             ToolbarIconButton(
                 if (isGridView) Icons.Default.ViewList else Icons.Default.GridView,
                 "切换视图", theme
             ) { isGridView = !isGridView }
-            // 安装 APK
             ToolbarIconButton(Icons.Default.Add, "安装 APK", theme) {
                 apkPickerLauncher.launch(arrayOf("application/vnd.android.package-archive"))
             }
@@ -302,7 +294,7 @@ private fun FileExplorerContent(scope: WindowContentScope) {
 
         // ===== 主体：左侧栏 + 文件区 =====
         Row(modifier = Modifier.weight(1f)) {
-            // 左侧导航栏
+            // ===== 左侧导航栏 =====
             Column(
                 modifier = Modifier
                     .width(200.dp)
@@ -312,95 +304,62 @@ private fun FileExplorerContent(scope: WindowContentScope) {
                     .verticalScroll(rememberScrollState())
             ) {
                 NavSection("快速访问")
-                SidebarItem("🏠 主页", currentPath == "C:\\" && !browsingReal, theme) {
-                    navigateToVirtual("C:\\")
-                }
-                SidebarItem("🖼️ 图片", false, theme) {
-                    browseRealDir(File(storageRoot, "Pictures"))
-                }
-                SidebarItem("🎵 音乐", false, theme) {
-                    browseRealDir(File(storageRoot, "Music"))
-                }
-                SidebarItem("📺 视频", false, theme) {
-                    browseRealDir(File(storageRoot, "Movies"))
+                SidebarItem("⬇️ 下载", false, theme) {
+                    openFolder(File(storageRoot, "Download"))
                 }
                 SidebarItem("📄 文档", false, theme) {
-                    browseRealDir(File(storageRoot, "Documents"))
+                    openFolder(File(storageRoot, "Documents"))
                 }
-                SidebarItem("⬇️ 下载", false, theme) {
-                    browseRealDir(File(storageRoot, "Download"))
+                SidebarItem("🖼️ 图片", false, theme) {
+                    openFolder(File(storageRoot, "Pictures"))
+                }
+                SidebarItem("🎵 音乐", false, theme) {
+                    openFolder(File(storageRoot, "Music"))
+                }
+                SidebarItem("🎬 视频", false, theme) {
+                    openFolder(File(storageRoot, "Movies"))
                 }
                 SidebarItem("📷 相册 (DCIM)", false, theme) {
-                    browseRealDir(File(storageRoot, "DCIM"))
+                    openFolder(File(storageRoot, "DCIM"))
                 }
 
                 Spacer(Modifier.height(12.dp))
                 NavSection("设备")
-                SidebarItem("💻 此电脑", !browsingReal && currentPath == "C:\\", theme) {
-                    navigateToVirtual("C:\\")
-                }
+                SidebarItem("💻 此电脑", isThisPcHome, theme) { goHome() }
                 SidebarItem(
                     "📱 内部存储",
-                    browsingReal && currentRealDir?.absolutePath == storageRoot.absolutePath,
+                    !isThisPcHome && currentRealDir?.absolutePath == storageRoot.absolutePath,
                     theme
-                ) { tryEnterRealStorage() }
-                SidebarItem("💿 C: 系统盘", !browsingReal && currentPath == "C:\\", theme) {
-                    navigateToVirtual("C:\\")
-                }
+                ) { openFolder(storageRoot) }
             }
 
             // ===== 文件区 =====
-            Box(modifier = Modifier.weight(1f).fillMaxHeight().padding(8.dp)) {
-                if (browsingReal) {
-                    if (!hasAllFilesAccess) {
-                        // 未授权，显示授权提示
-                        PermissionRequiredState(theme) { requestAllFilesAccess() }
-                    } else if (realItems.isEmpty()) {
-                        EmptyState(theme, "此文件夹为空")
-                    } else if (isGridView) {
-                        RealFileGrid(realItems, theme) { file ->
-                            if (file.isDirectory) navigateToReal(file)
-                            else openRealFile(context, file)
-                        }
-                    } else {
-                        RealFileList(realItems, theme) { file ->
-                            if (file.isDirectory) navigateToReal(file)
-                            else openRealFile(context, file)
-                        }
-                    }
-                } else if (virtualItems.isEmpty()) {
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxHeight()
+                    .padding(12.dp)
+            ) {
+                if (!hasAllFilesAccess) {
+                    PermissionRequiredState(theme) { requestAllFilesAccess() }
+                } else if (isThisPcHome) {
+                    // ===== 此电脑 首页 =====
+                    ThisPcHomeView(
+                        storageRoot = storageRoot,
+                        theme = theme,
+                        onOpenFolder = { openFolder(it) }
+                    )
+                } else if (realItems.isEmpty()) {
                     EmptyState(theme, "此文件夹为空")
                 } else if (isGridView) {
-                    VirtualFileGrid(virtualItems, theme) { file ->
-                        if (file.isDirectory) {
-                            currentPath = file.path
-                        } else if (file.extension == "html" || file.extension == "htm") {
-                            WindowManager.get().open(
-                                appId = "browser", title = "Browser",
-                                launchMode = LaunchMode.FLOATING,
-                                launchArgs = mapOf("url" to "content://${file.assetPath}")
-                            )
-                        } else if (file.extension == "apk" && file.realUri != null) {
-                            installApk(context, file.realUri)
-                        } else {
-                            Toast.makeText(context, "暂不支持打开该类型文件", Toast.LENGTH_SHORT).show()
-                        }
+                    RealFileGrid(realItems, theme) { file ->
+                        if (file.isDirectory) openFolder(file)
+                        else openRealFile(context, file)
                     }
                 } else {
-                    VirtualFileList(virtualItems, theme) { file ->
-                        if (file.isDirectory) {
-                            currentPath = file.path
-                        } else if (file.extension == "html" || file.extension == "htm") {
-                            WindowManager.get().open(
-                                appId = "browser", title = "Browser",
-                                launchMode = LaunchMode.FLOATING,
-                                launchArgs = mapOf("url" to "content://${file.assetPath}")
-                            )
-                        } else if (file.extension == "apk" && file.realUri != null) {
-                            installApk(context, file.realUri)
-                        } else {
-                            Toast.makeText(context, "暂不支持打开该类型文件", Toast.LENGTH_SHORT).show()
-                        }
+                    RealFileList(realItems, theme) { file ->
+                        if (file.isDirectory) openFolder(file)
+                        else openRealFile(context, file)
                     }
                 }
             }
@@ -416,19 +375,192 @@ private fun FileExplorerContent(scope: WindowContentScope) {
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
-                if (browsingReal) "${realItems.size} 个项目" else "${virtualItems.size} 个项目",
+                text = if (isThisPcHome) "此电脑" else "${realItems.size} 个项目",
                 color = if (theme.isDark) Color.White else Color.Black,
                 fontSize = 11.sp
             )
             Spacer(Modifier.weight(1f))
             Text(
-                if (isGridView) "网格视图" else "列表视图",
+                text = if (isGridView) "网格视图" else "列表视图",
                 color = theme.secondaryTextColor,
                 fontSize = 11.sp
             )
         }
     }
 }
+
+// ============================================================
+// 此电脑首页：5 个快捷文件夹 + 内部存储驱动器条目
+// ============================================================
+@Composable
+private fun ThisPcHomeView(
+    storageRoot: File,
+    theme: com.anwind.core.theme.WinTheme,
+    onOpenFolder: (File) -> Unit
+) {
+    val context = LocalContext.current
+    val scrollState = rememberScrollState()
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(scrollState)
+    ) {
+        // ===== 文件夹区 =====
+        SectionHeader("文件夹 (5)")
+        Spacer(Modifier.height(6.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            val folders = listOf(
+                SpecialFolder("文档", "📄", File(storageRoot, "Documents")),
+                SpecialFolder("下载", "⬇️", File(storageRoot, "Download")),
+                SpecialFolder("音乐", "🎵", File(storageRoot, "Music")),
+                SpecialFolder("图片", "🖼️", File(storageRoot, "Pictures")),
+                SpecialFolder("视频", "🎬", File(storageRoot, "Movies"))
+            )
+            folders.forEach { folder ->
+                SpecialFolderCell(folder, theme) { onOpenFolder(folder.file) }
+            }
+        }
+
+        Spacer(Modifier.height(24.dp))
+
+        // ===== 设备和驱动器区 =====
+        SectionHeader("设备和驱动器")
+        Spacer(Modifier.height(6.dp))
+        DriveCell(
+            label = "内部存储 (C:)",
+            theme = theme,
+            storageRoot = storageRoot,
+            onClick = { onOpenFolder(storageRoot) }
+        )
+    }
+}
+
+private data class SpecialFolder(val name: String, val icon: String, val file: File)
+
+@Composable
+private fun SectionHeader(title: String) {
+    val theme = LocalWinTheme.current
+    Text(
+        text = title,
+        color = if (theme.isDark) Color.White else Color.Black,
+        fontSize = 13.sp,
+        fontWeight = FontWeight.SemiBold,
+        modifier = Modifier.padding(vertical = 4.dp)
+    )
+}
+
+@Composable
+private fun SpecialFolderCell(folder: SpecialFolder, theme: com.anwind.core.theme.WinTheme, onClick: () -> Unit) {
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = Modifier
+            .width(96.dp)
+            .clip(RoundedCornerShape(6.dp))
+            .clickable(onClick = onClick)
+            .padding(8.dp)
+    ) {
+        // 文件夹图标（黄色 Win11 风格）
+        Box(
+            modifier = Modifier
+                .size(56.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                Icons.Default.Folder, null,
+                tint = Color(0xFFDCA84A),
+                modifier = Modifier.size(56.dp)
+            )
+            // 在图标中央叠一个 emoji 标识（符合 Win11 的文件夹封面预览风格）
+            Text(text = folder.icon, fontSize = 18.sp)
+        }
+        Spacer(Modifier.height(6.dp))
+        Text(
+            text = folder.name,
+            color = if (theme.isDark) Color.White else Color.Black,
+            fontSize = 11.sp,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            textAlign = androidx.compose.ui.text.style.TextAlign.Center
+        )
+    }
+}
+
+@Composable
+private fun DriveCell(
+    label: String,
+    theme: com.anwind.core.theme.WinTheme,
+    storageRoot: File,
+    onClick: () -> Unit
+) {
+    // 计算磁盘容量
+    val (totalGB, valAvailGB) = remember(storageRoot.absolutePath) {
+        runCatching {
+            val stat = StatFs(storageRoot.absolutePath)
+            val total = stat.totalBytes
+            val avail = stat.availableBytes
+            Pair(total / (1024L * 1024L * 1024L), avail / (1024L * 1024L * 1024L))
+        }.getOrDefault(Pair(0L, 0L))
+    }
+    val usedGB = totalGB - valAvailGB
+    val usagePct = if (totalGB > 0) (usedGB.toFloat() / totalGB.toFloat()).coerceIn(0f, 1f) else 0f
+    val usagePctInt = (usagePct * 100).toInt()
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(6.dp))
+            .clickable(onClick = onClick)
+            .padding(vertical = 8.dp, horizontal = 4.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        // 驱动器图标
+        Icon(
+            Icons.Default.Storage, null,
+            tint = if (theme.isDark) Color(0xFF9CC4E8) else Color(0xFF0078D4),
+            modifier = Modifier.size(48.dp)
+        )
+        Spacer(Modifier.width(12.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = label,
+                color = if (theme.isDark) Color.White else Color.Black,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Medium
+            )
+            Spacer(Modifier.height(6.dp))
+            // 容量条
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(6.dp)
+                    .clip(RoundedCornerShape(3.dp))
+                    .background(theme.cardBackgroundColor)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth(usagePct)
+                        .fillMaxHeight()
+                        .clip(RoundedCornerShape(3.dp))
+                        .background(theme.accentColor)
+                )
+            }
+            Spacer(Modifier.height(4.dp))
+            Text(
+                text = "$valAvailGB GB 可用（共 $totalGB GB）",
+                color = theme.secondaryTextColor,
+                fontSize = 11.sp
+            )
+        }
+    }
+}
+
+// ============================================================
+// 通用 UI 子组件
+// ============================================================
 
 @Composable
 private fun NavSection(title: String) {
@@ -443,15 +575,26 @@ private fun NavSection(title: String) {
 }
 
 @Composable
-private fun ToolbarIconButton(icon: androidx.compose.ui.graphics.vector.ImageVector, desc: String, theme: com.anwind.core.theme.WinTheme, onClick: () -> Unit) {
+private fun ToolbarIconButton(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    desc: String,
+    theme: com.anwind.core.theme.WinTheme,
+    enabled: Boolean = true,
+    onClick: () -> Unit
+) {
     Box(
         modifier = Modifier
             .size(34.dp)
             .clip(RoundedCornerShape(4.dp))
-            .clickable(onClick = onClick),
+            .clickable(enabled = enabled, onClick = onClick),
         contentAlignment = Alignment.Center
     ) {
-        Icon(icon, desc, tint = if (theme.isDark) Color.White else Color.Black, modifier = Modifier.size(16.dp))
+        Icon(
+            icon, desc,
+            tint = if (!enabled) theme.secondaryTextColor.copy(alpha = 0.4f)
+                   else if (theme.isDark) Color.White else Color.Black,
+            modifier = Modifier.size(16.dp)
+        )
     }
 }
 
@@ -469,7 +612,9 @@ private fun SidebarItem(label: String, active: Boolean, theme: com.anwind.core.t
             label,
             color = if (active) theme.accentColor else (if (theme.isDark) Color.White else Color.Black),
             fontSize = 12.sp,
-            fontWeight = if (active) FontWeight.Medium else FontWeight.Normal
+            fontWeight = if (active) FontWeight.Medium else FontWeight.Normal,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
         )
     }
 }
@@ -513,51 +658,13 @@ private fun PermissionRequiredState(theme: com.anwind.core.theme.WinTheme, onGra
                 textAlign = androidx.compose.ui.text.style.TextAlign.Center
             )
             Spacer(Modifier.height(16.dp))
-            Button(onClick = onGrant) {
-                Text("授予权限")
-            }
+            Button(onClick = onGrant) { Text("授予权限") }
         }
     }
 }
 
 // ============================================================
-// 虚拟文件系统（C:\ 演示目录）的网格/列表渲染
-// ============================================================
-
-@Composable
-private fun VirtualFileGrid(items: List<VirtualFile>, theme: com.anwind.core.theme.WinTheme, onClick: (VirtualFile) -> Unit) {
-    LazyVerticalGrid(
-        columns = GridCells.Adaptive(minSize = 100.dp),
-        verticalArrangement = Arrangement.spacedBy(4.dp),
-        horizontalArrangement = Arrangement.spacedBy(4.dp)
-    ) {
-        items(items, key = { it.path }) { item ->
-            FileGridCell(
-                name = item.name,
-                isDir = item.isDirectory,
-                extension = item.extension,
-                sizeText = if (item.isDirectory) "" else item.sizeText,
-                theme = theme
-            ) { onClick(item) }
-        }
-    }
-}
-
-@Composable
-private fun VirtualFileList(items: List<VirtualFile>, theme: com.anwind.core.theme.WinTheme, onClick: (VirtualFile) -> Unit) {
-    LazyColumn {
-        items(items, key = { it.path }) { item ->
-            FileListRow(
-                name = item.name, isDir = item.isDirectory, extension = item.extension,
-                sizeText = if (item.isDirectory) "" else item.sizeText,
-                theme = theme
-            ) { onClick(item) }
-        }
-    }
-}
-
-// ============================================================
-// 真实文件系统（File）的网格/列表渲染
+// 真实文件系统的网格/列表渲染
 // ============================================================
 
 @Composable
@@ -617,10 +724,7 @@ private fun FileGridCell(
                     modifier = Modifier.size(56.dp)
                 )
             } else {
-                Text(
-                    text = iconForExtension(extension),
-                    fontSize = 36.sp
-                )
+                Text(text = iconForExtension(extension), fontSize = 36.sp)
             }
         }
         Spacer(Modifier.height(6.dp))
@@ -634,11 +738,7 @@ private fun FileGridCell(
         )
         if (sizeText.isNotEmpty()) {
             Spacer(Modifier.height(2.dp))
-            Text(
-                sizeText,
-                color = theme.secondaryTextColor,
-                fontSize = 9.sp
-            )
+            Text(sizeText, color = theme.secondaryTextColor, fontSize = 9.sp)
         }
     }
 }
@@ -689,7 +789,6 @@ private fun openRealFile(context: Context, file: File) {
     try {
         when {
             ext in listOf("jpg", "jpeg", "png", "gif", "bmp", "webp") -> {
-                // 用内置图片查看器
                 WindowManager.get().open(
                     appId = "image_viewer",
                     title = file.name,
@@ -714,7 +813,6 @@ private fun openRealFile(context: Context, file: File) {
                 installApk(context, uri)
             }
             else -> {
-                // 用 mimeType + FileProvider 启动系统 ACTION_VIEW
                 val mime = mimeForExtension(ext)
                 val uri = FileProvider.getUriForFile(
                     context, "${context.packageName}.fileprovider", file

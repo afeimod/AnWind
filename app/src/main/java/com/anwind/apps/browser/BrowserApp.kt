@@ -104,8 +104,8 @@ private fun BrowserContent(scope: WindowContentScope) {
         val next = if (uaMode == "desktop") "mobile" else "desktop"
         scope0.launch { app.settingsStore.setBrowserUaMode(next) }
     }
-    // 用户设置的主页
-    val defaultHome by app.settingsStore.defaultBrowserHome.collectAsState(initial = "https://www.bing.com")
+    // 用户设置的主页（默认 AnWind 速度页 anwind://home，符合用户截图 1 的预期）
+    val defaultHome by app.settingsStore.defaultBrowserHome.collectAsState(initial = "anwind://home")
 
     // 启动时打开初始标签
     LaunchedEffect(Unit) {
@@ -116,7 +116,7 @@ private fun BrowserContent(scope: WindowContentScope) {
         }
         val tab = tabManager.openTab(initialUrl)
         activeTabId = tab.id
-        addressInput = initialUrl
+        addressInput = if (initialUrl == "anwind://home") "" else initialUrl
     }
 
     Column(modifier = Modifier.fillMaxSize().background(theme.windowBackgroundColor)) {
@@ -151,18 +151,26 @@ private fun BrowserContent(scope: WindowContentScope) {
             onForward = { tabManager.getTab(activeTabId)?.goForward() },
             onRefresh = { tabManager.getTab(activeTabId)?.refresh() },
             onHome = {
-                // 返回用户设置的主页
+                // 返回用户设置的主页（默认 anwind://home 速度页）
                 tabManager.getTab(activeTabId)?.loadUrl(defaultHome)
-                addressInput = defaultHome
+                addressInput = if (defaultHome == "anwind://home") "" else defaultHome
             },
             onGo = {
                 val url = normalizeUrl(addressInput)
-                tabManager.getTab(activeTabId)?.loadUrl(url)
-                scope0.launch {
-                    withContext(Dispatchers.IO) {
-                        app.database.historyDao().insert(
-                            HistoryEntity(title = url, url = url)
-                        )
+                val tab = tabManager.getTab(activeTabId)
+                if (tab != null) {
+                    // 关键：更新 tab.url 会让条件分支切换到 WebViewContainer，AndroidView 重建并加载新 URL
+                    tab.url = url
+                    tab.title = url
+                    // 如果 WebView 已存在，直接命令其加载；否则切换到 WebViewContainer 后由 factory 块加载
+                    tab.webView?.loadUrl(url)
+                    addressInput = url
+                    scope0.launch {
+                        withContext(Dispatchers.IO) {
+                            app.database.historyDao().insert(
+                                HistoryEntity(title = url, url = url)
+                            )
+                        }
                     }
                 }
             },
@@ -201,13 +209,20 @@ private fun BrowserContent(scope: WindowContentScope) {
                     BrowserHomePage(
                         onNavigate = { target ->
                             val finalUrl = normalizeUrl(target)
-                            tabManager.getTab(activeTabId)?.loadUrl(finalUrl)
-                            addressInput = finalUrl
-                            scope0.launch {
-                                withContext(Dispatchers.IO) {
-                                    app.database.historyDao().insert(
-                                        HistoryEntity(title = finalUrl, url = finalUrl)
-                                    )
+                            val tab = tabManager.getTab(activeTabId)
+                            if (tab != null) {
+                                // 关键：从速度页跳到真实 URL，更新 tab.url 触发条件分支切换，
+                                // AndroidView factory 块会创建新 WebView 并调用 loadUrl(url)。
+                                tab.url = finalUrl
+                                tab.title = finalUrl
+                                tab.webView?.loadUrl(finalUrl)
+                                addressInput = finalUrl
+                                scope0.launch {
+                                    withContext(Dispatchers.IO) {
+                                        app.database.historyDao().insert(
+                                            HistoryEntity(title = finalUrl, url = finalUrl)
+                                        )
+                                    }
                                 }
                             }
                         }
