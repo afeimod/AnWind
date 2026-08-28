@@ -2,6 +2,8 @@ package com.anwind.apps.filemanager
 
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Environment
 import android.os.StatFs
@@ -9,6 +11,7 @@ import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -31,9 +34,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.FileProvider
@@ -212,7 +218,14 @@ private fun FileExplorerContent(scope: WindowContentScope) {
     }
 
     // ===== 布局 =====
-    Column(modifier = Modifier.fillMaxSize().background(theme.windowBackgroundColor)) {
+    BoxWithConstraints(modifier = Modifier.fillMaxSize().background(theme.windowBackgroundColor)) {
+        // 窄屏（手机竖屏）阈值：窗口宽度 < 600dp 时启用窄屏布局
+        val isNarrow = maxWidth < 600.dp
+        // 侧边栏开关：null = 跟随窗口宽度（宽屏默认展开，窄屏默认收起）
+        var sidebarOverride by remember { mutableStateOf<Boolean?>(null) }
+        val showSidebar = sidebarOverride ?: !isNarrow
+
+    Column(modifier = Modifier.fillMaxSize()) {
 
         // ===== 顶部工具栏 =====
         Row(
@@ -223,6 +236,11 @@ private fun FileExplorerContent(scope: WindowContentScope) {
                 .padding(horizontal = 8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
+            // 侧边栏开关（窄屏适配：竖屏时可收起侧栏，把空间让给文件区）
+            ToolbarIconButton(
+                if (showSidebar) Icons.Default.Menu else Icons.Default.MenuOpen,
+                "侧边栏", theme
+            ) { sidebarOverride = !showSidebar }
             ToolbarIconButton(Icons.Default.ArrowBack, "后退", theme, enabled = backStack.isNotEmpty()) { goBack() }
             ToolbarIconButton(Icons.Default.ArrowForward, "前进", theme, enabled = forwardStack.isNotEmpty()) { goForward() }
             ToolbarIconButton(Icons.Default.KeyboardArrowUp, "向上", theme, enabled = !isThisPcHome) { goUp() }
@@ -264,24 +282,25 @@ private fun FileExplorerContent(scope: WindowContentScope) {
 
             Spacer(Modifier.width(8.dp))
 
-            // 搜索框（占位，暂时不可输入）
-            Box(
-                modifier = Modifier
-                    .width(160.dp)
-                    .height(30.dp)
-                    .clip(RoundedCornerShape(6.dp))
-                    .background(theme.cardBackgroundColor)
-                    .padding(horizontal = 10.dp),
-                contentAlignment = Alignment.CenterStart
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.Search, null, tint = theme.secondaryTextColor, modifier = Modifier.size(14.dp))
-                    Spacer(Modifier.width(6.dp))
-                    Text("搜索", color = theme.secondaryTextColor, fontSize = 12.sp)
+            // 搜索框（窄屏隐藏，避免挤占地址栏空间）
+            if (!isNarrow) {
+                Box(
+                    modifier = Modifier
+                        .width(160.dp)
+                        .height(30.dp)
+                        .clip(RoundedCornerShape(6.dp))
+                        .background(theme.cardBackgroundColor)
+                        .padding(horizontal = 10.dp),
+                    contentAlignment = Alignment.CenterStart
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.Search, null, tint = theme.secondaryTextColor, modifier = Modifier.size(14.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("搜索", color = theme.secondaryTextColor, fontSize = 12.sp)
+                    }
                 }
+                Spacer(Modifier.width(8.dp))
             }
-
-            Spacer(Modifier.width(8.dp))
 
             ToolbarIconButton(
                 if (isGridView) Icons.Default.ViewList else Icons.Default.GridView,
@@ -294,10 +313,11 @@ private fun FileExplorerContent(scope: WindowContentScope) {
 
         // ===== 主体：左侧栏 + 文件区 =====
         Row(modifier = Modifier.weight(1f)) {
-            // ===== 左侧导航栏 =====
+            // ===== 左侧导航栏（窄屏可收起） =====
+            if (showSidebar) {
             Column(
                 modifier = Modifier
-                    .width(200.dp)
+                    .width(if (isNarrow) 168.dp else 200.dp)
                     .fillMaxHeight()
                     .background(theme.cardBackgroundColor)
                     .padding(8.dp)
@@ -331,6 +351,7 @@ private fun FileExplorerContent(scope: WindowContentScope) {
                     !isThisPcHome && currentRealDir?.absolutePath == storageRoot.absolutePath,
                     theme
                 ) { openFolder(storageRoot) }
+            }
             }
 
             // ===== 文件区 =====
@@ -387,6 +408,7 @@ private fun FileExplorerContent(scope: WindowContentScope) {
             )
         }
     }
+    }
 }
 
 // ============================================================
@@ -406,11 +428,13 @@ private fun ThisPcHomeView(
             .fillMaxSize()
             .verticalScroll(scrollState)
     ) {
-        // ===== 文件夹区 =====
+        // ===== 文件夹区（窄屏可横向滑动，解决竖屏图标显示不全） =====
         SectionHeader("文件夹 (5)")
         Spacer(Modifier.height(6.dp))
         Row(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
             horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             val folders = listOf(
@@ -680,6 +704,7 @@ private fun RealFileGrid(items: List<File>, theme: com.anwind.core.theme.WinThem
                 isDir = item.isDirectory,
                 extension = item.extension,
                 sizeText = if (item.isDirectory) "" else formatSize(item.length()),
+                imagePath = if (!item.isDirectory && isImageExtension(item.extension)) item.absolutePath else null,
                 theme = theme
             ) { onClick(item) }
         }
@@ -694,6 +719,7 @@ private fun RealFileList(items: List<File>, theme: com.anwind.core.theme.WinThem
                 name = item.name, isDir = item.isDirectory,
                 extension = item.extension,
                 sizeText = if (item.isDirectory) "" else formatSize(item.length()),
+                imagePath = if (!item.isDirectory && isImageExtension(item.extension)) item.absolutePath else null,
                 theme = theme
             ) { onClick(item) }
         }
@@ -703,6 +729,7 @@ private fun RealFileList(items: List<File>, theme: com.anwind.core.theme.WinThem
 @Composable
 private fun FileGridCell(
     name: String, isDir: Boolean, extension: String, sizeText: String,
+    imagePath: String? = null,
     theme: com.anwind.core.theme.WinTheme, onClick: () -> Unit
 ) {
     Column(
@@ -723,6 +750,9 @@ private fun FileGridCell(
                     tint = Color(0xFFDCA84A),
                     modifier = Modifier.size(56.dp)
                 )
+            } else if (imagePath != null) {
+                // 图片文件直接显示缩略图预览
+                ImageThumbnail(path = imagePath, size = 56.dp, corner = 6.dp)
             } else {
                 Text(text = iconForExtension(extension), fontSize = 36.sp)
             }
@@ -746,6 +776,7 @@ private fun FileGridCell(
 @Composable
 private fun FileListRow(
     name: String, isDir: Boolean, extension: String, sizeText: String,
+    imagePath: String? = null,
     theme: com.anwind.core.theme.WinTheme, onClick: () -> Unit
 ) {
     Row(
@@ -758,6 +789,8 @@ private fun FileListRow(
     ) {
         if (isDir) {
             Icon(Icons.Default.Folder, null, tint = Color(0xFFDCA84A), modifier = Modifier.size(18.dp))
+        } else if (imagePath != null) {
+            ImageThumbnail(path = imagePath, size = 20.dp, corner = 3.dp)
         } else {
             Text(text = iconForExtension(extension), fontSize = 14.sp)
         }
@@ -777,11 +810,53 @@ private fun FileListRow(
 }
 
 /**
+ * 图片缩略图（v2.9 新增）：IO 线程采样解码，避免大图 OOM / 主线程卡顿。
+ * 解码失败时回退到 emoji 占位。
+ */
+@Composable
+private fun ImageThumbnail(path: String, size: Dp, corner: Dp) {
+    val bitmap by produceState<Bitmap?>(initialValue = null, path) {
+        value = withContext(Dispatchers.IO) {
+            runCatching {
+                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                BitmapFactory.decodeFile(path, bounds)
+                var sample = 1
+                while (bounds.outWidth / sample > 256 || bounds.outHeight / sample > 256) {
+                    sample *= 2
+                }
+                BitmapFactory.decodeFile(
+                    path,
+                    BitmapFactory.Options().apply { inSampleSize = sample }
+                )
+            }.getOrNull()
+        }
+    }
+    if (bitmap != null) {
+        Image(
+            bitmap = bitmap!!.asImageBitmap(),
+            contentDescription = null,
+            contentScale = ContentScale.Crop,
+            modifier = Modifier
+                .size(size)
+                .clip(RoundedCornerShape(corner))
+        )
+    } else {
+        Box(modifier = Modifier.size(size), contentAlignment = Alignment.Center) {
+            Text(text = "🖼️", fontSize = (size.value * 0.6f).sp)
+        }
+    }
+}
+
+private fun isImageExtension(ext: String): Boolean =
+    ext.lowercase() in setOf("jpg", "jpeg", "png", "gif", "bmp", "webp")
+
+/**
  * 打开真实文件：
  * - 图片 → 内置图片查看器
  * - HTML/HTM → 内置浏览器
+ * - 音频/视频 → 内置媒体播放器（v2.9）
  * - APK → 系统安装器（FileProvider）
- * - 音频/视频/文本/PDF → 系统 ACTION_VIEW Intent（FileProvider）
+ * - 文本/PDF/其他 → 系统 ACTION_VIEW Intent（FileProvider）
  */
 private fun openRealFile(context: Context, file: File) {
     val name = file.name.lowercase()
@@ -794,6 +869,17 @@ private fun openRealFile(context: Context, file: File) {
                     title = file.name,
                     launchMode = LaunchMode.FLOATING,
                     launchArgs = mapOf("path" to file.absolutePath)
+                )
+            }
+            // 音频/视频 → 内置媒体播放器（v2.9）
+            ext in AUDIO_FILE_EXTS || ext in VIDEO_FILE_EXTS -> {
+                WindowManager.get().open(
+                    appId = "media_player",
+                    title = file.name,
+                    launchMode = LaunchMode.FLOATING,
+                    launchArgs = mapOf("path" to file.absolutePath),
+                    initialWidth = 760,
+                    initialHeight = 540
                 )
             }
             ext == "html" || ext == "htm" -> {
@@ -862,6 +948,12 @@ private fun iconForExtension(ext: String): String = when (ext.lowercase()) {
     "ppt", "pptx" -> "📙"
     else -> "📄"
 }
+
+/** 音频文件扩展名（与媒体播放器一致） */
+private val AUDIO_FILE_EXTS = setOf("mp3", "wav", "ogg", "m4a", "flac", "aac", "mid", "wma", "opus")
+
+/** 视频文件扩展名（与媒体播放器一致） */
+private val VIDEO_FILE_EXTS = setOf("mp4", "avi", "mov", "mkv", "3gp", "webm", "ts", "m4v", "flv")
 
 private fun formatSize(len: Long): String = when {
     len < 1024 -> "$len B"

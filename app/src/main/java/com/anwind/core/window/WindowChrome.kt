@@ -24,6 +24,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.PointerInputScope
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.layout
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
@@ -58,10 +59,28 @@ fun WindowChrome(
     // 根据是否最大化决定尺寸/位置（FULLSCREEN 模式也占满工作区；真全屏占满整屏）
     val isMaximized = state.isMaximized || state.launchMode == LaunchMode.FULLSCREEN
     val isTrueFs = state.isTrueFullscreen
-    val finalX = if (isMaximized || isTrueFs) 0 else state.x
-    val finalY = if (isMaximized || isTrueFs) 0 else state.y
-    val finalW = if (isMaximized || isTrueFs) workAreaWidth else state.width
-    val finalH = if (isMaximized || isTrueFs) workAreaHeight else state.height
+
+    // v2.9 单位统一 + 窗口尺寸钳制（修复竖屏"图标显示不全"）：
+    // - 旧代码把 BoxWithConstraints 的 px 值直接当 dp 用（.size(workAreaWidth.dp)），
+    //   最大化窗口实际渲染为约 2.75 倍屏幕大小（溢出部分不可见被掩盖）；
+    // - 浮动窗口默认宽度（如 920dp）超过手机竖屏工作区（约 400dp），右侧内容被裁剪。
+    // 现在：px → dp 换算后钳制到工作区内，窗口永远完整可见。
+    val density = LocalDensity.current
+    val workAreaWidthDp = with(density) { workAreaWidth.toDp() }
+    val workAreaHeightDp = with(density) { workAreaHeight.toDp() }
+    val floatingW = state.width.dp.coerceAtMost(workAreaWidthDp)
+    val floatingH = state.height.dp.coerceAtMost(workAreaHeightDp)
+
+    val finalW = if (isMaximized || isTrueFs) workAreaWidthDp else floatingW
+    val finalH = if (isMaximized || isTrueFs) workAreaHeightDp else floatingH
+
+    // 位置也钳制到工作区内（px 空间，与拖拽偏移单位一致），保证窗口不被拖出屏幕
+    val finalWpx = with(density) { finalW.roundToPx() }
+    val finalHpx = with(density) { finalH.roundToPx() }
+    val baseX = if (isMaximized || isTrueFs) 0
+                else state.x.coerceIn(0, (workAreaWidth - finalWpx).coerceAtLeast(0))
+    val baseY = if (isMaximized || isTrueFs) 0
+                else state.y.coerceIn(0, (workAreaHeight - finalHpx).coerceAtLeast(0))
 
     // 拖拽偏移：只在本地 Compose 状态中累加，避免拖拽中每帧触发全局重组导致卡顿。
     // 松手时一次性提交给 WindowManager。
@@ -78,13 +97,13 @@ fun WindowChrome(
         modifier = Modifier
             .offset {
                 IntOffset(
-                    finalX + dragOffset.x.roundToInt(),
-                    finalY + dragOffset.y.roundToInt()
+                    baseX + dragOffset.x.roundToInt(),
+                    baseY + dragOffset.y.roundToInt()
                 )
             }
             // 调整大小时窗口尺寸会变化，这里我们让 Box 的尺寸在调整中保持原值，
             // 由 resizeOffset 单独影响视觉位置（通过额外的 offset）
-            .size(width = finalW.dp, height = finalH.dp)
+            .size(width = finalW, height = finalH)
             .shadow(shadowElevation, theme.windowShape, clip = false)
             .clip(theme.windowShape)
             .background(theme.windowBackgroundColor)

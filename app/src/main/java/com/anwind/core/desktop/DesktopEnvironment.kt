@@ -45,6 +45,9 @@ fun DesktopEnvironment(
     // 显示设置
     val taskbarAutohide by app.settingsStore.taskbarAutohide.collectAsState(initial = false)
     val showSeconds by app.settingsStore.showSeconds.collectAsState(initial = false)
+    val timeFormat24h by app.settingsStore.timeFormat24h.collectAsState(initial = true)
+    // 任务栏高度（v2.9 可调节）：>=36 时用自定义高度，否则跟随主题默认
+    val taskbarHeightPref by app.settingsStore.taskbarHeight.collectAsState(initial = 0f)
 
     // 任务栏自动隐藏：只在与阈值交界处翻转，避免每次指针移动都触发整体重组
     var taskbarShown by remember { mutableStateOf(true) }
@@ -88,7 +91,8 @@ fun DesktopEnvironment(
             }
     ) {
         val fullHeight = maxHeight
-        val taskbarHeight = theme.taskbarHeight
+        // v2.9：任务栏高度可调（个性化设置 36..80dp），未设置时跟随主题
+        val taskbarHeight = if (taskbarHeightPref >= 36f) taskbarHeightPref.dp else theme.taskbarHeight
         // 工作区高度 = 全屏高度 - 任务栏高度 - 任务栏底部 4dp - 任务栏顶部 4dp 空隙
         // 真全屏（F11）时浮动窗口层占满整屏，隐藏任务栏
         val workAreaHeight = if (anyTrueFullscreen) fullHeight else fullHeight - taskbarHeight - 8.dp
@@ -165,11 +169,13 @@ fun DesktopEnvironment(
         // ===== 5. 任务栏（底部浮起） =====
         Taskbar(
             theme = theme,
+            taskbarHeight = taskbarHeight,
             startMenuOpen = startMenuOpen,
             onStartClick = { startMenuOpen = !startMenuOpen },
             onOpenCalendar = { trayPopup = TrayPopup.CALENDAR },
             onOpenQuickSettings = { trayPopup = TrayPopup.QUICK_SETTINGS },
             showSeconds = showSeconds,
+            timeFormat24h = timeFormat24h,
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()

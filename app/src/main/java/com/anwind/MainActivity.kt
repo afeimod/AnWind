@@ -1,7 +1,9 @@
 package com.anwind
 
 import android.content.pm.ActivityInfo
+import android.os.Build
 import android.os.Bundle
+import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.runtime.CompositionLocalProvider
@@ -23,6 +25,8 @@ class MainActivity : ComponentActivity() {
 
         // 全面屏沉浸式：内容绘制到状态栏/导航栏下方，并隐藏系统栏
         ImmersiveMode.applyTo(window)
+        // 默认占用刘海屏：内容延伸绘制到刘海/挖孔区域（API 28+）
+        applyCutoutMode(true)
 
         val app = AnWindApp.get(this)
         setContent {
@@ -35,6 +39,11 @@ class MainActivity : ComponentActivity() {
             // 全局 UI 缩放（乘到密度上，同时缩放所有 dp/sp）
             val uiScale by settingsStore.uiScale.collectAsState(initial = 1f)
             val orientation by settingsStore.displayOrientation.collectAsState(initial = "auto")
+            // 刘海屏占用开关（个性化设置）
+            val useCutout by settingsStore.useCutout.collectAsState(initial = true)
+
+            // 刘海屏模式切换：SHORT_EDGES = 内容延伸到刘海区；DEFAULT = 不占用刘海区
+            LaunchedEffect(useCutout) { applyCutoutMode(useCutout) }
 
             // 应用显示方向设置：
             // - portrait / landscape: 锁定方向
@@ -75,6 +84,25 @@ class MainActivity : ComponentActivity() {
         super.onWindowFocusChanged(hasFocus)
         if (hasFocus) {
             ImmersiveMode.applyTo(window)
+        }
+    }
+
+    /**
+     * 刘海屏绘制模式（v2.9）：
+     * - useCutout = true  → SHORT_EDGES：内容延伸绘制到刘海/挖孔区域（默认，占用刘海屏）
+     * - useCutout = false → DEFAULT：刘海区不绘制内容，状态栏区域留黑
+     * 仅 API 28+ 生效；旧设备无刘海屏概念，调用无副作用。
+     */
+    private fun applyCutoutMode(useCutout: Boolean) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            val mode = if (useCutout) {
+                WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+            } else {
+                WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_DEFAULT
+            }
+            window.attributes = window.attributes.apply {
+                layoutInDisplayCutoutMode = mode
+            }
         }
     }
 

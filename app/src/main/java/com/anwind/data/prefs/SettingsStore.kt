@@ -35,6 +35,12 @@ class SettingsStore(private val context: Context) {
         // 浏览器桌面/手机模式：desktop / mobile
         val BROWSER_UA_MODE = stringPreferencesKey("browser_ua_mode")
 
+        // === 刘海屏 / 任务栏 ===
+        // 内容是否绘制进刘海屏区域（默认 true，占用刘海屏）
+        val USE_CUTOUT = booleanPreferencesKey("use_cutout")
+        // 任务栏高度（dp，36..80；0f 表示跟随主题默认）
+        val TASKBAR_HEIGHT = floatPreferencesKey("taskbar_height")
+
         // === 蓝牙与设备 ===
         val BLUETOOTH_ENABLED = booleanPreferencesKey("bluetooth_enabled")
         val MOUSE_POINTER_SPEED = floatPreferencesKey("mouse_pointer_speed")
@@ -80,6 +86,10 @@ class SettingsStore(private val context: Context) {
         .map { it[Keys.DISPLAY_ORIENTATION] ?: "auto" }
     val browserUaMode: Flow<String> = context.appPrefs.data
         .map { it[Keys.BROWSER_UA_MODE] ?: "desktop" }
+
+    // === 刘海屏 / 任务栏 ===
+    val useCutout: Flow<Boolean> = context.appPrefs.data.map { it[Keys.USE_CUTOUT] ?: true }
+    val taskbarHeight: Flow<Float> = context.appPrefs.data.map { it[Keys.TASKBAR_HEIGHT] ?: 0f }
 
     // === 蓝牙与设备 ===
     val bluetoothEnabled: Flow<Boolean> = context.appPrefs.data.map { it[Keys.BLUETOOTH_ENABLED] ?: false }
@@ -150,6 +160,15 @@ class SettingsStore(private val context: Context) {
 
     suspend fun setBrowserUaMode(mode: String) {
         context.appPrefs.edit { it[Keys.BROWSER_UA_MODE] = mode }
+    }
+
+    // === 刘海屏 / 任务栏 setter ===
+    suspend fun setUseCutout(enabled: Boolean) {
+        context.appPrefs.edit { it[Keys.USE_CUTOUT] = enabled }
+    }
+
+    suspend fun setTaskbarHeight(heightDp: Float) {
+        context.appPrefs.edit { it[Keys.TASKBAR_HEIGHT] = heightDp.coerceIn(0f, 80f) }
     }
 
     // === 蓝牙与设备 setter ===
@@ -228,5 +247,13 @@ class SettingsStore(private val context: Context) {
 
     suspend fun setUpdateChannel(channel: String) {
         context.appPrefs.edit { it[Keys.UPDATE_CHANNEL] = channel }
+    }
+
+    /**
+     * 清空全部偏好设置（设置中心"重置应用"使用）。
+     * 注意：壁纸 URI 的持久化权限无法逐项回收，重置后由系统在重启时自动回收。
+     */
+    suspend fun clearAll() {
+        context.appPrefs.edit { it.clear() }
     }
 }
