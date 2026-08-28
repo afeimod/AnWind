@@ -97,6 +97,11 @@ fun Taskbar(
         // 窄屏（手机竖屏）阈值：宽度 < 600.dp 视为窄屏
         // 窄屏下隐藏任务栏搜索条 + 紧凑分隔线，腾出空间给运行任务与系统托盘
         val isNarrow = maxWidth < 600.dp
+        // 注意：BoxWithConstraintsScope 的 maxWidth/minWidth 被 @LayoutScopeMarker 标注，
+        // 进入嵌套的 Row{}/Box{} 等同标记作用域后会被 DSL 规则遮蔽
+        // （"can't be called in this context by implicit receiver"），
+        // 必须在外层先捕获为局部变量再传入。
+        val screenMaxWidth = maxWidth
 
         Row(
             modifier = Modifier
@@ -126,7 +131,7 @@ fun Taskbar(
                     timeFormat24h = timeFormat24h,
                     isNarrow = isNarrow,
                     taskbarCentered = taskbarCentered,
-                    maxBarWidth = maxWidth
+                    maxBarWidth = screenMaxWidth
                 )
             }
         }
@@ -189,15 +194,11 @@ private fun CenteredTaskbar(
                 onSubmit = {
                     val q = searchText.trim()
                     if (q.isNotEmpty()) {
-                        // 网址直接打开，搜索关键词走 Bing；v2.14：内网地址（IP/localhost/带端口）默认 http
+                        // 网址直接打开，搜索关键词走 Bing。
+                        // v2.14.1：一律默认 https（保证加密浏览）；内网地址若不支持
+                        // https，由 BrowserEngine 在 SSL 握手/连接失败时自动回退 http。
                         val target = if (q.contains(".") && !q.contains(" ")) {
-                            val bare = q.substringBefore("/")
-                            val isIp = Regex("^\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}(:\\d+)?").matches(bare)
-                            when {
-                                q.startsWith("http") -> q
-                                isIp || bare.startsWith("localhost") || bare.contains(":") -> "http://$q"
-                                else -> "https://$q"
-                            }
+                            if (q.startsWith("http")) q else "https://$q"
                         } else {
                             "https://www.bing.com/search?q=" + android.net.Uri.encode(q)
                         }

@@ -2,6 +2,7 @@ package com.anwind.core.desktop
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -27,6 +28,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -117,14 +119,19 @@ fun LockScreenLayer(
                 )
             }
             // 点击任意处直接解锁（移动端最顺手的方式）
+            // 注意：detectTapGestures 是 PointerInputScope 的扩展函数，
+            // Kotlin 不支持对扩展函数做全限定调用，必须 import 后裸调用。
             .pointerInput(Unit) {
-                androidx.compose.foundation.gestures.detectTapGestures(
+                detectTapGestures(
                     onTap = { onUnlock() }
                 )
             }
     ) {
+        // Dp.toPx() 是 Density 的成员扩展，Composable 作用域内必须经 LocalDensity 转换
+        val unlockDenominatorPx = with(LocalDensity.current) { 480.dp.toPx() }
+
         // 壁纸 + 深色遮罩（上滑时整体跟手上移 + 渐隐）
-        val unlockProgress = (dragUpPx / 480.dp.toPx()).coerceIn(0f, 1f)
+        val unlockProgress = (dragUpPx / unlockDenominatorPx).coerceIn(0f, 1f)
         Box(
             modifier = Modifier
                 .fillMaxSize()

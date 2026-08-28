@@ -1,6 +1,8 @@
 package com.anwind.core.theme
 
 import androidx.compose.ui.graphics.Color
+// toArgb 是 Color 的扩展函数（非成员），必须显式 import 才能裸调用
+import androidx.compose.ui.graphics.toArgb
 
 /**
  * v2.14 主题覆盖层：个性化设置「颜色 / 字体」对主题的动态覆盖。

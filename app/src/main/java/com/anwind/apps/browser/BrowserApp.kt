@@ -924,14 +924,12 @@ private fun normalizeUrl(input: String): String {
     if (input.startsWith("http://") || input.startsWith("https://") || input.startsWith("content://")) return input
     if (input.startsWith("anwind://")) return input
     if (input.contains(".") && !input.contains(" ")) {
-        // v2.14：内网地址（IP / localhost / 带端口号）默认 http ——
-        // 路由器/NAS/本地服务大多不支持 https，自动加 https:// 会直接挂掉。
-        // 其余域名仍默认 https。
-        val isBareHost = input.substringBefore("/")
-        val isIp = Regex("^\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}(:\\d+)?").matches(isBareHost)
-        val isLocalhost = isBareHost.startsWith("localhost") || isBareHost.endsWith(".local")
-        val hasPort = isBareHost.contains(":")
-        return if (isIp || isLocalhost || hasPort) "http://$input" else "https://$input"
+        // v2.14.1：一律默认 https，保证加密浏览；
+        // 内网地址（IP / localhost / .local / 带端口）若不支持 https，
+        // 由 BrowserEngine 在 SSL 握手 / 连接失败时自动回退 http 重试一次
+        // （兼容路由器、NAS 等纯 http 本地服务），不再默认 http。
+        // 显式输入 http:// 前缀则原样尊重用户选择。
+        return "https://$input"
     }
     return "https://www.bing.com/search?q=" + android.net.Uri.encode(input)
 }

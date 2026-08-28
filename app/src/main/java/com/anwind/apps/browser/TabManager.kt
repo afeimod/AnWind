@@ -42,7 +42,13 @@ class BrowserTab(
     /** 抑制下一次导航的历史记录（后退/前进/刷新不写入历史） */
     var suppressNextHistory: Boolean = false,
     /** v2.14：灰屏检测连续疑似计数（≥2 触发软件渲染回退） */
-    var blankStrikes: Int = 0
+    var blankStrikes: Int = 0,
+    /**
+     * v2.14.1：已自动回退过 http 的 https 地址（防回退循环）。
+     * 内网地址 https 失败 → 自动改 http 重试一次并记录；同一地址被
+     * 重新导航（重试/地址栏回车）时在 onPageStarted 重置，给再次机会。
+     */
+    var httpsFallbackUrl: String? = null
 )
 
 /**

@@ -6,6 +6,7 @@ import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.net.Uri
+import android.net.http.SslError
 import android.os.Build
 import android.os.Environment
 import android.os.Message
@@ -14,6 +15,7 @@ import android.view.ViewGroup
 import android.webkit.CookieManager
 import android.webkit.JsPromptResult
 import android.webkit.JsResult
+import android.webkit.SslErrorHandler
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
@@ -249,6 +251,20 @@ object BrowserEngine {
         }
     }
 
+    /**
+     * v2.14.1：是否为内网/本地地址（IP / localhost / *.local / 带端口）。
+     * 这类地址（路由器、NAS、本地开发服务）大多只有 http 或自签证书，
+     * 是唯一允许 https→http 自动回退的范围；公网域名绝不回退（安全底线）。
+     */
+    internal fun isLanishUrl(url: String): Boolean {
+        if (!url.startsWith("https://")) return false
+        val bare = url.removePrefix("https://").substringBefore("/").substringBefore("?")
+        val host = bare.substringBefore(":")
+        val hasPort = bare.contains(":")
+        return Regex("^\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}$").matches(host) ||
+            host == "localhost" || host.endsWith(".local") || hasPort
+    }
+
     // ====================================================================
     // WebViewClient：每个标签一次性创建，通过 manager 路由 UI 回调
     // ====================================================================
@@ -285,6 +301,9 @@ object BrowserEngine {
 
         override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
             if (url != null) {
+                // v2.14.1：同一 https 地址被重新导航（重试/地址栏回车/书签重开）时，
+                // 重置自动回退标记，允许再次尝试 https 而非直接报错
+                if (url == tab.httpsFallbackUrl) tab.httpsFallbackUrl = null
                 // 登记 lastRequestedUrl：页面内部导航（含弹窗首跳）后
                 // update 块不会重复 loadUrl 把页面拉回旧地址
                 tab.lastRequestedUrl = url
@@ -404,18 +423,72 @@ object BrowserEngine {
             return variance < 4f
         }
 
+        // ====================================================================
+        // v2.14.1 https→http 自动回退（一次性）
+        // ====================================================================
+        // 场景：地址栏一律默认 https（保证加密浏览），但路由器/NAS 等
+        // 内网服务只有 http。当内网地址 https 连接失败（ERROR_CONNECT /
+        // ERROR_FAILED_SSL_HANDSHAKE）或 SSL 证书校验失败（自签/无证书）时，
+        // 自动改用 http 重试一次：既保证默认 https，又兼容 http 服务。
+        // 公网域名不回退 —— 无效证书必须显式拒绝（安全）。
+        private fun tryHttpsFallback(view: WebView?, failingUrl: String): Boolean {
+            if (!isLanishUrl(failingUrl)) return false
+            if (tab.httpsFallbackUrl == failingUrl) return false
+            tab.httpsFallbackUrl = failingUrl
+            val httpUrl = "http://" + failingUrl.removePrefix("https://")
+            tab.url = httpUrl
+            tab.lastRequestedUrl = httpUrl
+            if (manager.activeTabId == tab.id) {
+                manager.ui?.onUrlSync(httpUrl)
+            }
+            runCatching {
+                Toast.makeText(ctx, "该地址不支持 HTTPS，已自动改用 HTTP 加载", Toast.LENGTH_SHORT).show()
+            }
+            view?.let { wv ->
+                if (wv.tag != TAG_DESTROYED) {
+                    wv.post { if (tab.webView === wv) wv.loadUrl(httpUrl) }
+                }
+            }
+            return true
+        }
+
         override fun onReceivedError(
             view: WebView?,
             request: WebResourceRequest?,
             error: WebResourceError?
         ) {
             super.onReceivedError(view, request, error)
-            // 仅主框架错误才提示；忽略 -1（未知/取消）与 DNS 解析失败（WebView 会自行重试）
-            if (request?.isForMainFrame == true && isActive()) {
+            // 仅主框架错误才处理；忽略 -1（未知/取消）与 DNS 解析失败（WebView 会自行重试）
+            if (request?.isForMainFrame == true) {
                 val code = error?.errorCode ?: -1
-                if (code != -1 && code != WebViewClient.ERROR_HOST_LOOKUP) {
+                // v2.14.1：内网地址 https 连接/SSL 握手失败 → 自动回退 http 重试一次
+                if (code == WebViewClient.ERROR_CONNECT ||
+                    code == WebViewClient.ERROR_FAILED_SSL_HANDSHAKE
+                ) {
+                    if (tryHttpsFallback(view, request.url.toString())) return
+                }
+                if (isActive() && code != -1 && code != WebViewClient.ERROR_HOST_LOOKUP) {
                     manager.ui?.onError(error?.description?.toString() ?: "加载失败")
                 }
+            }
+        }
+
+        override fun onReceivedSslError(view: WebView?, handler: SslErrorHandler?, error: SslError?) {
+            val failingUrl = error?.url ?: ""
+            // v2.14.1：内网地址（路由器/NAS 自签证书）https 握手失败 →
+            // 取消本次 https 加载并改用 http 重试一次。
+            // 仅当失败资源就是主框架页面时才回退，避免子资源证书问题把整页导航走。
+            if (failingUrl.isNotEmpty() && failingUrl == view?.url &&
+                tryHttpsFallback(view, failingUrl)
+            ) {
+                handler?.cancel()
+                return
+            }
+            // 公网站点：不自动信任无效证书（安全底线），保持默认取消行为
+            super.onReceivedSslError(view, handler, error)
+            // 仅主框架证书失败才提示（子资源失败沿用默认取消行为，不打扰用户）
+            if (isActive() && failingUrl.isNotEmpty() && failingUrl == view?.url) {
+                manager.ui?.onError("SSL 证书校验失败，已阻止不安全的连接")
             }
         }
 
