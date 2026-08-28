@@ -30,6 +30,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import com.anwind.core.input.keyboardAware
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -515,7 +516,17 @@ private fun BrowserHomePage(onNavigate: (String) -> Unit) {
                         onNavigate(q)
                     }
                 }),
-                modifier = Modifier.weight(1f)
+                modifier = Modifier
+                    .weight(1f)
+                    .keyboardAware(
+                        value = { searchText },
+                        onValue = { searchText = it },
+                        singleLine = true,
+                        onEnter = {
+                            val q = searchText.trim()
+                            if (q.isNotEmpty()) onNavigate(q)
+                        }
+                    )
             )
             IconButton(onClick = {
                 val q = searchText.trim()
@@ -718,7 +729,14 @@ private fun Toolbar(
                 ),
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
                 keyboardActions = KeyboardActions(onGo = { onGo() }),
-                modifier = Modifier.fillMaxWidth()
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .keyboardAware(
+                        value = { address },
+                        onValue = onAddressChange,
+                        singleLine = true,
+                        onEnter = onGo
+                    )
             )
         }
 

@@ -38,6 +38,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.anwind.AnWindApp
+import com.anwind.core.input.keyboardAware
 import com.anwind.core.theme.LocalWinTheme
 import com.anwind.core.theme.WinTheme
 import com.anwind.core.window.AppRegistry
@@ -415,7 +416,14 @@ private fun PillSearchBar(
                 ),
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
                 keyboardActions = KeyboardActions(onSearch = { onSubmit() }),
-                modifier = Modifier.weight(1f),
+                modifier = Modifier
+                    .weight(1f)
+                    .keyboardAware(
+                        value = { text },
+                        onValue = onTextChange,
+                        singleLine = true,
+                        onEnter = onSubmit
+                    ),
                 cursorBrush = androidx.compose.ui.graphics.SolidColor(theme.accentColor)
             )
             if (text.isEmpty()) {

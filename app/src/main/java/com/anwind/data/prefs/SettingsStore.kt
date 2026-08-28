@@ -60,6 +60,35 @@ class SettingsStore(private val context: Context) {
         val KEYBOARD_VIBRATION = booleanPreferencesKey("keyboard_vibration")
         val TOUCH_FEEDBACK = booleanPreferencesKey("touch_feedback")
 
+        // === 虚拟鼠标（v2.13：Windows 风格指针） ===
+        // 是否显示鼠标指针
+        val MOUSE_CURSOR_ENABLED = booleanPreferencesKey("mouse_cursor_enabled")
+        // 指针主题：white 经典白 / black 经典黑 / blue 蓝色 / green 高对比绿
+        val MOUSE_CURSOR_THEME = stringPreferencesKey("mouse_cursor_theme")
+        // 指针大小（dp，16..48）
+        val MOUSE_CURSOR_SIZE = floatPreferencesKey("mouse_cursor_size")
+        // 图标打开方式：single 单击打开 / double 双击打开（默认 single）
+        val MOUSE_CLICK_MODE = stringPreferencesKey("mouse_click_mode")
+        // 右键手势：twofinger 双指轻点 / longpress 长按（默认 twofinger）
+        val MOUSE_RIGHT_CLICK = stringPreferencesKey("mouse_right_click")
+
+        // === 虚拟键盘（v2.13：全键盘） ===
+        // 总开关：off 时文本框回退系统输入法
+        val KEYBOARD_MASTER = booleanPreferencesKey("keyboard_master")
+        // 显示功能键行（Esc + F1-F12）
+        val KEYBOARD_FUNC_ROW = booleanPreferencesKey("keyboard_func_row")
+        // 显示小键盘（含方向键）
+        val KEYBOARD_NUMPAD = booleanPreferencesKey("keyboard_numpad")
+        // 键盘缩放（0.75..1.35）
+        val KEYBOARD_SCALE = floatPreferencesKey("keyboard_scale")
+        // 键盘主题：light / dark / blue / glass
+        val KEYBOARD_THEME = stringPreferencesKey("keyboard_theme")
+        // 键盘位置（归一化 0..1，x 居中比例 / y 1.0=贴底）
+        val KEYBOARD_POS_X = floatPreferencesKey("keyboard_pos_x")
+        val KEYBOARD_POS_Y = floatPreferencesKey("keyboard_pos_y")
+        // 允许拖动键盘
+        val KEYBOARD_DRAG_ENABLED = booleanPreferencesKey("keyboard_drag_enabled")
+
         // === 系统：电源、通知 ===
         val POWER_SAVER = booleanPreferencesKey("power_saver")
         val BRIGHTNESS = floatPreferencesKey("brightness")
@@ -118,6 +147,23 @@ class SettingsStore(private val context: Context) {
     val mousePointerSpeed: Flow<Float> = context.appPrefs.data.map { it[Keys.MOUSE_POINTER_SPEED] ?: 1.0f }
     val keyboardVibration: Flow<Boolean> = context.appPrefs.data.map { it[Keys.KEYBOARD_VIBRATION] ?: true }
     val touchFeedback: Flow<Boolean> = context.appPrefs.data.map { it[Keys.TOUCH_FEEDBACK] ?: false }
+
+    // === 虚拟鼠标（v2.13） ===
+    val mouseCursorEnabled: Flow<Boolean> = context.appPrefs.data.map { it[Keys.MOUSE_CURSOR_ENABLED] ?: true }
+    val mouseCursorTheme: Flow<String> = context.appPrefs.data.map { it[Keys.MOUSE_CURSOR_THEME] ?: "white" }
+    val mouseCursorSize: Flow<Float> = context.appPrefs.data.map { it[Keys.MOUSE_CURSOR_SIZE] ?: 26f }
+    val mouseClickMode: Flow<String> = context.appPrefs.data.map { it[Keys.MOUSE_CLICK_MODE] ?: "single" }
+    val mouseRightClick: Flow<String> = context.appPrefs.data.map { it[Keys.MOUSE_RIGHT_CLICK] ?: "twofinger" }
+
+    // === 虚拟键盘（v2.13） ===
+    val keyboardMaster: Flow<Boolean> = context.appPrefs.data.map { it[Keys.KEYBOARD_MASTER] ?: true }
+    val keyboardFuncRow: Flow<Boolean> = context.appPrefs.data.map { it[Keys.KEYBOARD_FUNC_ROW] ?: true }
+    val keyboardNumpad: Flow<Boolean> = context.appPrefs.data.map { it[Keys.KEYBOARD_NUMPAD] ?: true }
+    val keyboardScale: Flow<Float> = context.appPrefs.data.map { it[Keys.KEYBOARD_SCALE] ?: 1.0f }
+    val keyboardTheme: Flow<String> = context.appPrefs.data.map { it[Keys.KEYBOARD_THEME] ?: "dark" }
+    val keyboardPosX: Flow<Float> = context.appPrefs.data.map { it[Keys.KEYBOARD_POS_X] ?: 0.5f }
+    val keyboardPosY: Flow<Float> = context.appPrefs.data.map { it[Keys.KEYBOARD_POS_Y] ?: 1.0f }
+    val keyboardDragEnabled: Flow<Boolean> = context.appPrefs.data.map { it[Keys.KEYBOARD_DRAG_ENABLED] ?: true }
 
     // === 系统 ===
     val powerSaver: Flow<Boolean> = context.appPrefs.data.map { it[Keys.POWER_SAVER] ?: false }
@@ -233,6 +279,63 @@ class SettingsStore(private val context: Context) {
 
     suspend fun setTouchFeedback(enabled: Boolean) {
         context.appPrefs.edit { it[Keys.TOUCH_FEEDBACK] = enabled }
+    }
+
+    // === 虚拟鼠标 setter（v2.13） ===
+    suspend fun setMouseCursorEnabled(enabled: Boolean) {
+        context.appPrefs.edit { it[Keys.MOUSE_CURSOR_ENABLED] = enabled }
+    }
+
+    suspend fun setMouseCursorTheme(theme: String) {
+        val v = if (theme in setOf("white", "black", "blue", "green")) theme else "white"
+        context.appPrefs.edit { it[Keys.MOUSE_CURSOR_THEME] = v }
+    }
+
+    suspend fun setMouseCursorSize(sizeDp: Float) {
+        context.appPrefs.edit { it[Keys.MOUSE_CURSOR_SIZE] = sizeDp.coerceIn(16f, 48f) }
+    }
+
+    suspend fun setMouseClickMode(mode: String) {
+        val v = if (mode in setOf("single", "double")) mode else "single"
+        context.appPrefs.edit { it[Keys.MOUSE_CLICK_MODE] = v }
+    }
+
+    suspend fun setMouseRightClick(mode: String) {
+        val v = if (mode in setOf("twofinger", "longpress")) mode else "twofinger"
+        context.appPrefs.edit { it[Keys.MOUSE_RIGHT_CLICK] = v }
+    }
+
+    // === 虚拟键盘 setter（v2.13） ===
+    suspend fun setKeyboardMaster(enabled: Boolean) {
+        context.appPrefs.edit { it[Keys.KEYBOARD_MASTER] = enabled }
+    }
+
+    suspend fun setKeyboardFuncRow(enabled: Boolean) {
+        context.appPrefs.edit { it[Keys.KEYBOARD_FUNC_ROW] = enabled }
+    }
+
+    suspend fun setKeyboardNumpad(enabled: Boolean) {
+        context.appPrefs.edit { it[Keys.KEYBOARD_NUMPAD] = enabled }
+    }
+
+    suspend fun setKeyboardScale(scale: Float) {
+        context.appPrefs.edit { it[Keys.KEYBOARD_SCALE] = scale.coerceIn(0.75f, 1.35f) }
+    }
+
+    suspend fun setKeyboardTheme(theme: String) {
+        val v = if (theme in setOf("light", "dark", "blue", "glass")) theme else "dark"
+        context.appPrefs.edit { it[Keys.KEYBOARD_THEME] = v }
+    }
+
+    suspend fun setKeyboardPos(x: Float, y: Float) {
+        context.appPrefs.edit {
+            it[Keys.KEYBOARD_POS_X] = x.coerceIn(0f, 1f)
+            it[Keys.KEYBOARD_POS_Y] = y.coerceIn(0f, 1f)
+        }
+    }
+
+    suspend fun setKeyboardDragEnabled(enabled: Boolean) {
+        context.appPrefs.edit { it[Keys.KEYBOARD_DRAG_ENABLED] = enabled }
     }
 
     // === 系统 setter ===

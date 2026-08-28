@@ -123,12 +123,19 @@ internal fun SystemInfoDialog(onDismiss: () -> Unit) {
 internal fun BluetoothDevicesSection() {
     val context = LocalContext.current
     val app = AnWindApp.get()
-    val scope0 = rememberCoroutineScope()
     val theme = LocalWinTheme.current
 
-    val mouseSpeed by app.settingsStore.mousePointerSpeed.collectAsState(initial = 1f)
-    val keyboardVib by app.settingsStore.keyboardVibration.collectAsState(initial = true)
-    val touchFeedback by app.settingsStore.touchFeedback.collectAsState(initial = false)
+    // v2.13：鼠标/键盘设置子页（应用内，替代旧的零散卡片）
+    var showMousePage by remember { mutableStateOf(false) }
+    var showKeyboardPage by remember { mutableStateOf(false) }
+    if (showMousePage) {
+        MouseSettingsPage(onBack = { showMousePage = false })
+        return
+    }
+    if (showKeyboardPage) {
+        KeyboardSettingsPage(onBack = { showKeyboardPage = false })
+        return
+    }
 
     // ===== 真实蓝牙适配器 =====
     val adapter = remember {
@@ -276,86 +283,33 @@ internal fun BluetoothDevicesSection() {
         Spacer(Modifier.height(8.dp))
     }
 
-    // ===== 鼠标 =====
+    // ===== 鼠标（v2.13：应用内子页） =====
     SettingsCard(
         icon = Icons.Default.Mouse,
         iconBackgroundColor = Color(0xFF00B294),
         title = "鼠标",
-        subtitle = "鼠标光标速度、点击操作"
+        subtitle = "指针主题、大小、单击/双击打开、右键手势",
+        onClick = { showMousePage = true }
     )
     Spacer(Modifier.height(8.dp))
 
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(6.dp))
-            .background(theme.cardBackgroundColor)
-            .padding(12.dp)
-    ) {
-        Column {
-            Text(
-                "鼠标光标速度",
-                color = if (theme.isDark) Color.White else Color.Black,
-                fontSize = 13.sp,
-                fontWeight = FontWeight.Medium
-            )
-            Spacer(Modifier.height(8.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Slider(
-                    value = mouseSpeed,
-                    onValueChange = { scope0.launch { app.settingsStore.setMousePointerSpeed(it) } },
-                    valueRange = 0.5f..2.0f,
-                    modifier = Modifier.weight(1f)
-                )
-                Spacer(Modifier.width(12.dp))
-                Text(
-                    "${(mouseSpeed * 100).toInt()}%",
-                    color = theme.secondaryTextColor,
-                    fontSize = 11.sp
-                )
-            }
-        }
-    }
-    Spacer(Modifier.height(8.dp))
-
-    // ===== 键盘 / 振动 / 触摸 =====
+    // ===== 键盘（v2.13：应用内子页，含振动/触摸反馈/布局/主题） =====
     SettingsCard(
         icon = Icons.Default.Keyboard,
         iconBackgroundColor = Color(0xFF8764B8),
         title = "键盘",
-        subtitle = "键盘振动、布局、输入法"
+        subtitle = "布局（功能键行/小键盘）、大小、主题、位置、振动与触摸反馈",
+        onClick = { showKeyboardPage = true }
     )
     Spacer(Modifier.height(8.dp))
 
-    SettingsCard(
-        icon = Icons.Default.Vibration,
-        iconBackgroundColor = Color(0xFFCA5010),
-        title = "键盘振动",
-        subtitle = "按键时振动反馈",
-        trailingContent = {
-            ToggleSwitch(keyboardVib) { v -> scope0.launch { app.settingsStore.setKeyboardVibration(v) } }
-        }
-    )
-    Spacer(Modifier.height(8.dp))
-
-    SettingsCard(
-        icon = Icons.Default.TouchApp,
-        iconBackgroundColor = Color(0xFF00B7C3),
-        title = "触摸反馈",
-        subtitle = "触摸屏幕时振动",
-        trailingContent = {
-            ToggleSwitch(touchFeedback) { v -> scope0.launch { app.settingsStore.setTouchFeedback(v) } }
-        }
-    )
-    Spacer(Modifier.height(8.dp))
-
-    // ===== 外设（系统级功能，保留系统入口） =====
+    // ===== 外设（v2.13：应用内小窗，不再跳系统设置） =====
     SettingsCard(
         icon = Icons.Default.Print,
         iconBackgroundColor = Color(0xFF6B69D6),
         title = "打印机和扫描仪",
-        subtitle = "打印服务由系统管理，点击打开系统打印设置",
-        onClick = { openPanel(context, AndroidSettings.ACTION_PRINT_SETTINGS, "系统打印设置") }
+        subtitle = "打印服务、测试打印、打印任务（应用内小窗）",
+        onClick = { openSettingsSection("printers", "打印机和扫描仪", 560, 520) }
     )
     Spacer(Modifier.height(8.dp))
 
@@ -363,8 +317,8 @@ internal fun BluetoothDevicesSection() {
         icon = Icons.Default.Cast,
         iconBackgroundColor = Color(0xFF8E8CD8),
         title = "无线显示器",
-        subtitle = "投屏由系统管理，点击打开投屏设置",
-        onClick = { openPanel(context, AndroidSettings.ACTION_CAST_SETTINGS, "投屏设置") }
+        subtitle = "投屏路由、可用显示器、连接（应用内小窗）",
+        onClick = { openSettingsSection("cast", "无线显示器", 520, 520) }
     )
 
     // ===== 添加设备对话框（应用内搜索 + 配对） =====
@@ -849,23 +803,23 @@ internal fun NetworkInternetSection() {
     }
     Spacer(Modifier.height(8.dp))
 
-    // ===== 移动数据（真实状态；切换需系统权限，点击打开系统面板） =====
+    // ===== 移动数据（v2.13：应用内小窗） =====
     SettingsCard(
         icon = Icons.Default.NetworkCell,
         iconBackgroundColor = Color(0xFF00B294),
         title = "移动数据",
-        subtitle = if (mobileDataOn) "已开启 · 点击打开系统数据设置" else "已关闭 · 点击打开系统数据设置",
-        onClick = { openPanel(context, AndroidSettings.ACTION_DATA_USAGE_SETTINGS, "流量使用设置") }
+        subtitle = if (mobileDataOn) "已开启 · 点击打开应用内移动数据窗口" else "已关闭 · 点击打开应用内移动数据窗口",
+        onClick = { openSettingsSection("mobile_data", "移动数据", 520, 540) }
     )
     Spacer(Modifier.height(8.dp))
 
-    // ===== 飞行模式（真实状态） =====
+    // ===== 飞行模式（v2.13：应用内小窗） =====
     SettingsCard(
         icon = Icons.Default.AirplanemodeActive,
         iconBackgroundColor = Color(0xFF6B69D6),
         title = "飞行模式",
-        subtitle = if (airplaneOn) "已开启 · 点击打开系统面板切换" else "已关闭 · 点击打开系统面板切换",
-        onClick = { openPanel(context, AndroidSettings.ACTION_AIRPLANE_MODE_SETTINGS, "飞行模式设置") }
+        subtitle = if (airplaneOn) "已开启 · 点击打开应用内飞行模式窗口" else "已关闭 · 点击打开应用内飞行模式窗口",
+        onClick = { openSettingsSection("airplane", "飞行模式", 480, 420) }
     )
     Spacer(Modifier.height(8.dp))
 
@@ -879,13 +833,13 @@ internal fun NetworkInternetSection() {
     )
     Spacer(Modifier.height(8.dp))
 
-    // ===== 系统级功能（保留系统入口） =====
+    // ===== 系统级功能（v2.13：应用内小窗） =====
     SettingsCard(
         icon = Icons.Default.VpnKey,
         iconBackgroundColor = Color(0xFF8764B8),
         title = "VPN",
-        subtitle = "VPN 配置由系统管理，点击打开系统 VPN 设置",
-        onClick = { openPanel(context, AndroidSettings.ACTION_VPN_SETTINGS, "VPN 设置") }
+        subtitle = "VPN 状态、始终开启配置（应用内小窗）",
+        onClick = { openSettingsSection("vpn", "VPN", 500, 480) }
     )
     Spacer(Modifier.height(8.dp))
 
@@ -893,8 +847,8 @@ internal fun NetworkInternetSection() {
         icon = Icons.Default.MobileFriendly,
         iconBackgroundColor = Color(0xFFCA5010),
         title = "移动热点",
-        subtitle = "热点由系统管理，点击打开系统热点设置",
-        onClick = { openPanel(context, AndroidSettings.ACTION_WIRELESS_SETTINGS, "网络设置") }
+        subtitle = "热点状态（应用内小窗）",
+        onClick = { openSettingsSection("hotspot", "移动热点", 500, 460) }
     )
 }
 

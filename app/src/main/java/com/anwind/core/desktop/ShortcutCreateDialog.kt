@@ -21,6 +21,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupProperties
+import com.anwind.core.input.keyboardAware
 import com.anwind.core.theme.LocalWinTheme
 import com.anwind.core.window.AppRegistry
 import com.anwind.data.model.DesktopItemType
@@ -282,7 +283,13 @@ private fun InputField(
                 color = if (theme.isDark) Color.White else Color.Black,
                 fontSize = 13.sp
             ),
-            modifier = Modifier.fillMaxWidth()
+            modifier = Modifier
+                .fillMaxWidth()
+                .keyboardAware(
+                    value = { value },
+                    onValue = onValueChange,
+                    singleLine = true
+                )
         )
     }
 }

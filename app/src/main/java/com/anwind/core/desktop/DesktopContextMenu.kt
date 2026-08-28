@@ -45,6 +45,7 @@ import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupPositionProvider
 import androidx.compose.ui.window.PopupProperties
 import com.anwind.AnWindApp
+import com.anwind.core.input.keyboardAware
 import com.anwind.core.theme.LocalWinTheme
 import com.anwind.core.theme.Themes
 import com.anwind.core.theme.WindowsVariant
@@ -580,6 +581,11 @@ private fun RenameShortcutDialog(
                     .background(
                         if (theme.isDark) Color(0x22FFFFFF) else Color(0x11000000),
                         RoundedCornerShape(6.dp)
+                    )
+                    .keyboardAware(
+                        value = { text },
+                        onValue = { text = it },
+                        singleLine = true
                     )
                     .padding(horizontal = 12.dp, vertical = 10.dp)
             )

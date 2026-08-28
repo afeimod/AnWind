@@ -39,6 +39,7 @@ import com.anwind.AnWindApp
 import com.anwind.BuildConfig
 import com.anwind.core.desktop.IconPainter
 import com.anwind.core.theme.LocalWinTheme
+import com.anwind.core.input.keyboardAware
 import com.anwind.core.theme.Themes
 import com.anwind.core.theme.WindowsVariant
 import com.anwind.core.window.AppDef
@@ -159,7 +160,14 @@ private fun SettingsContent(scope: WindowContentScope) {
                 placeholder = { Text("查找设置", fontSize = 12.sp) },
                 leadingIcon = { Icon(Icons.Default.Search, null, modifier = Modifier.size(14.dp)) },
                 singleLine = true,
-                modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 12.dp)
+                    .keyboardAware(
+                        value = { searchText },
+                        onValue = { searchText = it },
+                        singleLine = true
+                    ),
                 shape = RoundedCornerShape(6.dp),
                 textStyle = LocalTextStyle.current.copy(fontSize = 12.sp)
             )
@@ -222,6 +230,13 @@ private fun SettingsContent(scope: WindowContentScope) {
                     "privacy" -> PrivacySection()
                     "update" -> WindowsUpdateSection()
                     "about" -> AboutSection()
+                    // v2.13：应用内系统功能小窗（点击设置卡片以新窗口打开）
+                    "printers" -> PrintersPage()
+                    "cast" -> WirelessDisplayPage()
+                    "vpn" -> VpnPage()
+                    "mobile_data" -> MobileDataPage()
+                    "airplane" -> AirplanePage()
+                    "hotspot" -> HotspotPage()
                 }
             }
         }
@@ -1123,7 +1138,13 @@ private fun AppsSection() {
             OutlinedTextField(
                 value = homeInput,
                 onValueChange = { homeInput = it },
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .keyboardAware(
+                        value = { homeInput },
+                        onValue = { homeInput = it },
+                        singleLine = true
+                    ),
                 singleLine = true,
                 shape = RoundedCornerShape(6.dp)
             )

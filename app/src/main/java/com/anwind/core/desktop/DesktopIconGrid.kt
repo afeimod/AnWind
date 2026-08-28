@@ -56,12 +56,17 @@ import java.io.IOException
  *   与设置中心共用 DataStore 持久化）；
  * - iconBounds：上报每个图标的屏幕边界，供双指右键手势命中检测
  *   （命中图标 → 图标菜单，否则 → 桌面菜单）。
+ *
+ * v2.13：
+ * - clickMode：图标打开方式（single 单击打开 / double 双击打开，
+ *   与鼠标设置共用 DataStore 持久化）。
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun DesktopIconGrid(
     sortMode: String = "default",
-    iconBounds: SnapshotStateMap<String, Pair<DesktopItem, Rect>>? = null
+    iconBounds: SnapshotStateMap<String, Pair<DesktopItem, Rect>>? = null,
+    clickMode: String = "double"
 ) {
     val app = AnWindApp.get()
     val shortcuts by app.database.shortcutDao().observeAll().collectAsState(initial = emptyList())
@@ -132,7 +137,7 @@ fun DesktopIconGrid(
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             sortedItems.forEach { item ->
-                DesktopIcon(item = item, iconSize = iconSize, boundsRegistry = iconBounds)
+                DesktopIcon(item = item, iconSize = iconSize, boundsRegistry = iconBounds, clickMode = clickMode)
             }
         }
     }
@@ -186,7 +191,8 @@ fun launchDesktopItem(item: DesktopItem, wm: WindowManager) {
 private fun DesktopIcon(
     item: DesktopItem,
     iconSize: Float,
-    boundsRegistry: SnapshotStateMap<String, Pair<DesktopItem, Rect>>? = null
+    boundsRegistry: SnapshotStateMap<String, Pair<DesktopItem, Rect>>? = null,
+    clickMode: String = "double"
 ) {
     val theme = LocalWinTheme.current
     val wm = remember { WindowManager.get() }
@@ -208,13 +214,23 @@ private fun DesktopIcon(
                     }
                 }
             }
-            .pointerInput(item.id) {
-                detectTapGestures(
-                    onDoubleTap = {
-                        // 双击启动（与右键菜单"打开"共用同一入口）
-                        launchDesktopItem(item, wm)
-                    }
-                )
+            // v2.13：clickMode 进入手势 key —— 单击模式立即启动，双击模式保持 v2.11 行为
+            .pointerInput(item.id, clickMode) {
+                if (clickMode == "single") {
+                    detectTapGestures(
+                        onTap = {
+                            // 单击启动（与右键菜单"打开"共用同一入口）
+                            launchDesktopItem(item, wm)
+                        }
+                    )
+                } else {
+                    detectTapGestures(
+                        onDoubleTap = {
+                            // 双击启动（与右键菜单"打开"共用同一入口）
+                            launchDesktopItem(item, wm)
+                        }
+                    )
+                }
             }
             .padding(4.dp)
     ) {

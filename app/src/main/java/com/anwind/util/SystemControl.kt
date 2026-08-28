@@ -124,6 +124,97 @@ object SystemControl {
     }.getOrDefault(false)
 
     // ============================================================
+    // 飞行模式 / 移动数据 / 热点 / VPN（v2.13 应用内窗口控制）
+    // ============================================================
+
+    /** 飞行模式真实状态 */
+    fun isAirplaneMode(context: Context): Boolean = runCatching {
+        android.provider.Settings.Global.getInt(
+            context.contentResolver, android.provider.Settings.Global.AIRPLANE_MODE_ON
+        ) == 1
+    }.getOrDefault(false)
+
+    /**
+     * 尝试切换飞行模式（需 WRITE_SETTINGS；切换广播是系统保护广播，
+     * 大多数 ROM 会拒绝 → 返回 false，调用方引导系统面板）。
+     */
+    fun setAirplaneMode(context: Context, enable: Boolean): Boolean {
+        if (!canWriteSystemSettings(context)) return false
+        val putOk = runCatching {
+            android.provider.Settings.Global.putInt(
+                context.contentResolver,
+                android.provider.Settings.Global.AIRPLANE_MODE_ON,
+                if (enable) 1 else 0
+            )
+        }.getOrDefault(false)
+        if (!putOk) return false
+        // 受保护广播：三方发送通常被拒绝，失败不影响状态位写入但不会真正切换射频
+        runCatching {
+            context.sendBroadcast(
+                Intent(Intent.ACTION_AIRPLANE_MODE_CHANGED).putExtra("state", enable)
+            )
+        }
+        return true
+    }
+
+    /** 移动数据真实状态（Settings.Global mobile_data） */
+    fun isMobileData(context: Context): Boolean = runCatching {
+        android.provider.Settings.Global.getInt(
+            context.contentResolver, "mobile_data", 0
+        ) == 1
+    }.getOrDefault(false)
+
+    /** 尝试切换移动数据（部分 ROM 允许持 WRITE_SETTINGS 的应用写入） */
+    fun setMobileData(context: Context, enable: Boolean): Boolean {
+        if (!canWriteSystemSettings(context)) return false
+        return runCatching {
+            android.provider.Settings.Global.putInt(
+                context.contentResolver, "mobile_data", if (enable) 1 else 0
+            )
+        }.getOrDefault(false)
+    }
+
+    /**
+     * 热点状态（反射读取隐藏 API isWifiApEnabled；多数新系统受隐藏 API 限制返回 null）。
+     * @return true=开 / false=关 / null=无法读取
+     */
+    fun hotspotEnabled(context: Context): Boolean? = runCatching {
+        val wm = context.applicationContext.getSystemService(Context.WIFI_SERVICE)
+        val m = Class.forName("android.net.wifi.WifiManager")
+            .getMethod("isWifiApEnabled")
+        m.invoke(wm) as? Boolean
+    }.getOrNull()
+
+    data class VpnStatus(
+        val active: Boolean,          // 当前活动网络是否走 VPN 传输层
+        val networkName: String,      // 活动网络描述
+        val alwaysOnApp: String?,     // 始终开启的 VPN 包名（可读时）
+        val lockdown: Boolean         // VPN 锁定（阻断无 VPN 网络）
+    )
+
+    /** VPN 真实状态：传输层检测 + Secure 表始终开启 VPN 配置 */
+    fun readVpnStatus(context: Context): VpnStatus = runCatching {
+        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE)
+            as android.net.ConnectivityManager
+        val caps = cm.getNetworkCapabilities(cm.activeNetwork)
+        val vpnActive = caps?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_VPN) == true
+        val alwaysOn = android.provider.Settings.Secure.getString(
+            context.contentResolver, "always_on_vpn_app"
+        )
+        val lockdown = runCatching {
+            android.provider.Settings.Secure.getInt(
+                context.contentResolver, "always_on_vpn_lockdown", 0
+            ) == 1
+        }.getOrDefault(false)
+        VpnStatus(
+            active = vpnActive,
+            networkName = caps?.toString() ?: "无活动网络",
+            alwaysOnApp = alwaysOn,
+            lockdown = lockdown
+        )
+    }.getOrDefault(VpnStatus(false, "无活动网络", null, false))
+
+    // ============================================================
     // 电池
     // ============================================================
 

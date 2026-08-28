@@ -17,10 +17,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.anwind.core.input.keyboardAware
 import com.anwind.core.theme.LocalWinTheme
 import com.anwind.core.window.AppDef
 import com.anwind.core.window.LaunchMode
@@ -48,7 +50,8 @@ val NotepadApp = AppDef(
 @Composable
 private fun NotepadContent(scope: WindowContentScope) {
     val theme = LocalWinTheme.current
-    var text by remember { mutableStateOf("") }
+    // v2.13：TextFieldValue 状态，支持虚拟键盘光标级编辑（插入/删除/方向键/全选/复制粘贴）
+    var text by remember { mutableStateOf(TextFieldValue("")) }
     var savedAt by remember { mutableStateOf<Long?>(null) }
     var wrapText by remember { mutableStateOf(true) }
     var fontSize by remember { mutableStateOf(14) }
@@ -64,7 +67,7 @@ private fun NotepadContent(scope: WindowContentScope) {
                 .padding(horizontal = 4.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            MenuButton("文件", theme) { text = "" }
+            MenuButton("文件", theme) { text = TextFieldValue("") }
             MenuButton("编辑", theme) { /* 复制等操作 */ }
             MenuButton("查看", theme) { wrapText = !wrapText }
             Spacer(Modifier.weight(1f))
@@ -81,7 +84,7 @@ private fun NotepadContent(scope: WindowContentScope) {
             IconButton(onClick = { fontSize = (fontSize + 1).coerceAtMost(36) }, modifier = Modifier.size(28.dp)) {
                 Icon(Icons.Default.TextIncrease, null, tint = if (theme.isDark) Color.White else Color.Black, modifier = Modifier.size(14.dp))
             }
-            IconButton(onClick = { text = "" }, modifier = Modifier.size(28.dp)) {
+            IconButton(onClick = { text = TextFieldValue("") }, modifier = Modifier.size(28.dp)) {
                 Icon(Icons.Default.Add, "新建", tint = if (theme.isDark) Color.White else Color.Black, modifier = Modifier.size(14.dp))
             }
             IconButton(onClick = { savedAt = System.currentTimeMillis() }, modifier = Modifier.size(28.dp)) {
@@ -105,7 +108,7 @@ private fun NotepadContent(scope: WindowContentScope) {
                 .background(theme.windowBackgroundColor)
                 .padding(8.dp)
         ) {
-            if (text.isEmpty()) {
+            if (text.text.isEmpty()) {
                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.TopStart) {
                     Text(
                         "开始输入文本...",
@@ -129,6 +132,11 @@ private fun NotepadContent(scope: WindowContentScope) {
                 modifier = Modifier
                     .fillMaxSize()
                     .verticalScroll(rememberScrollState())
+                    .keyboardAware(
+                        value = { text },
+                        onValue = { text = it },
+                        singleLine = false
+                    )
                     .padding(4.dp)
             )
         }
@@ -143,7 +151,7 @@ private fun NotepadContent(scope: WindowContentScope) {
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
-                "行 ${text.count { it == '\n' } + 1}  字符 ${text.length}  字 ${text.toCharArray().filter { !it.isWhitespace() }.size}",
+                "行 ${text.text.count { it == '\n' } + 1}  字符 ${text.text.length}  字 ${text.text.toCharArray().filter { !it.isWhitespace() }.size}",
                 color = if (theme.isDark) Color.White else Color.Black,
                 fontSize = 10.sp
             )

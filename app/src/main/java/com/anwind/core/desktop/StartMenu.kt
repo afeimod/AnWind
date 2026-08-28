@@ -37,6 +37,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.anwind.core.input.keyboardAware
 import com.anwind.core.theme.WinTheme
 import com.anwind.core.window.AppRegistry
 import com.anwind.core.window.WindowManager
@@ -60,6 +61,27 @@ fun StartMenu(
     val wm = remember { WindowManager.get() }
     val allApps = remember { AppRegistry.all() }
     var searchText by remember { mutableStateOf("") }
+
+    // 搜索提交（v2.13：上移声明，供 IME 搜索回调与虚拟键盘 onEnter 共用）
+    val submitSearch: () -> Unit = {
+        val q = searchText.trim()
+        if (q.isNotEmpty()) {
+            val target = if (q.contains(".") && !q.contains(" ")) {
+                if (q.startsWith("http")) q else "https://$q"
+            } else {
+                "https://www.bing.com/search?q=" + android.net.Uri.encode(q)
+            }
+            wm.open(
+                appId = "browser",
+                title = "浏览器",
+                launchMode = com.anwind.core.window.LaunchMode.FLOATING,
+                launchArgs = mapOf("url" to target),
+                initialWidth = 980,
+                initialHeight = 640
+            )
+            onDismiss()
+        }
+    }
 
     Box(
         modifier = modifier
@@ -113,26 +135,15 @@ fun StartMenu(
                             fontSize = 13.sp
                         ),
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                        keyboardActions = KeyboardActions(onSearch = {
-                            val q = searchText.trim()
-                            if (q.isNotEmpty()) {
-                                val target = if (q.contains(".") && !q.contains(" ")) {
-                                    if (q.startsWith("http")) q else "https://$q"
-                                } else {
-                                    "https://www.bing.com/search?q=" + android.net.Uri.encode(q)
-                                }
-                                wm.open(
-                                    appId = "browser",
-                                    title = "浏览器",
-                                    launchMode = com.anwind.core.window.LaunchMode.FLOATING,
-                                    launchArgs = mapOf("url" to target),
-                                    initialWidth = 980,
-                                    initialHeight = 640
-                                )
-                                onDismiss()
-                            }
-                        }),
-                        modifier = Modifier.weight(1f),
+                        keyboardActions = KeyboardActions(onSearch = { submitSearch() }),
+                        modifier = Modifier
+                            .weight(1f)
+                            .keyboardAware(
+                                value = { searchText },
+                                onValue = { searchText = it },
+                                singleLine = true,
+                                onEnter = submitSearch
+                            ),
                         cursorBrush = androidx.compose.ui.graphics.SolidColor(theme.accentColor)
                     )
                     if (searchText.isEmpty()) {

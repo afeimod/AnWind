@@ -18,6 +18,7 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.anwind.core.input.keyboardAware
 import com.anwind.core.theme.LocalWinTheme
 import com.anwind.core.window.AppDef
 import com.anwind.core.window.LaunchMode
@@ -48,6 +49,31 @@ private fun TerminalContent(scope: WindowContentScope) {
     var input by remember { mutableStateOf("") }
     val lines = remember { mutableStateListOf<TerminalLine>() }
     val scrollState = rememberLazyListState()
+
+    // 命令提交（v2.13：上移声明 —— 虚拟键盘 onEnter 回调在输入行声明之前引用）
+    val handleSubmit: () -> Unit = {
+        val cmd = input.trim()
+        lines.add(TerminalLine("$currentPath> $cmd", LineType.INPUT))
+        input = ""
+
+        if (cmd.isNotEmpty()) {
+            val output = executeCommand(cmd, currentPath, app)
+            output.forEach { lines.add(TerminalLine(it, LineType.OUTPUT)) }
+            // 处理 cd 命令
+            if (cmd.startsWith("cd ") || cmd == "cd") {
+                val target = if (cmd == "cd") "C:\\Users\\User" else cmd.removePrefix("cd ").trim()
+                currentPath = target.ifEmpty { currentPath }
+            }
+            if (cmd == "cls" || cmd == "clear") {
+                lines.clear()
+                lines.add(TerminalLine("", LineType.SYSTEM))
+            }
+            if (cmd == "exit") {
+                scope.onClose()
+            }
+        }
+        lines.add(TerminalLine("", LineType.SYSTEM))
+    }
 
     // 欢迎信息
     LaunchedEffect(Unit) {
@@ -88,7 +114,14 @@ private fun TerminalContent(scope: WindowContentScope) {
                             fontFamily = FontFamily.Monospace
                         ),
                         cursorBrush = androidx.compose.ui.graphics.SolidColor(Color(0xFF00FF00)),
-                        modifier = Modifier.weight(1f)
+                        modifier = Modifier
+                            .weight(1f)
+                            .keyboardAware(
+                                value = { input },
+                                onValue = { input = it },
+                                singleLine = true,
+                                onEnter = { handleSubmit() }
+                            )
                     )
                 }
             }
@@ -107,33 +140,8 @@ private fun TerminalContent(scope: WindowContentScope) {
     // 这里监听键盘 enter 事件需要用 Modifier.onKeyEvent
     // 简化版：提供一个"执行"按钮（暂时隐藏，依赖回车键）
 
-    // 监听 Enter 键
-    val handleSubmit: () -> Unit = {
-        val cmd = input.trim()
-        lines.add(TerminalLine("$currentPath> $cmd", LineType.INPUT))
-        input = ""
-
-        if (cmd.isNotEmpty()) {
-            val output = executeCommand(cmd, currentPath, app)
-            output.forEach { lines.add(TerminalLine(it, LineType.OUTPUT)) }
-            // 处理 cd 命令
-            if (cmd.startsWith("cd ") || cmd == "cd") {
-                val target = if (cmd == "cd") "C:\\Users\\User" else cmd.removePrefix("cd ").trim()
-                currentPath = target.ifEmpty { currentPath }
-            }
-            if (cmd == "cls" || cmd == "clear") {
-                lines.clear()
-                lines.add(TerminalLine("", LineType.SYSTEM))
-            }
-            if (cmd == "exit") {
-                scope.onClose()
-            }
-        }
-        lines.add(TerminalLine("", LineType.SYSTEM))
-    }
-
-    // 因为 BasicTextField 默认不监听 Enter，我们用一个隐藏的提交按钮
-    // 或者监听软键盘的 IME action
+    // v2.13：命令提交已上移（供虚拟键盘 onEnter 与隐藏回车输入框共用）；
+    // 隐藏输入框保留：兼容系统输入法的回车提交路径。
     Box(modifier = Modifier.offset(x = 9999.dp)) {
         BasicTextField(
             value = input,
