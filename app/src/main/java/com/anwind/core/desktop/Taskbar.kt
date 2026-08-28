@@ -78,6 +78,10 @@ fun Taskbar(
         val taskbarColor = theme.taskbarColor.copy(alpha = theme.taskbarAlpha)
         val floatingWidth = maxWidth * 0.96f
         val bottomPadding = 4.dp
+        // 窄屏（手机竖屏）阈值：宽度 < 600.dp 视为窄屏
+        // 窄屏下隐藏任务栏搜索条 + 紧凑分隔线，腾出空间给右侧系统托盘的
+        // wifi/音量/电池/时钟组，避免它们被挤到屏幕边缘外
+        val isNarrow = maxWidth < 600.dp
 
         Row(
             modifier = Modifier
@@ -101,7 +105,8 @@ fun Taskbar(
                     onOpenCalendar = onOpenCalendar,
                     onOpenQuickSettings = onOpenQuickSettings,
                     tick = tick,
-                    showSeconds = showSeconds
+                    showSeconds = showSeconds,
+                    isNarrow = isNarrow
                 )
             }
         }
@@ -116,7 +121,8 @@ private fun CenteredTaskbar(
     onOpenCalendar: () -> Unit,
     onOpenQuickSettings: () -> Unit,
     tick: Long,
-    showSeconds: Boolean
+    showSeconds: Boolean,
+    isNarrow: Boolean
 ) {
     val wm = remember { WindowManager.get() }
     val runningWindows = remember(tick, theme) { wm.windows }
@@ -127,6 +133,7 @@ private fun CenteredTaskbar(
 
     Box(modifier = Modifier.fillMaxSize()) {
         // ===== 居中簇：Start + 搜索条 + 浏览器/文件管理器/设置 + 运行中窗口 =====
+        // 竖屏（isNarrow=true）下隐藏搜索条与分隔线，给右侧系统托盘腾出空间
         Row(
             modifier = Modifier.align(Alignment.Center),
             verticalAlignment = Alignment.CenterVertically,
@@ -134,51 +141,54 @@ private fun CenteredTaskbar(
         ) {
             // Start 按钮
             StartButton(theme = theme, isOpen = startMenuOpen, onClick = onStartClick)
-            Spacer(Modifier.width(2.dp))
 
-            // 搜索条（药丸形，未激活时显示图标 + "搜索"，激活时变宽接受输入）
-            PillSearchBar(
-                theme = theme,
-                text = searchText,
-                active = searchActive,
-                onActiveChange = { searchActive = it },
-                onTextChange = { searchText = it },
-                onSubmit = {
-                    val q = searchText.trim()
-                    if (q.isNotEmpty()) {
-                        // 用 normalizeUrl 处理：网址直接打开，搜索关键词走 Bing
-                        val target = if (q.contains(".") && !q.contains(" ")) {
-                            if (q.startsWith("http")) q else "https://$q"
-                        } else {
-                            "https://www.bing.com/search?q=" + android.net.Uri.encode(q)
+            if (!isNarrow) {
+                Spacer(Modifier.width(2.dp))
+
+                // 搜索条（药丸形，未激活时显示图标 + "搜索"，激活时变宽接受输入）
+                PillSearchBar(
+                    theme = theme,
+                    text = searchText,
+                    active = searchActive,
+                    onActiveChange = { searchActive = it },
+                    onTextChange = { searchText = it },
+                    onSubmit = {
+                        val q = searchText.trim()
+                        if (q.isNotEmpty()) {
+                            // 用 normalizeUrl 处理：网址直接打开，搜索关键词走 Bing
+                            val target = if (q.contains(".") && !q.contains(" ")) {
+                                if (q.startsWith("http")) q else "https://$q"
+                            } else {
+                                "https://www.bing.com/search?q=" + android.net.Uri.encode(q)
+                            }
+                            // 直接打开新浏览器窗口，让 launchArgs["url"] 自动加载
+                            wm.open(
+                                appId = "browser",
+                                title = "浏览器",
+                                launchMode = com.anwind.core.window.LaunchMode.FLOATING,
+                                launchArgs = mapOf("url" to target),
+                                initialWidth = 980,
+                                initialHeight = 640
+                            )
+                            searchText = ""
+                            searchActive = false
+                            keyboard?.hide()
                         }
-                        // 直接打开新浏览器窗口，让 launchArgs["url"] 自动加载
-                        wm.open(
-                            appId = "browser",
-                            title = "浏览器",
-                            launchMode = com.anwind.core.window.LaunchMode.FLOATING,
-                            launchArgs = mapOf("url" to target),
-                            initialWidth = 980,
-                            initialHeight = 640
-                        )
-                        searchText = ""
-                        searchActive = false
-                        keyboard?.hide()
                     }
-                }
-            )
+                )
 
-            Spacer(Modifier.width(2.dp))
+                Spacer(Modifier.width(2.dp))
 
-            // 紧凑分隔线
-            Box(
-                modifier = Modifier
-                    .width(1.dp)
-                    .height(20.dp)
-                    .background(theme.taskbarIconColor.copy(alpha = 0.15f))
-            )
+                // 紧凑分隔线
+                Box(
+                    modifier = Modifier
+                        .width(1.dp)
+                        .height(20.dp)
+                        .background(theme.taskbarIconColor.copy(alpha = 0.15f))
+                )
 
-            Spacer(Modifier.width(2.dp))
+                Spacer(Modifier.width(2.dp))
+            }
 
             // 仅显示固定在任务栏的核心三件套：浏览器/文件管理器/设置
             val pinnedApps = remember {

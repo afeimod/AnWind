@@ -661,7 +661,23 @@ private fun WebViewContainer(
                     lastRequestedUrl = url
                 }
             },
-            onRelease = { tab.webView = null },
+            onRelease = { webview ->
+                // 关键修复：关闭标签页 / 关闭浏览器窗口时，必须显式销毁 WebView，
+                // 否则网页内的音频/视频会继续在后台播放（"浏览器关了还在响"Bug）。
+                // 1) onPause() 暂停视频/音频播放
+                // 2) pauseTimers() 停止 WebView 内部定时器
+                // 3) stopLoading() 中止当前加载
+                // 4) destroy() 彻底释放 native 资源并断开与 JS 通信
+                try {
+                    webview.onPause()
+                    webview.pauseTimers()
+                    webview.stopLoading()
+                    webview.destroy()
+                } catch (_: Exception) {
+                    // 某些设备上 destroy() 可能抛 IllegalStateException，吞掉即可
+                }
+                tab.webView = null
+            },
             modifier = Modifier.fillMaxSize()
         )
 

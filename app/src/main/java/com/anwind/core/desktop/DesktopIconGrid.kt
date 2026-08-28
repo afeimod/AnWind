@@ -6,9 +6,9 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -36,7 +36,11 @@ import com.anwind.data.model.Shortcut
 import java.io.IOException
 
 /**
- * 桌面图标网格：靠左上角、从左到右自动换行排列（类似 Windows 桌面）。
+ * 桌面图标网格：靠左上角、**先竖向填充再横向换列**排列（Windows 桌面真实样式）。
+ *
+ * 与之前用 FlowRow 不同：Windows 桌面图标是按列组织的——从上到下铺满一列后再
+ * 跳到右边下一列继续从上到下，而不是从左到右铺满一行后再换行。
+ * 这样在窄屏（手机竖屏）下也能合理利用屏幕高度。
  *
  * 数据来源：
  * 1. AppRegistry 中 pinnedToDesktop=true 的内置应用
@@ -80,16 +84,19 @@ fun DesktopIconGrid() {
         builtin + shortcutItems
     }
 
-    Column(
+    // 使用 FlowColumn：先竖向（从上到下）填充，超出屏幕高度后自动换到下一列
+    // （从左到右），完整还原 Windows 桌面图标的排列方式。
+    // 外层 horizontalScroll 让超出屏幕右边界的列可水平滚动访问。
+    Box(
         modifier = Modifier
             .fillMaxSize()
-            .padding(8.dp)
-            .verticalScroll(rememberScrollState())
+            .horizontalScroll(rememberScrollState())
     ) {
-        // 从左到右、自动换行排列；图标超出一屏时可纵向滚动，不会被裁剪
-        FlowRow(
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+        FlowColumn(
+            modifier = Modifier
+                .padding(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             items.forEach { item ->
                 DesktopIcon(item = item, iconSize = iconSize)
