@@ -509,7 +509,9 @@ private fun WebViewContainer(
                                 resultMsg?.let { msg ->
                                     val transport = msg.obj as? WebView.WebViewTransport
                                     transport?.webView = src
-                                    msg.target?.sendToTarget()
+                                    // sendToTarget() 是 Message 的方法（内部调用 target.sendMessage(this)），
+                                    // 不能在 target (Handler) 上调用
+                                    msg.sendToTarget()
                                 }
                             }
                             return true
