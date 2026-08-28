@@ -40,7 +40,9 @@ class BrowserTab(
     /** 是否为 window.open / target=_blank 弹出的标签 */
     var isPopup: Boolean = false,
     /** 抑制下一次导航的历史记录（后退/前进/刷新不写入历史） */
-    var suppressNextHistory: Boolean = false
+    var suppressNextHistory: Boolean = false,
+    /** v2.14：灰屏检测连续疑似计数（≥2 触发软件渲染回退） */
+    var blankStrikes: Int = 0
 )
 
 /**
@@ -90,6 +92,10 @@ class TabManager {
 
     /** 当前 UA 模式（"desktop" / "mobile"），由 BrowserContent 同步，供弹窗 WebView 创建时使用 */
     internal var uaMode: String = "desktop"
+
+    /** v2.14：渲染模式（"hardware" / "software"），由 BrowserContent 同步；
+     *  灰屏自动检测确认后会置为 software 并持久化 */
+    internal var renderMode: String = "hardware"
 
     fun getTab(id: String?): BrowserTab? = _tabs.firstOrNull { it.id == id }
 

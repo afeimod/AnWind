@@ -43,6 +43,7 @@ import com.anwind.core.theme.LocalWinTheme
 import com.anwind.core.theme.WinTheme
 import com.anwind.core.window.AppRegistry
 import com.anwind.core.window.WindowManager
+import com.anwind.util.L
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
@@ -74,6 +75,7 @@ fun Taskbar(
     onOpenClockStyle: () -> Unit = {},
     showSeconds: Boolean = false,
     timeFormat24h: Boolean = true,
+    taskbarCentered: Boolean = true,
     modifier: Modifier = Modifier
 ) {
     var tick by remember { mutableStateOf(0L) }
@@ -122,7 +124,9 @@ fun Taskbar(
                     tick = tick,
                     showSeconds = showSeconds,
                     timeFormat24h = timeFormat24h,
-                    isNarrow = isNarrow
+                    isNarrow = isNarrow,
+                    taskbarCentered = taskbarCentered,
+                    maxBarWidth = maxWidth
                 )
             }
         }
@@ -141,7 +145,9 @@ private fun CenteredTaskbar(
     tick: Long,
     showSeconds: Boolean,
     timeFormat24h: Boolean,
-    isNarrow: Boolean
+    isNarrow: Boolean,
+    taskbarCentered: Boolean = true,
+    maxBarWidth: Dp = 600.dp
 ) {
     val wm = remember { WindowManager.get() }
     val runningWindows = remember(tick, theme) { wm.windows }
@@ -183,9 +189,15 @@ private fun CenteredTaskbar(
                 onSubmit = {
                     val q = searchText.trim()
                     if (q.isNotEmpty()) {
-                        // 用 normalizeUrl 处理：网址直接打开，搜索关键词走 Bing
+                        // 网址直接打开，搜索关键词走 Bing；v2.14：内网地址（IP/localhost/带端口）默认 http
                         val target = if (q.contains(".") && !q.contains(" ")) {
-                            if (q.startsWith("http")) q else "https://$q"
+                            val bare = q.substringBefore("/")
+                            val isIp = Regex("^\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}(:\\d+)?").matches(bare)
+                            when {
+                                q.startsWith("http") -> q
+                                isIp || bare.startsWith("localhost") || bare.contains(":") -> "http://$q"
+                                else -> "https://$q"
+                            }
                         } else {
                             "https://www.bing.com/search?q=" + android.net.Uri.encode(q)
                         }
@@ -216,6 +228,13 @@ private fun CenteredTaskbar(
             )
 
             Spacer(Modifier.width(4.dp))
+        }
+
+        // v2.14 任务栏居中设置：居中模式下在固定图标区两侧插入等宽弹性区，
+        // 图标组（固定 + 运行任务）整体落在任务栏中部（Win11 风格）；
+        // 左对齐模式保持 v2.11 布局（图标紧跟搜索条，运行任务占中间弹性区）。
+        if (taskbarCentered) {
+            Spacer(Modifier.weight(1f))
         }
 
         // 仅显示固定在任务栏的核心三件套：浏览器/文件管理器/设置
@@ -250,15 +269,20 @@ private fun CenteredTaskbar(
             )
         }
 
-        // ===== 运行中的窗口（非固定应用）：中间弹性区，任务少时靠左，任务多时可横向滑动 =====
-        // weight(1f)：占满固定图标与系统托盘之间的全部剩余空间；图标在区内靠左排列，
-        // 超出宽度后变为可滚动 —— 托盘因此始终稳定贴在最右端。
+        // ===== 运行中的窗口（非固定应用）：居中模式下与固定图标一起构成中部图标组
+        // （限宽可滚动，超出后左滚）；左对齐模式占满固定图标与系统托盘之间的弹性区。 =====
         val pinnedIds = pinnedApps.map { it.id }.toSet()
         val runningOnly = runningWindows.filter { it.appId !in pinnedIds }
         Box(
-            modifier = Modifier
-                .weight(1f)
-                .horizontalScroll(rememberScrollState())
+            modifier = if (taskbarCentered) {
+                Modifier
+                    .widthIn(max = maxBarWidth * 0.34f)
+                    .horizontalScroll(rememberScrollState())
+            } else {
+                Modifier
+                    .weight(1f)
+                    .horizontalScroll(rememberScrollState())
+            }
         ) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
@@ -288,6 +312,11 @@ private fun CenteredTaskbar(
                     }
                 }
             }
+        }
+
+        // 居中模式：图标组右侧弹性区（与左侧等宽，托盘仍固定最右）
+        if (taskbarCentered) {
+            Spacer(Modifier.weight(1f))
         }
 
         // ===== 系统托盘（v2.11：固定在最右端，不随任务数量移动） =====
@@ -401,7 +430,7 @@ private fun PillSearchBar(
     ) {
         Icon(
             imageVector = Icons.Default.Search,
-            contentDescription = "搜索",
+            contentDescription = L("搜索"),
             tint = theme.taskbarIconColor,
             modifier = Modifier.size(14.dp)
         )
@@ -428,14 +457,14 @@ private fun PillSearchBar(
             )
             if (text.isEmpty()) {
                 Text(
-                    text = "搜索",
+                    text = L("搜索"),
                     color = theme.taskbarIconColor.copy(alpha = 0.6f),
                     fontSize = 12.sp
                 )
             }
         } else {
             Text(
-                text = "搜索",
+                text = L("搜索"),
                 color = theme.taskbarIconColor,
                 fontSize = 11.sp,
                 fontWeight = FontWeight.Normal

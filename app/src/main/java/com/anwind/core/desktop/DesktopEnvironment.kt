@@ -67,6 +67,9 @@ fun DesktopEnvironment(
     var taskbarShown by remember { mutableStateOf(true) }
     var bottomThresholdPx by remember { mutableStateOf(0f) }
 
+    // v2.14：任务栏图标对齐（居中 Win11 / 靠左经典）
+    val taskbarCentered by app.settingsStore.taskbarCentered.collectAsState(initial = true)
+
     // 监听 WindowManager 变化：用于检测是否有窗口进入真全屏（F11），
     // 真全屏时隐藏任务栏 + 让浮动窗口层占满整屏
     var wmRevision by remember { mutableStateOf(0) }
@@ -243,6 +246,7 @@ fun DesktopEnvironment(
             onOpenClockStyle = { trayPopup = TrayPopup.CLOCK_STYLE },
             showSeconds = showSeconds,
             timeFormat24h = timeFormat24h,
+            taskbarCentered = taskbarCentered,
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
@@ -317,6 +321,17 @@ fun DesktopEnvironment(
 
         // ===== 8. 虚拟鼠标指针层（v2.13：Windows 风格指针 + 点击涟漪，最顶层） =====
         MouseCursorOverlay()
+
+        // ===== 9. 锁屏层（v2.14：设置→个性化→锁屏界面 / 开始菜单电源→锁定） =====
+        // 放在键盘/鼠标层之上，拦截一切交互，只允许上滑或点击解锁
+        if (LockController.locked) {
+            LockScreenLayer(
+                theme = theme,
+                customWallpaperUri = customWallpaperUri,
+                timeFormat24h = timeFormat24h,
+                onUnlock = { LockController.unlock() }
+            )
+        }
     }
 }
 

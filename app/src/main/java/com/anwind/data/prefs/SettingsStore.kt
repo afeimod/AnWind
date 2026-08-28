@@ -34,6 +34,22 @@ class SettingsStore(private val context: Context) {
         val DISPLAY_ORIENTATION = stringPreferencesKey("display_orientation")
         // 浏览器桌面/手机模式：desktop / mobile
         val BROWSER_UA_MODE = stringPreferencesKey("browser_ua_mode")
+        // v2.14：浏览器渲染模式：hardware 硬件加速（默认）/ software 软件渲染（修复灰屏）
+        val BROWSER_RENDER_MODE = stringPreferencesKey("browser_render_mode")
+
+        // === v2.14：个性化（颜色 / 字体 / 任务栏） ===
+        // 颜色模式：auto 跟随主题 / light 强制浅色 / dark 强制深色（作用于所有 Windows 主题）
+        val APP_COLOR_MODE = stringPreferencesKey("app_color_mode")
+        // 强调色覆盖：default 主题自带 / "#RRGGBB" 十六进制色值
+        val APP_ACCENT = stringPreferencesKey("app_accent")
+        // 全局字体缩放（0.85..1.4，乘到系统 fontScale 上，控制所有文字大小）
+        val FONT_SCALE = floatPreferencesKey("font_scale")
+        // 全局字体颜色：auto 跟随主题 / white 白色 / black 黑色
+        val FONT_COLOR = stringPreferencesKey("font_color")
+        // 全局字体样式：default 无衬线 / serif 衬线 / mono 等宽
+        val FONT_STYLE = stringPreferencesKey("font_style")
+        // 任务栏图标对齐：true 居中（Win11 风格）/ false 靠左（Win7 风格）
+        val TASKBAR_CENTERED = booleanPreferencesKey("taskbar_centered")
 
         // === 刘海屏 / 任务栏 ===
         // 内容是否绘制进刘海屏区域（默认 true，占用刘海屏）
@@ -53,6 +69,8 @@ class SettingsStore(private val context: Context) {
         // === 桌面图标（v2.11 右键菜单"排序方式"） ===
         // 排序模式：default 默认（内置应用 + 快捷方式原序）/ name 按名称 / type 按类型
         val DESKTOP_SORT = stringPreferencesKey("desktop_sort")
+        // v2.14：桌面图标自定义顺序（长按拖动排序后保存，逗号分隔的 item id 列表）
+        val DESKTOP_ICON_ORDER = stringPreferencesKey("desktop_icon_order")
 
         // === 蓝牙与设备 ===
         val BLUETOOTH_ENABLED = booleanPreferencesKey("bluetooth_enabled")
@@ -141,6 +159,18 @@ class SettingsStore(private val context: Context) {
 
     // === 桌面图标 ===
     val desktopSort: Flow<String> = context.appPrefs.data.map { it[Keys.DESKTOP_SORT] ?: "default" }
+    // v2.14：自定义图标顺序（空串 = 未自定义，按默认序）
+    val desktopIconOrder: Flow<String> = context.appPrefs.data.map { it[Keys.DESKTOP_ICON_ORDER] ?: "" }
+
+    // === v2.14：个性化 ===
+    val browserRenderMode: Flow<String> = context.appPrefs.data
+        .map { it[Keys.BROWSER_RENDER_MODE] ?: "hardware" }
+    val appColorMode: Flow<String> = context.appPrefs.data.map { it[Keys.APP_COLOR_MODE] ?: "auto" }
+    val appAccent: Flow<String> = context.appPrefs.data.map { it[Keys.APP_ACCENT] ?: "default" }
+    val fontScale: Flow<Float> = context.appPrefs.data.map { it[Keys.FONT_SCALE] ?: 1.0f }
+    val fontColor: Flow<String> = context.appPrefs.data.map { it[Keys.FONT_COLOR] ?: "auto" }
+    val fontStyle: Flow<String> = context.appPrefs.data.map { it[Keys.FONT_STYLE] ?: "default" }
+    val taskbarCentered: Flow<Boolean> = context.appPrefs.data.map { it[Keys.TASKBAR_CENTERED] ?: true }
 
     // === 蓝牙与设备 ===
     val bluetoothEnabled: Flow<Boolean> = context.appPrefs.data.map { it[Keys.BLUETOOTH_ENABLED] ?: false }
@@ -264,6 +294,43 @@ class SettingsStore(private val context: Context) {
     suspend fun setDesktopSort(mode: String) {
         val v = if (mode in setOf("default", "name", "type")) mode else "default"
         context.appPrefs.edit { it[Keys.DESKTOP_SORT] = v }
+    }
+
+    suspend fun setDesktopIconOrder(order: String) {
+        context.appPrefs.edit { it[Keys.DESKTOP_ICON_ORDER] = order }
+    }
+
+    // === v2.14：个性化 setter ===
+    suspend fun setBrowserRenderMode(mode: String) {
+        val v = if (mode in setOf("hardware", "software")) mode else "hardware"
+        context.appPrefs.edit { it[Keys.BROWSER_RENDER_MODE] = v }
+    }
+
+    suspend fun setAppColorMode(mode: String) {
+        val v = if (mode in setOf("auto", "light", "dark")) mode else "auto"
+        context.appPrefs.edit { it[Keys.APP_COLOR_MODE] = v }
+    }
+
+    suspend fun setAppAccent(accent: String) {
+        context.appPrefs.edit { it[Keys.APP_ACCENT] = accent }
+    }
+
+    suspend fun setFontScale(scale: Float) {
+        context.appPrefs.edit { it[Keys.FONT_SCALE] = scale.coerceIn(0.85f, 1.4f) }
+    }
+
+    suspend fun setFontColor(color: String) {
+        val v = if (color in setOf("auto", "white", "black")) color else "auto"
+        context.appPrefs.edit { it[Keys.FONT_COLOR] = v }
+    }
+
+    suspend fun setFontStyle(style: String) {
+        val v = if (style in setOf("default", "serif", "mono")) style else "default"
+        context.appPrefs.edit { it[Keys.FONT_STYLE] = v }
+    }
+
+    suspend fun setTaskbarCentered(centered: Boolean) {
+        context.appPrefs.edit { it[Keys.TASKBAR_CENTERED] = centered }
     }
 
     // === 蓝牙与设备 setter ===

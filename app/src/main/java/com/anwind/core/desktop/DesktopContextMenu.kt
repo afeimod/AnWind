@@ -54,6 +54,7 @@ import com.anwind.core.window.WindowManager
 import com.anwind.data.db.entity.ShortcutEntity
 import com.anwind.data.model.DesktopItem
 import com.anwind.data.model.DesktopItemType
+import com.anwind.util.L
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -122,17 +123,17 @@ fun DesktopContextMenu(
                 // ==================== 图标右键菜单 ====================
                 val item = data.iconItem
                 val isShortcut = item.type != DesktopItemType.BUILTIN_APP
-                ContextMenuEntry(icon = Icons.Default.Launch, label = "打开") {
+                ContextMenuEntry(icon = Icons.Default.Launch, label = L("打开")) {
                     launchDesktopItem(item, wm)
                     onDismiss()
                 }
                 if (isShortcut) {
                     ContextMenuDivider()
-                    ContextMenuEntry(icon = Icons.Default.DriveFileRenameOutline, label = "重命名") {
+                    ContextMenuEntry(icon = Icons.Default.DriveFileRenameOutline, label = L("重命名")) {
                         showRenameDialog = item
                         onDismiss()
                     }
-                    ContextMenuEntry(icon = Icons.Default.Delete, label = "删除") {
+                    ContextMenuEntry(icon = Icons.Default.Delete, label = L("删除")) {
                         val shortcutId = item.id.removePrefix("shortcut_").toLongOrNull()
                         if (shortcutId != null) {
                             scope0.launch {
@@ -145,7 +146,7 @@ fun DesktopContextMenu(
                     }
                 }
                 ContextMenuDivider()
-                ContextMenuEntry(icon = Icons.Default.Info, label = "属性") {
+                ContextMenuEntry(icon = Icons.Default.Info, label = L("属性")) {
                     showPropsDialog = item
                     onDismiss()
                 }
@@ -162,17 +163,17 @@ fun DesktopContextMenu(
                 // ===== 查看（图标大小） =====
                 SubmenuEntry(
                     icon = Icons.Default.GridView,
-                    label = "查看",
+                    label = L("查看"),
                     expanded = expandedSub == "view",
                     onToggle = { expandedSub = if (expandedSub == "view") null else "view" }
                 ) {
-                    RadioOption("大图标", iconSize >= 60f) {
+                    RadioOption(L("大图标"), iconSize >= 60f) {
                         scope0.launch { app.settingsStore.setIconSize(64f) }
                     }
-                    RadioOption("中等图标", iconSize in 40f..59f) {
+                    RadioOption(L("中等图标"), iconSize in 40f..59f) {
                         scope0.launch { app.settingsStore.setIconSize(48f) }
                     }
-                    RadioOption("小图标", iconSize < 40f) {
+                    RadioOption(L("小图标"), iconSize < 40f) {
                         scope0.launch { app.settingsStore.setIconSize(36f) }
                     }
                 }
@@ -180,23 +181,23 @@ fun DesktopContextMenu(
                 // ===== 排序方式 =====
                 SubmenuEntry(
                     icon = Icons.Default.SortByAlpha,
-                    label = "排序方式",
+                    label = L("排序方式"),
                     expanded = expandedSub == "sort",
                     onToggle = { expandedSub = if (expandedSub == "sort") null else "sort" }
                 ) {
-                    RadioOption("默认（内置应用优先）", sortMode == "default") {
+                    RadioOption(L("默认"), sortMode == "default") {
                         scope0.launch { app.settingsStore.setDesktopSort("default") }
                     }
-                    RadioOption("按名称", sortMode == "name") {
+                    RadioOption(L("名称"), sortMode == "name") {
                         scope0.launch { app.settingsStore.setDesktopSort("name") }
                     }
-                    RadioOption("按类型", sortMode == "type") {
+                    RadioOption(L("类型"), sortMode == "type") {
                         scope0.launch { app.settingsStore.setDesktopSort("type") }
                     }
                 }
 
                 // ===== 刷新（真正重建桌面网格，重载图标位图） =====
-                ContextMenuEntry(icon = Icons.Default.Refresh, label = "刷新") {
+                ContextMenuEntry(icon = Icons.Default.Refresh, label = L("刷新")) {
                     onRefresh()
                     onDismiss()
                 }
@@ -204,7 +205,7 @@ fun DesktopContextMenu(
                 ContextMenuDivider()
 
                 // ===== 新建快捷方式 =====
-                ContextMenuEntry(icon = Icons.Default.Link, label = "新建快捷方式") {
+                ContextMenuEntry(icon = Icons.Default.Link, label = L("新建快捷方式")) {
                     showShortcutDialog = true
                     onDismiss()
                 }
@@ -214,7 +215,7 @@ fun DesktopContextMenu(
                 // ===== 切换主题（直接切换，与设置-个性化同一入口） =====
                 SubmenuEntry(
                     icon = Icons.Default.FormatPaint,
-                    label = "切换主题",
+                    label = L("切换主题"),
                     expanded = expandedSub == "theme",
                     onToggle = { expandedSub = if (expandedSub == "theme") null else "theme" }
                 ) {
@@ -226,7 +227,7 @@ fun DesktopContextMenu(
                 }
 
                 // ===== 显示设置 / 个性化（跳到设置中心对应分区） =====
-                ContextMenuEntry(icon = Icons.Default.Monitor, label = "显示设置") {
+                ContextMenuEntry(icon = Icons.Default.Monitor, label = L("显示设置")) {
                     wm.open(
                         appId = "settings",
                         title = "设置",
@@ -235,7 +236,7 @@ fun DesktopContextMenu(
                     )
                     onDismiss()
                 }
-                ContextMenuEntry(icon = Icons.Default.Palette, label = "个性化") {
+                ContextMenuEntry(icon = Icons.Default.Palette, label = L("个性化设置")) {
                     wm.open(
                         appId = "settings",
                         title = "设置",
@@ -248,16 +249,16 @@ fun DesktopContextMenu(
                 ContextMenuDivider()
 
                 // ===== 打开终端 / 任务管理器 / 关闭所有窗口 =====
-                ContextMenuEntry(icon = Icons.Default.Terminal, label = "打开终端") {
+                ContextMenuEntry(icon = Icons.Default.Terminal, label = L("打开终端")) {
                     openApp("terminal", wm)
                     onDismiss()
                 }
-                ContextMenuEntry(icon = Icons.Default.Analytics, label = "任务管理器") {
+                ContextMenuEntry(icon = Icons.Default.Analytics, label = L("任务管理器")) {
                     openApp("sysinfo", wm)
                     onDismiss()
                 }
                 if (wm.windows.isNotEmpty()) {
-                    ContextMenuEntry(icon = Icons.Default.CancelPresentation, label = "关闭所有窗口") {
+                    ContextMenuEntry(icon = Icons.Default.CancelPresentation, label = L("关闭所有窗口")) {
                         wm.closeAll()
                         onDismiss()
                     }

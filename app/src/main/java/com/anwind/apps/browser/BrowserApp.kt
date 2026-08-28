@@ -107,6 +107,22 @@ private fun BrowserContent(scope: WindowContentScope) {
         scope0.launch { app.settingsStore.setBrowserUaMode(next) }
     }
 
+    // v2.14：渲染模式（硬件加速 / 软件渲染）—— 同步到 TabManager 供新建 WebView 使用；
+    // 切换时对所有已存在标签应用新 layerType 并重载（灰屏修复立即生效）
+    val renderMode by app.settingsStore.browserRenderMode.collectAsState(initial = "hardware")
+    LaunchedEffect(renderMode) {
+        tabManager.renderMode = renderMode
+        tabManager.tabs.forEach { t ->
+            t.webView?.let { wv ->
+                BrowserEngine.applyRenderMode(wv, renderMode)
+                if (wv.layerType == android.view.View.LAYER_TYPE_SOFTWARE || renderMode == "software") {
+                    // 切到软件渲染后重载，重新走软件合成路径
+                    runCatching { wv.reload() }
+                }
+            }
+        }
+    }
+
     // 用户设置的主页（默认 AnWind 速度页 anwind://home）
     val defaultHome by app.settingsStore.defaultBrowserHome.collectAsState(initial = "anwind://home")
 
@@ -907,6 +923,15 @@ private fun normalizeUrl(input: String): String {
     if (input.isEmpty()) return ""
     if (input.startsWith("http://") || input.startsWith("https://") || input.startsWith("content://")) return input
     if (input.startsWith("anwind://")) return input
-    if (input.contains(".") && !input.contains(" ")) return "https://$input"
+    if (input.contains(".") && !input.contains(" ")) {
+        // v2.14：内网地址（IP / localhost / 带端口号）默认 http ——
+        // 路由器/NAS/本地服务大多不支持 https，自动加 https:// 会直接挂掉。
+        // 其余域名仍默认 https。
+        val isBareHost = input.substringBefore("/")
+        val isIp = Regex("^\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}(:\\d+)?").matches(isBareHost)
+        val isLocalhost = isBareHost.startsWith("localhost") || isBareHost.endsWith(".local")
+        val hasPort = isBareHost.contains(":")
+        return if (isIp || isLocalhost || hasPort) "http://$input" else "https://$input"
+    }
     return "https://www.bing.com/search?q=" + android.net.Uri.encode(input)
 }

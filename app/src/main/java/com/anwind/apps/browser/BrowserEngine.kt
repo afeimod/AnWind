@@ -4,6 +4,7 @@ import android.app.DownloadManager
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
@@ -28,6 +29,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import java.lang.ref.WeakReference
 
 /**
  * 浏览器内核引擎：WebView 的创建 / 配置 / 销毁，以及 WebViewClient、WebChromeClient。
@@ -43,6 +45,14 @@ import kotlinx.coroutines.launch
  *      a destroyed WebView"。
  *    现在：弹出的 WebView 直接作为新标签的【真实 WebView】通过 transport 交给
  *    Chromium，导航（GET/POST/JS 重定向）在真实标签中完成，全场景兼容。
+ *
+ * v2.14 灰屏修复（参考 gamehtml 容器方案 + 灰屏日志分析）：
+ * 1. 渲染模式可切换：hardware（默认）/ software（软件渲染兼容）。
+ *    日志特征：MIUI ForceDarkHelper 初始化 + 沙盒进程 RSS 飙到 400MB，
+ *    页面有声曾但 GPU 合成失败（Surface 不上屏）→ 灰屏。
+ * 2. 自动灰屏检测回退：onPageFinished 后采样 48px 缩略图，连续 2 次判定
+ *    "整面单色"（方差≈0）→ 自动切换软件渲染 + reload + 持久化记忆。
+ * 3. 禁用 WebView 算法暗色（MIUI 强制深色不干预网页渲染）。
  */
 object BrowserEngine {
 
@@ -72,6 +82,7 @@ object BrowserEngine {
         val existing = tab.webView
         if (existing != null) {
             applyUa(existing, manager.uaMode)
+            applyRenderMode(existing, manager.renderMode)
             return existing
         }
         val wv = WebView(context)
@@ -81,6 +92,25 @@ object BrowserEngine {
         configure(wv, tab, manager)
         tab.webView = wv
         return wv
+    }
+
+    /**
+     * v2.14：应用渲染模式。
+     * - hardware：默认硬件加速（LAYER_TYPE_NONE，交由窗口系统合成）
+     * - software：软件渲染（修复部分 MIUI / GPU 驱动上页面有声曾但灰屏不合成）
+     */
+    fun applyRenderMode(wv: WebView, mode: String) {
+        val layerType = if (mode == "software") {
+            View.LAYER_TYPE_SOFTWARE
+        } else {
+            View.LAYER_TYPE_NONE
+        }
+        if (wv.layerType != layerType) {
+            try {
+                wv.setLayerType(layerType, null)
+            } catch (_: Exception) {
+            }
+        }
     }
 
     private fun applyUa(wv: WebView, uaMode: String) {
@@ -128,6 +158,18 @@ object BrowserEngine {
         // ⚠️ v2.8：不再调用 setLayerType(LAYER_TYPE_HARDWARE)。
         // WebView 自身默认硬件加速；强制加离屏硬件层在部分设备（MIUI/部分 GPU 驱动）
         // 上首帧不合成，表现为页面加载完成（标题更新）但一直黑屏。
+
+        // v2.14：渲染模式（软件渲染修复灰屏，见 applyRenderMode）
+        applyRenderMode(wv, manager.renderMode)
+
+        // v2.14：禁用算法暗色 —— MIUI 强制深色会介入 WebView 渲染管线，
+        // 配合 GPU 合成问题放大灰屏概率（灰屏日志出现 ForceDarkHelperStubImpl 初始化）
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            runCatching { wv.settings.isAlgorithmicDarkeningAllowed = false }
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            @Suppress("DEPRECATION")
+            runCatching { wv.settings.forceDark = WebSettings.FORCE_DARK_OFF }
+        }
 
         // 启用 WebView 内部数据库 (WebStorage) 自动管理
         WebStorage.getInstance()
@@ -274,6 +316,92 @@ object BrowserEngine {
                 tab.canGoBack = it.canGoBack()
                 tab.canGoForward = it.canGoForward()
             }
+            // v2.14：灰屏自动检测（仅硬件加速模式，软件渲染已是回退态）
+            if (manager.renderMode == "hardware" && url != null &&
+                url != "about:blank" && !url.startsWith("data:")
+            ) {
+                scheduleBlankDetection(view)
+            }
+        }
+
+        // ====================================================================
+        // v2.14 灰屏自动检测回退（参考 gamehtml 容器思路）
+        //
+        // 原理：页面加载完成（有标题、音频在播）但 GPU 合成失败时，把 WebView
+        // draw 到 48px 宽的软件画布上得到的也是整面单色。采样像素亮度方差≈0
+        // 即判定疑似灰屏；连续 2 次（间隔 1.6s）确认后自动切换软件渲染并重载。
+        // 正常网页缩略图必有文字/图片结构，方差远大于阈值，不会误判。
+        // ====================================================================
+        private val blankCheckDelayMs = 1600L
+
+        private fun scheduleBlankDetection(view: WebView?) {
+            if (view == null || view.tag == TAG_DESTROYED) return
+            val weak = WeakReference(view)
+            view.postDelayed({
+                val wv = weak.get() ?: return@postDelayed
+                if (wv.tag == TAG_DESTROYED) return@postDelayed
+                val isBlank = runCatching { isViewBlank(wv) }.getOrDefault(false)
+                if (!isBlank) {
+                    tab.blankStrikes = 0
+                    return@postDelayed
+                }
+                tab.blankStrikes++
+                if (tab.blankStrikes >= 2) {
+                    // 两次确认灰屏：自动回退软件渲染 + 持久化 + 重载
+                    tab.blankStrikes = 0
+                    manager.renderMode = "software"
+                    applyRenderMode(wv, "software")
+                    engineScope.launch {
+                        runCatching { AnWindApp.get().settingsStore.setBrowserRenderMode("software") }
+                    }
+                    Toast.makeText(
+                        ctx,
+                        "检测到页面灰屏，已自动切换为软件渲染并重新加载",
+                        Toast.LENGTH_LONG
+                    ).show()
+                    runCatching { wv.reload() }
+                } else {
+                    // 首次疑似：延迟后复检一次，避免纯色开场页误判
+                    scheduleBlankDetection(wv)
+                }
+            }, blankCheckDelayMs)
+        }
+
+        /** 采样 48px 缩略图，判定是否整面单色（灰/白/黑） */
+        private fun isViewBlank(wv: WebView): Boolean {
+            if (wv.width <= 0 || wv.height <= 0) return false
+            val w = 48
+            val h = maxOf(1, 48 * wv.height / wv.width)
+            val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+            val canvas = Canvas(bmp)
+            canvas.save()
+            canvas.scale(w.toFloat() / wv.width, h.toFloat() / wv.height)
+            wv.draw(canvas)
+            canvas.restore()
+            var rSum = 0f; var gSum = 0f; var bSum = 0f
+            var n = 0
+            for (x in 0 until w step 2) {
+                for (y in 0 until h step 2) {
+                    val p = bmp.getPixel(x, y)
+                    rSum += (p shr 16 and 0xFF); gSum += (p shr 8 and 0xFF); bSum += (p and 0xFF)
+                    n++
+                }
+            }
+            if (n == 0) return false
+            val rAvg = rSum / n; val gAvg = gSum / n; val bAvg = bSum / n
+            // 平均色亮度方差：真实网页缩略图 > 6，整面单色 < 2
+            var variance = 0f
+            for (x in 0 until w step 2) {
+                for (y in 0 until h step 2) {
+                    val p = bmp.getPixel(x, y)
+                    val lum = 0.299f * (p shr 16 and 0xFF) + 0.587f * (p shr 8 and 0xFF) + 0.114f * (p and 0xFF)
+                    val avg = 0.299f * rAvg + 0.587f * gAvg + 0.114f * bAvg
+                    variance += (lum - avg) * (lum - avg)
+                }
+            }
+            variance /= n
+            bmp.recycle()
+            return variance < 4f
         }
 
         override fun onReceivedError(

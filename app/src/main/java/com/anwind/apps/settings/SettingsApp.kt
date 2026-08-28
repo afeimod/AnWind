@@ -48,6 +48,7 @@ import com.anwind.core.window.LaunchMode
 import com.anwind.core.window.WindowManager
 import com.anwind.core.window.WindowContentScope
 import com.anwind.util.ImmersiveMode
+import com.anwind.util.L
 import com.anwind.util.SystemControl
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
@@ -204,7 +205,7 @@ private fun SettingsContent(scope: WindowContentScope) {
 
             Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
                 visibleNavItems.forEach { (id, label, icon) ->
-                    SettingsNavItem(label, icon, active = activeSection == id) { activeSection = id }
+                    SettingsNavItem(L(label), icon, active = activeSection == id) { activeSection = id }
                 }
             }
         }
@@ -280,7 +281,7 @@ private fun SettingsNavItem(label: String, icon: ImageVector, active: Boolean, o
 internal fun SectionHeader(title: String, description: String? = null) {
     val theme = LocalWinTheme.current
     Text(
-        title,
+        L(title),
         color = if (theme.isDark) Color.White else Color.Black,
         fontSize = 24.sp,
         fontWeight = FontWeight.Bold
@@ -288,7 +289,7 @@ internal fun SectionHeader(title: String, description: String? = null) {
     if (description != null) {
         Spacer(Modifier.height(4.dp))
         Text(
-            description,
+            L(description),
             color = theme.secondaryTextColor,
             fontSize = 12.sp
         )
@@ -906,21 +907,19 @@ private fun BrightnessSliderCard() {
 private fun PersonalizationSection() {
     val theme = LocalWinTheme.current
     val app = AnWindApp.get()
+    val wm = remember { WindowManager.get() }
     val scope0 = rememberCoroutineScope()
     var currentVariant by remember { mutableStateOf(theme.variant) }
     val customWallpaper by app.settingsStore.customWallpaper.collectAsState(initial = null)
-    val pickWallpaper = rememberLauncherForActivityResult(
-        ActivityResultContracts.OpenDocument()
-    ) { uri ->
-        if (uri != null) {
-            runCatching {
-                app.contentResolver.takePersistableUriPermission(
-                    uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
-                )
-            }
-            scope0.launch { app.settingsStore.setCustomWallpaper(uri.toString()) }
-        }
-    }
+
+    // ===== v2.14 个性化真实化：颜色 / 字体 / 任务栏 / 锁屏全部可操作 =====
+    val colorMode by app.settingsStore.appColorMode.collectAsState(initial = "auto")
+    val accent by app.settingsStore.appAccent.collectAsState(initial = "default")
+    val fontScale by app.settingsStore.fontScale.collectAsState(initial = 1f)
+    val fontColor by app.settingsStore.fontColor.collectAsState(initial = "auto")
+    val fontStyle by app.settingsStore.fontStyle.collectAsState(initial = "default")
+    val taskbarCentered by app.settingsStore.taskbarCentered.collectAsState(initial = true)
+    val autohide by app.settingsStore.taskbarAutohide.collectAsState(initial = false)
 
     SectionHeader("个性化", "背景、颜色、主题、锁屏界面")
 
@@ -941,15 +940,25 @@ private fun PersonalizationSection() {
     }
     Spacer(Modifier.height(16.dp))
 
-    // 背景
-    Text("背景", color = if (theme.isDark) Color.White else Color.Black, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+    // 背景（v2.14：壁纸改从应用内文件资源管理器选择，不再拉起手机系统文件管理器）
+    Text(L("背景"), color = if (theme.isDark) Color.White else Color.Black, fontSize = 14.sp, fontWeight = FontWeight.Medium)
     Spacer(Modifier.height(8.dp))
     SettingsCard(
         icon = Icons.Default.Image,
         iconBackgroundColor = Color(0xFF0078D7),
-        title = "壁纸",
-        subtitle = "当前：${customWallpaper ?: "主题默认"}",
-        onClick = { pickWallpaper.launch(arrayOf("image/*")) }
+        title = L("壁纸"),
+        subtitle = L("从文件资源管理器选择图片"),
+        onClick = {
+            wm.open(
+                appId = "file_explorer",
+                title = "选择壁纸",
+                launchMode = AppRegistry.get("file_explorer")?.launchMode
+                    ?: com.anwind.core.window.LaunchMode.FLOATING,
+                launchArgs = mapOf("pickMode" to "wallpaper"),
+                initialWidth = 920,
+                initialHeight = 620
+            )
+        }
     )
     Spacer(Modifier.height(8.dp))
 
@@ -957,61 +966,219 @@ private fun PersonalizationSection() {
         SettingsCard(
             icon = Icons.Default.Restore,
             iconBackgroundColor = Color(0xFFCA5010),
-            title = "恢复默认壁纸",
-            subtitle = "使用主题自带的默认壁纸",
+            title = L("恢复默认壁纸"),
+            subtitle = L("使用主题自带的默认壁纸"),
             onClick = { scope0.launch { app.settingsStore.setCustomWallpaper(null) } }
         )
         Spacer(Modifier.height(8.dp))
     }
 
-    // 颜色
-    SettingsCard(
-        icon = Icons.Default.Palette,
-        iconBackgroundColor = Color(0xFF8764B8),
-        title = "颜色",
-        subtitle = "强调色：${theme.accentColor.toArgb().ushr(16).toInt().toString(16)}"
-    )
+    // ===== 颜色（v2.14：深浅模式作用于所有 Windows 主题 + 强调色覆盖） =====
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(6.dp))
+            .background(theme.cardBackgroundColor)
+            .padding(12.dp)
+    ) {
+        Column {
+            Text(
+                L("颜色"),
+                color = if (theme.isDark) Color.White else Color.Black,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Medium
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(
+                L("深浅模式对所有 Windows 主题生效"),
+                color = theme.secondaryTextColor,
+                fontSize = 11.sp
+            )
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                SegmentedOption(L("跟随主题"), colorMode == "auto") {
+                    scope0.launch { app.settingsStore.setAppColorMode("auto") }
+                }
+                SegmentedOption(L("浅色"), colorMode == "light") {
+                    scope0.launch { app.settingsStore.setAppColorMode("light") }
+                }
+                SegmentedOption(L("深色"), colorMode == "dark") {
+                    scope0.launch { app.settingsStore.setAppColorMode("dark") }
+                }
+            }
+            Spacer(Modifier.height(12.dp))
+            Text(
+                L("强调色"),
+                color = theme.secondaryTextColor,
+                fontSize = 11.sp
+            )
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                // 主题自带（描边圆点）+ 5 个预设强调色
+                AccentSwatch(
+                    color = theme.accentColor,
+                    selected = accent == "default",
+                    outline = true,
+                    onClick = { scope0.launch { app.settingsStore.setAppAccent("default") } }
+                )
+                listOf(
+                    "#0078D7", "#10893E", "#8764B8", "#CA5010", "#C42B1C"
+                ).forEach { hex ->
+                    AccentSwatch(
+                        color = Color(android.graphics.Color.parseColor(hex)),
+                        selected = accent == hex,
+                        outline = false,
+                        onClick = { scope0.launch { app.settingsStore.setAppAccent(hex) } }
+                    )
+                }
+            }
+        }
+    }
     Spacer(Modifier.height(8.dp))
 
-    // （刘海屏占用与任务栏高度已移至“系统-显示”子页，v2.12）
-
-    // 锁屏界面
+    // ===== 锁屏界面（v2.14：真实锁屏，点击立即锁定） =====
     SettingsCard(
         icon = Icons.Default.Lock,
         iconBackgroundColor = Color(0xFF00B294),
-        title = "锁屏界面",
-        subtitle = "锁屏壁纸、状态显示"
+        title = L("锁屏界面"),
+        subtitle = L("点击立即锁定，上滑解锁"),
+        onClick = { com.anwind.core.desktop.LockController.lock() }
     )
     Spacer(Modifier.height(8.dp))
 
-    // 主题
-    SettingsCard(
-        icon = Icons.Default.Style,
-        iconBackgroundColor = Color(0xFFCA5010),
-        title = "主题",
-        subtitle = "当前主题：${theme.displayName}"
-    )
-    Spacer(Modifier.height(8.dp))
-
-    // 字体
-    SettingsCard(
-        icon = Icons.Default.TextFields,
-        iconBackgroundColor = Color(0xFF6B69D6),
-        title = "字体",
-        subtitle = "系统字体大小、字形"
-    )
-    Spacer(Modifier.height(8.dp))
-
-    // 任务栏（补充说明 + 快捷开关）
-    SettingsCard(
-        icon = Icons.Default.ViewDay,
-        iconBackgroundColor = Color(0xFF00B7C3),
-        title = "任务栏",
-        subtitle = "对齐：${if (theme.taskbarAlignment == com.anwind.core.theme.TaskbarAlignment.CENTER) "居中" else "左对齐"} · 高度可在上方滑块调节 · 系统托盘随任务数量自动右移",
-        trailingContent = {
-            val autohide by app.settingsStore.taskbarAutohide.collectAsState(initial = false)
-            ToggleSwitch(autohide) { v -> scope0.launch { app.settingsStore.setTaskbarAutohide(v) } }
+    // ===== 字体（v2.14：大小 / 颜色 / 样式全局生效） =====
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(6.dp))
+            .background(theme.cardBackgroundColor)
+            .padding(12.dp)
+    ) {
+        Column {
+            Text(
+                L("字体"),
+                color = if (theme.isDark) Color.White else Color.Black,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Medium
+            )
+            Spacer(Modifier.height(8.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    L("字体大小"),
+                    color = if (theme.isDark) Color.White else Color.Black,
+                    fontSize = 13.sp,
+                    modifier = Modifier.weight(1f)
+                )
+                Text(
+                    "${(fontScale * 100).roundToInt()}%",
+                    color = theme.secondaryTextColor,
+                    fontSize = 11.sp
+                )
+            }
+            Slider(
+                value = fontScale,
+                onValueChange = { scope0.launch { app.settingsStore.setFontScale(it) } },
+                valueRange = 0.85f..1.4f,
+                steps = 10
+            )
+            Spacer(Modifier.height(8.dp))
+            Text(L("字体颜色"), color = theme.secondaryTextColor, fontSize = 11.sp)
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                SegmentedOption(L("跟随主题色"), fontColor == "auto") {
+                    scope0.launch { app.settingsStore.setFontColor("auto") }
+                }
+                SegmentedOption(L("白色"), fontColor == "white") {
+                    scope0.launch { app.settingsStore.setFontColor("white") }
+                }
+                SegmentedOption(L("黑色"), fontColor == "black") {
+                    scope0.launch { app.settingsStore.setFontColor("black") }
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+            Text(L("字体样式"), color = theme.secondaryTextColor, fontSize = 11.sp)
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                SegmentedOption(L("无衬线（默认）"), fontStyle == "default") {
+                    scope0.launch { app.settingsStore.setFontStyle("default") }
+                }
+                SegmentedOption(L("衬线"), fontStyle == "serif") {
+                    scope0.launch { app.settingsStore.setFontStyle("serif") }
+                }
+                SegmentedOption(L("等宽"), fontStyle == "mono") {
+                    scope0.launch { app.settingsStore.setFontStyle("mono") }
+                }
+            }
+            Spacer(Modifier.height(10.dp))
+            Text(
+                L("预览：AnWind Windows 桌面体验 AaBbCc 123"),
+                color = if (theme.isDark) Color.White else Color.Black,
+                fontSize = 14.sp
+            )
         }
+    }
+    Spacer(Modifier.height(8.dp))
+
+    // ===== 任务栏（v2.14：居中/左对齐真实生效 + 自动隐藏） =====
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(6.dp))
+            .background(theme.cardBackgroundColor)
+            .padding(12.dp)
+    ) {
+        Column {
+            Text(
+                L("任务栏图标对齐方式"),
+                color = if (theme.isDark) Color.White else Color.Black,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Medium
+            )
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                SegmentedOption(L("居中"), taskbarCentered) {
+                    scope0.launch { app.settingsStore.setTaskbarCentered(true) }
+                }
+                SegmentedOption(L("左对齐"), !taskbarCentered) {
+                    scope0.launch { app.settingsStore.setTaskbarCentered(false) }
+                }
+            }
+            Spacer(Modifier.height(12.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    L("自动隐藏任务栏"),
+                    color = if (theme.isDark) Color.White else Color.Black,
+                    fontSize = 13.sp,
+                    modifier = Modifier.weight(1f)
+                )
+                ToggleSwitch(autohide) { v ->
+                    scope0.launch { app.settingsStore.setTaskbarAutohide(v) }
+                }
+            }
+        }
+    }
+}
+
+/** v2.14 强调色色块（卡片内展示用） */
+@Composable
+private fun AccentSwatch(
+    color: Color,
+    selected: Boolean,
+    outline: Boolean,
+    onClick: () -> Unit
+) {
+    val theme = LocalWinTheme.current
+    Box(
+        modifier = Modifier
+            .size(26.dp)
+            .clip(RoundedCornerShape(13.dp))
+            .background(color)
+            .border(
+                width = if (selected) 3.dp else if (outline) 2.dp else 0.dp,
+                color = if (selected) theme.accentColor else if (outline) theme.secondaryTextColor else Color.Transparent,
+                shape = RoundedCornerShape(13.dp)
+            )
+            .clickable(onClick = onClick)
     )
 }
 
@@ -1106,6 +1273,11 @@ private fun AppsSection() {
 
     // 浏览器 UA 模式
     val theme = LocalWinTheme.current
+
+    // ===== v2.14 浏览器渲染模式：灰屏修复开关 =====
+    // 硬件加速（默认）：流畅；软件渲染：兼容（部分 MIUI / GPU 驱动上页面有声但灰屏时切换）
+    // 另有灰屏自动检测：连续 2 次采样判定灰屏后自动切换软件渲染并持久化
+    val renderMode by app.settingsStore.browserRenderMode.collectAsState(initial = "hardware")
     Box(
         modifier = Modifier
             .fillMaxWidth()
@@ -1114,11 +1286,44 @@ private fun AppsSection() {
             .padding(12.dp)
     ) {
         Column {
-            Text("浏览器 UA 模式", color = if (theme.isDark) Color.White else Color.Black, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+            Text(
+                L("浏览器渲染模式"),
+                color = if (theme.isDark) Color.White else Color.Black,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Medium
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(
+                L("灰屏（有声音无画面）时切换软件渲染，立即生效并自动重载"),
+                color = theme.secondaryTextColor,
+                fontSize = 11.sp
+            )
             Spacer(Modifier.height(8.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                SegmentedOption("桌面模式", uaMode == "desktop") { scope0.launch { app.settingsStore.setBrowserUaMode("desktop") } }
-                SegmentedOption("手机模式", uaMode == "mobile") { scope0.launch { app.settingsStore.setBrowserUaMode("mobile") } }
+                SegmentedOption(L("硬件加速"), renderMode == "hardware") {
+                    scope0.launch { app.settingsStore.setBrowserRenderMode("hardware") }
+                }
+                SegmentedOption(L("软件渲染（修复灰屏）"), renderMode == "software") {
+                    scope0.launch { app.settingsStore.setBrowserRenderMode("software") }
+                }
+            }
+        }
+    }
+    Spacer(Modifier.height(8.dp))
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(6.dp))
+            .background(theme.cardBackgroundColor)
+            .padding(12.dp)
+    ) {
+        Column {
+            Text(L("浏览器 UA 模式"), color = if (theme.isDark) Color.White else Color.Black, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                SegmentedOption(L("桌面模式"), uaMode == "desktop") { scope0.launch { app.settingsStore.setBrowserUaMode("desktop") } }
+                SegmentedOption(L("手机模式"), uaMode == "mobile") { scope0.launch { app.settingsStore.setBrowserUaMode("mobile") } }
             }
         }
     }
@@ -1295,7 +1500,7 @@ private fun TimeLanguageSection() {
     )
     Spacer(Modifier.height(8.dp))
 
-    // 语言切换
+    // 语言切换（v2.14：真实生效 —— 设置中心导航/分区/开始菜单/任务栏/桌面菜单即时切换）
     val theme = LocalWinTheme.current
     Box(
         modifier = Modifier
@@ -1305,12 +1510,43 @@ private fun TimeLanguageSection() {
             .padding(12.dp)
     ) {
         Column {
-            Text("显示语言", color = if (theme.isDark) Color.White else Color.Black, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+            Text(
+                L("显示语言"),
+                color = if (theme.isDark) Color.White else Color.Black,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Medium
+            )
             Spacer(Modifier.height(8.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                SegmentedOption("中文", language == "zh-CN") { scope0.launch { app.settingsStore.setLanguage("zh-CN") } }
-                SegmentedOption("English", language == "en-US") { scope0.launch { app.settingsStore.setLanguage("en-US") } }
+                SegmentedOption(L("中文"), language == "zh-CN") {
+                    scope0.launch {
+                        app.settingsStore.setLanguage("zh-CN")
+                        com.anwind.util.L10n.current = "zh-CN"
+                        Toast.makeText(
+                            AnWindApp.get(),
+                            com.anwind.util.L10n.t("已切换为中文，主要界面即时生效"),
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    }
+                }
+                SegmentedOption(L("English"), language == "en-US") {
+                    scope0.launch {
+                        app.settingsStore.setLanguage("en-US")
+                        com.anwind.util.L10n.current = "en-US"
+                        Toast.makeText(
+                            AnWindApp.get(),
+                            com.anwind.util.L10n.t("已切换为 English，主要界面即时生效"),
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    }
+                }
             }
+            Spacer(Modifier.height(6.dp))
+            Text(
+                L("切换后设置中心、开始菜单、任务栏等主要界面即时生效"),
+                color = theme.secondaryTextColor,
+                fontSize = 11.sp
+            )
         }
     }
     Spacer(Modifier.height(8.dp))

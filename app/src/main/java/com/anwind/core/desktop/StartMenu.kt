@@ -14,9 +14,12 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.outlined.AccountCircle
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -41,6 +44,7 @@ import com.anwind.core.input.keyboardAware
 import com.anwind.core.theme.WinTheme
 import com.anwind.core.window.AppRegistry
 import com.anwind.core.window.WindowManager
+import com.anwind.util.L
 
 /**
  * 开始菜单：Win11 真实风格
@@ -121,7 +125,7 @@ fun StartMenu(
                 ) {
                     Icon(
                         imageVector = Icons.Default.Search,
-                        contentDescription = "搜索",
+                        contentDescription = L("搜索"),
                         tint = (if (theme.isDark) Color.White else Color.Black).copy(alpha = 0.6f),
                         modifier = Modifier.size(16.dp)
                     )
@@ -148,7 +152,7 @@ fun StartMenu(
                     )
                     if (searchText.isEmpty()) {
                         Text(
-                            text = "搜索应用和 Web",
+                            text = L("搜索应用和 Web"),
                             color = (if (theme.isDark) Color.White else Color.Black).copy(alpha = 0.5f),
                             fontSize = 13.sp
                         )
@@ -165,7 +169,7 @@ fun StartMenu(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "已固定",
+                    text = L("已固定"),
                     color = if (theme.isDark) Color.White else Color.Black,
                     fontSize = 13.sp,
                     fontWeight = FontWeight.SemiBold
@@ -178,7 +182,7 @@ fun StartMenu(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = "所有应用",
+                        text = L("所有应用"),
                         color = if (theme.isDark) Color.White else Color.Black,
                         fontSize = 11.sp
                     )
@@ -278,24 +282,57 @@ fun StartMenu(
                     )
                 }
 
+                // v2.14：电源按钮弹出菜单（锁定 / 关闭所有窗口）
+                var powerMenuOpen by remember { mutableStateOf(false) }
                 Box(
                     modifier = Modifier
                         .size(32.dp)
                         .clip(RoundedCornerShape(50))
                         .background(theme.buttonBackgroundColor)
-                        .clickable {
-                            // 关闭所有窗口，回到桌面
-                            wm.closeAll()
-                            onDismiss()
-                        },
+                        .clickable { powerMenuOpen = true },
                     contentAlignment = Alignment.Center
                 ) {
                     Icon(
                         imageVector = Icons.Default.PowerSettingsNew,
-                        contentDescription = "电源",
+                        contentDescription = L("电源"),
                         tint = if (theme.isDark) Color.White else Color.Black,
                         modifier = Modifier.size(16.dp)
                     )
+                    DropdownMenu(
+                        expanded = powerMenuOpen,
+                        onDismissRequest = { powerMenuOpen = false }
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text(L("锁定")) },
+                            leadingIcon = {
+                                Icon(
+                                    Icons.Default.Lock,
+                                    null,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            },
+                            onClick = {
+                                powerMenuOpen = false
+                                onDismiss()
+                                LockController.lock()
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text(L("关闭所有窗口")) },
+                            leadingIcon = {
+                                Icon(
+                                    Icons.Default.PowerSettingsNew,
+                                    null,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            },
+                            onClick = {
+                                powerMenuOpen = false
+                                wm.closeAll()
+                                onDismiss()
+                            }
+                        )
+                    }
                 }
             }
         }

@@ -8,15 +8,20 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.Density
+import com.anwind.core.theme.ThemeOverlay
 import com.anwind.core.theme.WinThemeScope
 import com.anwind.core.desktop.DesktopEnvironment
 import com.anwind.data.prefs.SettingsStore
 import com.anwind.util.ImmersiveMode
+import com.anwind.util.L10n
+import com.anwind.util.LocalAppLanguage
 
 class MainActivity : ComponentActivity() {
 
@@ -30,7 +35,7 @@ class MainActivity : ComponentActivity() {
 
         val app = AnWindApp.get(this)
         setContent {
-            val theme by app.themeManager.activeTheme.collectAsState(
+            val baseTheme by app.themeManager.activeTheme.collectAsState(
                 initial = com.anwind.core.theme.Themes.Win11
             )
             val settingsStore = remember { app.settingsStore }
@@ -41,6 +46,29 @@ class MainActivity : ComponentActivity() {
             val orientation by settingsStore.displayOrientation.collectAsState(initial = "auto")
             // 刘海屏占用开关（个性化设置）
             val useCutout by settingsStore.useCutout.collectAsState(initial = true)
+
+            // ===== v2.14 个性化：颜色 / 字体 =====
+            // 颜色模式：强制所有 Windows 主题深色或浅色
+            val colorMode by settingsStore.appColorMode.collectAsState(initial = "auto")
+            // 强调色覆盖
+            val accent by settingsStore.appAccent.collectAsState(initial = "default")
+            // 字体：缩放（乘到系统 fontScale，全局生效）/ 颜色 / 样式
+            val fontScale by settingsStore.fontScale.collectAsState(initial = 1f)
+            val fontColor by settingsStore.fontColor.collectAsState(initial = "auto")
+            val fontStyle by settingsStore.fontStyle.collectAsState(initial = "default")
+            // 显示语言（v2.14：设置→时间和语言→显示语言）
+            val language by settingsStore.language.collectAsState(initial = "zh-CN")
+
+            // 同步全局语言状态（Toast / 锁屏等非组合环境取词用）
+            SideEffect { L10n.current = language }
+
+            // 主题链：基础主题 → 深浅模式覆盖 → 强调色覆盖 → 字体颜色覆盖
+            val theme = remember(baseTheme, colorMode, accent, fontColor) {
+                baseTheme
+                    .let { ThemeOverlay.apply(it, colorMode) }
+                    .let { ThemeOverlay.applyAccent(it, accent) }
+                    .let { ThemeOverlay.applyFontColor(it, fontColor) }
+            }
 
             // 刘海屏模式切换：SHORT_EDGES = 内容延伸到刘海区；DEFAULT = 不占用刘海区
             LaunchedEffect(useCutout) { applyCutoutMode(useCutout) }
@@ -56,13 +84,25 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
-            // 通过覆盖 LocalDensity 实现全局 UI 缩放
+            // 通过覆盖 LocalDensity 实现全局 UI 缩放 + 字体大小缩放（v2.14）
             val baseDensity = LocalDensity.current
+            val baseTextStyle = androidx.compose.material3.LocalTextStyle.current
             CompositionLocalProvider(
                 LocalDensity provides Density(
                     density = baseDensity.density * uiScale,
-                    fontScale = baseDensity.fontScale
-                )
+                    fontScale = baseDensity.fontScale * fontScale
+                ),
+                // v2.14：全局字体样式（衬线/等宽）—— 未显式指定样式的 Text 全部跟随；
+                // default 模式下 fontFamily 保持原样（零影响）
+                androidx.compose.material3.LocalTextStyle provides baseTextStyle.copy(
+                    fontFamily = when (fontStyle) {
+                        "serif" -> FontFamily.Serif
+                        "mono" -> FontFamily.Monospace
+                        else -> baseTextStyle.fontFamily
+                    }
+                ),
+                // v2.14：显示语言
+                LocalAppLanguage provides language
             ) {
                 WinThemeScope(theme = theme) {
                     DesktopEnvironment(

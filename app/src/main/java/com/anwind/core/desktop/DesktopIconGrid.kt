@@ -4,6 +4,7 @@ import android.graphics.BitmapFactory
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.horizontalScroll
@@ -14,23 +15,31 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshots.SnapshotStateMap
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.painter.BitmapPainter
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.zIndex
 import com.anwind.AnWindApp
 import com.anwind.core.theme.LocalWinTheme
 import com.anwind.core.window.AppRegistry
@@ -38,6 +47,7 @@ import com.anwind.core.window.WindowManager
 import com.anwind.data.model.DesktopItem
 import com.anwind.data.model.DesktopItemType
 import com.anwind.data.model.Shortcut
+import kotlinx.coroutines.launch
 import java.io.IOException
 
 /**
@@ -60,6 +70,11 @@ import java.io.IOException
  * v2.13：
  * - clickMode：图标打开方式（single 单击打开 / double 双击打开，
  *   与鼠标设置共用 DataStore 持久化）。
+ *
+ * v2.14：
+ * - 长按拖动排序：长按图标 400ms 触发（震动反馈），图标跟随手指，
+ *   松手时与落点最近的图标交换位置，顺序持久化到 DataStore（desktop_icon_order）。
+ *   仅 sortMode = default（默认排序）时启用；按名称/类型排序时拖动禁用。
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -72,6 +87,9 @@ fun DesktopIconGrid(
     val shortcuts by app.database.shortcutDao().observeAll().collectAsState(initial = emptyList())
     val builtinApps = remember { AppRegistry.desktopApps() }
     val iconSize by app.settingsStore.iconSize.collectAsState(initial = 48f)
+    // v2.14：自定义图标顺序（长按拖动后持久化）
+    val iconOrder by app.settingsStore.desktopIconOrder.collectAsState(initial = "")
+    val scope = rememberCoroutineScope()
 
     // 合并桌面项
     val items: List<DesktopItem> = remember(shortcuts, builtinApps) {
@@ -103,12 +121,21 @@ fun DesktopIconGrid(
         builtin + shortcutItems
     }
 
-    // 排序（v2.11 右键菜单"排序方式"）
-    val sortedItems = remember(items, sortMode) {
+    // 排序（v2.11 右键菜单"排序方式"；v2.14 default 模式优先应用拖动自定义顺序）
+    val sortedItems = remember(items, sortMode, iconOrder) {
         when (sortMode) {
             "name" -> items.sortedWith(compareBy({ it.label }, { it.id }))
             "type" -> items.sortedWith(compareBy({ it.type }, { it.label }))
-            else -> items   // 默认：内置应用 + 快捷方式原序
+            else -> {
+                if (iconOrder.isNotBlank()) {
+                    val orderIds = iconOrder.split(",").filter { it.isNotBlank() }
+                    val pos = orderIds.withIndex().associate { (i, id) -> id to i }
+                    // 已记录顺序的图标在前（按记录序），新出现的图标追加在后（保持默认序）
+                    items.sortedBy { pos[it.id] ?: Int.MAX_VALUE }
+                } else {
+                    items   // 默认：内置应用 + 快捷方式原序
+                }
+            }
         }
     }
 
@@ -137,7 +164,25 @@ fun DesktopIconGrid(
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             sortedItems.forEach { item ->
-                DesktopIcon(item = item, iconSize = iconSize, boundsRegistry = iconBounds, clickMode = clickMode)
+                DesktopIcon(
+                    item = item,
+                    iconSize = iconSize,
+                    boundsRegistry = iconBounds,
+                    clickMode = clickMode,
+                    dragEnabled = sortMode == "default",
+                    onMoveItem = { fromId, toId ->
+                        // 基于当前显示顺序重建 id 序列，把 fromId 移到 toId 的位置
+                        val ids = sortedItems.map { it.id }
+                        val f = ids.indexOf(fromId)
+                        val t = ids.indexOf(toId)
+                        if (f >= 0 && t >= 0 && f != t) {
+                            val m = ids.toMutableList()
+                            m.removeAt(f)
+                            m.add(t, fromId)
+                            scope.launch { app.settingsStore.setDesktopIconOrder(m.joinToString(",")) }
+                        }
+                    }
+                )
             }
         }
     }
@@ -192,19 +237,37 @@ private fun DesktopIcon(
     item: DesktopItem,
     iconSize: Float,
     boundsRegistry: SnapshotStateMap<String, Pair<DesktopItem, Rect>>? = null,
-    clickMode: String = "double"
+    clickMode: String = "double",
+    dragEnabled: Boolean = false,
+    onMoveItem: (String, String) -> Unit = { _, _ -> }
 ) {
     val theme = LocalWinTheme.current
     val wm = remember { WindowManager.get() }
     val iconPx = iconSize.dp
     val cellWidth = (iconSize + 24).dp
+    val haptic = LocalHapticFeedback.current
+
+    // v2.14 长按拖动状态：拖动中偏移（px），松手归零
+    var dragOffset by remember { mutableStateOf(Offset.Zero) }
+    val dragging = dragOffset != Offset.Zero
 
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         modifier = Modifier
             .width(cellWidth)
-            // 上报图标边界（根坐标）：供双指右键手势命中检测；
+            // 拖动中置顶 + 轻微放大，视觉上"拎起来"
+            .zIndex(if (dragging) 10f else 0f)
+            .graphicsLayer {
+                translationX = dragOffset.x
+                translationY = dragOffset.y
+                val s = if (dragging) 1.08f else 1f
+                scaleX = s
+                scaleY = s
+                alpha = if (dragging) 0.85f else 1f
+            }
+            // 上报图标边界（根坐标）：供双指右键手势命中检测 + 拖动落点计算；
             // 值未变化时不重复写入，避免无谓的快照失效。
+            // 注意：上报的是【布局位置】（不含拖动偏移），落点计算时手动叠加偏移。
             .onGloballyPositioned { coords ->
                 if (boundsRegistry != null) {
                     val rect = coords.boundsInRoot()
@@ -213,6 +276,42 @@ private fun DesktopIcon(
                         boundsRegistry[item.id] = item to rect
                     }
                 }
+            }
+            // v2.14：长按 400ms 进入拖动 → 图标跟随手指 → 松手与最近图标换位
+            .pointerInput(item.id, dragEnabled) {
+                if (!dragEnabled) return@pointerInput
+                detectDragGesturesAfterLongPress(
+                    onDragStart = {
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                    },
+                    onDrag = { change, dragAmount ->
+                        change.consume()
+                        dragOffset += dragAmount
+                    },
+                    onDragEnd = {
+                        // 落点 = 布局位置 + 累计偏移
+                        val myRect = boundsRegistry?.get(item.id)?.second
+                        if (myRect != null && dragOffset != Offset.Zero) {
+                            val dropCenter = Offset(
+                                myRect.center.x + dragOffset.x,
+                                myRect.center.y + dragOffset.y
+                            )
+                            // 找到中心距离落点最近的其他图标（拖动自身偏移不参与）
+                            val target = boundsRegistry.entries
+                                .filter { it.key != item.id }
+                                .minByOrNull { entry ->
+                                    val c = entry.value.second.center
+                                    (c.x - dropCenter.x) * (c.x - dropCenter.x) +
+                                        (c.y - dropCenter.y) * (c.y - dropCenter.y)
+                                }
+                            if (target != null) {
+                                onMoveItem(item.id, target.key)
+                            }
+                        }
+                        dragOffset = Offset.Zero
+                    },
+                    onDragCancel = { dragOffset = Offset.Zero }
+                )
             }
             // v2.13：clickMode 进入手势 key —— 单击模式立即启动，双击模式保持 v2.11 行为
             .pointerInput(item.id, clickMode) {

@@ -43,11 +43,13 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.FileProvider
+import com.anwind.AnWindApp
 import com.anwind.core.theme.LocalWinTheme
 import com.anwind.core.window.AppDef
 import com.anwind.core.window.LaunchMode
 import com.anwind.core.window.WindowContentScope
 import com.anwind.core.window.WindowManager
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -97,6 +99,36 @@ private fun FileExplorerContent(scope: WindowContentScope) {
 
     // MANAGE_EXTERNAL_STORAGE 权限检查
     var hasAllFilesAccess by remember { mutableStateOf(Environment.isExternalStorageManager()) }
+
+    // ===== v2.14 壁纸选择模式 =====
+    // 个性化→壁纸 卡片不再拉起系统文件选择器，而是打开本应用文件资源管理器；
+    // pickMode=wallpaper 时：初始直达 Pictures，点击图片 → 设为壁纸 → 关闭窗口。
+    val app = AnWindApp.get()
+    val pickMode = scope.windowState.launchArgs["pickMode"] ?: ""
+    val wallpaperPick = pickMode == "wallpaper"
+    val scope0 = androidx.compose.runtime.rememberCoroutineScope()
+    if (wallpaperPick) {
+        // 选择模式：直接进入 Pictures（不存在则内部存储根）
+        LaunchedEffect(Unit) {
+            val pics = File(storageRoot, "Pictures")
+            if (pics.exists() && pics.isDirectory) {
+                currentRealDir = pics
+            } else {
+                currentRealDir = storageRoot
+            }
+            isThisPcHome = false
+        }
+    }
+
+    /** v2.14：设为壁纸（file:// URI 持久化）并关闭选择窗口 */
+    fun setWallpaperAndClose(file: File) {
+        scope0.launch {
+            app.settingsStore.setCustomWallpaper("file://${file.absolutePath}")
+        }
+        Toast.makeText(context, "已设为壁纸", Toast.LENGTH_SHORT).show()
+        scope.onClose()
+    }
+
     val allFilesPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
     ) {
@@ -311,6 +343,29 @@ private fun FileExplorerContent(scope: WindowContentScope) {
             }
         }
 
+        // ===== v2.14 壁纸选择模式横幅 =====
+        if (wallpaperPick) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(theme.accentColor.copy(alpha = 0.15f))
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    Icons.Default.Image, null,
+                    tint = theme.accentColor,
+                    modifier = Modifier.size(16.dp)
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    "点击任意图片，直接设为桌面壁纸",
+                    color = if (theme.isDark) Color.White else Color.Black,
+                    fontSize = 12.sp
+                )
+            }
+        }
+
         // ===== 主体：左侧栏 + 文件区 =====
         Row(modifier = Modifier.weight(1f)) {
             // ===== 左侧导航栏（窄屏可收起） =====
@@ -375,12 +430,16 @@ private fun FileExplorerContent(scope: WindowContentScope) {
                 } else if (isGridView) {
                     RealFileGrid(realItems, theme) { file ->
                         if (file.isDirectory) openFolder(file)
-                        else openRealFile(context, file)
+                        else if (wallpaperPick && isImageExtension(file.extension)) {
+                            setWallpaperAndClose(file)
+                        } else openRealFile(context, file)
                     }
                 } else {
                     RealFileList(realItems, theme) { file ->
                         if (file.isDirectory) openFolder(file)
-                        else openRealFile(context, file)
+                        else if (wallpaperPick && isImageExtension(file.extension)) {
+                            setWallpaperAndClose(file)
+                        } else openRealFile(context, file)
                     }
                 }
             }
