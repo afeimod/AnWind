@@ -3,11 +3,14 @@ package com.anwind.core.desktop
 import android.content.Context
 import android.media.MediaPlayer
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
@@ -114,26 +117,26 @@ fun DesktopEnvironment(
         )
 
         // ===== 2. 桌面图标层（占据任务栏上方） =====
+        // v2.10 手势：双指轻点 = 桌面右键菜单（替代旧版长按）；单指轻点 = 关闭菜单
         Box(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(workAreaHeight)
-                .pointerInput(Unit) {
-                    detectTapGestures(
-                        onLongPress = { offset ->
-                            // 弹出桌面右键菜单
-                            contextMenu = DesktopContextMenuData(
-                                x = offset.x,
-                                y = offset.y
-                            )
-                        },
-                        onTap = {
-                            // 点击空白处关闭开始菜单和右键菜单
-                            startMenuOpen = false
-                            contextMenu = null
-                        }
-                    )
-                }
+                .desktopGestures(
+                    onTap = {
+                        // 点击空白处关闭开始菜单和右键菜单
+                        startMenuOpen = false
+                        contextMenu = null
+                    },
+                    onTwoFingerTap = { offset ->
+                        // 双指轻点：在双指中点弹出桌面右键菜单
+                        startMenuOpen = false
+                        contextMenu = DesktopContextMenuData(
+                            x = offset.x,
+                            y = offset.y
+                        )
+                    }
+                )
         ) {
             DesktopIconGrid()
         }
@@ -174,6 +177,7 @@ fun DesktopEnvironment(
             onStartClick = { startMenuOpen = !startMenuOpen },
             onOpenCalendar = { trayPopup = TrayPopup.CALENDAR },
             onOpenQuickSettings = { trayPopup = TrayPopup.QUICK_SETTINGS },
+            onOpenClockStyle = { trayPopup = TrayPopup.CLOCK_STYLE },
             showSeconds = showSeconds,
             timeFormat24h = timeFormat24h,
             modifier = Modifier
@@ -183,7 +187,8 @@ fun DesktopEnvironment(
                 .offset { IntOffset(0, taskbarOffsetY) }
         )
 
-        // ===== 5.5. 系统托盘弹窗（Calendar / QuickSettings） =====
+        // ===== 5.5. 系统托盘弹窗（Calendar / QuickSettings / ClockStyle）=====
+        // v2.10：托盘固定在任务栏左侧，弹窗相应从左下角弹出
         trayPopup?.let { popup ->
             // 背景遮罩：点击关闭
             Box(
@@ -198,8 +203,8 @@ fun DesktopEnvironment(
                     theme = theme,
                     onDismiss = { trayPopup = null },
                     modifier = Modifier
-                        .align(Alignment.BottomEnd)
-                        .padding(end = 8.dp, bottom = taskbarHeight + 8.dp)
+                        .align(Alignment.BottomStart)
+                        .padding(start = 8.dp, bottom = taskbarHeight + 8.dp)
                 )
                 TrayPopup.QUICK_SETTINGS -> QuickSettingsPanel(
                     theme = theme,
@@ -215,8 +220,15 @@ fun DesktopEnvironment(
                     },
                     onDismiss = { trayPopup = null },
                     modifier = Modifier
-                        .align(Alignment.BottomEnd)
-                        .padding(end = 8.dp, bottom = taskbarHeight + 8.dp)
+                        .align(Alignment.BottomStart)
+                        .padding(start = 8.dp, bottom = taskbarHeight + 8.dp)
+                )
+                TrayPopup.CLOCK_STYLE -> TrayClockSettingsFlyout(
+                    theme = theme,
+                    onDismiss = { trayPopup = null },
+                    modifier = Modifier
+                        .align(Alignment.BottomStart)
+                        .padding(start = 8.dp, bottom = taskbarHeight + 8.dp)
                 )
             }
         }
@@ -257,5 +269,78 @@ private fun playStartupSound(context: Context, assetPath: String) {
  * 系统托盘弹窗类型：
  * - CALENDAR：点击时钟后显示的 Win11 风格日历
  * - QUICK_SETTINGS：点击 wifi/电池/音量后显示的 Win11 风格快速设置面板
+ * - CLOCK_STYLE：长按时钟弹出的托盘时钟样式设置（v2.10）
  */
-private enum class TrayPopup { CALENDAR, QUICK_SETTINGS }
+private enum class TrayPopup { CALENDAR, QUICK_SETTINGS, CLOCK_STYLE }
+
+/**
+ * 桌面手势（v2.10）：
+ * - 单指轻点：关闭开始菜单/右键菜单（不消费事件，不影响子组件手势）
+ * - 双指轻点：两指几乎同时按下、位移小于 slop、持续 < 800ms，
+ *   在双指中点触发桌面右键菜单（用户要求：双指点击 = 右键，替代长按）
+ *
+ * 实现为纯观察者（从不消费事件），与图标双击启动、图标区横向滚动完全兼容；
+ * 双指即使其中一指落在图标上，本层也能收到全部两根指针的事件（祖先命中路径）。
+ */
+private fun Modifier.desktopGestures(
+    onTap: (Offset) -> Unit,
+    onTwoFingerTap: (Offset) -> Unit
+): Modifier = pointerInput(Unit) {
+    awaitEachGesture {
+        val first = awaitFirstDown(requireUnconsumed = false)
+        val startTime = first.uptimeMillis
+        val startPositions = mutableMapOf(first.id to first.position)
+        var maxPointers = 1
+        var moved = false
+        var expired = false
+        var twoFingerCentroid: Offset? = null
+        val slop = viewConfiguration.pointerSlop
+
+        while (true) {
+            val event = awaitPointerEvent()
+            // 记录新按下的手指；检测任一手指位移超过 slop
+            event.changes.forEach { c ->
+                if (c.pressed) {
+                    val start = startPositions[c.id]
+                    if (start == null) {
+                        startPositions[c.id] = c.position
+                    } else if ((c.position - start).getDistance() > slop) {
+                        moved = true
+                    }
+                }
+            }
+            val pressedCount = event.changes.count { it.pressed }
+            if (pressedCount > maxPointers) maxPointers = pressedCount
+            // 记录双指中点（首次达到 2 指时）
+            if (pressedCount == 2 && twoFingerCentroid == null) {
+                val pressed = event.changes.filter { it.pressed }
+                if (pressed.size >= 2) {
+                    twoFingerCentroid = Offset(
+                        (pressed[0].position.x + pressed[1].position.x) / 2f,
+                        (pressed[0].position.y + pressed[1].position.y) / 2f
+                    )
+                }
+            }
+            if (pressedCount == 0) {
+                // 全部手指抬起：判定轻点 / 双指轻点
+                val duration = event.changes.maxOf { it.uptimeMillis } - startTime
+                if (!moved && !expired) {
+                    if (maxPointers == 2 && twoFingerCentroid != null &&
+                        duration < viewConfiguration.longPressTimeoutMillis * 2
+                    ) {
+                        onTwoFingerTap(twoFingerCentroid!!)
+                    } else if (maxPointers == 1 &&
+                        duration < viewConfiguration.doubleTapTimeoutMillis
+                    ) {
+                        onTap(first.position)
+                    }
+                }
+                break
+            }
+            // 按压超过 800ms：不再是"轻点"，等待抬手后结束（不触发任何回调）
+            if (event.changes.maxOf { it.uptimeMillis } - startTime > 800L) {
+                expired = true
+            }
+        }
+    }
+}

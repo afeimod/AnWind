@@ -4,10 +4,12 @@ import android.media.MediaPlayer
 import android.net.Uri
 import android.widget.Toast
 import android.widget.VideoView
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -21,6 +23,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -31,6 +34,7 @@ import com.anwind.core.theme.LocalWinTheme
 import com.anwind.core.window.AppDef
 import com.anwind.core.window.LaunchMode
 import com.anwind.core.window.WindowContentScope
+import com.anwind.core.window.WindowManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -80,6 +84,13 @@ private data class MediaSource(
 private fun MediaPlayerContent(scope: WindowContentScope) {
     val theme = LocalWinTheme.current
     val context = LocalContext.current
+    val wm = remember { WindowManager.get() }
+
+    // ===== 视频真全屏状态（v2.10：隐藏顶部栏，占满整屏） =====
+    var wmRevision by remember { mutableStateOf(0) }
+    LaunchedEffect(Unit) { wm.observe { wmRevision++ } }
+    val isTrueFs = remember(wmRevision) { scope.windowState.isTrueFullscreen }
+    BackHandler(enabled = isTrueFs) { wm.toggleTrueFullscreen(scope.windowState.id) }
 
     // ===== 状态 =====
     var library by remember { mutableStateOf<List<MediaSource>>(emptyList()) }
@@ -89,6 +100,10 @@ private fun MediaPlayerContent(scope: WindowContentScope) {
     var positionMs by remember { mutableStateOf(0L) }
     var durationMs by remember { mutableStateOf(0L) }
     var userSeeking by remember { mutableStateOf(false) }
+
+    // 播放代号（v2.10）：每次新播放自增，旧源的异步回调（含被中断的 prepare 错误）
+    // 一律静默丢弃 —— 修复“已正常播放却提示音频播放失败”的误报
+    val playGen = remember { mutableStateOf(0) }
 
     // 音频播放器（音频走 MediaPlayer，视频走 VideoView）
     val audioPlayer = remember { MediaPlayer() }
@@ -125,7 +140,13 @@ private fun MediaPlayerContent(scope: WindowContentScope) {
 
     // ===== 停止 / 播放控制 =====
     fun stopAll() {
+        // 使旧源的异步回调全部失效（v2.10 误报修复关键）
+        playGen.value++
         runCatching {
+            // 先解绑监听器，再停止/重置：避免被中断的 prepare 异步报错触发错误回调
+            audioPlayer.setOnErrorListener(null)
+            audioPlayer.setOnCompletionListener(null)
+            audioPlayer.setOnPreparedListener(null)
             videoViewRef.value?.stopPlayback()
             if (audioPlayer.isPlaying) audioPlayer.stop()
             audioPlayer.reset()
@@ -145,27 +166,53 @@ private fun MediaPlayerContent(scope: WindowContentScope) {
             videoLoadedUri = null
             isPlaying = true
         } else {
-            runCatching {
+            // 音频：带代号的装载，陈旧回调静默丢弃；瞬时错误自动重试一次（v2.10）
+            val gen = ++playGen.value
+            var retried = false
+            fun startAudio() {
                 audioPlayer.reset()
                 audioPlayer.setDataSource(context, src.uri)
                 audioPlayer.setOnPreparedListener { mp ->
+                    if (gen != playGen.value) return@setOnPreparedListener
                     durationMs = mp.duration.toLong()
                     mp.start()
                     isPlaying = true
                 }
                 audioPlayer.setOnCompletionListener {
+                    if (gen != playGen.value) return@setOnCompletionListener
                     isPlaying = false
                     positionMs = it.duration.toLong()
                 }
                 audioPlayer.setOnErrorListener { _, what, extra ->
-                    Toast.makeText(context, "音频播放失败 ($what/$extra)", Toast.LENGTH_SHORT).show()
-                    isPlaying = false
+                    when {
+                        // 旧源的陈旧错误（已被新播放取代/中断）：静默吞掉，不提示
+                        gen != playGen.value -> Unit
+                        // 本地文件首载常见瞬时错误：自动重试一次
+                        !retried -> {
+                            retried = true
+                            runCatching { startAudio() }.onFailure {
+                                isPlaying = false
+                                Toast.makeText(context, "音频播放失败", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                        // 部分设备在播放临近结束时回调 error：视为自然播完
+                        durationMs > 0 && positionMs >= durationMs - 2000 -> {
+                            isPlaying = false
+                            positionMs = durationMs
+                        }
+                        else -> {
+                            Toast.makeText(context, "音频播放失败 ($what/$extra)", Toast.LENGTH_SHORT).show()
+                            isPlaying = false
+                        }
+                    }
                     true
                 }
                 audioPlayer.prepareAsync()
-            }.onFailure {
-                Toast.makeText(context, "无法播放: ${it.message}", Toast.LENGTH_SHORT).show()
             }
+            runCatching { startAudio() }
+                .onFailure {
+                    Toast.makeText(context, "无法播放: ${it.message}", Toast.LENGTH_SHORT).show()
+                }
         }
     }
 
@@ -272,48 +319,50 @@ private fun MediaPlayerContent(scope: WindowContentScope) {
     // ===== 布局 =====
     Column(modifier = Modifier.fillMaxSize().background(theme.windowBackgroundColor)) {
 
-        // ===== 顶部栏 =====
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(44.dp)
-                .background(theme.windowTitleBarColor)
-                .padding(horizontal = 8.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Icon(
-                Icons.Default.PlayCircle, null,
-                tint = theme.accentColor, modifier = Modifier.size(18.dp)
-            )
-            Spacer(Modifier.width(8.dp))
-            Text(
-                "媒体播放器",
-                color = if (theme.isDark) Color.White else Color.Black,
-                fontSize = 13.sp,
-                fontWeight = FontWeight.SemiBold
-            )
-            Spacer(Modifier.weight(1f))
-            if (current != null) {
+        // ===== 顶部栏（真全屏时隐藏，v2.10） =====
+        if (!isTrueFs) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(44.dp)
+                    .background(theme.windowTitleBarColor)
+                    .padding(horizontal = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    Icons.Default.PlayCircle, null,
+                    tint = theme.accentColor, modifier = Modifier.size(18.dp)
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    "媒体播放器",
+                    color = if (theme.isDark) Color.White else Color.Black,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Spacer(Modifier.weight(1f))
+                if (current != null) {
+                    TextButton(onClick = {
+                        stopAll()
+                        current = null
+                        scope.onTitleChange("媒体播放器")
+                    }) {
+                        Icon(Icons.Default.LibraryMusic, null, modifier = Modifier.size(14.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("媒体库", fontSize = 12.sp)
+                    }
+                }
                 TextButton(onClick = {
-                    stopAll()
-                    current = null
-                    scope.onTitleChange("媒体播放器")
+                    openFileLauncher.launch(arrayOf("audio/*", "video/*"))
                 }) {
-                    Icon(Icons.Default.LibraryMusic, null, modifier = Modifier.size(14.dp))
+                    Icon(Icons.Default.FolderOpen, null, modifier = Modifier.size(14.dp))
                     Spacer(Modifier.width(4.dp))
-                    Text("媒体库", fontSize = 12.sp)
+                    Text("打开文件", fontSize = 12.sp)
                 }
             }
-            TextButton(onClick = {
-                openFileLauncher.launch(arrayOf("audio/*", "video/*"))
-            }) {
-                Icon(Icons.Default.FolderOpen, null, modifier = Modifier.size(14.dp))
-                Spacer(Modifier.width(4.dp))
-                Text("打开文件", fontSize = 12.sp)
-            }
-        }
 
-        HorizontalDivider(color = theme.dividerColor, thickness = 0.5.dp)
+            HorizontalDivider(color = theme.dividerColor, thickness = 0.5.dp)
+        }
 
         // ===== 主区域 =====
         val src = current
@@ -331,6 +380,7 @@ private fun MediaPlayerContent(scope: WindowContentScope) {
                 isPlaying = isPlaying,
                 positionMs = positionMs,
                 durationMs = durationMs,
+                isFullscreen = isTrueFs,
                 theme = theme,
                 onLoaded = { uri -> videoLoadedUri = uri },
                 alreadyLoaded = videoLoadedUri == src.uri,
@@ -340,7 +390,8 @@ private fun MediaPlayerContent(scope: WindowContentScope) {
                 onSeekEnd = { userSeeking = false },
                 onPrev = { playPrev() },
                 onNext = { playNext() },
-                onCompleted = { playNext() }
+                onCompleted = { playNext() },
+                onToggleFullscreen = { wm.toggleTrueFullscreen(scope.windowState.id) }
             )
         } else {
             AudioPlayerView(
@@ -591,6 +642,7 @@ private fun VideoPlayerView(
     isPlaying: Boolean,
     positionMs: Long,
     durationMs: Long,
+    isFullscreen: Boolean,
     theme: com.anwind.core.theme.WinTheme,
     onLoaded: (Uri) -> Unit,
     alreadyLoaded: Boolean,
@@ -600,32 +652,55 @@ private fun VideoPlayerView(
     onSeekEnd: () -> Unit,
     onPrev: () -> Unit,
     onNext: () -> Unit,
-    onCompleted: () -> Unit
+    onCompleted: () -> Unit,
+    onToggleFullscreen: () -> Unit
 ) {
+    // 当前已装载 URI + 单次重试标记（v2.10：本地视频首载常见瞬时错误 1/-2147483648，
+    // 重试装载一次即可正常播放）
+    val loadedUri = remember { mutableStateOf<Uri?>(null) }
+    val retriedFor = remember { mutableStateOf<Uri?>(null) }
+
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
-        AndroidView(
-            factory = { ctx ->
-                VideoView(ctx).apply {
-                    videoViewRef.value = this
-                    setOnPreparedListener { mp ->
-                        mp.isLooping = false
-                        this.start()
-                    }
-                    setOnCompletionListener { onCompleted() }
-                    setOnErrorListener { _, what, extra ->
-                        Toast.makeText(ctx, "视频播放失败 ($what/$extra)", Toast.LENGTH_SHORT).show()
-                        true
-                    }
+        // 视频画面区：单击 播放/暂停（控制栏为兄弟节点，不会误触）
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .pointerInput(Unit) {
+                    detectTapGestures(onTap = { onToggle() })
                 }
-            },
-            update = { vv ->
-                if (!alreadyLoaded) {
-                    vv.setVideoURI(source.uri)
-                    onLoaded(source.uri)
-                }
-            },
-            modifier = Modifier.fillMaxSize()
-        )
+        ) {
+            AndroidView(
+                factory = { ctx ->
+                    VideoView(ctx).apply {
+                        videoViewRef.value = this
+                        setOnPreparedListener { mp ->
+                            mp.isLooping = false
+                            this.start()
+                        }
+                        setOnCompletionListener { onCompleted() }
+                        setOnErrorListener { _, what, extra ->
+                            val uri = loadedUri.value
+                            if (uri != null && retriedFor.value != uri) {
+                                // 首次错误：自动重试装载一次（多数瞬时错误重试即可播放）
+                                retriedFor.value = uri
+                                this.setVideoURI(uri)
+                            } else {
+                                Toast.makeText(ctx, "视频播放失败 ($what/$extra)", Toast.LENGTH_SHORT).show()
+                            }
+                            true
+                        }
+                    }
+                },
+                update = { vv ->
+                    if (!alreadyLoaded) {
+                        loadedUri.value = source.uri
+                        vv.setVideoURI(source.uri)
+                        onLoaded(source.uri)
+                    }
+                },
+                modifier = Modifier.fillMaxSize()
+            )
+        }
 
         // ===== 底部控制栏（半透明覆盖） =====
         Column(
@@ -660,26 +735,33 @@ private fun VideoPlayerView(
                 IconButton(onClick = onNext) {
                     Icon(Icons.Default.SkipNext, "下一个", tint = Color.White)
                 }
-                Spacer(Modifier.weight(1f))
+                Spacer(Modifier.width(4.dp))
                 Text(
                     source.displayName,
                     color = Color.White,
                     fontSize = 11.sp,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier
-                        .weight(1f, fill = false)
-                        .padding(end = 8.dp)
+                    modifier = Modifier.weight(1f)
                 )
+                // ===== 全屏按钮（v2.10）：窗口占满整屏（隐藏任务栏/标题栏），返回键退出 =====
+                IconButton(onClick = onToggleFullscreen) {
+                    Icon(
+                        if (isFullscreen) Icons.Default.FullscreenExit else Icons.Default.Fullscreen,
+                        if (isFullscreen) "退出全屏" else "全屏",
+                        tint = Color.White
+                    )
+                }
             }
         }
     }
 }
 
-// ============================================================
-// 通用进度条（音频/视频共用）
-// ============================================================
-
+/**
+ * 通用进度条（音频/视频共用，v2.10 重写）：
+ * - 拖动期间只在本地更新拖动位置（不连续 seek），抬手时才执行一次 seek
+ *   —— 修复旧版 onSeek 值计算错误（毫秒×时长导致快进失效）与拖动卡顿
+ */
 @Composable
 private fun MediaProgressSlider(
     positionMs: Long,
@@ -694,14 +776,23 @@ private fun MediaProgressSlider(
     val textColor = if (lightOnDark) Color.White else theme.secondaryTextColor
     val dur = if (durationMs > 0) durationMs else 1L
 
+    // 拖动中的本地位置；null = 未拖动，跟随播放进度
+    var dragValue by remember { mutableStateOf<Float?>(null) }
+    val currentValue = dragValue ?: positionMs.coerceIn(0L, dur).toFloat()
+
     Column(modifier = Modifier.fillMaxWidth()) {
         Slider(
-            value = positionMs.coerceIn(0L, dur).toFloat(),
+            value = currentValue.coerceIn(0f, dur.toFloat()),
             onValueChange = {
+                dragValue = it
                 onSeekStart()
-                onSeek((it * dur).toLong())
             },
-            onValueChangeFinished = { onSeekEnd() },
+            onValueChangeFinished = {
+                // 抬手：一次性 seek 到拖动目标位置
+                dragValue?.let { v -> onSeek(v.toLong()) }
+                dragValue = null
+                onSeekEnd()
+            },
             valueRange = 0f..dur.toFloat(),
             modifier = Modifier.fillMaxWidth(),
             colors = SliderDefaults.colors(
@@ -710,7 +801,7 @@ private fun MediaProgressSlider(
             )
         )
         Row(modifier = Modifier.fillMaxWidth()) {
-            Text(formatTime(positionMs), color = textColor, fontSize = 10.sp)
+            Text(formatTime(currentValue.toLong()), color = textColor, fontSize = 10.sp)
             Spacer(Modifier.weight(1f))
             Text(formatTime(durationMs), color = textColor, fontSize = 10.sp)
         }

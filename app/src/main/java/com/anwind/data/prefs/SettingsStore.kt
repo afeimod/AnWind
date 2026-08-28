@@ -40,6 +40,15 @@ class SettingsStore(private val context: Context) {
         val USE_CUTOUT = booleanPreferencesKey("use_cutout")
         // 任务栏高度（dp，36..80；0f 表示跟随主题默认）
         val TASKBAR_HEIGHT = floatPreferencesKey("taskbar_height")
+        // === 托盘时钟样式（v2.10，长按任务栏时间弹出设置） ===
+        // 显示模式：digital 数字 / clock 表盘 / lcd 液晶
+        val TRAY_CLOCK_MODE = stringPreferencesKey("tray_clock_mode")
+        // 时钟字号（sp，8..18）
+        val TRAY_CLOCK_FONT_SIZE = floatPreferencesKey("tray_clock_font_size")
+        // 是否显示日期
+        val TRAY_SHOW_DATE = booleanPreferencesKey("tray_show_date")
+        // 排版：stacked 时间/日期两行 / inline 单行
+        val TRAY_LAYOUT = stringPreferencesKey("tray_layout")
 
         // === 蓝牙与设备 ===
         val BLUETOOTH_ENABLED = booleanPreferencesKey("bluetooth_enabled")
@@ -90,6 +99,12 @@ class SettingsStore(private val context: Context) {
     // === 刘海屏 / 任务栏 ===
     val useCutout: Flow<Boolean> = context.appPrefs.data.map { it[Keys.USE_CUTOUT] ?: true }
     val taskbarHeight: Flow<Float> = context.appPrefs.data.map { it[Keys.TASKBAR_HEIGHT] ?: 0f }
+
+    // === 托盘时钟样式 ===
+    val trayClockMode: Flow<String> = context.appPrefs.data.map { it[Keys.TRAY_CLOCK_MODE] ?: "digital" }
+    val trayClockFontSize: Flow<Float> = context.appPrefs.data.map { it[Keys.TRAY_CLOCK_FONT_SIZE] ?: 0f }
+    val trayShowDate: Flow<Boolean> = context.appPrefs.data.map { it[Keys.TRAY_SHOW_DATE] ?: true }
+    val trayLayout: Flow<String> = context.appPrefs.data.map { it[Keys.TRAY_LAYOUT] ?: "stacked" }
 
     // === 蓝牙与设备 ===
     val bluetoothEnabled: Flow<Boolean> = context.appPrefs.data.map { it[Keys.BLUETOOTH_ENABLED] ?: false }
@@ -169,6 +184,25 @@ class SettingsStore(private val context: Context) {
 
     suspend fun setTaskbarHeight(heightDp: Float) {
         context.appPrefs.edit { it[Keys.TASKBAR_HEIGHT] = heightDp.coerceIn(0f, 80f) }
+    }
+
+    // === 托盘时钟样式 setter ===
+    suspend fun setTrayClockMode(mode: String) {
+        context.appPrefs.edit { it[Keys.TRAY_CLOCK_MODE] = mode }
+    }
+
+    suspend fun setTrayClockFontSize(sizeSp: Float) {
+        // 0 表示"自动"（跟随任务栏高度自适应），有效范围 8..18sp
+        val v = if (sizeSp < 8f) 0f else sizeSp.coerceIn(8f, 18f)
+        context.appPrefs.edit { it[Keys.TRAY_CLOCK_FONT_SIZE] = v }
+    }
+
+    suspend fun setTrayShowDate(show: Boolean) {
+        context.appPrefs.edit { it[Keys.TRAY_SHOW_DATE] = show }
+    }
+
+    suspend fun setTrayLayout(layout: String) {
+        context.appPrefs.edit { it[Keys.TRAY_LAYOUT] = layout }
     }
 
     // === 蓝牙与设备 setter ===

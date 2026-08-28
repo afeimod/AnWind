@@ -15,6 +15,12 @@
     <!-- 用于直接访问 /storage/emulated/0 真实文件系统（文件资源管理器） -->
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
         tools:ignore="ScopedStorage" />
+    <!-- 蓝牙开关（v2.10 快速设置面板）：旧版本静态权限 + Android 12+ 运行时权限 -->
+    <uses-permission android:name="android.permission.BLUETOOTH"
+        android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN"
+        android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
 
     <application
         android:name=".AnWindApp"

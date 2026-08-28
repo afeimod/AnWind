@@ -1,7 +1,9 @@
 package com.anwind.core.desktop
 
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.*
@@ -21,31 +23,43 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Shadow
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.anwind.AnWindApp
 import com.anwind.core.theme.LocalWinTheme
 import com.anwind.core.theme.WinTheme
 import com.anwind.core.window.AppRegistry
 import com.anwind.core.window.WindowManager
 import java.text.SimpleDateFormat
+import java.util.Calendar
 import java.util.Date
 import java.util.Locale
+import kotlin.math.cos
+import kotlin.math.sin
 
 /**
  * 任务栏 - Win11 真实风格
  *
+ * v2.10 更新：
+ * - 系统托盘（无线/音量/电池/时间）固定在左侧（开始按钮旁），不再随任务数量移动；
+ *   运行任务区移到右侧弹性区，任务增多时向右扩展（可横向滑动）
+ * - 时钟显示样式可自定义：长按任务栏时间 → 弹出样式设置
+ *   （显示模式：数字/表盘/液晶；字号；是否显示日期；排版：两行/单行）
+ *
  * v2.9 更新：
  * - 高度可调（个性化设置 36..80dp，通过 taskbarHeight 参数传入，图标随高度自动缩放）
- * - 布局重构：主簇（开始+搜索+固定+运行任务）+ 系统托盘在同一水平流式布局中，
- *   两侧弹性空间夹持 —— 任务少时整体居中、托盘靠近主簇；
- *   打开的任务增多时运行任务区自动占满中间弹性区（可横向滑动），
- *   托盘随之往右移动，彻底避免窄屏下托盘与任务图标重叠。
  * - 时钟支持 12/24 小时制（跟随时间与语言设置）
  */
 @Composable
@@ -56,6 +70,7 @@ fun Taskbar(
     onStartClick: () -> Unit,
     onOpenCalendar: () -> Unit,
     onOpenQuickSettings: () -> Unit,
+    onOpenClockStyle: () -> Unit = {},
     showSeconds: Boolean = false,
     timeFormat24h: Boolean = true,
     modifier: Modifier = Modifier
@@ -102,6 +117,7 @@ fun Taskbar(
                     onStartClick = onStartClick,
                     onOpenCalendar = onOpenCalendar,
                     onOpenQuickSettings = onOpenQuickSettings,
+                    onOpenClockStyle = onOpenClockStyle,
                     tick = tick,
                     showSeconds = showSeconds,
                     timeFormat24h = timeFormat24h,
@@ -120,6 +136,7 @@ private fun CenteredTaskbar(
     onStartClick: () -> Unit,
     onOpenCalendar: () -> Unit,
     onOpenQuickSettings: () -> Unit,
+    onOpenClockStyle: () -> Unit,
     tick: Long,
     showSeconds: Boolean,
     timeFormat24h: Boolean,
@@ -132,9 +149,15 @@ private fun CenteredTaskbar(
     var searchActive by remember { mutableStateOf(false) }
     val keyboard = LocalSoftwareKeyboardController.current
 
-    // ===== 主簇 + 系统托盘的流式布局 =====
-    // [左弹性] 开始 + 搜索 + 固定图标 + 运行任务(中间弹性区,可滑动) [间距] 系统托盘 [右弹性]
-    // 任务增多 → 中间弹性区扩张 → 托盘往右移动（用户要求的行为）
+    // ===== 托盘时钟样式偏好（v2.10，长按任务栏时间可弹出设置） =====
+    val app = AnWindApp.get()
+    val clockMode by app.settingsStore.trayClockMode.collectAsState(initial = "digital")
+    val clockFontSize by app.settingsStore.trayClockFontSize.collectAsState(initial = 0f)
+    val trayShowDate by app.settingsStore.trayShowDate.collectAsState(initial = true)
+    val trayLayout by app.settingsStore.trayLayout.collectAsState(initial = "stacked")
+
+    // ===== 布局（v2.10）：开始 → 系统托盘(左固定) → 搜索 → 固定图标 → 运行任务(右侧弹性区) =====
+    // 托盘始终靠左固定，不随任务数量移动；运行任务向右扩展，超出后可横向滑动
     Row(
         modifier = Modifier
             .fillMaxSize()
@@ -142,14 +165,39 @@ private fun CenteredTaskbar(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(4.dp)
     ) {
-        // 左侧弹性空间：把主簇推向中间
-        Spacer(Modifier.weight(1f))
-
-        // Start 按钮
+        // Start 按钮（最左）
         StartButton(theme = theme, height = taskbarHeight, isOpen = startMenuOpen, onClick = onStartClick)
 
+        Spacer(Modifier.width(4.dp))
+
+        // ===== 系统托盘（v2.10：始终靠左固定，不随任务数量移动） =====
+        SystemTray(
+            theme = theme,
+            height = taskbarHeight,
+            tick = tick,
+            showSeconds = showSeconds,
+            timeFormat24h = timeFormat24h,
+            clockMode = clockMode,
+            clockFontSize = clockFontSize,
+            showDate = trayShowDate,
+            trayLayout = trayLayout,
+            onOpenCalendar = onOpenCalendar,
+            onOpenQuickSettings = onOpenQuickSettings,
+            onOpenClockStyle = onOpenClockStyle
+        )
+
+        Spacer(Modifier.width(4.dp))
+
+        // 紧凑分隔线（托盘与主簇之间）
+        Box(
+            modifier = Modifier
+                .width(1.dp)
+                .height(20.dp)
+                .background(theme.taskbarIconColor.copy(alpha = 0.15f))
+        )
+
         if (!isNarrow) {
-            Spacer(Modifier.width(2.dp))
+            Spacer(Modifier.width(4.dp))
 
             // 搜索条（药丸形，未激活时显示图标 + "搜索"，激活时变宽接受输入）
             PillSearchBar(
@@ -184,7 +232,7 @@ private fun CenteredTaskbar(
                 }
             )
 
-            Spacer(Modifier.width(2.dp))
+            Spacer(Modifier.width(4.dp))
 
             // 紧凑分隔线
             Box(
@@ -194,7 +242,7 @@ private fun CenteredTaskbar(
                     .background(theme.taskbarIconColor.copy(alpha = 0.15f))
             )
 
-            Spacer(Modifier.width(2.dp))
+            Spacer(Modifier.width(4.dp))
         }
 
         // 仅显示固定在任务栏的核心三件套：浏览器/文件管理器/设置
@@ -229,14 +277,13 @@ private fun CenteredTaskbar(
             )
         }
 
-        // ===== 运行中的窗口（非固定应用）：中间弹性区，任务多时可横向滑动 =====
-        // weight(2f, fill=false)：任务少时只占内容实际宽度（托盘紧随其后），
-        // 任务多时最多占据中间弹性区全部剩余空间并变为可滚动
+        // ===== 运行中的窗口（非固定应用）：右侧弹性区，向右扩展，任务多时可横向滑动 =====
+        // weight(1f, fill=false)：任务少时只占内容实际宽度，任务增多时最多占据剩余全部空间并变为可滚动
         val pinnedIds = pinnedApps.map { it.id }.toSet()
         val runningOnly = runningWindows.filter { it.appId !in pinnedIds }
         Box(
             modifier = Modifier
-                .weight(2f, fill = false)
+                .weight(1f, fill = false)
                 .horizontalScroll(rememberScrollState())
         ) {
             Row(
@@ -268,22 +315,6 @@ private fun CenteredTaskbar(
                 }
             }
         }
-
-        Spacer(Modifier.width(6.dp))
-
-        // ===== 右侧系统托盘（可点击打开 flyout），随任务数量右移 =====
-        SystemTray(
-            theme = theme,
-            height = taskbarHeight,
-            tick = tick,
-            showSeconds = showSeconds,
-            timeFormat24h = timeFormat24h,
-            onOpenCalendar = onOpenCalendar,
-            onOpenQuickSettings = onOpenQuickSettings
-        )
-
-        // 右侧弹性空间：与左侧对称，任务增多时收缩为 0
-        Spacer(Modifier.weight(1f))
     }
 }
 
@@ -444,7 +475,11 @@ private fun TaskbarAppIcon(
 }
 
 /**
- * 系统托盘 - 点击 wifi/电池 组合打开 Quick Settings，点击时钟打开 Calendar
+ * 系统托盘（v2.10：固定在任务栏左侧）
+ * - 点击 wifi/音量/电池 图标组 → Quick Settings
+ * - 点击时钟 → Calendar
+ * - 长按时钟 → 托盘时钟样式设置（显示模式/字号/日期/排版）
+ * - 时钟显示模式：digital 数字 / clock 表盘 / lcd 液晶
  */
 @Composable
 private fun SystemTray(
@@ -453,11 +488,15 @@ private fun SystemTray(
     tick: Long,
     showSeconds: Boolean,
     timeFormat24h: Boolean,
+    clockMode: String,
+    clockFontSize: Float,
+    showDate: Boolean,
+    trayLayout: String,
     onOpenCalendar: () -> Unit,
-    onOpenQuickSettings: () -> Unit
+    onOpenQuickSettings: () -> Unit,
+    onOpenClockStyle: () -> Unit
 ) {
     val quickInteraction = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
-    val calendarInteraction = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
     // 托盘图标随任务栏高度轻微缩放
     val trayIconSize = (height.value * 0.31f).dp.coerceIn(13.dp, 20.dp)
 
@@ -485,39 +524,276 @@ private fun SystemTray(
 
         Spacer(Modifier.width(2.dp))
 
-        // 时钟组（点击触发 Calendar）；支持 12/24 小时制
-        Column(
-            horizontalAlignment = Alignment.End,
-            modifier = Modifier
-                .clip(RoundedCornerShape(4.dp))
-                .clickable(
-                    interactionSource = calendarInteraction,
-                    indication = null,
-                    onClick = onOpenCalendar
-                )
-                .padding(horizontal = 4.dp, vertical = 2.dp)
-        ) {
-            val timePattern = when {
-                showSeconds && timeFormat24h -> "HH:mm:ss"
-                showSeconds -> "hh:mm:ss a"
-                timeFormat24h -> "HH:mm"
-                else -> "hh:mm a"
+        // ===== 时钟组（v2.10 可自定义样式）=====
+        TrayClock(
+            theme = theme,
+            height = height,
+            tick = tick,
+            showSeconds = showSeconds,
+            timeFormat24h = timeFormat24h,
+            mode = clockMode,
+            fontSizePref = clockFontSize,
+            showDate = showDate,
+            layout = trayLayout,
+            onOpenCalendar = onOpenCalendar,
+            onOpenClockStyle = onOpenClockStyle
+        )
+    }
+}
+
+/**
+ * 托盘时钟（v2.10）：
+ * - 点击 → 日历弹窗；长按 → 样式设置弹窗
+ * - 数字/液晶模式：时间 + 日期文本（两行或单行排版）
+ * - 表盘模式：Canvas 绘制模拟时钟（时针/分针/秒针）
+ */
+@Composable
+private fun TrayClock(
+    theme: WinTheme,
+    height: Dp,
+    tick: Long,
+    showSeconds: Boolean,
+    timeFormat24h: Boolean,
+    mode: String,
+    fontSizePref: Float,
+    showDate: Boolean,
+    layout: String,
+    onOpenCalendar: () -> Unit,
+    onOpenClockStyle: () -> Unit
+) {
+    val timePattern = when {
+        showSeconds && timeFormat24h -> "HH:mm:ss"
+        showSeconds -> "hh:mm:ss a"
+        timeFormat24h -> "HH:mm"
+        else -> "hh:mm a"
+    }
+    val timeStr = SimpleDateFormat(timePattern, Locale.getDefault()).format(Date(tick))
+    val dateStr = SimpleDateFormat("MM-dd", Locale.getDefault()).format(Date(tick))
+
+    // 字号：未设置(0)时按任务栏高度自适应
+    val timeFontSize = if (fontSizePref >= 8f) fontSizePref.sp
+    else (height.value * 0.24f).coerceIn(9f, 13f).sp
+    val dateFontSize = (timeFontSize.value - 1f).coerceAtLeast(8f).sp
+
+    // 点击 → 日历；长按 → 时钟样式设置
+    val gestureModifier = Modifier.pointerInput(Unit) {
+        detectTapGestures(
+            onTap = { onOpenCalendar() },
+            onLongPress = { onOpenClockStyle() }
+        )
+    }
+
+    when (mode) {
+        // ===== 表盘时钟 =====
+        "clock" -> {
+            val clockSize = (height.value * 0.52f).dp.coerceIn(18.dp, 30.dp)
+            val content: @Composable () -> Unit = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    AnalogClockCanvas(
+                        size = clockSize,
+                        tick = tick,
+                        showSeconds = showSeconds,
+                        color = theme.taskbarClockColor,
+                        accent = theme.accentColor
+                    )
+                    if (showDate) {
+                        Spacer(Modifier.width(5.dp))
+                        Text(
+                            text = dateStr,
+                            color = theme.taskbarClockColor,
+                            fontSize = dateFontSize,
+                            fontFamily = FontFamily.Monospace
+                        )
+                    }
+                }
             }
-            val timeFormat = SimpleDateFormat(timePattern, Locale.getDefault())
-            val dateFormat = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
-            val timeStr = timeFormat.format(Date(tick))
-            val dateStr = dateFormat.format(Date(tick))
-            Text(
-                text = timeStr,
-                color = theme.taskbarClockColor,
-                fontSize = 11.sp,
-                fontWeight = FontWeight.Normal
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(4.dp))
+                    .then(gestureModifier)
+                    .padding(horizontal = 4.dp, vertical = 2.dp),
+                contentAlignment = Alignment.Center
+            ) { content() }
+        }
+        // ===== 液晶时钟（等宽字体 + 辉光效果） =====
+        "lcd" -> {
+            val lcdColor = if (theme.isDark) Color(0xFF4AF2A1) else Color(0xFF0B7A4B)
+            val lcdStyle = TextStyle(
+                color = lcdColor,
+                fontSize = timeFontSize,
+                fontFamily = FontFamily.Monospace,
+                shadow = Shadow(color = lcdColor.copy(alpha = 0.75f), blurRadius = 7f)
             )
-            Text(
-                text = dateStr,
-                color = theme.taskbarClockColor,
-                fontSize = 10.sp
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(4.dp))
+                    .then(gestureModifier)
+                    .padding(horizontal = 4.dp, vertical = 2.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                if (showDate && layout == "inline") {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(text = timeStr, style = lcdStyle)
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            text = dateStr,
+                            style = lcdStyle.copy(
+                                fontSize = dateFontSize,
+                                shadow = Shadow(color = lcdColor.copy(alpha = 0.5f), blurRadius = 5f)
+                            )
+                        )
+                    }
+                } else if (showDate) {
+                    Column(horizontalAlignment = Alignment.Start) {
+                        Text(text = timeStr, style = lcdStyle)
+                        Text(
+                            text = dateStr,
+                            style = lcdStyle.copy(
+                                fontSize = dateFontSize,
+                                shadow = Shadow(color = lcdColor.copy(alpha = 0.5f), blurRadius = 5f)
+                            )
+                        )
+                    }
+                } else {
+                    Text(text = timeStr, style = lcdStyle)
+                }
+            }
+        }
+        // ===== 数字时钟（默认） =====
+        else -> {
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(4.dp))
+                    .then(gestureModifier)
+                    .padding(horizontal = 4.dp, vertical = 2.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                if (showDate && layout == "inline") {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = timeStr,
+                            color = theme.taskbarClockColor,
+                            fontSize = timeFontSize,
+                            fontWeight = FontWeight.Normal
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            text = dateStr,
+                            color = theme.taskbarClockColor.copy(alpha = 0.75f),
+                            fontSize = dateFontSize
+                        )
+                    }
+                } else if (showDate) {
+                    Column(horizontalAlignment = Alignment.Start) {
+                        Text(
+                            text = timeStr,
+                            color = theme.taskbarClockColor,
+                            fontSize = timeFontSize,
+                            fontWeight = FontWeight.Normal
+                        )
+                        Text(
+                            text = dateStr,
+                            color = theme.taskbarClockColor.copy(alpha = 0.75f),
+                            fontSize = dateFontSize
+                        )
+                    }
+                } else {
+                    Text(
+                        text = timeStr,
+                        color = theme.taskbarClockColor,
+                        fontSize = timeFontSize,
+                        fontWeight = FontWeight.Normal
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * 表盘时钟（v2.10）：Canvas 绘制圆形表盘 + 时针/分针/秒针
+ * （internal：TrayClockSettingsFlyout 预览复用）
+ */
+@Composable
+internal fun AnalogClockCanvas(
+    size: Dp,
+    tick: Long,
+    showSeconds: Boolean,
+    color: Color,
+    accent: Color
+) {
+    val cal = remember(tick) { Calendar.getInstance() }
+    Canvas(modifier = Modifier.size(size)) {
+        val r = this.size.minDimension / 2f
+        val center = Offset(this.size.width / 2f, this.size.height / 2f)
+        // 表盘边框
+        drawCircle(
+            color = color.copy(alpha = 0.9f),
+            radius = r,
+            center = center,
+            style = Stroke(width = r * 0.09f)
+        )
+        // 12 个刻度
+        for (i in 0 until 12) {
+            val angle = (Math.PI * 2 * i / 12.0) - Math.PI / 2
+            val outer = Offset(
+                (center.x + r * 0.82f * cos(angle)).toFloat(),
+                (center.y + r * 0.82f * sin(angle)).toFloat()
+            )
+            val inner = Offset(
+                (center.x + r * 0.66f * cos(angle)).toFloat(),
+                (center.y + r * 0.66f * sin(angle)).toFloat()
+            )
+            drawLine(
+                color = color.copy(alpha = if (i % 3 == 0) 0.9f else 0.45f),
+                start = inner,
+                end = outer,
+                strokeWidth = r * (if (i % 3 == 0) 0.09f else 0.05f),
+                cap = StrokeCap.Round
             )
         }
+        // 时针（含分的 fraction）
+        val hourF = (cal.get(Calendar.HOUR) + cal.get(Calendar.MINUTE) / 60f) / 12f
+        val hourAngle = (Math.PI * 2 * hourF) - Math.PI / 2
+        drawLine(
+            color = color,
+            start = center,
+            end = Offset(
+                (center.x + r * 0.42f * cos(hourAngle)).toFloat(),
+                (center.y + r * 0.42f * sin(hourAngle)).toFloat()
+            ),
+            strokeWidth = r * 0.11f,
+            cap = StrokeCap.Round
+        )
+        // 分针
+        val minF = (cal.get(Calendar.MINUTE) + cal.get(Calendar.SECOND) / 60f) / 60f
+        val minAngle = (Math.PI * 2 * minF) - Math.PI / 2
+        drawLine(
+            color = color,
+            start = center,
+            end = Offset(
+                (center.x + r * 0.62f * cos(minAngle)).toFloat(),
+                (center.y + r * 0.62f * sin(minAngle)).toFloat()
+            ),
+            strokeWidth = r * 0.08f,
+            cap = StrokeCap.Round
+        )
+        // 秒针（强调色，更细）
+        if (showSeconds) {
+            val secF = (cal.get(Calendar.SECOND) + cal.get(Calendar.MILLISECOND) / 1000f) / 60f
+            val secAngle = (Math.PI * 2 * secF) - Math.PI / 2
+            drawLine(
+                color = accent,
+                start = center,
+                end = Offset(
+                    (center.x + r * 0.72f * cos(secAngle)).toFloat(),
+                    (center.y + r * 0.72f * sin(secAngle)).toFloat()
+                ),
+                strokeWidth = r * 0.045f,
+                cap = StrokeCap.Round
+            )
+        }
+        // 中心点
+        drawCircle(color = color, radius = r * 0.07f, center = center)
     }
 }

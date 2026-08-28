@@ -1,9 +1,18 @@
 package com.anwind.core.desktop
 
+import android.Manifest
 import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.hardware.camera2.CameraCharacteristics
+import android.hardware.camera2.CameraManager
 import android.media.AudioManager
 import android.net.wifi.WifiManager
+import android.os.Build
+import android.provider.Settings as AndroidSettings
 import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -12,33 +21,52 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Accessibility
+import androidx.compose.material.icons.filled.AirplanemodeActive
+import androidx.compose.material.icons.filled.BatteryChargingFull
 import androidx.compose.material.icons.filled.BatteryFull
 import androidx.compose.material.icons.filled.Bluetooth
+import androidx.compose.material.icons.filled.BrightnessMedium
 import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.ChevronRight
-import androidx.compose.material.icons.filled.Cloud
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.FlashlightOn
 import androidx.compose.material.icons.filled.KeyboardArrowDown
-import androidx.compose.material.icons.filled.Palette
+import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.VolumeOff
 import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material.icons.filled.Wifi
+import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Slider
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
+import com.anwind.AnWindApp
 import com.anwind.core.theme.WinTheme
+import com.anwind.util.ImmersiveMode
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import java.text.SimpleDateFormat
 import java.util.Calendar
+import java.util.Date
+import java.util.Locale
+import kotlin.math.roundToInt
 
 /**
  * Win11 风格日历弹窗 - 点击任务栏时钟后显示
@@ -216,9 +244,15 @@ fun CalendarFlyout(
 /**
  * Win11 风格快速设置面板 - 点击任务栏 wifi/电池/音量后显示
  *
- * - 顶部 3x2 toggle 网格：WiFi/Internet/Bluetooth/Nearby sharing/Theme/Accessibility
- * - 中部：音量滑块
- * - 底部：电池 % + 设置齿轮
+ * v2.10 全部接入真实逻辑：
+ * - WiFi：Android 9 及以下直接开关；Android 10+ 打开系统互联网面板（系统限制）
+ * - 蓝牙：直接开关（Android 12+ 自动请求 BLUETOOTH_CONNECT 权限；失败回退蓝牙设置页）
+ * - 飞行模式：显示真实状态，点击打开系统飞行模式面板（系统限制无法直接切换）
+ * - 手电筒：CameraManager.setTorchMode 真实开关闪光灯
+ * - 辅助功能：打开系统无障碍设置页
+ * - 音量：滑块直接控制系统媒体音量 + 静音/恢复按钮
+ * - 亮度：滑块实时调整应用窗口亮度（与设置中心联动）
+ * - 电池：真实电量 + 充电状态，点击打开系统省电设置
  */
 @Composable
 fun QuickSettingsPanel(
@@ -228,88 +262,211 @@ fun QuickSettingsPanel(
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
+    val app = AnWindApp.get()
+    val scope = rememberCoroutineScope()
     val popupColor = if (theme.isDark) Color(0xE6323232) else Color(0xE6F9F9F9)
+    val fg = if (theme.isDark) Color.White else Color.Black
 
-    // 状态：从系统读取
+    /** 打开系统设置面板 */
+    fun openSystemPanel(action: String, name: String) {
+        runCatching {
+            context.startActivity(Intent(action).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        }.onFailure {
+            Toast.makeText(context, "无法打开$name", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    // ===== WiFi =====
+    val wifiManager = remember {
+        context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+    }
     var wifiEnabled by remember {
-        mutableStateOf(runCatching {
-            val wm = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
-            wm.isWifiEnabled
-        }.getOrDefault(false))
+        mutableStateOf(runCatching { wifiManager?.isWifiEnabled }.getOrNull() == true)
+    }
+
+    fun toggleWifi(want: Boolean) {
+        val ok = runCatching {
+            @Suppress("DEPRECATION")
+            wifiManager?.setWifiEnabled(want) == true
+        }.getOrDefault(false)
+        if (ok) {
+            wifiEnabled = want
+            Toast.makeText(context, if (want) "已开启 WiFi" else "已关闭 WiFi", Toast.LENGTH_SHORT).show()
+        } else {
+            // Android 10+ 第三方应用无法直接开关 WiFi（系统限制）→ 打开系统面板
+            Toast.makeText(context, "系统限制，已打开互联网面板", Toast.LENGTH_SHORT).show()
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                openSystemPanel(AndroidSettings.Panel.ACTION_INTERNET_CONNECTIVITY, "互联网面板")
+            } else {
+                openSystemPanel(AndroidSettings.ACTION_WIFI_SETTINGS, "WiFi 设置")
+            }
+        }
+    }
+
+    // ===== 蓝牙（Android 12+ 需要 BLUETOOTH_CONNECT 运行时权限） =====
+    val bluetoothAdapter = remember {
+        runCatching {
+            (context.getSystemService(Context.BLUETOOTH_SERVICE) as android.bluetooth.BluetoothManager).adapter
+        }.getOrNull()
     }
     var bluetoothEnabled by remember {
-        mutableStateOf(runCatching {
-            val adapter = android.bluetooth.BluetoothAdapter.getDefaultAdapter()
-            adapter?.isEnabled == true
-        }.getOrDefault(false))
+        mutableStateOf(runCatching { bluetoothAdapter?.isEnabled == true }.getOrDefault(false))
     }
+    var pendingBtEnable by remember { mutableStateOf<Boolean?>(null) }
+    val btPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        val want = pendingBtEnable
+        pendingBtEnable = null
+        if (granted && want != null) {
+            val ok = runCatching {
+                if (want) bluetoothAdapter?.enable() else bluetoothAdapter?.disable()
+                true
+            }.getOrDefault(false)
+            if (ok) {
+                bluetoothEnabled = want
+                Toast.makeText(context, if (want) "已开启蓝牙" else "已关闭蓝牙", Toast.LENGTH_SHORT).show()
+            } else {
+                openSystemPanel(AndroidSettings.ACTION_BLUETOOTH_SETTINGS, "蓝牙设置")
+            }
+        } else if (!granted) {
+            Toast.makeText(context, "需要蓝牙权限才能开关蓝牙", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    fun toggleBluetooth(want: Boolean) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val granted = ContextCompat.checkSelfPermission(
+                context, Manifest.permission.BLUETOOTH_CONNECT
+            ) == PackageManager.PERMISSION_GRANTED
+            if (!granted) {
+                pendingBtEnable = want
+                btPermissionLauncher.launch(Manifest.permission.BLUETOOTH_CONNECT)
+                return
+            }
+        }
+        val ok = runCatching {
+            if (want) bluetoothAdapter?.enable() else bluetoothAdapter?.disable()
+            true
+        }.getOrDefault(false)
+        if (ok) {
+            bluetoothEnabled = want
+            Toast.makeText(context, if (want) "已开启蓝牙" else "已关闭蓝牙", Toast.LENGTH_SHORT).show()
+        } else {
+            openSystemPanel(AndroidSettings.ACTION_BLUETOOTH_SETTINGS, "蓝牙设置")
+        }
+    }
+
+    // ===== 飞行模式（真实状态；切换需系统权限，点击打开系统面板） =====
+    var airplaneOn by remember {
+        mutableStateOf(
+            runCatching {
+                AndroidSettings.Global.getInt(
+                    context.contentResolver, AndroidSettings.Global.AIRPLANE_MODE_ON
+                ) == 1
+            }.getOrDefault(false)
+        )
+    }
+
+    // ===== 手电筒（CameraManager.setTorchMode，无需运行时权限） =====
+    var torchOn by remember { mutableStateOf(false) }
+    fun toggleTorch() {
+        runCatching {
+            val cm = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+            val cameraId = cm.cameraIdList.firstOrNull { id ->
+                cm.getCameraCharacteristics(id)
+                    .get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
+            } ?: error("设备无闪光灯")
+            cm.setTorchMode(cameraId, !torchOn)
+            torchOn = !torchOn
+            Toast.makeText(
+                context,
+                if (torchOn) "手电筒已开启" else "手电筒已关闭",
+                Toast.LENGTH_SHORT
+            ).show()
+        }.onFailure {
+            Toast.makeText(context, "无法切换手电筒: ${it.message}", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    // ===== 音量（真实控制系统媒体音量） =====
+    val audioManager = remember { context.getSystemService(Context.AUDIO_SERVICE) as AudioManager }
     var volume by remember {
-        mutableStateOf(runCatching {
-            val am = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
-            am.getStreamVolume(AudioManager.STREAM_MUSIC)
-        }.getOrDefault(0))
+        mutableStateOf(
+            runCatching { audioManager.getStreamVolume(AudioManager.STREAM_MUSIC) }.getOrDefault(0)
+        )
     }
     val maxVolume = remember {
-        runCatching {
-            val am = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
-            am.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
-        }.getOrDefault(15)
+        runCatching { audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC) }.getOrDefault(15)
     }
-    val batteryPct = remember {
+    var volumeBeforeMute by remember { mutableStateOf(-1) }
+
+    // ===== 亮度（与设置中心偏好联动，实时作用于本应用窗口） =====
+    val brightness by app.settingsStore.brightness.collectAsState(initial = 0.8f)
+
+    // ===== 电池（真实电量 + 充电状态） =====
+    val batteryInfo = remember {
         runCatching {
-            val ifilter = android.content.IntentFilter(android.content.Intent.ACTION_BATTERY_CHANGED)
-            val battery = context.registerReceiver(null, ifilter)
+            val battery = context.registerReceiver(
+                null, android.content.IntentFilter(android.content.Intent.ACTION_BATTERY_CHANGED)
+            )
             val level = battery?.getIntExtra(android.os.BatteryManager.EXTRA_LEVEL, -1) ?: -1
             val scale = battery?.getIntExtra(android.os.BatteryManager.EXTRA_SCALE, -1) ?: -1
-            if (level >= 0 && scale > 0) (level * 100) / scale else 100
-        }.getOrDefault(100)
+            val status = battery?.getIntExtra(android.os.BatteryManager.EXTRA_STATUS, -1) ?: -1
+            val charging = status == android.os.BatteryManager.BATTERY_STATUS_CHARGING ||
+                    status == android.os.BatteryManager.BATTERY_STATUS_FULL
+            val pct = if (level >= 0 && scale > 0) level * 100 / scale else 100
+            pct to charging
+        }.getOrDefault(100 to false)
     }
 
     Box(
         modifier = modifier
             .width(320.dp)
-            .height(380.dp)
+            .height(430.dp)
             .shadow(16.dp, RoundedCornerShape(8.dp))
             .clip(RoundedCornerShape(8.dp))
             .background(popupColor)
             .padding(16.dp)
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
-            // ===== 顶部 3x2 toggle 网格 =====
+            // ===== 顶部 3x2 toggle 网格（全部真实逻辑） =====
             val toggles = listOf(
-                QuickToggle("WiFi", if (wifiEnabled) "已连接" else "关闭",
-                    Icons.Default.Wifi, wifiEnabled,
+                QuickToggle(
+                    "WiFi", if (wifiEnabled) "已开启" else "已关闭",
+                    Icons.Default.Wifi, wifiEnabled, onClick = { toggleWifi(!wifiEnabled) }
+                ),
+                QuickToggle(
+                    "蓝牙", if (bluetoothEnabled) "已开启" else "已关闭",
+                    Icons.Default.Bluetooth, bluetoothEnabled, onClick = { toggleBluetooth(!bluetoothEnabled) }
+                ),
+                QuickToggle(
+                    "飞行模式", if (airplaneOn) "开启" else "关闭",
+                    Icons.Default.AirplanemodeActive, airplaneOn,
                     onClick = {
-                        runCatching {
-                            val wm = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
-                            @Suppress("DEPRECATION")
-                            wm.isWifiEnabled = !wm.isWifiEnabled
-                            wifiEnabled = wm.isWifiEnabled
-                            Toast.makeText(context, if (wifiEnabled) "已开启 WiFi" else "已关闭 WiFi", Toast.LENGTH_SHORT).show()
-                        }.onFailure {
-                            Toast.makeText(context, "无法切换 WiFi: ${it.message}", Toast.LENGTH_SHORT).show()
+                        // 系统限制无法直接切换，打开系统飞行模式面板
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                            openSystemPanel(AndroidSettings.Panel.ACTION_AIRPLANE_MODE, "飞行模式面板")
+                        } else {
+                            openSystemPanel(AndroidSettings.ACTION_AIRPLANE_MODE_SETTINGS, "飞行模式设置")
                         }
-                    }),
-                QuickToggle("Internet", "互联网", Icons.Default.Cloud, false, onClick = {}),
-                QuickToggle("蓝牙", if (bluetoothEnabled) "已连接" else "关闭",
-                    Icons.Default.Bluetooth, bluetoothEnabled,
-                    onClick = {
-                        runCatching {
-                            val adapter = android.bluetooth.BluetoothAdapter.getDefaultAdapter()
-                            if (adapter != null) {
-                                if (adapter.isEnabled) adapter.disable() else adapter.enable()
-                                bluetoothEnabled = !bluetoothEnabled
-                            }
-                        }.onFailure {
-                            Toast.makeText(context, "无法切换蓝牙: ${it.message}", Toast.LENGTH_SHORT).show()
-                        }
-                    }),
-                QuickToggle("附近共享", "关闭", Icons.Default.Share, false, onClick = {}),
-                QuickToggle("主题", if (theme.isDark) "深色" else "浅色", Icons.Default.Palette, theme.isDark, onClick = {}),
-                QuickToggle("辅助功能", "关闭", Icons.Default.Accessibility, false, onClick = {})
+                    }
+                ),
+                QuickToggle(
+                    "手电筒", if (torchOn) "已开启" else "已关闭",
+                    Icons.Default.FlashlightOn, torchOn, onClick = { toggleTorch() }
+                ),
+                QuickToggle(
+                    "辅助功能", "系统设置",
+                    Icons.Default.Accessibility, false,
+                    onClick = { openSystemPanel(AndroidSettings.ACTION_ACCESSIBILITY_SETTINGS, "辅助功能设置") }
+                ),
+                QuickToggle(
+                    "设置中心", "所有设置",
+                    Icons.Default.Settings, false, onClick = onOpenSettings
+                )
             )
 
-            // 用 Column + Row 模拟 3x2 网格
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 toggles.chunked(3).forEach { rowToggles ->
                     Row(
@@ -319,27 +476,50 @@ fun QuickSettingsPanel(
                         rowToggles.forEach { toggle ->
                             QuickToggleCell(toggle, theme, Modifier.weight(1f))
                         }
-                        // 凑齐 3 列
                         repeat(3 - rowToggles.size) { Spacer(Modifier.weight(1f)) }
                     }
                 }
             }
 
-            Spacer(Modifier.height(16.dp))
+            Spacer(Modifier.height(14.dp))
 
-            // ===== 音量滑块 =====
+            // ===== 音量滑块（真实控制系统音量）+ 静音按钮 =====
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(6.dp))
                     .background(if (theme.isDark) Color(0x33FFFFFF) else Color(0x11000000))
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
+                // 静音/恢复
                 Icon(
-                    Icons.Default.VolumeUp, null,
-                    tint = if (theme.isDark) Color.White else Color.Black,
-                    modifier = Modifier.size(18.dp)
+                    if (volume == 0) Icons.Default.VolumeOff else Icons.Default.VolumeUp,
+                    "静音/恢复",
+                    tint = fg,
+                    modifier = Modifier
+                        .size(24.dp)
+                        .clip(CircleShape)
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null
+                        ) {
+                            if (volume == 0) {
+                                val restore = if (volumeBeforeMute > 0) volumeBeforeMute
+                                else (maxVolume * 0.4f).toInt().coerceAtLeast(1)
+                                runCatching {
+                                    audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, restore, 0)
+                                }
+                                volume = restore
+                            } else {
+                                volumeBeforeMute = volume
+                                runCatching {
+                                    audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, 0, 0)
+                                }
+                                volume = 0
+                            }
+                        }
+                        .padding(3.dp)
                 )
                 Spacer(Modifier.width(8.dp))
                 Slider(
@@ -348,8 +528,7 @@ fun QuickSettingsPanel(
                         val newVol = v.toInt()
                         if (newVol != volume) {
                             runCatching {
-                                val am = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
-                                am.setStreamVolume(AudioManager.STREAM_MUSIC, newVol, 0)
+                                audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, newVol, 0)
                             }
                             volume = newVol
                         }
@@ -357,24 +536,74 @@ fun QuickSettingsPanel(
                     valueRange = 0f..maxVolume.toFloat(),
                     modifier = Modifier.weight(1f)
                 )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    text = if (volume == 0) "静音" else "$volume",
+                    color = fg.copy(alpha = 0.7f),
+                    fontSize = 11.sp,
+                    modifier = Modifier.width(30.dp),
+                    textAlign = TextAlign.Center
+                )
+            }
+
+            Spacer(Modifier.height(8.dp))
+
+            // ===== 亮度滑块（实时作用于本应用窗口） =====
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(if (theme.isDark) Color(0x33FFFFFF) else Color(0x11000000))
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(Icons.Default.BrightnessMedium, "亮度", tint = fg, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(8.dp))
+                Slider(
+                    value = brightness,
+                    onValueChange = {
+                        scope.launch { app.settingsStore.setBrightness(it) }
+                        applyPanelBrightness(context, it)
+                    },
+                    valueRange = 0.2f..1.0f,
+                    modifier = Modifier.weight(1f)
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    text = "${(brightness * 100).roundToInt()}%",
+                    color = fg.copy(alpha = 0.7f),
+                    fontSize = 11.sp,
+                    modifier = Modifier.width(30.dp),
+                    textAlign = TextAlign.Center
+                )
             }
 
             Spacer(Modifier.weight(1f))
 
-            // ===== 底部电池 + 设置 =====
+            // ===== 底部电池（真实电量/充电状态，点击打开省电设置）+ 设置齿轮 =====
             Row(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(6.dp))
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null
+                    ) {
+                        openSystemPanel(AndroidSettings.ACTION_BATTERY_SAVER_SETTINGS, "省电设置")
+                    }
+                    .padding(vertical = 4.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Icon(
-                    Icons.Default.BatteryFull, null,
-                    tint = if (theme.isDark) Color.White else Color.Black,
+                    if (batteryInfo.second) Icons.Default.BatteryChargingFull else Icons.Default.BatteryFull,
+                    "电池",
+                    tint = fg,
                     modifier = Modifier.size(18.dp)
                 )
                 Spacer(Modifier.width(6.dp))
                 Text(
-                    text = "$batteryPct%",
-                    color = if (theme.isDark) Color.White else Color.Black,
+                    text = if (batteryInfo.second) "${batteryInfo.first}% 充电中" else "${batteryInfo.first}%",
+                    color = fg,
                     fontSize = 12.sp
                 )
                 Spacer(Modifier.weight(1f))
@@ -387,12 +616,22 @@ fun QuickSettingsPanel(
                 ) {
                     Icon(
                         Icons.Default.Settings, null,
-                        tint = if (theme.isDark) Color.White else Color.Black,
+                        tint = fg,
                         modifier = Modifier.size(18.dp)
                     )
                 }
             }
         }
+    }
+}
+
+/** 应用真实屏幕亮度（对本应用窗口生效，v2.10 快速设置面板） */
+private fun applyPanelBrightness(context: Context, value: Float) {
+    val activity = ImmersiveMode.findActivity(context) ?: return
+    runCatching {
+        val lp = activity.window.attributes
+        lp.screenBrightness = value.coerceIn(0.05f, 1f)
+        activity.window.attributes = lp
     }
 }
 
@@ -446,5 +685,321 @@ private fun QuickToggleCell(
             color = contentColor.copy(alpha = 0.7f),
             fontSize = 9.sp
         )
+    }
+}
+
+// ============================================================
+// 托盘时钟样式设置（v2.10）— 长按任务栏时间弹出
+// ============================================================
+
+/**
+ * 时钟样式设置弹窗：
+ * - 顶部实时预览（与任务栏时钟同款渲染）
+ * - 显示模式：数字 / 表盘 / 液晶
+ * - 字号：8..18sp 滑杆（含"自动"）
+ * - 排版：两行 / 单行
+ * - 显示日期 / 显示秒数 / 24 小时制开关
+ * - 恢复默认 / 完成
+ */
+@Composable
+fun TrayClockSettingsFlyout(
+    theme: WinTheme,
+    modifier: Modifier = Modifier,
+    onDismiss: () -> Unit
+) {
+    val app = AnWindApp.get()
+    val scope = rememberCoroutineScope()
+    val popupColor = if (theme.isDark) Color(0xE6323232) else Color(0xE6F9F9F9)
+    val fg = if (theme.isDark) Color.White else Color.Black
+    val sub = theme.secondaryTextColor
+
+    val mode by app.settingsStore.trayClockMode.collectAsState(initial = "digital")
+    val fontSize by app.settingsStore.trayClockFontSize.collectAsState(initial = 0f)
+    val showDate by app.settingsStore.trayShowDate.collectAsState(initial = true)
+    val trayLayout by app.settingsStore.trayLayout.collectAsState(initial = "stacked")
+    val showSeconds by app.settingsStore.showSeconds.collectAsState(initial = false)
+    val time24 by app.settingsStore.timeFormat24h.collectAsState(initial = true)
+
+    // 实时预览时钟
+    var tick by remember { mutableStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            tick = System.currentTimeMillis()
+            delay(1000)
+        }
+    }
+
+    Box(
+        modifier = modifier
+            .width(320.dp)
+            .height(434.dp)
+            .shadow(16.dp, RoundedCornerShape(8.dp))
+            .clip(RoundedCornerShape(8.dp))
+            .background(popupColor)
+            .padding(16.dp)
+    ) {
+        Column(modifier = Modifier.fillMaxSize()) {
+            // 标题栏
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.Schedule, null, tint = fg, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    "时钟样式",
+                    color = fg,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.weight(1f)
+                )
+                Icon(
+                    Icons.Default.Close, "关闭",
+                    tint = sub,
+                    modifier = Modifier
+                        .size(24.dp)
+                        .clip(CircleShape)
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null,
+                            onClick = onDismiss
+                        )
+                        .padding(4.dp)
+                )
+            }
+
+            Spacer(Modifier.height(10.dp))
+
+            // ===== 实时预览 =====
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(56.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(
+                        if (theme.isDark) Color(0xFF1E1E1E) else Color(0xFFE8E8E8)
+                    ),
+                contentAlignment = Alignment.Center
+            ) {
+                ClockPreview(
+                    theme = theme,
+                    tick = tick,
+                    mode = mode,
+                    fontSize = fontSize,
+                    showDate = showDate,
+                    layout = trayLayout,
+                    showSeconds = showSeconds,
+                    time24 = time24
+                )
+            }
+
+            Spacer(Modifier.height(12.dp))
+
+            // ===== 显示模式 =====
+            Text("显示模式", color = sub, fontSize = 11.sp)
+            Spacer(Modifier.height(6.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                StyleChip("数字", mode == "digital", theme) {
+                    scope.launch { app.settingsStore.setTrayClockMode("digital") }
+                }
+                StyleChip("表盘", mode == "clock", theme) {
+                    scope.launch { app.settingsStore.setTrayClockMode("clock") }
+                }
+                StyleChip("液晶", mode == "lcd", theme) {
+                    scope.launch { app.settingsStore.setTrayClockMode("lcd") }
+                }
+            }
+
+            Spacer(Modifier.height(10.dp))
+
+            // ===== 字号 =====
+            Text(
+                "字号：${if (fontSize < 8f) "自动（跟随任务栏高度）" else "${fontSize.roundToInt()}sp"}",
+                color = sub,
+                fontSize = 11.sp
+            )
+            Slider(
+                value = if (fontSize < 8f) 8f else fontSize,
+                onValueChange = {
+                    scope.launch { app.settingsStore.setTrayClockFontSize(it) }
+                },
+                valueRange = 8f..18f
+            )
+
+            Spacer(Modifier.height(6.dp))
+
+            // ===== 排版 =====
+            Text("排版", color = sub, fontSize = 11.sp)
+            Spacer(Modifier.height(6.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                StyleChip("两行（时间/日期）", trayLayout == "stacked", theme) {
+                    scope.launch { app.settingsStore.setTrayLayout("stacked") }
+                }
+                StyleChip("单行", trayLayout == "inline", theme) {
+                    scope.launch { app.settingsStore.setTrayLayout("inline") }
+                }
+            }
+
+            Spacer(Modifier.height(6.dp))
+
+            // ===== 开关组 =====
+            ToggleRow("显示日期", showDate, theme) {
+                scope.launch { app.settingsStore.setTrayShowDate(it) }
+            }
+            ToggleRow("显示秒数", showSeconds, theme) {
+                scope.launch { app.settingsStore.setShowSeconds(it) }
+            }
+            ToggleRow("24 小时制", time24, theme) {
+                scope.launch { app.settingsStore.setTimeFormat24h(it) }
+            }
+
+            Spacer(Modifier.weight(1f))
+
+            // ===== 底部按钮 =====
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClick = {
+                    scope.launch {
+                        app.settingsStore.setTrayClockMode("digital")
+                        app.settingsStore.setTrayClockFontSize(0f)
+                        app.settingsStore.setTrayShowDate(true)
+                        app.settingsStore.setTrayLayout("stacked")
+                    }
+                }) {
+                    Text("恢复默认", fontSize = 12.sp)
+                }
+                Spacer(Modifier.weight(1f))
+                Button(onClick = onDismiss) {
+                    Text("完成", fontSize = 12.sp)
+                }
+            }
+        }
+    }
+}
+
+/** 时钟样式弹窗的实时预览（与任务栏 TrayClock 同款渲染逻辑） */
+@Composable
+private fun ClockPreview(
+    theme: WinTheme,
+    tick: Long,
+    mode: String,
+    fontSize: Float,
+    showDate: Boolean,
+    layout: String,
+    showSeconds: Boolean,
+    time24: Boolean
+) {
+    val timePattern = when {
+        showSeconds && time24 -> "HH:mm:ss"
+        showSeconds -> "hh:mm:ss a"
+        time24 -> "HH:mm"
+        else -> "hh:mm a"
+    }
+    val timeStr = SimpleDateFormat(timePattern, Locale.getDefault()).format(Date(tick))
+    val dateStr = SimpleDateFormat("MM-dd", Locale.getDefault()).format(Date(tick))
+    val timeSize = if (fontSize >= 8f) fontSize.sp else 12.sp
+    val dateSize = (timeSize.value - 1f).coerceAtLeast(8f).sp
+
+    when (mode) {
+        // 表盘预览
+        "clock" -> Row(verticalAlignment = Alignment.CenterVertically) {
+            AnalogClockCanvas(
+                size = 34.dp,
+                tick = tick,
+                showSeconds = showSeconds,
+                color = theme.taskbarClockColor,
+                accent = theme.accentColor
+            )
+            if (showDate) {
+                Spacer(Modifier.width(6.dp))
+                Text(dateStr, color = theme.taskbarClockColor, fontSize = 12.sp)
+            }
+        }
+        // 液晶预览
+        "lcd" -> {
+            val lcdColor = if (theme.isDark) Color(0xFF4AF2A1) else Color(0xFF0B7A4B)
+            val style = TextStyle(
+                color = lcdColor,
+                fontSize = timeSize,
+                fontFamily = FontFamily.Monospace,
+                shadow = Shadow(color = lcdColor.copy(alpha = 0.75f), blurRadius = 7f)
+            )
+            val dateStyle = style.copy(
+                fontSize = dateSize,
+                shadow = Shadow(color = lcdColor.copy(alpha = 0.5f), blurRadius = 5f)
+            )
+            if (showDate && layout == "inline") {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(timeStr, style = style)
+                    Spacer(Modifier.width(6.dp))
+                    Text(dateStr, style = dateStyle)
+                }
+            } else if (showDate) {
+                Column(horizontalAlignment = Alignment.Start) {
+                    Text(timeStr, style = style)
+                    Text(dateStr, style = dateStyle)
+                }
+            } else {
+                Text(timeStr, style = style)
+            }
+        }
+        // 数字预览（默认）
+        else -> {
+            if (showDate && layout == "inline") {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(timeStr, color = theme.taskbarClockColor, fontSize = timeSize)
+                    Spacer(Modifier.width(6.dp))
+                    Text(dateStr, color = theme.taskbarClockColor.copy(alpha = 0.75f), fontSize = dateSize)
+                }
+            } else if (showDate) {
+                Column(horizontalAlignment = Alignment.Start) {
+                    Text(timeStr, color = theme.taskbarClockColor, fontSize = timeSize)
+                    Text(dateStr, color = theme.taskbarClockColor.copy(alpha = 0.75f), fontSize = dateSize)
+                }
+            } else {
+                Text(timeStr, color = theme.taskbarClockColor, fontSize = timeSize)
+            }
+        }
+    }
+}
+
+/** 选项芯片（时钟样式弹窗用） */
+@Composable
+private fun StyleChip(label: String, selected: Boolean, theme: WinTheme, onClick: () -> Unit) {
+    val bg = if (selected) theme.accentColor
+             else if (theme.isDark) Color(0x22FFFFFF) else Color(0x11000000)
+    val fg = if (selected) Color.White
+             else if (theme.isDark) Color.White else Color.Black
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(6.dp))
+            .background(bg)
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = onClick
+            )
+            .padding(horizontal = 14.dp, vertical = 6.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            label,
+            color = fg,
+            fontSize = 12.sp,
+            fontWeight = if (selected) FontWeight.Medium else FontWeight.Normal
+        )
+    }
+}
+
+/** 开关行（时钟样式弹窗用） */
+@Composable
+private fun ToggleRow(label: String, checked: Boolean, theme: WinTheme, onChange: (Boolean) -> Unit) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            label,
+            color = if (theme.isDark) Color.White else Color.Black,
+            fontSize = 12.sp,
+            modifier = Modifier.weight(1f)
+        )
+        Switch(checked = checked, onCheckedChange = onChange)
     }
 }
