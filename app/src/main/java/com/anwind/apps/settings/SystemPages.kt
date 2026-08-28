@@ -301,13 +301,38 @@ internal fun WirelessDisplayPage() {
 
     fun readRoutes(): List<RouteRow> = runCatching {
         val router = context.getSystemService(Context.MEDIA_ROUTER_SERVICE) as android.media.MediaRouter
-        val selected = router.selectedRoute?.name
-        router.routes.map { r ->
+        val routerClass = android.media.MediaRouter::class.java
+
+        // MediaRouter.getRoutes()/getSelectedRoute() 无参版本与 RouteInfo.getName() 无参
+        // 均为隐藏 API（不在公开 android.jar 中，v2.13 CI 编译失败点），统一改用反射读取；
+        // getRoutes() 受限时回退到公开（已废弃）的 getRouteCount()+getRouteAt() 枚举，
+        // 被选中路由不再依赖 getSelectedRoute()，改用每个路由自身的 isSelected()
+        fun call(obj: Any, name: String): Any? =
+            runCatching { obj.javaClass.getMethod(name).invoke(obj) }.getOrNull()
+
+        fun nameOf(route: Any): String {
+            val n = call(route, "getName")
+                ?: runCatching {
+                    route.javaClass.getMethod("getName", Context::class.java).invoke(route, context)
+                }.getOrNull()
+            return (n as? CharSequence)?.toString() ?: "未知路由"
+        }
+
+        @Suppress("UNCHECKED_CAST")
+        val rawRoutes: List<Any> = runCatching {
+            routerClass.getMethod("getRoutes").invoke(router) as? List<Any>
+        }.getOrNull() ?: runCatching {
+            val at = routerClass.getMethod("getRouteAt", Int::class.javaPrimitiveType)
+            val count = routerClass.getMethod("getRouteCount").invoke(router) as? Int ?: 0
+            (0 until count).mapNotNull { i -> runCatching { at.invoke(router, i) }.getOrNull() }
+        }.getOrNull() ?: emptyList()
+
+        rawRoutes.map { r ->
             RouteRow(
-                name = r.name?.toString() ?: "未知路由",
-                description = r.description?.toString() ?: "",
-                enabled = r.isEnabled,
-                selected = r.name == selected
+                name = nameOf(r),
+                description = (call(r, "getDescription") as? CharSequence)?.toString() ?: "",
+                enabled = call(r, "isEnabled") as? Boolean ?: false,
+                selected = call(r, "isSelected") as? Boolean ?: false
             )
         }
     }.getOrDefault(emptyList())
