@@ -47,7 +47,14 @@ class BrowserTab(
      * 重新导航（重试/地址栏回车）时在 onPageStarted 重置，给再次机会。
      */
     var httpsFallbackUrl: String? = null
-)
+) {
+    /**
+     * v2.14.3：WebView 重建纪元（渲染进程崩溃 onRenderProcessGone 时 +1）。
+     * 作为 key() 的一部分：变化 → AndroidView 重组 → factory 重建新
+     * WebView 并自动重载 tab.url。快照状态存放，保证 key 能感知变化。
+     */
+    var renderEpoch by mutableStateOf(0)
+}
 
 /**
  * 当前正在显示的标签的 UI 回调。

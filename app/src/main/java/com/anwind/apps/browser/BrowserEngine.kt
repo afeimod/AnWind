@@ -14,6 +14,7 @@ import android.view.ViewGroup
 import android.webkit.CookieManager
 import android.webkit.JsPromptResult
 import android.webkit.JsResult
+import android.webkit.RenderProcessGoneDetail
 import android.webkit.SslErrorHandler
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
@@ -58,17 +59,38 @@ import javax.net.ssl.X509TrustManager
  * v2.14.2 WebView 优化（完整移植 afeimod/gamehtml 容器方案，移除 v2.14 自研
  * 灰屏像素检测 + 软件渲染切换 hack —— 灰屏是 WebView 自身渲染管线的时序问题，
  * gamehtml 的解法是强制重绘管线而非切换渲染器）：
- * 1. 显式硬件加速 LAYER_TYPE_HARDWARE（gamehtml GameWebView.configureSettings）。
- * 2. 强制重绘：onPageCommitVisible/onPageFinished invalidate + requestLayout +
+ * 1. 强制重绘：onPageCommitVisible/onPageFinished invalidate + requestLayout +
  *    延迟 300ms 二次重绘 + document.body.offsetHeight 强制布局 —— 解决
  *    "页面加载完成（有声音/标题）但 Surface 不上屏"的灰屏问题。
- * 3. View Transitions API 补丁：WebView 对 startViewTransition 支持不完善，
+ * 2. View Transitions API 补丁：WebView 对 startViewTransition 支持不完善，
  *    SPA 站点会出现回调不执行/页面卡住，polyfill 确保回调同步执行。
- * 4. Flash 游戏兼容（4399 等）：伪造 navigator.plugins 让页面创建 Flash 元素 +
+ * 3. Flash 游戏兼容（4399 等）：伪造 navigator.plugins 让页面创建 Flash 元素 +
  *    Ruffle polyfill（jsdelivr CDN）替换 <object>/<embed> 为 Canvas 播放器 +
  *    SWF 请求原生拦截（CORS 头 + Cookie 转发 + 防盗链 Referer）。
- * 5. PC 页面 viewport 自适配（无 viewport meta 的页面按 1200px 基准缩放）。
- * 6. 禁用 WebView 算法暗色（MIUI 强制深色不介入网页渲染）。
+ * 4. PC 页面 viewport 自适配（无 viewport meta 的页面按 1200px 基准缩放）。
+ * 5. 禁用 WebView 算法暗色（MIUI 强制深色不介入网页渲染）。
+ *
+ * v2.14.3 灰屏根因修复（弹窗时序 + 渲染层 + 渲染进程兑底，录屏/日志定位）：
+ * 用户录屏：4399 首页正常，点击游戏（window.open 弹窗）瞬间整页浅灰，
+ * 有声音无画面、无加载圈，持续 8s+ 无任何重绘。日志：弹窗 WebView
+ * 以 0,0-0,0 创建（脱离视图树加载），被销毁时 1080x868 且 invalidated+dirty
+ * ——帧在产、永不上屏，合成器/图层层面卡死。
+ * 1. attach 后强制重绘梯子（本次核心）：onCreateWindow 的弹窗 WebView 经
+ *    transport 交接后 Chromium 【立即在脱离视图树状态开始加载】，
+ *    onPageCommitVisible/onPageFinished 全部在 attach 前触发完（invalidate
+ *    对未 attach 视图无效），attach 后无人再触发重绘 → 永久灰屏。gamehtml
+ *    是 Activity 根视图（setContentView 先 attach 后 loadUrl）且
+ *    setSupportMultipleWindows(false) 无弹窗，根本不存在该时序；这里用
+ *    addOnAttachStateChangeListener 在 attach 时刻补齐同样的重绘管线。
+ *    切换标签/窗口最小化恢复的再 attach 同样被覆盖。
+ * 2. 撤销 v2.14.2 照搬的 setLayerType(LAYER_TYPE_HARDWARE)：官方文档明确
+ *    WebView 不支持强制硬件层（离屏缓冲由内核自管）；gamehtml 用在 Activity
+ *    根视图上能活，但 AnWind 的 WebView 嵌在 Compose AndroidView 多窗口环境，
+ *    v2.8 已用录屏证实强制硬件层导致"页面加载完成但永不绘制"。恢复默认
+ *    LAYER_TYPE_NONE + 窗口级硬件加速（Manifest hardwareAccelerated=true）。
+ * 3. onRenderProcessGone 兑底（WebView 自身问题）：不接管会被系统杀进程。
+ *    渲染进程崩溃/OOM 后丢弃死亡 WebView，标签重置未加载态并 renderEpoch+1
+ *    触发 key() 重组重建新 WebView 自动重载页面。
  */
 object BrowserEngine {
 
@@ -151,13 +173,44 @@ object BrowserEngine {
             userAgentString = desiredUa(manager.uaMode)
         }
 
-        // v2.14.2（gamehtml GameWebView.configureSettings）：显式硬件加速层。
-        // gamehtml 容器对所有 4399 游戏页面稳定使用硬件层；配合下面的强制重绘
-        // 管线解决首帧不上屏问题，不再切换软件渲染。
-        try {
-            wv.setLayerType(View.LAYER_TYPE_HARDWARE, null)
-        } catch (_: Exception) {
-        }
+        // v2.14.3：撤销 v2.14.2 照搬的 setLayerType(LAYER_TYPE_HARDWARE)。
+        // Android 官方文档明确 WebView 不支持 LAYER_TYPE_HARDWARE（内部离屏
+        // 缓冲由 Chromium 自管）；gamehtml 用在 Activity 根视图上能工作，但
+        // AnWind 的 WebView 嵌在 Compose AndroidView 多窗口环境里，v2.8 已用
+        // 录屏证实强制硬件层会导致“页面加载完成但永不绘制”。本次灰屏日志中
+        // 被销毁的弹窗 WebView 连续 4s 处于 invalidated+dirty 状态——帧在产、
+        // 永不上屏，正是离屏层合成失效的表征。默认 LAYER_TYPE_NONE + 窗口级
+        // 硬件加速（Manifest hardwareAccelerated=true）才是 WebView 的正确配置。
+
+        // v2.14.3（核心修复）：attach 后强制重绘梯子。
+        // 弹窗 WebView 经 onCreateWindow transport 交接后，Chromium 立即在
+        // 【脱离视图树】状态开始加载（日志佐证：创建时 0,0-0,0）——
+        // onPageCommitVisible/onPageFinished 的强制重绘全部在 attach 前触发完，
+        // 对未 attach 的视图 invalidate 无效；等下一帧 Compose 把它上屏后，
+        // 再没有任何代码路径触发重绘 → 首帧永不上屏（灰屏、有声音无画面）。
+        // gamehtml 是 Activity 根容器（setContentView 先 attach、后 loadUrl），
+        // 页面事件都落在 attached 状态，所以它的重绘管线在那边有效；这里在
+        // attach 时刻补齐同一套管线：立即 + 200ms + 600ms 三级梯子，兼容
+        // 注入脚本（Ruffle 等）执行晚于首帧的情况。切换标签/窗口最小化恢复的
+        // 再 attach 也一并覆盖。
+        wv.addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
+            override fun onViewAttachedToWindow(v: View) {
+                v.post {
+                    if (v.tag != TAG_DESTROYED) {
+                        v.requestLayout()
+                        v.invalidate()
+                    }
+                }
+                v.postDelayed({
+                    if (v.tag != TAG_DESTROYED) v.invalidate()
+                }, 200)
+                v.postDelayed({
+                    if (v.tag != TAG_DESTROYED) v.invalidate()
+                }, 600)
+            }
+
+            override fun onViewDetachedFromWindow(v: View) {}
+        })
 
         // v2.14.2：禁用算法暗色 —— MIUI 强制深色会介入 WebView 渲染管线，
         // 配合 GPU 合成问题放大灰屏概率（灰屏日志出现 ForceDarkHelperStubImpl 初始化）
@@ -379,6 +432,41 @@ object BrowserEngine {
                     "try{void document.body&&document.body.offsetHeight;}catch(e){}", null
                 )
             }, 300)
+        }
+
+        /**
+         * v2.14.3：渲染进程崩溃/OOM 兑底（WebView 自身的问题）。
+         * 不 override 该回调时，Chromium 会直接把【整个应用进程】杀掉。
+         * 处理：丢弃死亡 WebView，标签重置为未加载态，renderEpoch+1 触发
+         * key() 重组 → factory 重建新 WebView → 自动重载崩溃前页面。
+         * 4399 等 Ruffle/WASM 重型页面内存压力大，该路径真实可达。
+         */
+        override fun onRenderProcessGone(
+            view: WebView?,
+            detail: RenderProcessGoneDetail?
+        ): Boolean {
+            val dead = view ?: return true
+            if (dead.tag == TAG_DESTROYED) return true
+            try {
+                // 先更新状态再销毁：epoch 变化在下一帧驱动 factory 重建
+                tab.webView = null
+                tab.hasLoadedOnce = false
+                tab.lastRequestedUrl = null
+                tab.renderEpoch += 1
+                // 若该标签正处视频全屏，同步收起死掉的全屏层
+                if (manager.activeTabId == tab.id) {
+                    manager.hideCustomView()
+                }
+                BrowserEngine.destroyWebView(dead)
+                if (manager.activeTabId == tab.id) {
+                    runCatching {
+                        Toast.makeText(ctx, "页面渲染进程异常，已自动重新加载", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            } catch (_: Exception) {
+            }
+            // true = 应用已接管，系统不再杀进程
+            return true
         }
 
         // ====================================================================

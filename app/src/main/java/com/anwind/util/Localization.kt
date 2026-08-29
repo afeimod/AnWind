@@ -128,12 +128,8 @@ object L10n {
         "键盘、字典、自动更正（打开系统输入法设置）" to "Keyboard, dictionary, autocorrect (system settings)",
 
         // ===== 应用 =====
-        "浏览器渲染模式" to "Browser rendering mode",
-        "灰屏（有声音无画面）时切换软件渲染，立即生效并自动重载" to "If pages stay gray (sound but no video), switch to software rendering; applies instantly with auto reload",
+        // （v2.14.3 清理：旧渲染模式设置相关词条已随 v2.14 灰屏 hack 一并移除）
         "已安装应用" to "Installed apps",
-        "硬件加速" to "Hardware accelerated",
-        "软件渲染（修复灰屏）" to "Software (fixes gray screen)",
-        "已切换渲染模式，正在重新加载标签页" to "Rendering mode changed, reloading tabs",
         "浏览器 UA 模式" to "Browser UA mode",
         "桌面模式" to "Desktop mode",
         "手机模式" to "Mobile mode",

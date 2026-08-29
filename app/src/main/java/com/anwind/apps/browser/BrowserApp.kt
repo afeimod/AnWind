@@ -263,7 +263,9 @@ private fun BrowserContent(scope: WindowContentScope) {
                     } else {
                         // key(activeTab.id)：每个标签独立的组合位置 → 各自的 AndroidView。
                         // WebView 本身常驻缓存（切换标签不销毁），切回时原样恢复。
-                        key(activeTab.id) {
+                        // v2.14.3：+ renderEpoch —— 渲染进程崩溃重建 WebView 时强制
+                        // 重组，factory 走"无缓存"分支创建新实例并自动重载。
+                        key(activeTab.id, activeTab.renderEpoch) {
                             WebViewContainer(
                                 tab = activeTab,
                                 tabManager = tabManager,
