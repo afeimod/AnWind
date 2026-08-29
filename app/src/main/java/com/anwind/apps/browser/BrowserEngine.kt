@@ -418,7 +418,8 @@ object BrowserEngine {
                 // 2) PC 页面 viewport 自适配（页面自带 viewport 则不动）。
                 //    v2.14.6：恢复 v2.14.4 原版默认排版（用户要求“默认缩放
                 //    还用之前的”）；缩小到 30% 的能力改由 ZoomPinchLayout
-                //    在 View 层实现，不再动 viewport 画布宽
+                //    注入 body.zoom 实现（v2.14.7，GameBox 同源方案），
+                //    不动 viewport 画布宽、不动默认缩放
                 view?.evaluateJavascript(VIEWPORT_FIT_SCRIPT, null)
                 // 3) Flash 兼容：伪造插件让 4399 等页面创建 <object> Flash 元素（零网络开销）
                 view?.evaluateJavascript(FLASH_FAKE_SUPPORT_SCRIPT, null)
@@ -431,12 +432,14 @@ object BrowserEngine {
                 }
             }
 
-            // v2.14.6：导航重置 View 级双指缩放（30%~100% 缩小域）——
-            // 每次新页面默认回到 100% 排版，避免缩小态跨页残留被误认为
-            // 排版问题（v2.14.5 教训：默认视觉必须与旧版一致）
+            // v2.14.7：导航重置缩小域缩放（30%~100%）—— 每次新页面默认回到
+            // 100% 排版（v2.14.5 教训：默认视觉必须与旧版一致）。新文档天然
+            // 无 body.zoom；同文档锚点导航（onPageStarted 亦触发）由
+            // RESET_SCRIPT 清除内联样式。View 变换方案（v2.14.6）已被实测
+            // 否决：内容不随变换缩放、仅被缩小后的边界裁切
             if (tab.viewZoom != 1f) {
                 tab.viewZoom = 1f
-                view?.let { ZoomPinchLayout.applyZoom(it, 1f) }
+                view?.evaluateJavascript(ZoomPinchLayout.RESET_SCRIPT, null)
             }
         }
 
@@ -444,8 +447,9 @@ object BrowserEngine {
          * v2.14.2（gamehtml）：首次可见帧强制重绘。
          * 部分设备上首帧提交后合成器未拉起新帧，invalidate 确保当前帧上屏。
          * v2.14.5 曾在此注入 viewport 缩放脚本（宽画布方案），v2.14.6 撤销
-         * —— 该方案破坏无 viewport PC 页的默认排版，缩小能力改由
-         * ZoomPinchLayout 在 View 层实现，与页面渲染无关。
+         * —— 该方案破坏无 viewport PC 页的默认排版；v2.14.6 的 View 变换
+         * 缩放亦被 v2.14.7 实测否决（内容不跟随、仅被边界裁切），缩小能力
+         * 现由 ZoomPinchLayout 注入 body.zoom 实现，与页面渲染管线无关。
          */
         override fun onPageCommitVisible(view: WebView?, url: String?) {
             super.onPageCommitVisible(view, url)
@@ -459,8 +463,8 @@ object BrowserEngine {
                 tab.canGoForward = it.canGoForward()
             }
 
-            // v2.14.5 曾在此注入 viewport 缩放脚本（SPA 兑底），v2.14.6 撤销
-            //（理由同 onPageCommitVisible 注释）
+            // v2.14.5 曾在此注入 viewport 缩放脚本（SPA 兑底），v2.14.6 撤销，
+            // v2.14.7 缩小域改注入 body.zoom（理由同 onPageCommitVisible 注释）
 
             // ===== v2.14.2（gamehtml）强制重绘管线 —— 灰屏的真正解法 =====
             // 部分网页（View Transitions SPA / 重 Canvas 页面）加载完成后渲染
@@ -498,7 +502,8 @@ object BrowserEngine {
                 tab.webView = null
                 tab.hasLoadedOnce = false
                 tab.lastRequestedUrl = null
-                // v2.14.6：新 WebView 从默认 100% 开始，不继承旧缩放态
+                // v2.14.7：新 WebView 从默认 100% 开始，不继承旧缩放态
+                //（新文档天然无 body.zoom）
                 tab.viewZoom = 1f
                 tab.renderEpoch += 1
                 // 若该标签正处视频全屏，同步收起死掉的全屏层
@@ -883,9 +888,12 @@ object BrowserEngine {
             /** 本地虚拟域基址（publicPath + script src 同源，核心/wasm 相对解析） */
             private const val RUFFLE_LOCAL_BASE = "https://$RUFFLE_VIRTUAL_HOST/ruffle/"
 
-            /** 网络后备源（本地 404/拦截失效时逐级尝试；npmmirror 国内可达性最好） */
-            private const val RUFFLE_CDN_MIRROR = "https://registry.npmmirror.com/@ruffle-rs/ruffle/0.3.0/files/"
-            private const val RUFFLE_CDN_JSDELIVR = "https://cdn.jsdelivr.net/npm/@ruffle-rs/ruffle@0.3.0/"
+            /** 网络后备源（本地 404/拦截失效时逐级尝试；npmmirror 国内可达性最好）。
+             *  v2.14.7：0.3.0 → 0.5.0 —— 0.3.0（2022）Avm2/AS3 支持不成熟，
+             *  4399 新游戏（AS3）引擎能加载但无法执行 → 预加载进度条永远
+             *  卡住；后备源同步升级避免降级到坏版本 */
+            private const val RUFFLE_CDN_MIRROR = "https://registry.npmmirror.com/@ruffle-rs/ruffle/0.5.0/files/"
+            private const val RUFFLE_CDN_JSDELIVR = "https://cdn.jsdelivr.net/npm/@ruffle-rs/ruffle@0.5.0/"
 
             /**
              * WebGL 像素管线守卫（v2.14.4，HTML5 游戏灰屏兑底）：
@@ -979,9 +987,10 @@ object BrowserEngine {
              * 2) 实测症状与用户反馈逐条对应：4399 PC 首页按超宽画布排版整页
              *    压扁（排版有问题）、初始即 30% 全览（默认缩放被改）、初始
              *    已是最小值（不能继续缩小）、全览态无滚动余量（往左拉不过去）；
-             * 3) 结论：30%~100% 缩小域改由 ZoomPinchLayout 在 View 层实现
-             *    （对 WebView 施加 scale 变换，排版/媒体查询/innerWidth 全部
-             *    不动），本脚本只负责默认排版 —— 与 v2.14.4 逐字一致；
+             * 3) 结论：30%~100% 缩小域改由 ZoomPinchLayout 注入 body.zoom
+             *    实现（v2.14.7，GameBox applyPageZoom 同源方案；v2.14.6 的
+             *    View scale 变换已被实测否决——内容不随变换缩放、仅被缩小
+             *    后的边界裁切），本脚本只负责默认排版 —— 与 v2.14.4 逐字一致；
              *    ≥100% 放大继续由原生捏合处理（排版重排/文字回流）。
              *
              * 本脚本语义（v2.14.2 起不变）：仅对【无 viewport meta】的 PC 页
@@ -1064,16 +1073,25 @@ object BrowserEngine {
 
             /**
              * Ruffle 引擎链式加载器（v2.14.4 重写：本地 assets 优先，
-             * npmmirror / jsdelivr 网络后备；v2.14.5 移植 GameBox 字体修复）：
-             * 注入为 window.__anwindLoadRuffle()，幂等（加载中/已加载直接返回），
-             * 每次尝试同步更新 publicPath（core/wasm 相对它解析）。
-             * 旧版固定 jsdelivr —— 国内网络 TLS 掐断时 Flash 游戏区永远空白。
+             * npmmirror / jsdelivr 网络后备；v2.14.5 移植 GameBox 字体修复；
+             * v2.14.7 引擎资产整体升级）：注入为 window.__anwindLoadRuffle()，
+             * 幂等（加载中/已加载直接返回），每次尝试同步更新 publicPath
+             *（core/wasm 相对它解析）。旧版固定 jsdelivr —— 国内网络 TLS
+             * 掐断时 Flash 游戏区永远空白。
+             *
+             * v2.14.7（关键修复：本地加载卡进度条）：旧本地资产 = 官方
+             * 0.3.0 正式版（MD5 逐一比对确认），Avm2/AS3 支持不成熟 ——
+             * 4399 新游戏（AS3）引擎加载成功但无法执行，预加载进度条永远
+             * 卡住（用户实测“一直进度条”）。本次整体替换为 GameBox 同源
+             * nightly 构建（用户在 GameBox 上实测可用）；simhei.ttf 两边
+             * MD5 一致保持不变；CDN 后备同步升级 0.5.0。
              *
              * 字体修复（GameBox RuffleInjector.fontConfigScript 同款）：
              * Flash 游戏多用设备字体（中文 SWF 无内嵌字形），Ruffle 默认
              * 只带拉丁字形 → 中文显示方块。fontSources 指向本地 simhei.ttf
-             * （虚拟域供给，与引擎源无关恒本地），defaultFonts 把六类
-             * 设备字体全映射 SimHei，中文正常渲染。
+             * （虚拟域供给，与引擎源无关恒本地），defaultFonts 把七类
+             * 设备字体全映射 SimHei（v2.14.7 补 chineseSimplified，与
+             * GameBox swf 版对齐），中文正常渲染。
              */
             private const val RUFFLE_CHAIN_SCRIPT = """
                 (function(){
@@ -1099,7 +1117,8 @@ object BrowserEngine {
                       "typewriter": ["SimHei"],
                       "japaneseGothic": ["SimHei"],
                       "japaneseGothicMono": ["SimHei"],
-                      "japaneseMincho": ["SimHei"]
+                      "japaneseMincho": ["SimHei"],
+                      "chineseSimplified": ["SimHei"]
                     }
                   };
                   var SOURCES = [

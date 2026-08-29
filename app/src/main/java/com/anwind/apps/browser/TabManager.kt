@@ -57,12 +57,15 @@ class BrowserTab(
      */
     var httpsFallbackUrl: String? = null,
     /**
-     * v2.14.6：View 级双指缩放（0.3~1.0 缩小域）当前比例，1f=默认 100%。
+     * v2.14.7：双指缩小域（0.3~1.0）当前比例，1f=默认 100%。
      * Chromium 页面缩放地板 = max(meta minimum-scale, 窗口宽/画布宽)，
      * viewport 元数据物理上无法让页面缩到 100% 以下而不改排版（v2.14.5
-     * 宽画布方案的教训）；缩小域改由 ZoomPinchLayout 对 WebView 做
-     * View 变换实现，排版/媒体查询/innerWidth 全部保持旧默认。按标签
-     * 存放（切标签回来恢复），onPageStarted 导航时重置回 1f。
+     * 宽画布方案的教训）；v2.14.6 的 View scale 变换亦被实测否决（内容不
+     * 跟随、仅被边界裁切）。缩小域现由 ZoomPinchLayout 注入
+     * document.body.style.zoom 实现（GameBox applyPageZoom 同源方案），
+     * 整页等比 layout 缩放、命中测试/滚动原生正确，排版结构不变。
+     * 按标签存放（切标签回来恢复），onPageStarted 导航时重置回 1f
+     * （新文档天然无 zoom；锚点导航由 RESET_SCRIPT 清除）。
      * 普通字段即可：不驱动 Compose 重组，只由手势层读写。
      */
     var viewZoom: Float = 1f

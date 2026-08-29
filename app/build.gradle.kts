@@ -12,8 +12,8 @@ android {
         applicationId = "com.anwind"
         minSdk = 24
         targetSdk = 34
-        versionCode = 17
-        versionName = "2.14.6"
+        versionCode = 18
+        versionName = "2.14.7"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
