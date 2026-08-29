@@ -177,7 +177,9 @@ private fun GamepadElementHost(
             .size(element.sizeDp.dp)
             .then(
                 if (editMode) {
-                    Modifier.pointerInput(element.id) {
+                    // key 必须含 posX/posY：否则手势闭包捕获的是首次组合时的旧基准点，
+                    // 拖动一次后元素会跳回旧位置附近（“乱跑”的根因）
+                    Modifier.pointerInput(element.id, element.posX, element.posY) {
                         detectDragGestures(
                             onDrag = { change, amount ->
                                 change.consume()
@@ -566,61 +568,78 @@ private fun DpadContent(
     }
 }
 
-/** 十字键绘制：圆角十字 + 中心圆 + 四向箭头 + 激活高亮 */
+/** 十字键绘制：细长圆角十字 + 玻璃底托 + 四向箭头 + 激活高亮 */
 @Composable
 private fun DpadCanvas(sizeDp: Dp, activeDirs: Set<Char>) {
     Canvas(modifier = Modifier.size(sizeDp)) {
         val s = size.minDimension
         val c = Offset(size.width / 2f, size.height / 2f)
-        val arm = s * 0.30f       // 十字臂宽的一半
-        val len = s * 0.48f       // 十字臂长（从中心到端点）
+        val arm = s * 0.155f      // 十字臂宽的一半（细臂：全宽约 31%）
+        val len = s * 0.50f       // 十字臂长（从中心到端点，满伸至边缘）
 
-        // ===== 十字身体 =====
+        // ===== 玻璃底托（圆面 + 青色描边，现代化质感）=====
+        drawCircle(
+            brush = Brush.radialGradient(
+                colors = listOf(Color(0x2EFFFFFF), Color(0x141E2836)),
+                center = c,
+                radius = len
+            ),
+            radius = len,
+            center = c
+        )
+        drawCircle(
+            color = Color(0x4D2DD4BF),
+            radius = len,
+            center = c,
+            style = Stroke(width = s * 0.014f)
+        )
+
+        // ===== 十字身体（细臂，圆角端点）=====
         // 横臂
         drawRoundRect(
-            color = Color(0x2EFFFFFF),
+            color = Color(0x38FFFFFF),
             topLeft = Offset(c.x - len, c.y - arm),
             size = Size(len * 2, arm * 2),
-            cornerRadius = CornerRadius(arm * 0.55f)
+            cornerRadius = CornerRadius(arm * 0.72f)
         )
         // 竖臂
         drawRoundRect(
-            color = Color(0x2EFFFFFF),
+            color = Color(0x38FFFFFF),
             topLeft = Offset(c.x - arm, c.y - len),
             size = Size(arm * 2, len * 2),
-            cornerRadius = CornerRadius(arm * 0.55f)
+            cornerRadius = CornerRadius(arm * 0.72f)
         )
         // 描边
         drawRoundRect(
             color = Color(0x732DD4BF),
             topLeft = Offset(c.x - len, c.y - arm),
             size = Size(len * 2, arm * 2),
-            cornerRadius = CornerRadius(arm * 0.55f),
-            style = Stroke(width = s * 0.018f)
+            cornerRadius = CornerRadius(arm * 0.72f),
+            style = Stroke(width = s * 0.016f)
         )
         drawRoundRect(
             color = Color(0x732DD4BF),
             topLeft = Offset(c.x - arm, c.y - len),
             size = Size(arm * 2, len * 2),
-            cornerRadius = CornerRadius(arm * 0.55f),
-            style = Stroke(width = s * 0.018f)
+            cornerRadius = CornerRadius(arm * 0.72f),
+            style = Stroke(width = s * 0.016f)
         )
 
         // ===== 中心圆 =====
         drawCircle(
             brush = Brush.radialGradient(
-                listOf(Color(0x33FFFFFF), Color(0x1F1E2836)),
+                listOf(Color(0x3DFFFFFF), Color(0x1F1E2836)),
                 center = c,
-                radius = arm
+                radius = arm * 0.92f
             ),
-            radius = arm,
+            radius = arm * 0.92f,
             center = c
         )
         drawCircle(
             color = Color(0x592DD4BF),
-            radius = arm,
+            radius = arm * 0.92f,
             center = c,
-            style = Stroke(width = s * 0.015f)
+            style = Stroke(width = s * 0.012f)
         )
 
         // ===== 四向箭头 + 激活高亮 =====
@@ -629,9 +648,9 @@ private fun DpadCanvas(sizeDp: Dp, activeDirs: Set<Char>) {
         ).forEach { (char, angleDeg) ->
             val active = char in activeDirs
             val angle = Math.toRadians(angleDeg.toDouble())
-            val dist = len * 0.68f
-            val tipLen = s * 0.055f
-            val baseHalf = s * 0.045f
+            val dist = len * 0.74f
+            val tipLen = s * 0.062f
+            val baseHalf = s * 0.034f
             val dirVec = Offset(cos(angle).toFloat(), sin(angle).toFloat())
             val tip = Offset(c.x + dirVec.x * (dist + tipLen), c.y + dirVec.y * (dist + tipLen))
             val baseCenter = Offset(c.x + dirVec.x * dist, c.y + dirVec.y * dist)
@@ -642,11 +661,11 @@ private fun DpadCanvas(sizeDp: Dp, activeDirs: Set<Char>) {
                 lineTo(baseCenter.x - perp.x * baseHalf, baseCenter.y - perp.y * baseHalf)
                 close()
             }
-            drawPath(path, color = if (active) Color(0xFF2DD4BF) else Color(0xB3FFFFFF))
+            drawPath(path, color = if (active) Color(0xFF2DD4BF) else Color(0xE6FFFFFF))
 
             if (active) {
                 drawRoundRect(
-                    color = Color(0x3D2DD4BF),
+                    color = Color(0x4D2DD4BF),
                     topLeft = when (char) {
                         'U' -> Offset(c.x - arm, c.y - len)
                         'D' -> Offset(c.x - arm, c.y + arm)

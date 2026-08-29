@@ -221,7 +221,9 @@ fun DesktopEnvironment(
             WindowHost()
         }
 
-        // ===== 4. 开始菜单层（居中浮动，位于任务栏上方） =====
+        // ===== 4. 开始菜单层（位于任务栏上方） =====
+        // v2.15.2：95/XP/7/10 时代开始菜单贴左下角（紧挨左下角开始按钮）；
+        // 仅 Win11（MICA_11 悬浮 Dock）保持居中弹出。
         if (startMenuOpen) {
             // 背景遮罩：点击关闭
             Box(
@@ -231,12 +233,19 @@ fun DesktopEnvironment(
                         detectTapGestures(onTap = { startMenuOpen = false })
                     }
             )
+            val isModern11 = theme.taskbarStyle == com.anwind.core.theme.TaskbarStyle.MICA_11
             StartMenu(
                 theme = theme,
                 onDismiss = { startMenuOpen = false },
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .padding(bottom = taskbarHeight + 12.dp)
+                modifier = if (isModern11) {
+                    Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(bottom = taskbarHeight + 12.dp)
+                } else {
+                    Modifier
+                        .align(Alignment.BottomStart)
+                        .padding(start = 4.dp, bottom = taskbarHeight + 4.dp)
+                }
             )
         }
 

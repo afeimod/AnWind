@@ -75,18 +75,28 @@ object GamepadController {
 
     /** 映射分组：完整键盘 + 鼠标 */
     val ACTION_GROUPS: List<Pair<String, List<PadAction>>> by lazy {
+        // 注意：keyCodeFromString 区分大小写，Android 常量名全大写（KEYCODE_A），
+        // 拼小写会返回 KEYCODE_UNKNOWN(0)，导致按键无输出！
         val letters = ('A'..'Z').map { c ->
             PadAction.key(
-                KeyEvent.keyCodeFromString("KEYCODE_" + c.toString().lowercase()),
+                KeyEvent.keyCodeFromString("KEYCODE_$c").let { if (it != 0) it else KeyEvent.KEYCODE_A + (c - 'A') },
                 c.toString()
             )
         }
         val digits = ('0'..'9').map { c ->
-            PadAction.key(KeyEvent.keyCodeFromString("KEYCODE_$c"), c.toString())
+            PadAction.key(
+                KeyEvent.keyCodeFromString("KEYCODE_$c").let { if (it != 0) it else KeyEvent.KEYCODE_0 + (c - '0') },
+                c.toString()
+            )
         }
-        val fn = (1..12).map { i -> PadAction.key(KeyEvent.keyCodeFromString("KEYCODE_F$i"), "F$i") }
+        val fn = (1..12).map { i ->
+            PadAction.key(
+                KeyEvent.keyCodeFromString("KEYCODE_F$i").let { kc -> if (kc != 0) kc else KeyEvent.KEYCODE_F1 + (i - 1) },
+                "F$i"
+            )
+        }
         val symbols = listOf(",", ".", "/", ";", "'", "[", "]", "-", "=", "\\", "`").map { s ->
-            PadAction.key(KeyEvent.keyCodeFromString("KEYCODE_${symbolKeycodeName(s)}"), s)
+            PadAction.key(symbolKeyCode(s), s)
         }
         val control = listOf(
             PadAction.key(KeyEvent.KEYCODE_SPACE, "Space"),
@@ -105,13 +115,10 @@ object GamepadController {
             PadAction.key(KeyEvent.KEYCODE_INSERT, "Ins"),
             PadAction.key(KeyEvent.KEYCODE_SYSRQ, "PrtSc")
         )
-        val numpad = listOf(
-            KeyEvent.keyCodeFromString("KEYCODE_NUMPAD_0"), KeyEvent.keyCodeFromString("KEYCODE_NUMPAD_1"),
-            KeyEvent.keyCodeFromString("KEYCODE_NUMPAD_2"), KeyEvent.keyCodeFromString("KEYCODE_NUMPAD_3"),
-            KeyEvent.keyCodeFromString("KEYCODE_NUMPAD_4"), KeyEvent.keyCodeFromString("KEYCODE_NUMPAD_5"),
-            KeyEvent.keyCodeFromString("KEYCODE_NUMPAD_6"), KeyEvent.keyCodeFromString("KEYCODE_NUMPAD_7"),
-            KeyEvent.keyCodeFromString("KEYCODE_NUMPAD_8"), KeyEvent.keyCodeFromString("KEYCODE_NUMPAD_9")
-        ).mapIndexed { i, kc -> PadAction.key(kc, "小键盘$i") } + listOf(
+        val numpad = (0..9).map { i ->
+            val kc = KeyEvent.keyCodeFromString("KEYCODE_NUMPAD_$i")
+            PadAction.key(if (kc != 0) kc else KeyEvent.KEYCODE_NUMPAD_0 + i, "小键盘$i")
+        } + listOf(
             PadAction.key(KeyEvent.KEYCODE_NUMPAD_ADD, "小键盘+"),
             PadAction.key(KeyEvent.KEYCODE_NUMPAD_SUBTRACT, "小键盘-"),
             PadAction.key(KeyEvent.KEYCODE_NUMPAD_MULTIPLY, "小键盘×"),
@@ -151,7 +158,24 @@ object GamepadController {
         )
     }
 
-    /** 符号 → KeyEvent 名称（keyCodeFromString 用的完整名） */
+    /** 符号 → Android keyCode（直接常量，确保映射准确） */
+    private fun symbolKeyCode(s: String): Int = when (s) {
+        "," -> KeyEvent.KEYCODE_COMMA
+        "." -> KeyEvent.KEYCODE_PERIOD
+        "/" -> KeyEvent.KEYCODE_SLASH
+        ";" -> KeyEvent.KEYCODE_SEMICOLON
+        "'" -> KeyEvent.KEYCODE_APOSTROPHE
+        "[" -> KeyEvent.KEYCODE_LEFT_BRACKET
+        "]" -> KeyEvent.KEYCODE_RIGHT_BRACKET
+        "-" -> KeyEvent.KEYCODE_MINUS
+        "=" -> KeyEvent.KEYCODE_EQUALS
+        "\\" -> KeyEvent.KEYCODE_BACKSLASH
+        "`" -> KeyEvent.KEYCODE_GRAVE
+        else -> KeyEvent.KEYCODE_UNKNOWN
+    }
+
+    /** 符号 → KeyEvent 常量名（仅显示/调试用） */
+    @Suppress("unused")
     private fun symbolKeycodeName(s: String): String = when (s) {
         "," -> "COMMA"
         "." -> "PERIOD"

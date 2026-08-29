@@ -3,6 +3,7 @@ package com.anwind.core.input.gamepad
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -17,10 +18,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.anwind.AnWindApp
@@ -28,8 +33,9 @@ import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
 /**
- * 虚拟手柄悬浮设置窗（v2.15）：
+ * 虚拟手柄悬浮设置窗（v2.15.2）：
  *
+ * - 标题栏可拖动整窗重新定位（限制在屏幕范围内）
  * - 添加/删除元素：按钮、摇杆、十字键
  * - 位置与大小调节：X/Y 归一化滑杆 + 尺寸滑杆（摇杆/十字键/按钮全部支持）
  * - 完整映射选择器：全部键盘按键（字母/数字/功能键/控制键/方向/WASD/符号）+ 鼠标功能
@@ -88,6 +94,23 @@ fun GamepadSettingsWindow(modifier: Modifier = Modifier) {
     }
 
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+        val density = LocalDensity.current
+        val screenWpx = with(density) { maxWidth.toPx() }
+        val screenHpx = with(density) { maxHeight.toPx() }
+
+        // ===== 悬浮窗拖动位移（标题栏拖拽，限制在屏幕内）=====
+        var winOffset by remember { mutableStateOf(Offset.Zero) }
+        fun applyWindowDrag(delta: Offset) {
+            val maxX = screenWpx * 0.62f   // 右锚点，向左最多拉到屏宽 25% 处仍可见
+            val minX = -screenWpx * 0.75f
+            val maxY = screenHpx * 0.55f
+            val minY = -screenHpx * 0.65f
+            winOffset = Offset(
+                (winOffset.x + delta.x).coerceIn(minX, maxX),
+                (winOffset.y + delta.y).coerceIn(minY, maxY)
+            )
+        }
+
         // ===== 背景遮罩：点击关闭 =====
         Box(
             modifier = Modifier
@@ -99,11 +122,12 @@ fun GamepadSettingsWindow(modifier: Modifier = Modifier) {
                 ) { GamepadController.settingsOpen = false }
         )
 
-        // ===== 设置卡片（右侧居中，限制高度可滚动） =====
+        // ===== 设置卡片（右侧居中，标题栏可拖动，限制高度可滚动） =====
         Column(
             modifier = modifier
                 .align(Alignment.CenterEnd)
                 .padding(end = 10.dp)
+                .offset { IntOffset(winOffset.x.roundToInt(), winOffset.y.roundToInt()) }
                 .widthIn(min = 320.dp, max = 360.dp)
                 .heightIn(max = maxHeight - 24.dp)
                 .shadow(14.dp, RoundedCornerShape(16.dp))
@@ -112,7 +136,8 @@ fun GamepadSettingsWindow(modifier: Modifier = Modifier) {
                 .border(1.dp, Color(0x592DD4BF), RoundedCornerShape(16.dp))
         ) {
             GpSettingsHeader(
-                onDismiss = { GamepadController.settingsOpen = false }
+                onDismiss = { GamepadController.settingsOpen = false },
+                onDrag = { delta -> applyWindowDrag(delta) }
             )
 
             Column(
@@ -257,14 +282,23 @@ fun GamepadSettingsWindow(modifier: Modifier = Modifier) {
 // ============================================================
 
 @Composable
-private fun GpSettingsHeader(onDismiss: () -> Unit) {
+private fun GpSettingsHeader(onDismiss: () -> Unit, onDrag: (Offset) -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .background(Color(0x332DD4BF))
-            .padding(horizontal = 14.dp, vertical = 10.dp),
+            .pointerInput(Unit) {
+                detectDragGestures { change, amount ->
+                    change.consume()
+                    onDrag(amount)
+                }
+            }
+            .padding(horizontal = 10.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
+        // 拖动手柄提示
+        Text("⠿", color = Color(0x66E2F5FF), fontSize = 14.sp)
+        Spacer(Modifier.width(7.dp))
         Text("🎮", fontSize = 16.sp)
         Spacer(Modifier.width(8.dp))
         Text(
