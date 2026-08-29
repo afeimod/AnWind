@@ -297,6 +297,22 @@ class ZoomPinchLayout @JvmOverloads constructor(
         }
     }
 
+    /** 任意两指间最大距离（span） */
+    private fun spanOf(ev: MotionEvent): Float {
+        val n = ev.pointerCount
+        if (n < 2) return 0f
+        var max = 0f
+        for (i in 0 until n) {
+            for (j in i + 1 until n) {
+                val dx = ev.getX(i) - ev.getX(j)
+                val dy = ev.getY(i) - ev.getY(j)
+                val d = sqrt(dx * dx + dy * dy)
+                if (d > max) max = d
+            }
+        }
+        return if (max > 1f) max else 1f
+    }
+
     /**
      * 把缩放注入到页面（body.style.zoom）。force=true 精确注入当前值
      * （手势结束/换绑恢复）；否则受 [JS_INTERVAL_MS] 节流。
