@@ -343,6 +343,7 @@ MIT License — 见 [LICENSE](LICENSE)
 - Jetpack Compose 团队提供的现代声明式 UI 框架
 - Android Room 团队的数据持久化方案
 - 所有 Windows 版本的设计师，他们的工作启发了本项目
+- ruffle针对flash的优化
 
 ---
 
