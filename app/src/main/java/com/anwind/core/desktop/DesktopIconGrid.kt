@@ -354,13 +354,22 @@ private fun DesktopIcon(
 
 /**
  * 统一图标加载：支持 assets 路径 / "emoji:🚀" / 内置 drawable。
+ *
+ * v2.15 主题图标：图标引用先经 [com.anwind.core.theme.ThemeIcons.resolve]
+ * 解析为当前 Windows 主题的专属图标（icons/win95|winxp|win10|win11/<id>.png），
+ * 无专属图标时回退通用路径 —— 切换主题时桌面/任务栏/开始菜单图标即时换肤。
  */
 @Composable
 fun IconPainter(asset: String, size: androidx.compose.ui.unit.Dp) {
     val context = LocalContext.current
+    val theme = LocalWinTheme.current
+    // 主题图标解析（assets.list 有缓存，重组开销可忽略）
+    val resolvedAsset = remember(asset, theme.variant) {
+        com.anwind.core.theme.ThemeIcons.resolve(context, asset, theme.variant)
+    }
 
-    if (asset.startsWith("emoji:")) {
-        val emoji = asset.removePrefix("emoji:")
+    if (resolvedAsset.startsWith("emoji:")) {
+        val emoji = resolvedAsset.removePrefix("emoji:")
         androidx.compose.foundation.layout.Box(
             modifier = Modifier.size(size),
             contentAlignment = Alignment.Center
@@ -370,9 +379,9 @@ fun IconPainter(asset: String, size: androidx.compose.ui.unit.Dp) {
         return
     }
 
-    val painter = remember(asset) {
+    val painter = remember(resolvedAsset) {
         runCatching {
-            context.assets.open(asset).use {
+            context.assets.open(resolvedAsset).use {
                 BitmapPainter(BitmapFactory.decodeStream(it).asImageBitmap())
             }
         }.getOrNull()
@@ -389,10 +398,10 @@ fun IconPainter(asset: String, size: androidx.compose.ui.unit.Dp) {
         androidx.compose.foundation.layout.Box(
             modifier = Modifier
                 .size(size)
-                .background(LocalWinTheme.current.accentColor.copy(alpha = 0.2f), RoundedCornerShape(4.dp)),
+                .background(theme.accentColor.copy(alpha = 0.2f), RoundedCornerShape(4.dp)),
             contentAlignment = Alignment.Center
         ) {
-            Text("?", fontSize = 14.sp, color = LocalWinTheme.current.accentColor)
+            Text("?", fontSize = 14.sp, color = theme.accentColor)
         }
     }
 }

@@ -207,19 +207,24 @@ fun WindowChrome(
                     },
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // 左侧应用图标占位（Win11 风格标题栏彩色徽标）
+                // 左侧应用图标（v2.15：主题化真实应用图标，替换旧色块占位）
+                val appDef = remember(state.appId) { AppRegistry.get(state.appId) }
                 Box(
                     modifier = Modifier
                         .size(theme.windowTitleBarHeight)
                         .padding(8.dp),
                     contentAlignment = Alignment.Center
                 ) {
-                    Box(
-                        modifier = Modifier
-                            .size(16.dp)
-                            .clip(RoundedCornerShape(3.dp))
-                            .background(theme.windowTitleBarIconColor)
-                    )
+                    if (appDef != null) {
+                        com.anwind.core.desktop.IconPainter(appDef.iconAsset, size = 16.dp)
+                    } else {
+                        Box(
+                            modifier = Modifier
+                                .size(16.dp)
+                                .clip(RoundedCornerShape(3.dp))
+                                .background(theme.windowTitleBarIconColor)
+                        )
+                    }
                 }
 
                 Text(

@@ -23,7 +23,7 @@ import java.util.TimeZone
 val ClockApp = AppDef(
     id = "clock",
     displayName = "时钟",
-    iconAsset = "emoji:🕐",
+    iconAsset = "app:clock",
     launchMode = LaunchMode.FLOATING,
     defaultWidth = 480.dp,
     defaultHeight = 320.dp,

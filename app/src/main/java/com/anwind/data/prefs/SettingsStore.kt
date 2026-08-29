@@ -105,6 +105,12 @@ class SettingsStore(private val context: Context) {
         // 允许拖动键盘
         val KEYBOARD_DRAG_ENABLED = booleanPreferencesKey("keyboard_drag_enabled")
 
+        // === 虚拟游戏手柄（v2.15） ===
+        // 总开关：游戏时显示手柄覆盖层
+        val GAMEPAD_ENABLED = booleanPreferencesKey("gamepad_enabled")
+        // 手柄布局配置（JSON：元素类型/标签/映射/位置/大小/方向模式）
+        val GAMEPAD_CONFIG = stringPreferencesKey("gamepad_config")
+
         // === 系统：电源、通知 ===
         val POWER_SAVER = booleanPreferencesKey("power_saver")
         val BRIGHTNESS = floatPreferencesKey("brightness")
@@ -192,6 +198,10 @@ class SettingsStore(private val context: Context) {
     val keyboardPosX: Flow<Float> = context.appPrefs.data.map { it[Keys.KEYBOARD_POS_X] ?: 0.5f }
     val keyboardPosY: Flow<Float> = context.appPrefs.data.map { it[Keys.KEYBOARD_POS_Y] ?: 1.0f }
     val keyboardDragEnabled: Flow<Boolean> = context.appPrefs.data.map { it[Keys.KEYBOARD_DRAG_ENABLED] ?: true }
+
+    // === 虚拟游戏手柄（v2.15） ===
+    val gamepadEnabled: Flow<Boolean> = context.appPrefs.data.map { it[Keys.GAMEPAD_ENABLED] ?: false }
+    val gamepadConfig: Flow<String> = context.appPrefs.data.map { it[Keys.GAMEPAD_CONFIG] ?: "" }
 
     // === 系统 ===
     val powerSaver: Flow<Boolean> = context.appPrefs.data.map { it[Keys.POWER_SAVER] ?: false }
@@ -396,6 +406,15 @@ class SettingsStore(private val context: Context) {
 
     suspend fun setKeyboardDragEnabled(enabled: Boolean) {
         context.appPrefs.edit { it[Keys.KEYBOARD_DRAG_ENABLED] = enabled }
+    }
+
+    // === 虚拟游戏手柄 setter（v2.15） ===
+    suspend fun setGamepadEnabled(enabled: Boolean) {
+        context.appPrefs.edit { it[Keys.GAMEPAD_ENABLED] = enabled }
+    }
+
+    suspend fun setGamepadConfig(json: String) {
+        context.appPrefs.edit { it[Keys.GAMEPAD_CONFIG] = json }
     }
 
     // === 系统 setter ===

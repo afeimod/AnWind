@@ -41,6 +41,17 @@ enum class WindowsVariant {
 enum class TaskbarAlignment { LEFT, CENTER }
 
 /**
+ * 任务栏视觉风格（v2.15）：按时代完整重绘，五大主题各自还原。
+ *
+ * - CLASSIC_95：Win95 灰色立体凹凸任务栏（凸起开始按钮 + 凹陷托盘 + 文字任务按钮）
+ * - LUNA_XP：WinXP Luna 蓝色渐变任务栏（绿色圆角开始按钮 + 蓝渐变任务按钮）
+ * - AERO_7：Win7 Aero 玻璃任务栏（开始圆球 + 图标式任务栏 + 辉光激活态）
+ * - MODERN_10：Win10 深色扁平任务栏（靠左图标 + 搜索框 + 底部下划线激活态）
+ * - MICA_11：Win11 Mica 悬浮居中 Dock（本应用标志性现代样式）
+ */
+enum class TaskbarStyle { CLASSIC_95, LUNA_XP, AERO_7, MODERN_10, MICA_11 }
+
+/**
  * 窗口边框风格 - 现代化重构后统一为细边框 + 大圆角
  */
 enum class WindowChrome {
@@ -81,6 +92,8 @@ data class WinTheme(
     val taskbarIconColor: Color,
     val taskbarClockColor: Color,
     val startButtonLabel: String?,       // null=不显示文字（Win10/11 风格）
+    /** v2.15 任务栏视觉风格：决定任务栏按哪个时代绘制 */
+    val taskbarStyle: TaskbarStyle,
 
     // === 开始菜单 ===
     val startMenuWidth: Dp,
@@ -174,14 +187,15 @@ object Themes {
         wallpaperAsset = "wallpapers/win95.png",
         desktopIconTextColor = Color.White,
         desktopIconTextShadow = true,
-        taskbarAlignment = TaskbarAlignment.CENTER,  // 改为居中以统一现代风格
+        taskbarAlignment = TaskbarAlignment.LEFT,
         taskbarColor = Color(0xFFC0C0C0),
-        taskbarAlpha = 0.92f,
+        taskbarAlpha = 1f,
         taskbarHeight = 44.dp,
-        taskbarStartButtonColor = Color(0xFF808080),
+        taskbarStartButtonColor = Color(0xFFC0C0C0),
         taskbarIconColor = Color.Black,
         taskbarClockColor = Color.Black,
         startButtonLabel = "开始",
+        taskbarStyle = TaskbarStyle.CLASSIC_95,
         startMenuWidth = 360.dp,
         startMenuColor = Color(0xFFC0C0C0),
         startMenuAlpha = 0.97f,
@@ -220,14 +234,15 @@ object Themes {
         wallpaperAsset = "wallpapers/winxp_bliss.jpg",
         desktopIconTextColor = Color.White,
         desktopIconTextShadow = true,
-        taskbarAlignment = TaskbarAlignment.CENTER,
-        taskbarColor = Color(0xFFE1E8F5),   // 浅蓝灰，更现代化
-        taskbarAlpha = 0.92f,
+        taskbarAlignment = TaskbarAlignment.LEFT,
+        taskbarColor = Color(0xFF245EDB),
+        taskbarAlpha = 1f,
         taskbarHeight = 44.dp,
-        taskbarStartButtonColor = Color(0xFF2D7A3E),
-        taskbarIconColor = Color(0xFF1F3F7F),
-        taskbarClockColor = Color(0xFF1F3F7F),
+        taskbarStartButtonColor = Color(0xFF3C9A20),
+        taskbarIconColor = Color.White,
+        taskbarClockColor = Color.White,
         startButtonLabel = "开始",
+        taskbarStyle = TaskbarStyle.LUNA_XP,
         startMenuWidth = 380.dp,
         startMenuColor = Color(0xFFF6F8FB),
         startMenuAlpha = 0.98f,
@@ -266,14 +281,15 @@ object Themes {
         wallpaperAsset = "wallpapers/win7.jpg",
         desktopIconTextColor = Color.White,
         desktopIconTextShadow = true,
-        taskbarAlignment = TaskbarAlignment.CENTER,
-        taskbarColor = Color(0xFFD7E4F2),   // Aero 玻璃浅蓝
-        taskbarAlpha = 0.82f,
+        taskbarAlignment = TaskbarAlignment.LEFT,
+        taskbarColor = Color(0xFF2A3B4D),
+        taskbarAlpha = 0.88f,
         taskbarHeight = 46.dp,
         taskbarStartButtonColor = Color(0xFF1BA1E2),
-        taskbarIconColor = Color(0xFF1F3F5F),
-        taskbarClockColor = Color(0xFF1F3F5F),
+        taskbarIconColor = Color.White,
+        taskbarClockColor = Color.White,
         startButtonLabel = null,
+        taskbarStyle = TaskbarStyle.AERO_7,
         startMenuWidth = 400.dp,
         startMenuColor = Color(0xFFF0F5FA),
         startMenuAlpha = 0.97f,
@@ -312,14 +328,15 @@ object Themes {
         wallpaperAsset = "wallpapers/win10.jpg",
         desktopIconTextColor = Color.White,
         desktopIconTextShadow = true,
-        taskbarAlignment = TaskbarAlignment.CENTER,
-        taskbarColor = Color(0xFF1F1F1F),
-        taskbarAlpha = 0.85f,
+        taskbarAlignment = TaskbarAlignment.LEFT,
+        taskbarColor = Color(0xFF101010),
+        taskbarAlpha = 0.92f,
         taskbarHeight = 46.dp,
         taskbarStartButtonColor = Color(0xFF0078D7),
         taskbarIconColor = Color.White,
         taskbarClockColor = Color.White,
         startButtonLabel = null,
+        taskbarStyle = TaskbarStyle.MODERN_10,
         startMenuWidth = 400.dp,
         startMenuColor = Color(0xFF202020),
         startMenuAlpha = 0.98f,
@@ -366,6 +383,7 @@ object Themes {
         taskbarIconColor = Color(0xFF1F1F1F),
         taskbarClockColor = Color(0xFF1F1F1F),
         startButtonLabel = null,
+        taskbarStyle = TaskbarStyle.MICA_11,
         startMenuWidth = 440.dp,
         startMenuColor = Color(0xFFF8F8F8),
         startMenuAlpha = 0.96f,

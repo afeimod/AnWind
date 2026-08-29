@@ -57,7 +57,7 @@ import java.io.File
 val FileExplorerApp = AppDef(
     id = "file_explorer",
     displayName = "文件资源管理器",
-    iconAsset = "icons/file_explorer.png",
+    iconAsset = "app:file_explorer",
     launchMode = LaunchMode.FLOATING,
     defaultWidth = 920.dp,
     defaultHeight = 620.dp,

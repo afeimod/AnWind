@@ -35,6 +35,7 @@ import androidx.compose.material.icons.filled.FlashlightOn
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.SportsEsports
 import androidx.compose.material.icons.filled.VolumeOff
 import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material.icons.filled.Wifi
@@ -270,6 +271,9 @@ fun QuickSettingsPanel(
     val popupColor = if (theme.isDark) Color(0xE6323232) else Color(0xE6F9F9F9)
     val fg = if (theme.isDark) Color.White else Color.Black
 
+    // ===== 虚拟游戏手柄（v2.15）：快速开关，首开顺手弹设置窗 =====
+    val gamepadEnabled by app.settingsStore.gamepadEnabled.collectAsState(initial = false)
+
     /** 打开系统设置面板 */
     fun openSystemPanel(action: String, name: String) {
         runCatching {
@@ -433,14 +437,14 @@ fun QuickSettingsPanel(
     Box(
         modifier = modifier
             .width(320.dp)
-            .height(430.dp)
+            .height(500.dp)
             .shadow(16.dp, RoundedCornerShape(8.dp))
             .clip(RoundedCornerShape(8.dp))
             .background(popupColor)
             .padding(16.dp)
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
-            // ===== 顶部 3x2 toggle 网格（全部真实逻辑） =====
+            // ===== 顶部 3x3 toggle 网格（全部真实逻辑） =====
             val toggles = listOf(
                 QuickToggle(
                     "WiFi", if (wifiEnabled) "已开启" else "已关闭",
@@ -464,6 +468,17 @@ fun QuickSettingsPanel(
                 QuickToggle(
                     "手电筒", if (torchOn) "已开启" else "已关闭",
                     Icons.Default.FlashlightOn, torchOn, onClick = { toggleTorch() }
+                ),
+                QuickToggle(
+                    "虚拟手柄", if (gamepadEnabled) "已开启" else "已关闭",
+                    Icons.Default.SportsEsports, gamepadEnabled,
+                    onClick = {
+                        scope.launch { app.settingsStore.setGamepadEnabled(!gamepadEnabled) }
+                        if (!gamepadEnabled) {
+                            // 首次开启顺手打开设置窗，方便布置按键
+                            com.anwind.core.input.gamepad.GamepadController.settingsOpen = true
+                        }
+                    }
                 ),
                 QuickToggle(
                     "辅助功能", "系统设置",

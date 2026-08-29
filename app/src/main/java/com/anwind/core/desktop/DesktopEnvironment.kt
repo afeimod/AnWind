@@ -23,6 +23,8 @@ import com.anwind.core.input.MouseController
 import com.anwind.core.input.MouseCursorOverlay
 import com.anwind.core.input.VirtualKeyboardController
 import com.anwind.core.input.VirtualKeyboardOverlay
+import com.anwind.core.input.gamepad.GamepadOverlay
+import com.anwind.core.input.gamepad.GamepadSettingsWindow
 import com.anwind.core.theme.LocalWinTheme
 import com.anwind.core.theme.WinTheme
 import com.anwind.core.window.WindowHost
@@ -141,9 +143,12 @@ fun DesktopEnvironment(
         val fullHeight = maxHeight
         // v2.9：任务栏高度可调（个性化设置 36..80dp），未设置时跟随主题
         val taskbarHeight = if (taskbarHeightPref >= 36f) taskbarHeightPref.dp else theme.taskbarHeight
-        // 工作区高度 = 全屏高度 - 任务栏高度 - 任务栏底部 4dp - 任务栏顶部 4dp 空隙
+        // v2.15：Win11 悬浮 Dock 上下各留 4dp 空隙；其余时代任务栏通栏贴底（只减去任务栏高度）
         // 真全屏（F11）时浮动窗口层占满整屏，隐藏任务栏
-        val workAreaHeight = if (anyTrueFullscreen) fullHeight else fullHeight - taskbarHeight - 8.dp
+        val taskbarFloating = theme.taskbarStyle == com.anwind.core.theme.TaskbarStyle.MICA_11
+        val workAreaHeight = if (anyTrueFullscreen) fullHeight
+        else if (taskbarFloating) fullHeight - taskbarHeight - 8.dp
+        else fullHeight - taskbarHeight
 
         // 计算底部边缘呼出阈值（屏幕高度 - 28dp），供指针监听协程读取；
         // 同时初始化虚拟鼠标指针位置（首次进入桌面时置于屏幕中部偏上）
@@ -318,6 +323,10 @@ fun DesktopEnvironment(
 
         // ===== 7. 虚拟键盘层（v2.13：全键盘，可拖动） =====
         VirtualKeyboardOverlay()
+
+        // ===== 7.5. 虚拟游戏手柄层（v2.15：摇杆/十字键/按钮，悬浮设置窗） =====
+        GamepadOverlay()
+        GamepadSettingsWindow()
 
         // ===== 8. 虚拟鼠标指针层（v2.13：Windows 风格指针 + 点击涟漪，最顶层） =====
         MouseCursorOverlay()

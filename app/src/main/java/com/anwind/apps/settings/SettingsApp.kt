@@ -57,7 +57,7 @@ import java.io.File
 val SettingsApp = AppDef(
     id = "settings",
     displayName = "设置",
-    iconAsset = "icons/settings.png",
+    iconAsset = "app:settings",
     launchMode = LaunchMode.FLOATING,
     defaultWidth = 880.dp,
     defaultHeight = 600.dp,

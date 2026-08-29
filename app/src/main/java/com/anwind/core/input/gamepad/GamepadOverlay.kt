@@ -1,0 +1,762 @@
+package com.anwind.core.input.gamepad
+
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Text
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.anwind.AnWindApp
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
+import kotlin.math.cos
+import kotlin.math.roundToInt
+import kotlin.math.sin
+
+/**
+ * 虚拟手柄覆盖层（v2.15）：现代化绘制 + 全屏元素独立交互。
+ *
+ * - 摇杆：玻璃外环 + 径向渐变摇杆头 + 8 向指示灯，跟随手指，
+ *   死区 + 8 向扇区判定（含斜向），方向事件实时派发
+ * - 十字键：圆角十字 + 方向箭头，按触点位置判定 8 向（含斜向）
+ * - 按钮：径向渐变圆钮（A绿/B红/X蓝/Y黄/其他青），按压缩放 + 辉光环
+ * - 编辑模式：元素可拖动重新布局（松手持久化），显示删除角标
+ * - 迷你工具条：⚙ 设置 / ✎ 编辑 / ✕ 隐藏
+ * - 多点触控：每个元素独立 pointerInput，摇杆+按钮可同时操作
+ */
+@Composable
+fun GamepadOverlay() {
+    val app = AnWindApp.get()
+    val gamepadEnabled by app.settingsStore.gamepadEnabled.collectAsState(initial = false)
+    if (!gamepadEnabled) return
+
+    // 首次组合：加载持久化布局
+    LaunchedEffect(Unit) {
+        val json = app.settingsStore.gamepadConfig.first()
+        GamepadController.loadFromJson(json.ifBlank { null })
+    }
+
+    val scope = rememberCoroutineScope()
+
+    fun persistConfig() {
+        scope.launch { app.settingsStore.setGamepadConfig(GamepadController.toJson()) }
+    }
+
+    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+        val screenWpx = with(LocalDensity.current) { maxWidth.toPx() }
+        val screenHpx = with(LocalDensity.current) { maxHeight.toPx() }
+        val editMode = GamepadController.editMode
+
+        // ===== 手柄元素 =====
+        GamepadController.elements.forEach { element ->
+            key(element.id) {
+                val centerX = screenWpx * element.posX
+                val centerY = screenHpx * element.posY
+
+                GamepadElementHost(
+                    element = element,
+                    centerXpx = centerX,
+                    centerYpx = centerY,
+                    screenWpx = screenWpx,
+                    screenHpx = screenHpx,
+                    onMove = { nx, ny ->
+                        GamepadController.updateElements(
+                            GamepadController.elements.map {
+                                if (it.id == element.id) it.copy(posX = nx, posY = ny) else it
+                            }
+                        )
+                        persistConfig()
+                    },
+                    onDelete = {
+                        GamepadController.updateElements(
+                            GamepadController.elements.filter { it.id != element.id }
+                        )
+                        persistConfig()
+                    }
+                ) { editBlocked ->
+                    when (element.type) {
+                        GamepadController.ElementType.JOYSTICK -> JoystickContent(
+                            element = element,
+                            inputEnabled = !editBlocked
+                        )
+                        GamepadController.ElementType.DPAD -> DpadContent(
+                            element = element,
+                            inputEnabled = !editBlocked
+                        )
+                        GamepadController.ElementType.BUTTON -> PadButtonContent(
+                            element = element,
+                            inputEnabled = !editBlocked
+                        )
+                    }
+                }
+            }
+        }
+
+        // ===== 迷你工具条（右上角） =====
+        GamepadMiniToolbar(
+            onSettings = { GamepadController.settingsOpen = true },
+            onToggleEdit = {
+                GamepadController.editMode = !GamepadController.editMode
+                if (!GamepadController.editMode) GamepadController.selectElement(null)
+            },
+            onHide = {
+                GamepadController.editMode = false
+                scope.launch { app.settingsStore.setGamepadEnabled(false) }
+            },
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(top = 12.dp, end = 12.dp)
+        )
+    }
+}
+
+// ============================================================
+// 元素宿主：编辑模式拖动 + 删除角标
+// ============================================================
+
+/**
+ * 手柄元素宿主：
+ * - 编辑模式：整体可拖动（松手持久化新位置），右上角显示删除角标，内部游戏输入禁用
+ * - 游戏模式：内容自理输入，宿主不拦截事件
+ */
+@Composable
+private fun GamepadElementHost(
+    element: GamepadController.PadElement,
+    centerXpx: Float,
+    centerYpx: Float,
+    screenWpx: Float,
+    screenHpx: Float,
+    onMove: (Float, Float) -> Unit,
+    onDelete: () -> Unit,
+    content: @Composable (editBlocked: Boolean) -> Unit
+) {
+    val density = LocalDensity.current
+    val sizePx = with(density) { element.sizeDp.dp.toPx() }
+    val radius = sizePx / 2f
+    val editMode = GamepadController.editMode
+
+    var editDrag by remember { mutableStateOf(Offset.Zero) }
+
+    Box(
+        modifier = Modifier
+            .offset {
+                IntOffset(
+                    (centerXpx - radius + editDrag.x).roundToInt(),
+                    (centerYpx - radius + editDrag.y).roundToInt()
+                )
+            }
+            .size(element.sizeDp.dp)
+            .then(
+                if (editMode) {
+                    Modifier.pointerInput(element.id) {
+                        detectDragGestures(
+                            onDrag = { change, amount ->
+                                change.consume()
+                                editDrag += amount
+                            },
+                            onDragEnd = {
+                                val nx = ((centerXpx + editDrag.x) / screenWpx).coerceIn(0.04f, 0.96f)
+                                val ny = ((centerYpx + editDrag.y) / screenHpx).coerceIn(0.04f, 0.96f)
+                                editDrag = Offset.Zero
+                                onMove(nx, ny)
+                            },
+                            onDragCancel = { editDrag = Offset.Zero }
+                        )
+                    }
+                } else Modifier
+            )
+    ) {
+        content(editBlocked = editMode)
+
+        // 编辑模式删除角标
+        if (editMode) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .size(24.dp)
+                    .shadow(4.dp, CircleShape)
+                    .clip(CircleShape)
+                    .background(Color(0xE6EF4444))
+                    .pointerInput(element.id) {
+                        detectTapGestures(onTap = { onDelete() })
+                    },
+                contentAlignment = Alignment.Center
+            ) {
+                Text("×", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+            }
+        }
+    }
+}
+
+// ============================================================
+// 迷你工具条
+// ============================================================
+
+@Composable
+private fun GamepadMiniToolbar(
+    onSettings: () -> Unit,
+    onToggleEdit: () -> Unit,
+    onHide: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val editMode = GamepadController.editMode
+    Row(
+        modifier = modifier
+            .shadow(6.dp, RoundedCornerShape(20.dp))
+            .clip(RoundedCornerShape(20.dp))
+            .background(Color(0xD91E2836))
+            .padding(horizontal = 5.dp, vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        MiniToolButton("⚙") { onSettings() }
+        MiniToolButton(
+            label = if (editMode) "✓" else "✎",
+            active = editMode
+        ) { onToggleEdit() }
+        MiniToolButton("✕") { onHide() }
+    }
+}
+
+@Composable
+private fun MiniToolButton(label: String, active: Boolean = false, onClick: () -> Unit) {
+    var pressed by remember { mutableStateOf(false) }
+    Box(
+        modifier = Modifier
+            .size(30.dp)
+            .scale(if (pressed) 0.88f else 1f)
+            .clip(CircleShape)
+            .background(
+                when {
+                    active -> Color(0x662DD4BF)
+                    pressed -> Color(0x332DD4BF)
+                    else -> Color(0x1AFFFFFF)
+                }
+            )
+            .pointerInput(label) {
+                detectTapGestures(
+                    onPress = {
+                        pressed = true
+                        try { awaitRelease() } finally { pressed = false }
+                    },
+                    onTap = { onClick() }
+                )
+            },
+        contentAlignment = Alignment.Center
+    ) {
+        Text(label, color = Color(0xFFE2F5FF), fontSize = 13.sp)
+    }
+}
+
+// ============================================================
+// 摇杆
+// ============================================================
+
+/**
+ * 摇杆内容：外环（玻璃质感 + 青色描边）+ 8 向指示灯 + 渐变摇杆头。
+ * 摇杆头跟随手指（限制在外环内），死区 25%，8 向扇区判定（含斜向）。
+ */
+@Composable
+private fun JoystickContent(
+    element: GamepadController.PadElement,
+    inputEnabled: Boolean
+) {
+    val density = LocalDensity.current
+    val sizeDp = element.sizeDp.dp
+    val sizePx = with(density) { sizeDp.toPx() }
+    val radius = sizePx / 2f
+    val haptic = LocalHapticFeedback.current
+
+    // 摇杆头偏移（px）
+    var stickOffset by remember { mutableStateOf(Offset.Zero) }
+    // 当前按下方向
+    var activeDirs by remember { mutableStateOf(setOf<Char>()) }
+
+    // 元素引用更新时保持手势 lambda 最新
+    val currentElement by rememberUpdatedState(element)
+
+    fun dirsFromOffset(off: Offset): Set<Char> {
+        val mag = off.getDistance()
+        if (mag < radius * 0.25f) return emptySet()
+        val dirs = mutableSetOf<Char>()
+        val v = off.y / mag
+        val h = off.x / mag
+        if (v < -0.38) dirs.add('U')
+        if (v > 0.38) dirs.add('D')
+        if (h < -0.38) dirs.add('L')
+        if (h > 0.38) dirs.add('R')
+        return dirs
+    }
+
+    fun updateDirs(newDirs: Set<Char>) {
+        if (newDirs == activeDirs) return
+        (activeDirs - newDirs).forEach { GamepadController.onDirection(it, false, currentElement.dirMode) }
+        (newDirs - activeDirs).forEach {
+            GamepadController.onDirection(it, true, currentElement.dirMode)
+            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+        }
+        activeDirs = newDirs
+    }
+
+    Box(modifier = Modifier.size(sizeDp)) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .then(
+                    if (inputEnabled) Modifier.pointerInput(currentElement.id, currentElement.dirMode) {
+                        detectDragGestures(
+                            onDragStart = { touchPos ->
+                                stickOffset = Offset.Zero
+                                val local = touchPos - Offset(radius, radius)
+                                updateDirs(dirsFromOffset(local))
+                            },
+                            onDrag = { change, amount ->
+                                change.consume()
+                                stickOffset += amount
+                                val maxStick = radius * 0.72f
+                                val mag = stickOffset.getDistance()
+                                if (mag > maxStick) {
+                                    stickOffset = stickOffset / mag * maxStick
+                                }
+                                updateDirs(dirsFromOffset(stickOffset))
+                            },
+                            onDragEnd = {
+                                stickOffset = Offset.Zero
+                                updateDirs(emptySet())
+                            },
+                            onDragCancel = {
+                                stickOffset = Offset.Zero
+                                updateDirs(emptySet())
+                            }
+                        )
+                    } else Modifier
+                )
+        ) {
+            JoystickCanvas(
+                sizeDp = sizeDp,
+                stickOffset = stickOffset,
+                activeDirs = activeDirs,
+                dirModeLabel = if (currentElement.dirMode == GamepadController.DirMode.WASD) "WASD" else "←↑→↓"
+            )
+        }
+    }
+}
+
+/** 摇杆绘制：外环 + 主4向+斜4向指示灯 + 渐变摇杆头 */
+@Composable
+private fun JoystickCanvas(
+    sizeDp: Dp,
+    stickOffset: Offset,
+    activeDirs: Set<Char>,
+    dirModeLabel: String
+) {
+    Box(modifier = Modifier.size(sizeDp)) {
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val r = size.minDimension / 2f
+            val c = Offset(size.width / 2f, size.height / 2f)
+
+            // ===== 外环底（玻璃质感）=====
+            drawCircle(
+                brush = Brush.radialGradient(
+                    colors = listOf(Color(0x2EFFFFFF), Color(0x141E2836)),
+                    center = c,
+                    radius = r
+                ),
+                radius = r,
+                center = c
+            )
+            // 外环青色描边
+            drawCircle(
+                color = Color(0x802DD4BF),
+                radius = r,
+                center = c,
+                style = Stroke(width = r * 0.055f)
+            )
+            // 内环细描边
+            drawCircle(
+                color = Color(0x40FFFFFF),
+                radius = r * 0.88f,
+                center = c,
+                style = Stroke(width = r * 0.02f)
+            )
+
+            // ===== 指示灯：主 4 向（基数位）+ 斜 4 向（斜向需两主向同时激活）=====
+            // 主 4 向
+            listOf(
+                'U' to -90f, 'R' to 0f, 'D' to 90f, 'L' to 180f
+            ).forEach { (dirChar, angleDeg) ->
+                val angle = Math.toRadians(angleDeg.toDouble())
+                val dotR = r * 0.78f
+                val pos = Offset(
+                    (c.x + dotR * cos(angle)).toFloat(),
+                    (c.y + dotR * sin(angle)).toFloat()
+                )
+                val active = dirChar in activeDirs
+                if (active) drawCircle(Color(0x552DD4BF), radius = r * 0.1f, center = pos)
+                drawCircle(
+                    color = if (active) Color(0xFF2DD4BF) else Color(0x30FFFFFF),
+                    radius = r * (if (active) 0.055f else 0.038f),
+                    center = pos
+                )
+            }
+            // 斜 4 向（UR/RD/DL/LU）
+            listOf(
+                ('U' to 'R') to -45f,
+                ('R' to 'D') to 45f,
+                ('D' to 'L') to 135f,
+                ('L' to 'U') to 225f
+            ).forEach { (pair, angleDeg) ->
+                val angle = Math.toRadians(angleDeg.toDouble())
+                val dotR = r * 0.78f
+                val pos = Offset(
+                    (c.x + dotR * cos(angle)).toFloat(),
+                    (c.y + dotR * sin(angle)).toFloat()
+                )
+                val active = pair.first in activeDirs && pair.second in activeDirs
+                drawCircle(
+                    color = if (active) Color(0xFF2DD4BF) else Color(0x26FFFFFF),
+                    radius = r * (if (active) 0.045f else 0.03f),
+                    center = pos
+                )
+            }
+
+            // ===== 摇杆头（径向渐变球 + 高光）=====
+            val stickR = r * 0.42f
+            val stickCenter = c + stickOffset
+            drawCircle(
+                brush = Brush.radialGradient(
+                    colors = listOf(Color(0xFFF0FDFF), Color(0xFF7DD3FC), Color(0xFF2563EB)),
+                    center = Offset(stickCenter.x - stickR * 0.3f, stickCenter.y - stickR * 0.3f),
+                    radius = stickR * 1.4f
+                ),
+                radius = stickR,
+                center = stickCenter
+            )
+            drawCircle(
+                color = Color(0xAA0EA5E9),
+                radius = stickR,
+                center = stickCenter,
+                style = Stroke(width = stickR * 0.08f)
+            )
+            drawCircle(
+                color = Color(0xCCFFFFFF),
+                radius = stickR * 0.18f,
+                center = Offset(stickCenter.x - stickR * 0.35f, stickCenter.y - stickR * 0.35f)
+            )
+        }
+
+        // 方向模式标签
+        Text(
+            text = dirModeLabel,
+            color = Color(0xB3E2F5FF),
+            fontSize = 10.sp,
+            fontWeight = FontWeight.Medium,
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(bottom = 2.dp)
+        )
+    }
+}
+
+// ============================================================
+// 十字键
+// ============================================================
+
+/** 十字键内容：圆角十字 + 箭头，触点相对中心判定 8 向（含斜向） */
+@Composable
+private fun DpadContent(
+    element: GamepadController.PadElement,
+    inputEnabled: Boolean
+) {
+    val density = LocalDensity.current
+    val sizeDp = element.sizeDp.dp
+    val sizePx = with(density) { sizeDp.toPx() }
+    val radius = sizePx / 2f
+    val haptic = LocalHapticFeedback.current
+
+    var activeDirs by remember { mutableStateOf(setOf<Char>()) }
+    val currentElement by rememberUpdatedState(element)
+
+    fun dirsFromTouch(local: Offset): Set<Char> {
+        val off = local - Offset(radius, radius)
+        val mag = off.getDistance()
+        if (mag < radius * 0.18f) return emptySet()
+        val dirs = mutableSetOf<Char>()
+        val v = off.y / mag
+        val h = off.x / mag
+        if (v < -0.38) dirs.add('U')
+        if (v > 0.38) dirs.add('D')
+        if (h < -0.38) dirs.add('L')
+        if (h > 0.38) dirs.add('R')
+        return dirs
+    }
+
+    fun updateDirs(newDirs: Set<Char>) {
+        if (newDirs == activeDirs) return
+        (activeDirs - newDirs).forEach { GamepadController.onDirection(it, false, currentElement.dirMode) }
+        (newDirs - activeDirs).forEach {
+            GamepadController.onDirection(it, true, currentElement.dirMode)
+            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+        }
+        activeDirs = newDirs
+    }
+
+    Box(modifier = Modifier.size(sizeDp)) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .then(
+                    if (inputEnabled) Modifier.pointerInput(currentElement.id, currentElement.dirMode) {
+                        awaitEachGesture {
+                            val down = awaitFirstDown(requireUnconsumed = false)
+                            updateDirs(dirsFromTouch(down.position))
+                            while (true) {
+                                val event = awaitPointerEvent()
+                                val pressChange = event.changes.lastOrNull { it.pressed }
+                                if (pressChange == null) break
+                                updateDirs(dirsFromTouch(pressChange.position))
+                                event.changes.forEach { it.consume() }
+                            }
+                            updateDirs(emptySet())
+                        }
+                    } else Modifier
+                )
+        ) {
+            DpadCanvas(sizeDp = sizeDp, activeDirs = activeDirs)
+        }
+        // 方向模式标签
+        Text(
+            text = if (currentElement.dirMode == GamepadController.DirMode.WASD) "WASD" else "←↑→↓",
+            color = Color(0xB3E2F5FF),
+            fontSize = 10.sp,
+            fontWeight = FontWeight.Medium,
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(bottom = 2.dp)
+        )
+    }
+}
+
+/** 十字键绘制：圆角十字 + 中心圆 + 四向箭头 + 激活高亮 */
+@Composable
+private fun DpadCanvas(sizeDp: Dp, activeDirs: Set<Char>) {
+    Canvas(modifier = Modifier.size(sizeDp)) {
+        val s = size.minDimension
+        val c = Offset(size.width / 2f, size.height / 2f)
+        val arm = s * 0.30f       // 十字臂宽的一半
+        val len = s * 0.48f       // 十字臂长（从中心到端点）
+
+        // ===== 十字身体 =====
+        // 横臂
+        drawRoundRect(
+            color = Color(0x2EFFFFFF),
+            topLeft = Offset(c.x - len, c.y - arm),
+            size = Size(len * 2, arm * 2),
+            cornerRadius = CornerRadius(arm * 0.55f)
+        )
+        // 竖臂
+        drawRoundRect(
+            color = Color(0x2EFFFFFF),
+            topLeft = Offset(c.x - arm, c.y - len),
+            size = Size(arm * 2, len * 2),
+            cornerRadius = CornerRadius(arm * 0.55f)
+        )
+        // 描边
+        drawRoundRect(
+            color = Color(0x732DD4BF),
+            topLeft = Offset(c.x - len, c.y - arm),
+            size = Size(len * 2, arm * 2),
+            cornerRadius = CornerRadius(arm * 0.55f),
+            style = Stroke(width = s * 0.018f)
+        )
+        drawRoundRect(
+            color = Color(0x732DD4BF),
+            topLeft = Offset(c.x - arm, c.y - len),
+            size = Size(arm * 2, len * 2),
+            cornerRadius = CornerRadius(arm * 0.55f),
+            style = Stroke(width = s * 0.018f)
+        )
+
+        // ===== 中心圆 =====
+        drawCircle(
+            brush = Brush.radialGradient(
+                listOf(Color(0x33FFFFFF), Color(0x1F1E2836)),
+                center = c,
+                radius = arm
+            ),
+            radius = arm,
+            center = c
+        )
+        drawCircle(
+            color = Color(0x592DD4BF),
+            radius = arm,
+            center = c,
+            style = Stroke(width = s * 0.015f)
+        )
+
+        // ===== 四向箭头 + 激活高亮 =====
+        listOf(
+            'U' to -90f, 'D' to 90f, 'L' to 180f, 'R' to 0f
+        ).forEach { (char, angleDeg) ->
+            val active = char in activeDirs
+            val angle = Math.toRadians(angleDeg.toDouble())
+            val dist = len * 0.68f
+            val tipLen = s * 0.055f
+            val baseHalf = s * 0.045f
+            val dirVec = Offset(cos(angle).toFloat(), sin(angle).toFloat())
+            val tip = Offset(c.x + dirVec.x * (dist + tipLen), c.y + dirVec.y * (dist + tipLen))
+            val baseCenter = Offset(c.x + dirVec.x * dist, c.y + dirVec.y * dist)
+            val perp = Offset(-dirVec.y, dirVec.x)
+            val path = Path().apply {
+                moveTo(tip.x, tip.y)
+                lineTo(baseCenter.x + perp.x * baseHalf, baseCenter.y + perp.y * baseHalf)
+                lineTo(baseCenter.x - perp.x * baseHalf, baseCenter.y - perp.y * baseHalf)
+                close()
+            }
+            drawPath(path, color = if (active) Color(0xFF2DD4BF) else Color(0xB3FFFFFF))
+
+            if (active) {
+                drawRoundRect(
+                    color = Color(0x3D2DD4BF),
+                    topLeft = when (char) {
+                        'U' -> Offset(c.x - arm, c.y - len)
+                        'D' -> Offset(c.x - arm, c.y + arm)
+                        'L' -> Offset(c.x - len, c.y - arm)
+                        else -> Offset(c.x + arm, c.y - arm)
+                    },
+                    size = when (char) {
+                        'U', 'D' -> Size(arm * 2, len - arm)
+                        else -> Size(len - arm, arm * 2)
+                    },
+                    cornerRadius = CornerRadius(arm * 0.5f)
+                )
+            }
+        }
+    }
+}
+
+// ============================================================
+// 按钮
+// ============================================================
+
+/**
+ * 手柄按钮：径向渐变圆钮 + 辉光环 + 按压缩放。
+ * 颜色：A绿 / B红 / X蓝 / Y黄 / L青 / R紫 / 其他青。
+ * 按下 = 映射动作 down，抬起 = up（长按连发由游戏自身处理）。
+ */
+@Composable
+private fun PadButtonContent(
+    element: GamepadController.PadElement,
+    inputEnabled: Boolean
+) {
+    val sizeDp = element.sizeDp.dp
+    val haptic = LocalHapticFeedback.current
+    var pressed by remember { mutableStateOf(false) }
+    val currentElement by rememberUpdatedState(element)
+
+    val pressScale by animateFloatAsState(
+        targetValue = if (pressed) 0.86f else 1f,
+        animationSpec = tween(80),
+        label = "padBtnScale"
+    )
+    val colors = buttonColors(currentElement.label)
+
+    Box(
+        modifier = Modifier
+            .size(sizeDp)
+            .scale(pressScale)
+            .shadow(6.dp, CircleShape, ambientColor = Color(0x662DD4BF))
+            .clip(CircleShape)
+            .background(Brush.radialGradient(colors))
+            .then(
+                if (inputEnabled) Modifier.pointerInput(currentElement.id) {
+                    detectTapGestures(
+                        onPress = {
+                            pressed = true
+                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                            GamepadController.onButtonPress(currentElement)
+                            try { awaitRelease() } finally {
+                                pressed = false
+                                GamepadController.onButtonRelease(currentElement)
+                            }
+                        }
+                    )
+                } else Modifier
+            ),
+        contentAlignment = Alignment.Center
+    ) {
+        // 辉光外环 + 顶部高光弧
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val r = size.minDimension / 2f
+            drawCircle(
+                color = Color(0x59FFFFFF),
+                radius = r,
+                center = Offset(r, r),
+                style = Stroke(width = r * 0.09f)
+            )
+            if (pressed) {
+                drawCircle(
+                    color = Color(0x552DD4BF),
+                    radius = r * 1.02f,
+                    center = Offset(r, r),
+                    style = Stroke(width = r * 0.16f)
+                )
+            }
+            drawArc(
+                color = Color(0x40FFFFFF),
+                startAngle = 200f,
+                sweepAngle = 140f,
+                useCenter = false,
+                topLeft = Offset(r * 0.16f, r * 0.16f),
+                size = Size(r * 1.68f, r * 1.68f),
+                style = Stroke(width = r * 0.07f, cap = StrokeCap.Round)
+            )
+        }
+        Text(
+            text = currentElement.label,
+            color = Color.White,
+            fontSize = (sizeDp.value * 0.30f).coerceIn(10f, 22f).sp,
+            fontWeight = FontWeight.ExtraBold
+        )
+    }
+}
+
+/** 按钮配色：A绿 / B红 / X蓝 / Y黄 / L青 / R紫 / 其他青 */
+private fun buttonColors(label: String): List<Color> = when (label.uppercase()) {
+    "A" -> listOf(Color(0xFF86EFAC), Color(0xFF22C55E), Color(0xFF15803D))
+    "B" -> listOf(Color(0xFFFCA5A5), Color(0xFFEF4444), Color(0xFFB91C1C))
+    "X" -> listOf(Color(0xFF93C5FD), Color(0xFF3B82F6), Color(0xFF1D4ED8))
+    "Y" -> listOf(Color(0xFFFDE68A), Color(0xFFEAB308), Color(0xFFA16207))
+    "L1", "L2" -> listOf(Color(0xFFA5F3FC), Color(0xFF06B6D4), Color(0xFF0E7490))
+    "R1", "R2" -> listOf(Color(0xFFC4B5FD), Color(0xFF8B5CF6), Color(0xFF6D28D9))
+    else -> listOf(Color(0xFFA5F3FC), Color(0xFF2DD4BF), Color(0xFF0F766E))
+}

@@ -124,6 +124,7 @@ internal fun BluetoothDevicesSection() {
     val context = LocalContext.current
     val app = AnWindApp.get()
     val theme = LocalWinTheme.current
+    val scope = rememberCoroutineScope()
 
     // v2.13：鼠标/键盘设置子页（应用内，替代旧的零散卡片）
     var showMousePage by remember { mutableStateOf(false) }
@@ -300,6 +301,25 @@ internal fun BluetoothDevicesSection() {
         title = "键盘",
         subtitle = "布局（功能键行/小键盘）、大小、主题、位置、振动与触摸反馈",
         onClick = { showKeyboardPage = true }
+    )
+    Spacer(Modifier.height(8.dp))
+
+    // ===== 虚拟游戏手柄（v2.15：开启 + 悬浮设置窗） =====
+    val gamepadEnabled by app.settingsStore.gamepadEnabled.collectAsState(initial = false)
+    SettingsCard(
+        icon = Icons.Default.SportsEsports,
+        iconBackgroundColor = Color(0xFF107C10),
+        title = "虚拟游戏手柄",
+        subtitle = "摇杆/十字键/按钮布局、键鼠映射、方向键↔WASD（游戏时显示）",
+        onClick = {
+            scope.launch { app.settingsStore.setGamepadEnabled(!gamepadEnabled) }
+            com.anwind.core.input.gamepad.GamepadController.settingsOpen = true
+        },
+        trailingContent = {
+            ToggleSwitch(gamepadEnabled) { v ->
+                scope.launch { app.settingsStore.setGamepadEnabled(v) }
+            }
+        }
     )
     Spacer(Modifier.height(8.dp))
 

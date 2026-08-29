@@ -23,7 +23,7 @@ import java.io.File
 val SysInfoApp = AppDef(
     id = "sysinfo",
     displayName = "系统信息",
-    iconAsset = "emoji:📊",
+    iconAsset = "app:sysinfo",
     launchMode = LaunchMode.FLOATING,
     defaultWidth = 480.dp,
     defaultHeight = 560.dp,

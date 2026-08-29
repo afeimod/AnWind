@@ -30,7 +30,7 @@ import com.anwind.core.theme.WindowsVariant
 val TerminalApp = AppDef(
     id = "terminal",
     displayName = "终端",
-    iconAsset = "emoji:💻",
+    iconAsset = "app:terminal",
     launchMode = LaunchMode.FLOATING,
     defaultWidth = 640.dp,
     defaultHeight = 400.dp,

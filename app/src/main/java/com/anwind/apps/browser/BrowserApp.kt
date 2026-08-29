@@ -63,7 +63,7 @@ import kotlinx.coroutines.launch
 val BrowserApp = AppDef(
     id = "browser",
     displayName = "浏览器",
-    iconAsset = "icons/browser.png",
+    iconAsset = "app:browser",
     launchMode = LaunchMode.FLOATING,
     defaultWidth = 980.dp,
     defaultHeight = 640.dp,
@@ -378,6 +378,8 @@ private fun WebViewContainer(
                 val zoomLayout = ZoomPinchLayout(ctx)
                 val wv = BrowserEngine.ensureWebView(ctx, tab, tabManager)
                 zoomLayout.setWebView(wv, tab.viewZoom)
+                // v2.15：注册为虚拟手柄输入目标（显示中的标签即玩家所在页面）
+                com.anwind.core.input.gamepad.GamepadController.attachWebView(wv)
                 // 缩放值写回标签（切标签恢复 / 导航重置的同步点）
                 zoomLayout.onZoomChanged = { z -> tab.viewZoom = z }
                 // v2.14.4：标记已被 AndroidView 认领（弹窗临时挂载场景下，
@@ -407,6 +409,8 @@ private fun WebViewContainer(
                 if (webview != null) {
                     zoomLayout.setWebView(webview, tab.viewZoom)
                     zoomLayout.onZoomChanged = { z -> tab.viewZoom = z }
+                    // v2.15：确保当前显示的 WebView 持有手柄输入目标
+                    com.anwind.core.input.gamepad.GamepadController.attachWebView(webview)
                 } else {
                     return@AndroidView
                 }
@@ -436,6 +440,8 @@ private fun WebViewContainer(
             onRelease = { zoomLayout ->
                 // 解除容器对 WebView 的引用（WebView 生命周期由引擎管理）
                 zoomLayout.detachWebView()
+                // 虚拟手柄：解除输入目标注册（v2.15）
+                com.anwind.core.input.gamepad.GamepadController.detachWebView(tab.webView)
                 // 仅当标签被关闭时销毁 WebView；
                 // 普通切换标签保留（缓存复用，切回即恢复原状态）
                 // v2.14.10：closeTab/destroyAll 不再提前置空 tab.webView，
@@ -449,6 +455,14 @@ private fun WebViewContainer(
             },
             modifier = Modifier.fillMaxSize()
         )
+
+        // 虚拟手柄：把当前显示的 WebView 注册为输入目标（v2.15）
+        // 兜底：factory/attach 时序之外，任重组时重读 tab.webView 作为 key 刷新注册
+        LaunchedEffect(tab.id, tab.webView) {
+            tab.webView?.let {
+                com.anwind.core.input.gamepad.GamepadController.attachWebView(it)
+            }
+        }
 
         // 加载进度条
         if (progress in 1 until 100) {

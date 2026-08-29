@@ -28,7 +28,7 @@ import com.anwind.core.window.WindowContentScope
 val ImageViewerApp = AppDef(
     id = "image_viewer",
     displayName = "图片查看器",
-    iconAsset = "icons/image_viewer.png",
+    iconAsset = "app:image_viewer",
     launchMode = LaunchMode.FLOATING,
     defaultWidth = 640.dp,
     defaultHeight = 480.dp,

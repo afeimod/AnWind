@@ -6,6 +6,7 @@ import com.anwind.apps.clock.ClockApp
 import com.anwind.apps.filemanager.FileExplorerApp
 import com.anwind.apps.imageviewer.ImageViewerApp
 import com.anwind.apps.media.MediaPlayerApp
+import com.anwind.apps.minesweeper.MinesweeperApp
 import com.anwind.apps.notepad.NotepadApp
 import com.anwind.apps.settings.SettingsApp
 import com.anwind.apps.sysinfo.SysInfoApp
@@ -29,5 +30,6 @@ object AppBootstrap {
         AppRegistry.register(ClockApp)
         AppRegistry.register(TerminalApp)
         AppRegistry.register(MediaPlayerApp)
+        AppRegistry.register(MinesweeperApp)
     }
 }

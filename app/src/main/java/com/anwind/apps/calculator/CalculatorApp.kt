@@ -22,7 +22,7 @@ import com.anwind.core.window.WindowContentScope
 val CalculatorApp = AppDef(
     id = "calculator",
     displayName = "计算器",
-    iconAsset = "emoji:🧮",
+    iconAsset = "app:calculator",
     launchMode = LaunchMode.FLOATING,
     defaultWidth = 340.dp,
     defaultHeight = 540.dp,

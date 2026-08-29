@@ -41,7 +41,7 @@ import java.io.File
 val NotepadApp = AppDef(
     id = "notepad",
     displayName = "记事本",
-    iconAsset = "icons/notepad.png",
+    iconAsset = "app:notepad",
     launchMode = LaunchMode.FLOATING,
     defaultWidth = 620.dp,
     defaultHeight = 460.dp,

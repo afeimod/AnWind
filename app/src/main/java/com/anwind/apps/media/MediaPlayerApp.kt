@@ -44,7 +44,7 @@ import java.io.File
 val MediaPlayerApp = AppDef(
     id = "media_player",
     displayName = "媒体播放器",
-    iconAsset = "icons/music.png",
+    iconAsset = "app:media_player",
     launchMode = LaunchMode.FLOATING,
     defaultWidth = 760.dp,
     defaultHeight = 540.dp,
