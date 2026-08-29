@@ -367,7 +367,15 @@ private fun WebViewContainer(
     Box(modifier = Modifier.fillMaxSize().background(theme.windowBackgroundColor)) {
         AndroidView(
             factory = { ctx ->
+                // v2.14.6：AndroidView 承载 ZoomPinchLayout（手势仲裁容器），
+                // WebView 作为其子 View —— 双指缩放 30%~100% 缩小域在 View 层
+                // 实现（Chromium 引擎级地板 = 画布宽/窗宽，viewport 无法突破），
+                // 100% 以上仍由原生捏合处理，默认排版与 v2.14.4 完全一致
+                val zoomLayout = ZoomPinchLayout(ctx)
                 val wv = BrowserEngine.ensureWebView(ctx, tab, tabManager)
+                zoomLayout.setWebView(wv, tab.viewZoom)
+                // 缩放值写回标签（切标签恢复 / 导航重置的同步点）
+                zoomLayout.onZoomChanged = { z -> tab.viewZoom = z }
                 // v2.14.4：标记已被 AndroidView 认领（弹窗临时挂载场景下，
                 // closeTab 据此判断 onRelease 会不会来，防泄漏/遮挡）
                 tab.claimedByUi = true
@@ -385,11 +393,19 @@ private fun WebViewContainer(
                         }
                     }
                 }
-                wv
+                zoomLayout
             },
-            update = { webview ->
-                // 重新绑定（tab.webView 在 onRelease 后可能被置空）
-                tab.webView = webview
+            update = { zoomLayout ->
+                // 重新绑定（tab.webView 在 onRelease 后可能被置空）。
+                // setWebView 内部含换绑逻辑（旧容器剥离/重复绑定安全），
+                // 并按 tab.viewZoom 恢复缩放（导航重置后同步回 100%）
+                val webview = tab.webView
+                if (webview != null) {
+                    zoomLayout.setWebView(webview, tab.viewZoom)
+                    zoomLayout.onZoomChanged = { z -> tab.viewZoom = z }
+                } else {
+                    return@AndroidView
+                }
                 // UA 模式切换（当前激活标签实时生效）：设置后立即重载
                 val desiredUa = BrowserEngine.desiredUa(uaMode)
                 if (webview.settings.userAgentString != desiredUa) {
@@ -413,11 +429,13 @@ private fun WebViewContainer(
                     }
                 }
             },
-            onRelease = { webview ->
+            onRelease = { zoomLayout ->
+                // 解除容器对 WebView 的引用（WebView 生命周期由引擎管理）
+                zoomLayout.detachWebView()
                 // 仅当标签被关闭时销毁 WebView；
                 // 普通切换标签保留（缓存复用，切回即恢复原状态）
                 if (tab.destroyPending) {
-                    BrowserEngine.destroyWebView(webview)
+                    tab.webView?.let { BrowserEngine.destroyWebView(it) }
                 }
             },
             modifier = Modifier.fillMaxSize()

@@ -415,9 +415,11 @@ object BrowserEngine {
                 view?.evaluateJavascript(WEBGL_GUARD_SCRIPT, null)
                 // 1) View Transitions API 补丁（所有页面通用，防 SPA 跳转卡死）
                 view?.evaluateJavascript(VIEW_TRANSITION_PATCH_SCRIPT, null)
-                // 2) 双指缩放支持（v2.14.5）：见 ZOOM_VIEWPORT_SCRIPT 注释 ——
-                //    不在此处注入（页面 meta 未解析），改在 onPageCommitVisible /
-                //    onPageFinished 双阶段注入
+                // 2) PC 页面 viewport 自适配（页面自带 viewport 则不动）。
+                //    v2.14.6：恢复 v2.14.4 原版默认排版（用户要求“默认缩放
+                //    还用之前的”）；缩小到 30% 的能力改由 ZoomPinchLayout
+                //    在 View 层实现，不再动 viewport 画布宽
+                view?.evaluateJavascript(VIEWPORT_FIT_SCRIPT, null)
                 // 3) Flash 兼容：伪造插件让 4399 等页面创建 <object> Flash 元素（零网络开销）
                 view?.evaluateJavascript(FLASH_FAKE_SUPPORT_SCRIPT, null)
                 //    懒加载探测器：任意页面出现 Flash 元素时动态加载 Ruffle 引擎
@@ -428,20 +430,25 @@ object BrowserEngine {
                     view?.evaluateJavascript(RUFFLE_LOADER_SCRIPT, null)
                 }
             }
+
+            // v2.14.6：导航重置 View 级双指缩放（30%~100% 缩小域）——
+            // 每次新页面默认回到 100% 排版，避免缩小态跨页残留被误认为
+            // 排版问题（v2.14.5 教训：默认视觉必须与旧版一致）
+            if (tab.viewZoom != 1f) {
+                tab.viewZoom = 1f
+                view?.let { ZoomPinchLayout.applyZoom(it, 1f) }
+            }
         }
 
         /**
          * v2.14.2（gamehtml）：首次可见帧强制重绘。
          * 部分设备上首帧提交后合成器未拉起新帧，invalidate 确保当前帧上屏。
-         * v2.14.5：此处同步注入双指缩放支持脚本 —— 首帧前 head 内的 viewport
-         * meta 已解析完毕，此刻改写可让首帧直接按宽画布/放宽后的缩放限制
-         * 渲染，避免先按默认 980 画布出帧再跳变（脚本幂等，重复注入无副作用）。
+         * v2.14.5 曾在此注入 viewport 缩放脚本（宽画布方案），v2.14.6 撤销
+         * —— 该方案破坏无 viewport PC 页的默认排版，缩小能力改由
+         * ZoomPinchLayout 在 View 层实现，与页面渲染无关。
          */
         override fun onPageCommitVisible(view: WebView?, url: String?) {
             super.onPageCommitVisible(view, url)
-            if (url != null && (url.startsWith("http") || url.startsWith("file:"))) {
-                view?.evaluateJavascript(ZOOM_VIEWPORT_SCRIPT, null)
-            }
             view?.invalidate()
         }
 
@@ -452,11 +459,8 @@ object BrowserEngine {
                 tab.canGoForward = it.canGoForward()
             }
 
-            // v2.14.5：双指缩放支持第二阶段 —— SPA 动态建 viewport meta 的页面
-            // 在加载完成时才可改写；幂等脚本，与 onPageCommitVisible 重复注入无副作用
-            if (url != null && (url.startsWith("http") || url.startsWith("file:"))) {
-                view?.evaluateJavascript(ZOOM_VIEWPORT_SCRIPT, null)
-            }
+            // v2.14.5 曾在此注入 viewport 缩放脚本（SPA 兑底），v2.14.6 撤销
+            //（理由同 onPageCommitVisible 注释）
 
             // ===== v2.14.2（gamehtml）强制重绘管线 —— 灰屏的真正解法 =====
             // 部分网页（View Transitions SPA / 重 Canvas 页面）加载完成后渲染
@@ -494,6 +498,8 @@ object BrowserEngine {
                 tab.webView = null
                 tab.hasLoadedOnce = false
                 tab.lastRequestedUrl = null
+                // v2.14.6：新 WebView 从默认 100% 开始，不继承旧缩放态
+                tab.viewZoom = 1f
                 tab.renderEpoch += 1
                 // 若该标签正处视频全屏，同步收起死掉的全屏层
                 if (manager.activeTabId == tab.id) {
@@ -962,64 +968,42 @@ object BrowserEngine {
             """
 
             /**
-             * 双指缩放支持脚本（v2.14.5 重写，取代旧 VIEWPORT_FIT_SCRIPT）。
+             * PC 页面 viewport 自适配（gamehtml VIEWPORT_FIT_SCRIPT，v2.14.6 恢复）。
              *
-             * 背景：旧脚本给无 viewport 的 PC 页注入 width=device-width，
-             * 把布局画布钉死在窗口宽 —— Chromium 的页面最小缩放 =
-             * max(meta minimum-scale, 窗口宽 / 画布宽)，画布=窗口宽时
-             * 最小缩放恒为 100%，双指只能放大不能缩小（用户主诉）。
+             * v2.14.5 曾用 ZOOM_VIEWPORT_SCRIPT（宽画布 + minimum-scale=0.3）
+             * 尝试打开 30% 缩小域，实测失败并撤销，根因记录如下：
+             * 1) Chromium 页面最小缩放 = max(meta minimum-scale, 窗口宽/画布宽)，
+             *    而画布宽就是排版宽度 —— viewport 层面"缩到 100% 以下"与
+             *    "排版不变"物理上不可能兼得：画布一放宽，媒体查询/流式布局/
+             *    initial 全览全部跟着变；
+             * 2) 实测症状与用户反馈逐条对应：4399 PC 首页按超宽画布排版整页
+             *    压扁（排版有问题）、初始即 30% 全览（默认缩放被改）、初始
+             *    已是最小值（不能继续缩小）、全览态无滚动余量（往左拉不过去）；
+             * 3) 结论：30%~100% 缩小域改由 ZoomPinchLayout 在 View 层实现
+             *    （对 WebView 施加 scale 变换，排版/媒体查询/innerWidth 全部
+             *    不动），本脚本只负责默认排版 —— 与 v2.14.4 逐字一致；
+             *    ≥100% 放大继续由原生捏合处理（排版重排/文字回流）。
              *
-             * 修复（参考 GameBox 的 viewport 放宽思路 + Chromium 画布公式）：
-             * 1) 无 viewport（PC 页）：注入宽画布 width = max(1200, 窗口宽/0.3)，
-             *    最小缩放可达 30%；initial-scale 取全览比例，首屏视觉与旧版
-             *    sw/1200 自适配语义一致（窄窗口全览 PC 布局）。
-             * 2) 已有 viewport：保留页面布局（width / initial-scale 不动），
-             *    仅改写 minimum-scale=0.3 / maximum-scale=10（WebView 允许
-             *    的最大倍率）/ user-scalable=yes。width 为具体值的页面完整
-             *    生效；width=device-width 的移动页受 Chromium 引擎级约束
-             *    （画布=窗口宽时缩小会出现空白边，强制 min=100%），不强行
-             *    改宽以免破坏移动页布局。
-             *
-             * 注入时机：onPageCommitVisible（首帧前，head 内 meta 已解析，
-             * 避免首屏按默认 980 画布渲染后跳变）+ onPageFinished（SPA
-             * 动态建 meta 兕底）。脚本幂等：重复注入时重组结果相同，
-             * 不触发额外重排。不再在 onPageStarted 注入 —— document start
-             * 时页面 meta 未解析，创建的 meta 会与后到的页面 meta 并存，
-             * 覆盖顺序依赖 Blink 实现（last-wins）不可靠。
+             * 本脚本语义（v2.14.2 起不变）：仅对【无 viewport meta】的 PC 页
+             * 注入 width=device-width + sw/1200 自适配 initial-scale（device-width
+             * 画布下 initial 被 Chromium 钳到地板 100%，窄屏 sw/1200 不生效但
+             * 无害），页面自带 viewport 则完全不动。必须在页面自身 JS 之前
+             * 执行（onPageStarted），零网络开销。
              */
-            private const val ZOOM_VIEWPORT_SCRIPT = """
+            private const val VIEWPORT_FIT_SCRIPT = """
                 (function(){
                   try {
-                    var MIN = 0.3;
-                    var MAX = 10.0;
-                    var dev = window.innerWidth || document.documentElement.clientWidth || 360;
-                    var W = Math.max(1200, Math.ceil(dev / MIN));
                     var meta = document.querySelector('meta[name="viewport"]');
-                    if (!meta) {
-                      var head = document.head || document.documentElement;
-                      if (!head) return;
-                      var fit = Math.max(MIN, Math.min(1, dev / W));
-                      meta = document.createElement('meta');
-                      meta.name = 'viewport';
-                      meta.content = 'width=' + W + ', initial-scale=' + fit +
-                          ', minimum-scale=' + MIN + ', maximum-scale=' + MAX + ', user-scalable=yes';
-                      head.appendChild(meta);
-                      return;
-                    }
-                    var c = (meta.content || '').trim();
-                    if (!c) {
-                      meta.content = 'minimum-scale=' + MIN + ', maximum-scale=' + MAX + ', user-scalable=yes';
-                      return;
-                    }
-                    var keep = [];
-                    c.split(',').forEach(function(p){
-                      var k = p.split('=')[0].trim().toLowerCase();
-                      if (k && k !== 'minimum-scale' && k !== 'maximum-scale' && k !== 'user-scalable') {
-                        keep.push(p.trim());
-                      }
-                    });
-                    keep.push('minimum-scale=' + MIN, 'maximum-scale=' + MAX, 'user-scalable=yes');
-                    meta.content = keep.join(', ');
+                    if (meta) return;
+                    var head = document.head || document.documentElement;
+                    if (!head) return;
+                    meta = document.createElement('meta');
+                    meta.name = 'viewport';
+                    var sw = window.screen.width || 360;
+                    var scale = Math.max(0.25, Math.min(1, sw / 1200));
+                    meta.content = 'width=device-width, initial-scale=' + scale +
+                        ', minimum-scale=0.01, maximum-scale=10.0, user-scalable=yes';
+                    head.appendChild(meta);
                   } catch(e) {}
                 })();
             """
@@ -1283,8 +1267,9 @@ object BrowserEngine {
             // attach 梯子（v2.14.3）只是事后补救。挂到 opener 的容器（真实
             // attached 视图树），首帧在真实 surface 上产出；openTab 已激活新
             // 标签，Compose 下一帧重组时 factory 会剥离临时父容器认领。
-            // AndroidViewHolder 只测量/布局自己的 typedView，第二个子 View
-            // 必须手动 measure/layout 成 opener 当前尺寸。
+            // v2.14.6：opener 的父容器现在是 ZoomPinchLayout（普通 FrameLayout，
+            // 会自动布局子 View），手动 measure/layout 仍保留 —— transport
+            // 交接后 Chromium 立即加载，下一帧布局 pass 之前就要有正确尺寸。
             try {
                 val holder = view?.parent as? ViewGroup
                 if (holder != null && view.width > 0 && view.height > 0) {

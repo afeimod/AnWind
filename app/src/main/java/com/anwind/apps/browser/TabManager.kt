@@ -55,7 +55,17 @@ class BrowserTab(
      * 内网地址 https 失败 → 自动改 http 重试一次并记录；同一地址被
      * 重新导航（重试/地址栏回车）时在 onPageStarted 重置，给再次机会。
      */
-    var httpsFallbackUrl: String? = null
+    var httpsFallbackUrl: String? = null,
+    /**
+     * v2.14.6：View 级双指缩放（0.3~1.0 缩小域）当前比例，1f=默认 100%。
+     * Chromium 页面缩放地板 = max(meta minimum-scale, 窗口宽/画布宽)，
+     * viewport 元数据物理上无法让页面缩到 100% 以下而不改排版（v2.14.5
+     * 宽画布方案的教训）；缩小域改由 ZoomPinchLayout 对 WebView 做
+     * View 变换实现，排版/媒体查询/innerWidth 全部保持旧默认。按标签
+     * 存放（切标签回来恢复），onPageStarted 导航时重置回 1f。
+     * 普通字段即可：不驱动 Compose 重组，只由手势层读写。
+     */
+    var viewZoom: Float = 1f
 ) {
     /**
      * v2.14.3：WebView 重建纪元（渲染进程崩溃 onRenderProcessGone 时 +1）。
