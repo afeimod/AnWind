@@ -115,9 +115,9 @@ fun DesktopContextMenu(
     ) {
         Column(
             modifier = modifier
-                .width(252.dp)
-                .background(theme.windowBackgroundColor, RoundedCornerShape(8.dp))
-                .padding(5.dp)
+                .width(216.dp)
+                .background(theme.windowBackgroundColor, RoundedCornerShape(6.dp))
+                .padding(4.dp)
         ) {
             if (data.iconItem != null) {
                 // ==================== 图标右键菜单 ====================
@@ -375,7 +375,7 @@ private class ClampedMenuPositionProvider(
 // 菜单项组件
 // ============================================================
 
-/** 普通菜单项：图标 + 文字，按压时高亮，点击执行动作 */
+/** 普通菜单项：图标 + 文字，按压时高亮，点击执行动作（紧凑 Windows 尺寸） */
 @Composable
 private fun ContextMenuEntry(
     icon: ImageVector,
@@ -389,27 +389,27 @@ private fun ContextMenuEntry(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .height(38.dp)
-            .clip(RoundedCornerShape(5.dp))
+            .height(30.dp)
+            .clip(RoundedCornerShape(4.dp))
             .background(if (pressed) theme.accentColor.copy(alpha = 0.14f) else Color.Transparent)
             .clickable(
                 interactionSource = interaction,
                 indication = null,
                 onClick = onClick
             )
-            .padding(horizontal = 10.dp),
+            .padding(horizontal = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Icon(
             icon, null,
             tint = if (theme.isDark) Color(0xCCFFFFFF) else Color(0x99000000),
-            modifier = Modifier.size(17.dp)
+            modifier = Modifier.size(14.dp)
         )
-        Spacer(Modifier.width(10.dp))
+        Spacer(Modifier.width(8.dp))
         Text(
             text = label,
             color = fg,
-            fontSize = 13.sp
+            fontSize = 12.sp
         )
     }
 }
@@ -431,8 +431,8 @@ private fun SubmenuEntry(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(38.dp)
-                .clip(RoundedCornerShape(5.dp))
+                .height(30.dp)
+                .clip(RoundedCornerShape(4.dp))
                 .background(
                     when {
                         expanded -> theme.accentColor.copy(alpha = 0.10f)
@@ -445,26 +445,26 @@ private fun SubmenuEntry(
                     indication = null,
                     onClick = onToggle
                 )
-                .padding(horizontal = 10.dp),
+                .padding(horizontal = 8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Icon(
                 icon, null,
                 tint = if (theme.isDark) Color(0xCCFFFFFF) else Color(0x99000000),
-                modifier = Modifier.size(17.dp)
+                modifier = Modifier.size(14.dp)
             )
-            Spacer(Modifier.width(10.dp))
+            Spacer(Modifier.width(8.dp))
             Text(
                 text = label,
                 color = fg,
-                fontSize = 13.sp,
+                fontSize = 12.sp,
                 modifier = Modifier.weight(1f)
             )
             Icon(
                 Icons.Default.ExpandMore, null,
                 tint = if (theme.isDark) Color(0x99FFFFFF) else Color(0x66000000),
                 modifier = Modifier
-                    .size(18.dp)
+                    .size(15.dp)
                     .rotate(if (expanded) 180f else 0f)
             )
         }
@@ -472,7 +472,7 @@ private fun SubmenuEntry(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(start = 16.dp)
+                    .padding(start = 12.dp)
             ) {
                 content()
             }
@@ -490,8 +490,8 @@ private fun RadioOption(label: String, selected: Boolean, onClick: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .height(34.dp)
-            .clip(RoundedCornerShape(5.dp))
+            .height(26.dp)
+            .clip(RoundedCornerShape(4.dp))
             .background(
                 when {
                     selected -> theme.accentColor.copy(alpha = 0.12f)
@@ -504,24 +504,24 @@ private fun RadioOption(label: String, selected: Boolean, onClick: () -> Unit) {
                 indication = null,
                 onClick = onClick
             )
-            .padding(horizontal = 10.dp),
+            .padding(horizontal = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         // 勾选标记占位（保持文字对齐）
-        Box(modifier = Modifier.size(17.dp), contentAlignment = Alignment.Center) {
+        Box(modifier = Modifier.size(13.dp), contentAlignment = Alignment.Center) {
             if (selected) {
                 Icon(
                     Icons.Default.Check, null,
                     tint = theme.accentColor,
-                    modifier = Modifier.size(15.dp)
+                    modifier = Modifier.size(12.dp)
                 )
             }
         }
-        Spacer(Modifier.width(10.dp))
+        Spacer(Modifier.width(8.dp))
         Text(
             text = label,
             color = fg,
-            fontSize = 12.5.sp
+            fontSize = 11.5.sp
         )
     }
 }
@@ -532,7 +532,7 @@ private fun ContextMenuDivider() {
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 8.dp, vertical = 4.dp)
+            .padding(horizontal = 6.dp, vertical = 2.5.dp)
             .height(1.dp)
             .background(theme.windowBorderColor.copy(alpha = 0.35f))
     )

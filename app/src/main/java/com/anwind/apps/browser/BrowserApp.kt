@@ -444,7 +444,7 @@ private fun WebViewContainer(
                 com.anwind.core.input.gamepad.GamepadController.detachWebView(tab.webView)
                 // 仅当标签被关闭时销毁 WebView；
                 // 普通切换标签保留（缓存复用，切回即恢复原状态）
-                // v2.14.10：closeTab/destroyAll 不再提前置空 tab.webView，
+                // v2.15.3：closeTab/destroyAll 不再提前置空 tab.webView，
                 // 此处真正读取引用执行销毁，销毁后置空防重复
                 if (tab.destroyPending) {
                     tab.webView?.let {

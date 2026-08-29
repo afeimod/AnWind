@@ -185,9 +185,9 @@ fun GamepadSettingsWindow(modifier: Modifier = Modifier) {
                     Spacer(Modifier.height(12.dp))
                     GpSectionLabel("编辑：${typeLabel(selected)} \"${selected.label}\"")
 
-                    // 按钮标签快捷选择
+                    // 按钮标签快捷选择（决定按钮配色；按钮表面显示映射按键名）
                     if (selected.type == GamepadController.ElementType.BUTTON) {
-                        GpSubLabel("按钮标签")
+                        GpSubLabel("按钮标签（配色用，表面显示映射按键）")
                         Row(
                             modifier = Modifier.horizontalScroll(rememberScrollState()),
                             horizontalArrangement = Arrangement.spacedBy(6.dp)

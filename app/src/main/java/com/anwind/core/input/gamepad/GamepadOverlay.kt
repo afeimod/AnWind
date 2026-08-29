@@ -65,6 +65,11 @@ fun GamepadOverlay() {
         GamepadController.loadFromJson(json.ifBlank { null })
     }
 
+    // v2.15.3：手柄隐藏/离开组合时释放全部按下的键（防联键：不留任何"按着"的键）
+    DisposableEffect(gamepadEnabled) {
+        onDispose { GamepadController.releaseAllKeys() }
+    }
+
     val scope = rememberCoroutineScope()
 
     fun persistConfig() {
@@ -123,12 +128,17 @@ fun GamepadOverlay() {
 
         // ===== 迷你工具条（右上角） =====
         GamepadMiniToolbar(
-            onSettings = { GamepadController.settingsOpen = true },
+            onSettings = {
+                GamepadController.releaseAllKeys()
+                GamepadController.settingsOpen = true
+            },
             onToggleEdit = {
+                GamepadController.releaseAllKeys()
                 GamepadController.editMode = !GamepadController.editMode
                 if (!GamepadController.editMode) GamepadController.selectElement(null)
             },
             onHide = {
+                GamepadController.releaseAllKeys()
                 GamepadController.editMode = false
                 scope.launch { app.settingsStore.setGamepadEnabled(false) }
             },
@@ -335,31 +345,38 @@ private fun JoystickContent(
                 .fillMaxSize()
                 .then(
                     if (inputEnabled) Modifier.pointerInput(currentElement.id, currentElement.dirMode) {
-                        detectDragGestures(
-                            onDragStart = { touchPos ->
-                                stickOffset = Offset.Zero
-                                val local = touchPos - Offset(radius, radius)
-                                updateDirs(dirsFromOffset(local))
-                            },
-                            onDrag = { change, amount ->
-                                change.consume()
-                                stickOffset += amount
-                                val maxStick = radius * 0.72f
-                                val mag = stickOffset.getDistance()
-                                if (mag > maxStick) {
-                                    stickOffset = stickOffset / mag * maxStick
+                        // finally 兜底：手势被取消（如切编辑模式）时也清空方向，
+                        // 杜绝协程被取消导致的"方向键卡住"（v2.15.3）
+                        try {
+                            detectDragGestures(
+                                onDragStart = { touchPos ->
+                                    stickOffset = Offset.Zero
+                                    val local = touchPos - Offset(radius, radius)
+                                    updateDirs(dirsFromOffset(local))
+                                },
+                                onDrag = { change, amount ->
+                                    change.consume()
+                                    stickOffset += amount
+                                    val maxStick = radius * 0.72f
+                                    val mag = stickOffset.getDistance()
+                                    if (mag > maxStick) {
+                                        stickOffset = stickOffset / mag * maxStick
+                                    }
+                                    updateDirs(dirsFromOffset(stickOffset))
+                                },
+                                onDragEnd = {
+                                    stickOffset = Offset.Zero
+                                    updateDirs(emptySet())
+                                },
+                                onDragCancel = {
+                                    stickOffset = Offset.Zero
+                                    updateDirs(emptySet())
                                 }
-                                updateDirs(dirsFromOffset(stickOffset))
-                            },
-                            onDragEnd = {
-                                stickOffset = Offset.Zero
-                                updateDirs(emptySet())
-                            },
-                            onDragCancel = {
-                                stickOffset = Offset.Zero
-                                updateDirs(emptySet())
-                            }
-                        )
+                            )
+                        } finally {
+                            stickOffset = Offset.Zero
+                            updateDirs(emptySet())
+                        }
                     } else Modifier
                 )
         ) {
@@ -540,15 +557,19 @@ private fun DpadContent(
                     if (inputEnabled) Modifier.pointerInput(currentElement.id, currentElement.dirMode) {
                         awaitEachGesture {
                             val down = awaitFirstDown(requireUnconsumed = false)
-                            updateDirs(dirsFromTouch(down.position))
-                            while (true) {
-                                val event = awaitPointerEvent()
-                                val pressChange = event.changes.lastOrNull { it.pressed }
-                                if (pressChange == null) break
-                                updateDirs(dirsFromTouch(pressChange.position))
-                                event.changes.forEach { it.consume() }
+                            try {
+                                updateDirs(dirsFromTouch(down.position))
+                                while (true) {
+                                    val event = awaitPointerEvent()
+                                    val pressChange = event.changes.lastOrNull { it.pressed }
+                                    if (pressChange == null) break
+                                    updateDirs(dirsFromTouch(pressChange.position))
+                                    event.changes.forEach { it.consume() }
+                                }
+                            } finally {
+                                // 任何退出路径（含协程取消）都清空方向 → 发出全部 UP（v2.15.3）
+                                updateDirs(emptySet())
                             }
-                            updateDirs(emptySet())
                         }
                     } else Modifier
                 )
@@ -690,7 +711,9 @@ private fun DpadCanvas(sizeDp: Dp, activeDirs: Set<Char>) {
 /**
  * 手柄按钮：径向渐变圆钮 + 辉光环 + 按压缩放。
  * 颜色：A绿 / B红 / X蓝 / Y黄 / L青 / R紫 / 其他青。
- * 按下 = 映射动作 down，抬起 = up（长按连发由游戏自身处理）。
+ * 表面文字 = 映射后的按键名（J/K/L/U/I/O/Space…），不再显示 A/B/X/Y（v2.15.3）。
+ * 手势（v2.15.3 防联键）：抬手/取消必发 UP（finally 兜底）；
+ * 手指滑出按钮（含 25% 容差）立即抬起、滑回可再按下。
  */
 @Composable
 private fun PadButtonContent(
@@ -709,6 +732,24 @@ private fun PadButtonContent(
     )
     val colors = buttonColors(currentElement.label)
 
+    // 按钮表面显示映射后的按键名；鼠标动作显示短标签
+    val displayText = if (currentElement.action.kind == "mouse") {
+        when (currentElement.action.keyCode) {
+            GamepadController.PadAction.MOUSE_LEFT -> "左键"
+            GamepadController.PadAction.MOUSE_RIGHT -> "右键"
+            GamepadController.PadAction.MOUSE_MIDDLE -> "中键"
+            GamepadController.PadAction.MOUSE_SCROLL_UP -> "滚↑"
+            GamepadController.PadAction.MOUSE_SCROLL_DOWN -> "滚↓"
+            else -> "鼠标"
+        }
+    } else currentElement.action.label
+    val displayFontSize = when {
+        displayText.length <= 2 -> sizeDp.value * 0.32f
+        displayText.length == 3 -> sizeDp.value * 0.26f
+        displayText.length == 4 -> sizeDp.value * 0.21f
+        else -> sizeDp.value * 0.17f
+    }.coerceIn(9f, 22f).sp
+
     Box(
         modifier = Modifier
             .size(sizeDp)
@@ -718,17 +759,42 @@ private fun PadButtonContent(
             .background(Brush.radialGradient(colors))
             .then(
                 if (inputEnabled) Modifier.pointerInput(currentElement.id) {
-                    detectTapGestures(
-                        onPress = {
-                            pressed = true
-                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                            GamepadController.onButtonPress(currentElement)
-                            try { awaitRelease() } finally {
-                                pressed = false
-                                GamepadController.onButtonRelease(currentElement)
+                    awaitEachGesture {
+                        val down = awaitFirstDown(requireUnconsumed = false)
+                        val w = size.width.toFloat()
+                        val h = size.height.toFloat()
+                        fun inside(p: Offset) =
+                            p.x >= -w * 0.25f && p.x <= w * 1.25f &&
+                            p.y >= -h * 0.25f && p.y <= h * 1.25f
+                        var active = true
+                        pressed = true
+                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                        GamepadController.onButtonPress(currentElement)
+                        try {
+                            while (true) {
+                                val event = awaitPointerEvent()
+                                val change = event.changes.firstOrNull { it.id == down.id } ?: continue
+                                if (!change.pressed) break
+                                val nowInside = inside(change.position)
+                                if (active && !nowInside) {
+                                    // 手指滑出按钮 → 立即抬起
+                                    GamepadController.onButtonRelease(currentElement)
+                                    active = false
+                                    pressed = false
+                                } else if (!active && nowInside) {
+                                    // 滑回按钮 → 重新按下
+                                    GamepadController.onButtonPress(currentElement)
+                                    active = true
+                                    pressed = true
+                                }
+                                change.consume()
                             }
+                        } finally {
+                            // 无论正常抬手、滑出后抬手还是手势被取消，UP 必发
+                            GamepadController.onButtonRelease(currentElement)
+                            pressed = false
                         }
-                    )
+                    }
                 } else Modifier
             ),
         contentAlignment = Alignment.Center
@@ -761,10 +827,11 @@ private fun PadButtonContent(
             )
         }
         Text(
-            text = currentElement.label,
+            text = displayText,
             color = Color.White,
-            fontSize = (sizeDp.value * 0.30f).coerceIn(10f, 22f).sp,
-            fontWeight = FontWeight.ExtraBold
+            fontSize = displayFontSize,
+            fontWeight = FontWeight.ExtraBold,
+            maxLines = 1
         )
     }
 }

@@ -195,44 +195,45 @@ object GamepadController {
     // 预设布局
     // ============================================================
 
-    /** 经典手柄布局：左摇杆 + 左十字键 + 右 ABXY + Start/Select + L1/R1 */
+    /** 经典手柄布局（v2.15.3 新默认）：左摇杆=WASD + 左十字键=方向键 +
+     *  右六键 JKLUIO + Start≡=Tab。按钮表面直接显示映射按键名 */
     fun classicLayout(): List<PadElement> = listOf(
-        PadElement(type = ElementType.JOYSTICK, label = "摇杆", dirMode = DirMode.ARROWS,
+        PadElement(type = ElementType.JOYSTICK, label = "摇杆", dirMode = DirMode.WASD,
             posX = 0.16f, posY = 0.72f, sizeDp = 150f),
         PadElement(type = ElementType.DPAD, label = "十字键", dirMode = DirMode.ARROWS,
             posX = 0.38f, posY = 0.72f, sizeDp = 120f),
         PadElement(type = ElementType.BUTTON, label = "A",
-            action = PadAction.key(KeyEvent.KEYCODE_SPACE, "Space"),
+            action = PadAction.key(KeyEvent.KEYCODE_J, "J"),
             posX = 0.84f, posY = 0.70f, sizeDp = 62f),
         PadElement(type = ElementType.BUTTON, label = "B",
-            action = PadAction.key(KeyEvent.KEYCODE_ENTER, "Enter"),
+            action = PadAction.key(KeyEvent.KEYCODE_K, "K"),
             posX = 0.74f, posY = 0.78f, sizeDp = 62f),
         PadElement(type = ElementType.BUTTON, label = "X",
-            action = PadAction.key(KeyEvent.KEYCODE_SHIFT_LEFT, "Shift"),
+            action = PadAction.key(KeyEvent.KEYCODE_L, "L"),
             posX = 0.74f, posY = 0.60f, sizeDp = 62f),
         PadElement(type = ElementType.BUTTON, label = "Y",
-            action = PadAction.key(KeyEvent.KEYCODE_ESCAPE, "Esc"),
+            action = PadAction.key(KeyEvent.KEYCODE_U, "U"),
             posX = 0.64f, posY = 0.68f, sizeDp = 62f),
         PadElement(type = ElementType.BUTTON, label = "L1",
-            action = PadAction.key(KeyEvent.KEYCODE_Q, "Q"),
+            action = PadAction.key(KeyEvent.KEYCODE_I, "I"),
             posX = 0.12f, posY = 0.42f, sizeDp = 56f),
         PadElement(type = ElementType.BUTTON, label = "R1",
-            action = PadAction.key(KeyEvent.KEYCODE_E, "E"),
+            action = PadAction.key(KeyEvent.KEYCODE_O, "O"),
             posX = 0.88f, posY = 0.42f, sizeDp = 56f),
         PadElement(type = ElementType.BUTTON, label = "≡",
             action = PadAction.key(KeyEvent.KEYCODE_TAB, "Tab"),
             posX = 0.50f, posY = 0.82f, sizeDp = 48f)
     )
 
-    /** 简单布局：仅左十字键 + 右两键 */
+    /** 简单布局：仅左十字键（方向键） + 右 J/K 两键 */
     fun simpleLayout(): List<PadElement> = listOf(
         PadElement(type = ElementType.DPAD, label = "十字键", dirMode = DirMode.ARROWS,
             posX = 0.18f, posY = 0.72f, sizeDp = 140f),
         PadElement(type = ElementType.BUTTON, label = "A",
-            action = PadAction.key(KeyEvent.KEYCODE_SPACE, "Space"),
+            action = PadAction.key(KeyEvent.KEYCODE_J, "J"),
             posX = 0.82f, posY = 0.70f, sizeDp = 70f),
         PadElement(type = ElementType.BUTTON, label = "B",
-            action = PadAction.key(KeyEvent.KEYCODE_ENTER, "Enter"),
+            action = PadAction.key(KeyEvent.KEYCODE_K, "K"),
             posX = 0.70f, posY = 0.78f, sizeDp = 70f)
     )
 
@@ -259,6 +260,10 @@ object GamepadController {
     /** 是否已加载持久化配置（避免首帧默认布局闪现后被覆盖） */
     private var loaded = false
 
+    /** 配置版本：v2 = 摇杆WASD / 十字键方向键 / JKLUIO 默认布局；
+     *  旧版本（裸数组或 v<2）加载时自动升级为新默认 */
+    private const val CONFIG_VERSION = 2
+
     fun updateElements(list: List<PadElement>) {
         elements = list
     }
@@ -267,15 +272,23 @@ object GamepadController {
         selectedElementId = id
     }
 
-    /** 从持久化 JSON 恢复 */
+    /** 从持久化 JSON 恢复（带版本：旧版配置自动升级为 v2 新默认布局） */
     fun loadFromJson(json: String?) {
+        loaded = true
         if (json.isNullOrBlank()) {
             elements = classicLayout()
-            loaded = true
             return
         }
         runCatching {
-            val arr = JSONArray(json)
+            val arr: JSONArray = try {
+                val root = JSONObject(json)
+                if (root.optInt("v", 1) < CONFIG_VERSION) return@runCatching
+                root.optJSONArray("elements") ?: return@runCatching
+            } catch (_: org.json.JSONException) {
+                // v2.15.2 及之前是裸数组格式 = 旧默认布局（摇杆/十字键均为方向键、
+                // ABXY=空格/回车…），直接升级为 v2 新默认（摇杆WASD + JKLUIO）
+                return@runCatching
+            }
             val list = mutableListOf<PadElement>()
             for (i in 0 until arr.length()) {
                 val o = arr.getJSONObject(i)
@@ -298,10 +311,9 @@ object GamepadController {
             }
             if (list.isNotEmpty()) elements = list
         }
-        loaded = true
     }
 
-    /** 序列化到 JSON（持久化） */
+    /** 序列化到 JSON（带版本号，持久化） */
     fun toJson(): String {
         val arr = JSONArray()
         elements.forEach { e ->
@@ -317,7 +329,7 @@ object GamepadController {
                     .put("sizeDp", e.sizeDp.toDouble())
             )
         }
-        return arr.toString()
+        return JSONObject().put("v", CONFIG_VERSION).put("elements", arr).toString()
     }
 
     // ============================================================
@@ -328,22 +340,75 @@ object GamepadController {
     @Volatile
     private var targetWebView: WeakReference<WebView>? = null
 
-    /** 浏览器注册输入目标 */
+    // ============================================================
+    // 按键状态跟踪（v2.15.3 防联键核心）
+    // ============================================================
+
+    /** 引用计数：多个元素映射同一键（如摇杆 WASD + 按钮也映射 W）时，
+     * 只有第一个按下者发 ACTION_DOWN、最后一个抬起者才发 ACTION_UP，
+     * 页面不会收到 down/down/up/up 这种会"卡键"的序列 */
+    private val keyRefCounts = HashMap<Int, Int>()
+
+    /** 每个键的真实按下时刻（UP 事件的 downTime 必须用按下时间，事件语义才正确） */
+    private val keyDownTimes = HashMap<Int, Long>()
+
+    /** 浏览器注册输入目标（切换目标前先释放旧页面还按着的键，防联键） */
     fun attachWebView(webView: WebView?) {
+        val cur = targetWebView?.get()
+        if (cur === webView) return
+        if (cur != null) releaseAllKeys()
         targetWebView = webView?.let { WeakReference(it) }
     }
 
     fun detachWebView(webView: WebView?) {
         val cur = targetWebView?.get()
-        if (webView == null || cur === webView) targetWebView = null
+        if (webView == null || cur === webView) {
+            releaseAllKeys()
+            targetWebView = null
+        }
     }
 
-    /** 派发键盘按下/抬起（keyAction: KeyEvent.ACTION_DOWN / ACTION_UP） */
-    fun dispatchKey(keyCode: Int, keyAction: Int) {
+    /** 底层派发：原始 keydown/keyup 事件（真实事件管线，isTrusted=true） */
+    private fun dispatchKeyEventRaw(keyCode: Int, keyAction: Int, downTime: Long) {
         val wv = targetWebView?.get() ?: return
         val now = android.os.SystemClock.uptimeMillis()
-        val ev = KeyEvent(now, now, keyAction, keyCode, 0)
+        val ev = KeyEvent(downTime, now, keyAction, keyCode, 0)
         runCatching { wv.dispatchKeyEvent(ev) }
+    }
+
+    /** 按下按键（引用计数：已在按下状态的键不重发 DOWN） */
+    fun pressKey(keyCode: Int) {
+        if (keyCode <= 0) return
+        val n = keyRefCounts.getOrDefault(keyCode, 0)
+        if (n > 0) {
+            keyRefCounts[keyCode] = n + 1
+            return
+        }
+        keyRefCounts[keyCode] = 1
+        val now = android.os.SystemClock.uptimeMillis()
+        keyDownTimes[keyCode] = now
+        dispatchKeyEventRaw(keyCode, KeyEvent.ACTION_DOWN, now)
+    }
+
+    /** 抬起按键（引用计数归零才发 UP；多余的 UP 直接忽略） */
+    fun releaseKey(keyCode: Int) {
+        if (keyCode <= 0) return
+        val n = keyRefCounts.getOrDefault(keyCode, 0)
+        if (n <= 0) return
+        if (n == 1) {
+            keyRefCounts.remove(keyCode)
+            val down = keyDownTimes.remove(keyCode) ?: android.os.SystemClock.uptimeMillis()
+            dispatchKeyEventRaw(keyCode, KeyEvent.ACTION_UP, down)
+        } else {
+            keyRefCounts[keyCode] = n - 1
+        }
+    }
+
+    /** 一键抬起全部按下的键（隐藏手柄 / 进编辑模式 / 打开设置 / 切换标签时调用，
+     * 杜绝"松开后还在一直输出"） */
+    fun releaseAllKeys() {
+        if (keyRefCounts.isEmpty()) return
+        keyRefCounts.keys.toList().forEach { releaseKey(it) }
     }
 
     /** 派发鼠标动作（在虚拟鼠标指针位置；无指针则屏幕中心） */
@@ -408,13 +473,13 @@ object GamepadController {
     /** 按钮按下 */
     fun onButtonPress(element: PadElement) {
         if (element.action.kind == "mouse") dispatchMouse(element.action.keyCode)
-        else dispatchKey(element.action.keyCode, KeyEvent.ACTION_DOWN)
+        else pressKey(element.action.keyCode)
     }
 
     /** 按钮抬起 */
     fun onButtonRelease(element: PadElement) {
         if (element.action.kind == "mouse") return  // 鼠标点击在按下时一次性完成
-        dispatchKey(element.action.keyCode, KeyEvent.ACTION_UP)
+        releaseKey(element.action.keyCode)
     }
 
     /** 方向按下/抬起（摇杆/十字键共用；按方向模式映射为方向键或 WASD） */
@@ -434,7 +499,7 @@ object GamepadController {
                 else -> KeyEvent.KEYCODE_D
             }
         }
-        dispatchKey(keyCode, if (pressed) KeyEvent.ACTION_DOWN else KeyEvent.ACTION_UP)
+        if (pressed) pressKey(keyCode) else releaseKey(keyCode)
     }
 
     /** 无目标时是否有接收方（覆盖层可显示提示） */
