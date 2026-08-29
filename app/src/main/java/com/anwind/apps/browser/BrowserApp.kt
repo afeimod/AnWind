@@ -369,9 +369,11 @@ private fun WebViewContainer(
             factory = { ctx ->
                 // v2.14.7：AndroidView 承载 ZoomPinchLayout（手势仲裁容器），
                 // WebView 作为其子 View —— 双指缩放 30%~100% 缩小域由容器
-                // 拦截手势并注入 body.zoom 实现（Chromium 引擎级地板 =
-                // 画布宽/窗宽，viewport 无法突破；View 变换方案已被实测
-                // 否决：内容不跟随缩放、仅被边界裁切）。100% 以上仍由
+                // 拦截手势并动态改写 viewport meta 实现（v2.14.9：
+                // width=原宽/z + 钳制 scale=窗口宽/画布宽，整页等比变小且
+                // 任何比例下精确铺满窗口宽 —— 桌面 Chrome Ctrl+减号 同源
+                // 语义，无 letterbox 灰边；v2.14.7/8 的 body.zoom 方案
+                // 因两侧灰边被用户否决）。100% 以上仍由
                 // 原生捏合处理，默认排版与 v2.14.4 完全一致（零注入）
                 val zoomLayout = ZoomPinchLayout(ctx)
                 val wv = BrowserEngine.ensureWebView(ctx, tab, tabManager)

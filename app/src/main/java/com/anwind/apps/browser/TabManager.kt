@@ -58,15 +58,15 @@ class BrowserTab(
     var httpsFallbackUrl: String? = null,
     /**
      * v2.14.7：双指缩小域（0.3~1.0）当前比例，1f=默认 100%。
-     * Chromium 页面缩放地板 = max(meta minimum-scale, 窗口宽/画布宽)，
-     * viewport 元数据物理上无法让页面缩到 100% 以下而不改排版（v2.14.5
-     * 宽画布方案的教训）；v2.14.6 的 View scale 变换亦被实测否决（内容不
-     * 跟随、仅被边界裁切）。缩小域现由 ZoomPinchLayout 注入
-     * document.body.style.zoom 实现（GameBox applyPageZoom 同源方案），
-     * 整页等比 layout 缩放、命中测试/滚动原生正确，排版结构不变。
-     * 按标签存放（切标签回来恢复），onPageStarted 导航时重置回 1f
-     * （新文档天然无 zoom；锚点导航由 RESET_SCRIPT 清除）。
-     * 普通字段即可：不驱动 Compose 重组，只由手势层读写。
+     * 缩小域由 ZoomPinchLayout 在【捏合缩小期间】动态改写 viewport meta
+     * 实现（v2.14.9）：width=原排版宽/z + minimum=maximum=接管时 scale×z，
+     * 排版视口按 1/z 变宽、页面 scale 钳到"窗口宽/画布宽" —— 整页等比
+     * 变小且任何比例下精确铺满窗口宽（无 letterbox；v2.14.7/8 的
+     * body.zoom 方案因两侧灰白边被用户否决）。innerWidth/innerHeight
+     * 原生变宽，H5 游戏 resize 监听自动重排画布；fixed 全屏层自然跟随。
+     * 按标签存放（切标签回来恢复，快照 __az 随页面存续），onPageStarted
+     * 导航时重置回 1f（新文档天然无注入；锚点导航由 RESET_SCRIPT
+     * 还原原 meta）。普通字段即可：不驱动 Compose 重组，只由手势层读写。
      */
     var viewZoom: Float = 1f
 ) {

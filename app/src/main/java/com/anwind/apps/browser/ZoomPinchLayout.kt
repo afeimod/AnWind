@@ -11,40 +11,47 @@ import kotlin.math.abs
 import kotlin.math.sqrt
 
 /**
- * v2.14.8：双指缩放仲裁容器 —— 弥补 Chromium 无法缩小到 100% 以下的引擎级限制。
+ * v2.14.9：双指缩放仲裁容器 —— 弥补 Chromium 无法缩小到 100% 以下的引擎级限制。
  *
- * ## 方案演进（为什么是 JS body.zoom + 钉宽居中）
- * - v2.14.5 宽画布 viewport：破坏默认排版（用户否决）；
- * - v2.14.6 WebView View 变换（scaleX/Y）：实测【内容不跟随缩放、仅被缩小后
- *   的边界裁切】（用户截图证实：视口缩了、四周露深灰边，页面内容仍按原尺寸
- *   渲染被切掉右/下）。原因：Chromium 合成层不随 View 变换矩阵缩放；
- *   加 LAYER_TYPE_HARDWARE 强制离屏层虽可让变换生效，但 AnWind v2.8 已
- *   录屏证实该配置在 Compose 多窗口嵌套下会"页面加载完成但永不绘制"
- *   （灰屏），v2.14.3 已撤销 —— View 变换这条路两头都是死路；
- * - v2.14.7（GameBox applyPageZoom 同源方案）：缩小域改为 JS 注入
- *   document.body.style.zoom —— Chromium 原生整页 layout 缩放，对带
- *   viewport meta 的 4399 页面也生效，立即生效无需 reload（GameBox 注：
- *   "WebKit 私有 API，Chromium WebView 支持，终极方案"）。默认 100% 时
- *   不注入任何东西，默认排版/缩放与 v2.14.4 完全一致。
- *   实测缺陷：缩放生效但内容钉死左上角、右侧大片空白（用户截图实证）。
- *   根因：zoom 只缩渲染不改 window.innerWidth —— H5 游戏画布按 JS
- *   innerWidth 定尺寸，body 坐标系扩宽后画布不重排，钉在原位缩小；
- * - v2.14.8（钉宽居中）：zoom 同时把 body 钉在设计宽度
- *   （clientWidth）+ margin:auto 居中 —— body 盒等比缩小后对称 letterbox；
- *   再加 identity transform 使 body 成为 fixed 后代的包含块，
- *   position:fixed 游戏全屏层无法逃离 body 盒、一并居中。非满宽 body
- *   （页面自带显式宽度，如 PC 页 body{width:1200px}）不钉宽、仅
- *   margin:auto 居中，排版零回流。首次接管快照原内联样式，回 100% 时
- *   逐字还原（不盲清，防误伤页面自设内联样式）。
+ * ## 方案演进（为什么是"动态 viewport 宽画布"）
+ * - v2.14.5 加载期宽画布 viewport：改变默认排版（用户否决：4399 首页按超宽
+ *   画布排版整页压扁、初始即 30% 全览）；
+ * - v2.14.6 WebView View 变换（scaleX/Y）：内容不随变换矩阵缩放、仅被缩小后
+ *   的边界裁切（否决；强制离屏层在 Compose 嵌套下灰屏，v2.8 已录屏证实）；
+ * - v2.14.7 JS 注入 document.body.style.zoom：缩放生效但内容钉死左上角、
+ *   右侧大片空白（否决）。根因：zoom 只缩渲染不改 window.innerWidth ——
+ *   H5 游戏画布按 JS innerWidth 定尺寸，坐标系扩宽后画布不重排；
+ * - v2.14.8 body.zoom + 钉宽居中：对称 letterbox —— 用户实测否决（截图
+ *   实证：游戏缩成中间窄条、两侧大片灰白 WebView 底色，"没有整体缩放、
+ *   网页没有全屏显示"）。结构性缺陷：满宽页面等比缩小后，空出的区域
+ *   只能露出 WebView 底色 —— 钉左（v2.14.7）还是居中（v2.14.8）只是
+ *   决定灰边长在哪，无法消灭灰边；
+ * - v2.14.9（当前）：只在【缩小域激活期间】动态改写 viewport meta：
+ *   width = 原排版宽 / z，同时 minimum-scale = maximum-scale =
+ *   接管时页面 scale × z。语义与桌面 Chrome Ctrl+减号 完全一致 ——
+ *   排版视口按 1/z 变宽，页面 scale 被钳到"窗口宽/画布宽"= z 相对比例：
+ *   * 整页所有内容等比变小（整体缩放）；
+ *   * 画布宽 = 窗口宽 / z × z = 窗口宽 —— 任何比例下都【精确铺满窗口宽】，
+ *     letterbox 在物理上不可能出现；
+ *   * window.innerWidth/innerHeight 原生同步变宽 → H5 游戏的 resize 监听
+ *     拿到真实新尺寸自动重排画布（v2.14.7/8 的"画布按 innerWidth 定尺寸
+ *     不重排"根因被原生消除，无需伪造任何 API）；
+ *   * position:fixed 游戏全屏层以视口为包含块自然跟随（无需 v2.14.8 的
+ *     identity transform 包含块 hack）；
+ *   * 命中测试/滚动/Chromium 合成全部原生路径。
+ *   回 100% 时逐字还原原 meta（自建的整段移除），页面 scale 被 Chromium
+ *   按"窗口宽/画布宽"地板自动钳回初始满宽态。100% 默认态零注入、零
+ *   viewport 改写，排版与旧版完全一致 —— v2.14.5 改默认排版的教训不重蹈：
+ *   注入只发生在用户主动捏合缩小之后，且随回 100%/导航即时撤销。
  *
  * ## 两段式缩放域
  * - 【100% 以上】放大域：原生 Chromium 双指捏合（排版重排/文字回流），
  *   本类完全不干预，手势透传给 WebView；
- * - 【30% ~ 100%】缩小域：本类拦截手势流，把指距增量映射为 body.zoom
- *   值并节流注入。页面所有元素（含 position:fixed 游戏全屏层、canvas、
- *   ruffle 播放器）等比缩小，命中测试/滚动由 Chromium 原生处理。
+ * - 【30% ~ 100%】缩小域：本类拦截手势流，把指距增量映射为 z 并节流改写
+ *   viewport meta（每步 = 一次 meta 改写 + 整页重排，桌面 Chrome 缩放的
+ *   同款代价，由 80ms 节流兜底）。
  *
- * ## 手势仲裁（onInterceptTouchEvent）——与 v2.14.6 相同的已验证逻辑
+ * ## 手势仲裁（onInterceptTouchEvent）——与 v2.14.6~8 相同的已验证逻辑
  * 双指落下后先【观察】不拦截（第二指落下瞬间不抢占，避免断流缩小态下
  * 运行的双拇指游戏）：
  * - 100% 态、指距拉大（放大意图）→ 永久放行本次手势，原生捏合处理；
@@ -52,9 +59,11 @@ import kotlin.math.sqrt
  *   页地板<100% 的场景），放行；监测的是【最近】响应 —— 原生从 250% 缩到
  *   自身地板后 scale 冻结，同一次手势内无缝接管进缩小域；
  * - 100% 态、指距缩小 ≥15% 且页面 scale 连续 2 帧无变化（原生已在地板上
- *   无法响应）→ 拦截接管，进入 body.zoom 缩小域；
+ *   无法响应）→ 拦截接管，进入缩小域；
  * - 已处于缩小域（viewZoom<1）时，指距任一方向实质变化（≥5%）即接管
  *   （张开回 100%，收缩到 30%）；静止双指不接管（游戏不受扰）。
+ *   缩小域内 meta 已把 minimum-scale=maximum-scale 钳死，原生捏合天然
+ *   失效，不存在"页面 scale × 注入缩放"双系统叠加的混乱态。
  * 单指点击/滚动/长按全程不拦截，原样透传。
  *
  * ## 注入节流
@@ -63,11 +72,16 @@ import kotlin.math.sqrt
  * 增量 ≥0.02】节流；手势结束/换绑恢复时强制精确应用一次。
  *
  * ## 附带行为
- * - 缩放状态存于 [BrowserTab.viewZoom]：切标签恢复（重绑后重注入 zoom）、
- *   导航（onPageStarted）重置回 100%（新文档天然无 zoom，同文档锚点
- *   导航由引擎的 reset 脚本还原快照样式）；
- * - 缩放值域 [MIN_ZOOM=0.3, 1.0]，达 100% 时按快照还原全部注入样式
- *   （zoom/width/margin/transform，非盲清，防误伤页面自设内联样式）。
+ * - 缩放状态存于 [BrowserTab.viewZoom]：切标签恢复（重绑后重注入 meta）、
+ *   导航（onPageStarted）重置回 100%（新文档天然无注入，同文档锚点导航
+ *   由引擎的 RESET_SCRIPT 还原原 meta）；
+ * - 缩放值域 [MIN_ZOOM=0.3, 1.0]，达 100% 时按快照还原 meta 并清 __az；
+ * - 窗口尺寸变化（旋转/拖拽调整窗口）会使注入的 width=原宽/z 与新窗口
+ *   失配（画布不再精确铺满）→ onSizeChanged 直接重置回 100%，用户重新
+ *   捏合即可按新尺寸缩放；
+ * - 极端缩小 + 超宽原画布时 width 可能触及 Chromium 画布宽上限（约
+ *   10000px），此时画布被钳制、页面变为可横向滚动的宽页（桌面 Chrome
+ *   同款行为），不再有灰边。
  */
 class ZoomPinchLayout @JvmOverloads constructor(
     context: Context,
@@ -88,7 +102,7 @@ class ZoomPinchLayout @JvmOverloads constructor(
     private var passThrough = false
     /** 观察期基线指距 */
     private var baseSpan = 0f
-    /** 观察域：true = 已处于 body.zoom 缩小域（viewZoom<1），指距任一方向
+    /** 观察域：true = 已处于注入缩小域（viewZoom<1），指距任一方向
      *  实质变化即接管（双向）；false = 100% 态，缩小方向才可能接管 */
     private var observeViewDomain = false
     /** 最近一次采样的页面 scale（判断原生是否仍在响应） */
@@ -105,16 +119,17 @@ class ZoomPinchLayout @JvmOverloads constructor(
     private var viewZoom = 1f
 
     // ===== JS 注入节流状态 =====
-    /** 上次实际注入 body.zoom 的时间戳（uptimeMillis） */
+    /** 上次实际注入 viewport meta 的时间戳（uptimeMillis） */
     private var lastJsApplyAt = 0L
-    /** 上次实际注入的 zoom 值 */
+    /** 上次实际注入的缩放值 */
     private var lastJsZoom = 1f
 
     /**
      * 绑定（或换绑）本容器承载的 WebView。重复调用安全：
      * 换绑时先把 WebView 从旧容器剥离（弹窗临时挂载/标签切换认领场景）。
      * restoreZoom 同步到内部状态（手势仲裁据此判断当前域），<100% 时
-     * 立即重注入 body.zoom（切标签恢复缩放态）。
+     * 立即重注入 viewport meta（切标签恢复缩放态，快照 __az 随页面存续，
+     * 原 meta/原画布宽/接管 scale 均从快照复用，无需重新测量）。
      */
     fun setWebView(target: WebView?, restoreZoom: Float = 1f) {
         viewZoom = restoreZoom.coerceIn(MIN_ZOOM, MAX_ZOOM)
@@ -149,6 +164,26 @@ class ZoomPinchLayout @JvmOverloads constructor(
     /** 当前缩放比例（供恢复/展示用） */
     fun currentZoom(): Float = viewZoom
 
+    /**
+     * v2.14.9：窗口尺寸变化（旋转/AnWind 窗口拖拽调整）时，注入中的
+     * width=原宽/z 已与新窗口失配（画布不再精确铺满、比例漂移）——
+     * 直接重置回 100%（还原 meta，Chromium 钳回初始满宽态），
+     * 用户重新捏合即按新尺寸获得精确铺满的缩放。
+     * oldw/oldh>0 守卫：首次布局（0→实际尺寸）不触发。
+     */
+    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+        super.onSizeChanged(w, h, oldw, oldh)
+        if (oldw > 0 && oldh > 0 && (w != oldw || h != oldh) &&
+            viewZoom < 1f && webView != null
+        ) {
+            viewZoom = 1f
+            webView?.let { wv ->
+                applyZoom(wv, 1f, force = true)
+                onZoomChanged?.invoke(1f)
+            }
+        }
+    }
+
     @SuppressLint("ClickableViewAccessibility")
     override fun onInterceptTouchEvent(ev: MotionEvent): Boolean {
         when (ev.actionMasked) {
@@ -177,8 +212,8 @@ class ZoomPinchLayout @JvmOverloads constructor(
                     val span = spanOf(ev)
                     if (observeViewDomain) {
                         // 已在缩小域：指距任一方向实质变化即接管（放大向回
-                        // 100%，缩小向 30%），原生域不参与 —— 避免"页面
-                        // scale × body.zoom"双系统叠加的混乱态
+                        // 100%，缩小向 30%）。meta 已把 scale 钳死在
+                        // minimum=maximum，原生不会响应，直接接管无双系统叠加
                         if (span < baseSpan * 0.95f || span > baseSpan * 1.05f) {
                             return beginPinch(ev)
                         }
@@ -294,7 +329,7 @@ class ZoomPinchLayout @JvmOverloads constructor(
         }
     }
 
-    /** 捏合过程中设定目标缩放（节流注入 body.zoom 并回调写回标签） */
+    /** 捏合过程中设定目标缩放（节流改写 viewport meta 并回调写回标签） */
     private fun setZoom(zoom: Float) {
         viewZoom = zoom.coerceIn(minViewZoom, 1f)
         val now = android.os.SystemClock.uptimeMillis()
@@ -324,9 +359,10 @@ class ZoomPinchLayout @JvmOverloads constructor(
     }
 
     /**
-     * 把缩放注入到页面（zoom + 钉宽居中）。force=true 精确注入当前值
-     * （手势结束/换绑恢复）；否则受 [JS_INTERVAL_MS] 节流。
-     * 100% 时按快照还原全部注入样式（不盲清，防误伤页面自设内联样式）。
+     * 把缩放注入到页面（动态改写 viewport meta：width=原宽/z + 钳制
+     * scale）。force=true 精确注入当前值（手势结束/换绑恢复）；否则受
+     * [JS_INTERVAL_MS] 节流。100% 时按快照还原原 meta（不盲清，页面
+     * 自设的 viewport 逐字还原）。
      */
     private fun applyZoom(wv: WebView, zoom: Float, force: Boolean) {
         val now = android.os.SystemClock.uptimeMillis()
@@ -343,7 +379,7 @@ class ZoomPinchLayout @JvmOverloads constructor(
         const val MIN_ZOOM = 0.3f
         const val MAX_ZOOM = 1.0f
 
-        /** body.zoom 注入最小间隔（ms）：防 JNI 排队堆积 */
+        /** viewport meta 注入最小间隔（ms）：防 JNI 排队堆积 */
         private const val JS_INTERVAL_MS = 80L
 
         /** 手势状态机 */
@@ -352,58 +388,74 @@ class ZoomPinchLayout @JvmOverloads constructor(
         private const val MODE_PINCH = 2       // 已拦截，缩小域接管中
 
         /**
-         * body.zoom 注入脚本（静态入口：引擎导航重置也用 [RESET_SCRIPT]）。
-         * GameBox applyPageZoom 同源方案 + v2.14.8 钉宽居中：
-         * - zoom：Chromium 原生整页 layout 缩放（带 viewport meta 页面亦生效，
-         *   立即生效无需 reload）；
-         * - 钉宽：body 满宽时钉在 clientWidth（设计宽度）—— JS 按 innerWidth
-         *   定尺寸的画布/排版不回流，body 盒随 zoom 等比缩小；
-         * - margin:auto：缩小后的 body 盒在扩展后的包含块中居中 —— 对称
-         *   letterbox（v2.14.7 左上角钉死、右侧大空白的修复）；
-         * - transform:translate(0,0)：identity 变换使 body 成为 fixed 后代
-         *   的包含块 —— position:fixed 游戏全屏层无法逃逸 body 盒，一并
-         *   居中（fixed 默认以视口为包含块，会逃离 margin 居中）；
-         * - 非满宽 body（页面自带显式宽度）不钉宽，仅 margin:auto 居中；
-         * - 首次接管快照 body/html 五项内联样式（window.__az），回 100%/
-         *   导航重置时逐字还原；
-         * - 幂等可重入（捏合节流逐次重注入）：样式决策缓存于 __az，重复
-         *   注入只更新 zoom 值，无重复测量开销。
+         * 缩小域注入脚本（静态入口：引擎导航重置也用 [RESET_SCRIPT]）。
+         * v2.14.9 动态 viewport 宽画布 —— 桌面 Chrome Ctrl+减号 同源语义：
+         * - 首次接管快照（window.__az）：原 viewport meta（可能不存在）、
+         *   原 content 字符串、原排版宽 cw（此刻尚未注入，clientWidth 仍是
+         *   页面原生值）、接管瞬间页面 scale s0（= 原生地板 = 窗口宽/cw）；
+         * - 每次注入：width = cw/z（排版视口按 1/z 变宽 → 整页等比变小，
+         *   所有固定 px 元素统一缩小 = 整体缩放），minimum-scale =
+         *   maximum-scale = s0*z（把页面 scale 钳到"窗口宽/画布宽"——
+         *   画布宽 × scale = 窗口宽，任何比例下精确铺满窗口宽，letterbox
+         *   物理上不可能出现）；
+         * - innerWidth/innerHeight 由 Chromium 原生随排版视口变宽，H5 游戏
+         *   的 resize 监听拿到真实新尺寸自动重排画布/重算布局，fixed 全屏层
+         *   以视口为包含块自然铺满 —— 无需伪造 API、无需包含块 hack；
+         * - 幂等可重入（捏合节流逐次重注入、切标签恢复重注入）：快照缓存于
+         *   __az，重复注入只改写 width/scale 数值，无重复测量开销；
+         * - 回 100%/导航重置走 [RESET_SCRIPT]（还原原 meta、清 __az）。
          */
         fun zoomScript(zoom: Float): String {
             return if (zoom >= 0.999f) RESET_SCRIPT
             else "(function(){try{" +
-                "var d=document,z=$zoom,b=d.body||d.documentElement;if(!b)return;" +
-                "var cw=(d.documentElement&&d.documentElement.clientWidth)||window.innerWidth;" +
-                "var T=['zoom','width','marginLeft','marginRight','transform'];" +
+                "var d=document,z=$zoom;" +
+                "if(!d.documentElement)return;" +
                 "var S=window.__az;" +
                 "if(!S){" +
-                "S={b:{},h:{},full:true};" +
-                "if(d.body){var bs=d.body.style;for(var i=0;i<T.length;i++)S.b[T[i]]=bs[T[i]]||'';}" +
-                "if(d.documentElement){var hs=d.documentElement.style;for(var i=0;i<T.length;i++)S.h[T[i]]=hs[T[i]]||'';}" +
-                "try{if(d.body){var w=parseFloat(window.getComputedStyle(d.body).width);S.full=Math.abs(w-cw)<2;}}catch(e){}" +
+                // 首次接管：此刻 meta 尚未被改写，layout/scale 均为页面
+                // 原生值 —— 快照必须在此刻完成（之后 clientWidth 是注入
+                // 后的宽画布值，不可再作基准）
+                "var m=d.querySelector('meta[name=viewport]');" +
+                "var cw=(d.documentElement&&d.documentElement.clientWidth)||window.innerWidth;" +
+                "var s0=(window.visualViewport&&window.visualViewport.scale)||1;" +
+                "if(!(s0>0)||!isFinite(s0))s0=1;" +
+                "if(!m){" +
+                // 页面无 viewport meta（VIEWPORT_FIT_SCRIPT 失效的非 http 页
+                // 等）：自建一个，还原时整段移除，页面状态零残留
+                "m=d.createElement('meta');m.setAttribute('name','viewport');" +
+                "(d.head||d.documentElement).appendChild(m);" +
+                "S={meta:m,content:null,cw:cw,s0:s0,created:true};" +
+                "}else{" +
+                "S={meta:m,content:m.getAttribute('content'),cw:cw,s0:s0,created:false};" +
+                "}" +
                 "window.__az=S;" +
                 "}" +
-                "b.style.zoom=z;" +
-                "if(S.full)b.style.width=cw+'px';" +
-                "b.style.marginLeft='auto';" +
-                "b.style.marginRight='auto';" +
-                "b.style.transform='translate(0,0)';" +
+                "if(!(S.cw>0))return;" +
+                // 目标：画布宽 = cw/z（等比变小且铺满），页面 scale = s0*z
+                //（= 窗口宽/画布宽，Chromium 按新约束钳制生效）
+                "var w=Math.round(S.cw/z);" +
+                "var sc=S.s0*z;" +
+                "S.meta.setAttribute('content'," +
+                "'width='+w+',minimum-scale='+sc+',maximum-scale='+sc+',user-scalable=yes');" +
                 "}catch(e){}})()"
         }
 
         /**
-         * 重置缩放脚本：按快照还原 body/html 五项注入样式（zoom/width/
-         * marginLeft/marginRight/transform），无快照时清空，并清 __az。
+         * 重置缩放脚本：按快照还原 viewport meta（自建的整段移除、原存在
+         * 的逐字还原 content），并清 __az。还原后画布宽回到原生值，
+         * Chromium 按"窗口宽/画布宽"地板把当前 scale 钳回初始满宽态
+         * （device-width 页回 100%，固定宽 PC 页回全览态）。
          * 引擎 onPageStarted 导航重置用（新文档天然干净；同文档锚点导航
-         * 由此完整还原页面自设内联样式）。
+         * 由此完整还原页面自设 viewport）。
          */
         const val RESET_SCRIPT: String =
             "(function(){try{" +
-                "var d=document,T=['zoom','width','marginLeft','marginRight','transform'],S=window.__az;" +
-                "var els=[d.body,d.documentElement];" +
-                "for(var i=0;i<els.length;i++){var el=els[i];if(!el)continue;" +
-                "var sv=(S?(i==0?S.b:S.h):null)||{};" +
-                "for(var k=0;k<T.length;k++)el.style[T[k]]=sv[T[k]]||'';}" +
+                "var d=document,S=window.__az;" +
+                "if(S&&S.meta){" +
+                "if(S.created){if(S.meta.parentNode)S.meta.parentNode.removeChild(S.meta);}" +
+                "else if(S.content==null)S.meta.removeAttribute('content');" +
+                "else S.meta.setAttribute('content',S.content);" +
+                "}" +
                 "window.__az=null;" +
                 "}catch(e){}})()"
     }

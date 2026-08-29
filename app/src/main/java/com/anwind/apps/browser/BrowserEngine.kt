@@ -417,9 +417,10 @@ object BrowserEngine {
                 view?.evaluateJavascript(VIEW_TRANSITION_PATCH_SCRIPT, null)
                 // 2) PC 页面 viewport 自适配（页面自带 viewport 则不动）。
                 //    v2.14.6：恢复 v2.14.4 原版默认排版（用户要求“默认缩放
-                //    还用之前的”）；缩小到 30% 的能力改由 ZoomPinchLayout
-                //    注入 body.zoom 实现（v2.14.7，GameBox 同源方案），
-                //    不动 viewport 画布宽、不动默认缩放
+                //    还用之前的”）。缩小到 30% 的能力改由 ZoomPinchLayout
+                //    在【捏合缩小期间】动态改写 viewport meta 实现
+                //    （v2.14.9：width=原宽/z + 钳制 scale，页面始终精确
+                //    铺满窗口宽）；默认态本脚本不改画布宽、不改默认缩放
                 view?.evaluateJavascript(VIEWPORT_FIT_SCRIPT, null)
                 // 3) Flash 兼容：伪造插件让 4399 等页面创建 <object> Flash 元素（零网络开销）
                 view?.evaluateJavascript(FLASH_FAKE_SUPPORT_SCRIPT, null)
@@ -435,8 +436,9 @@ object BrowserEngine {
             // v2.14.7：导航重置缩小域缩放（30%~100%）—— 每次新页面默认回到
             // 100% 排版（v2.14.5 教训：默认视觉必须与旧版一致）。新文档天然
             // 无注入；同文档锚点导航（onPageStarted 亦触发）由 RESET_SCRIPT
-            // 按快照还原内联样式（v2.14.8：钉宽居中五项样式，含页面自设
-            // 内联样式的逐字还原）。View 变换方案（v2.14.6）已被实测
+            // 按快照还原原 viewport meta（v2.14.9：缩小域改为动态改写
+            // meta width=原宽/z + 钳制 scale，页面始终精确铺满窗口宽，
+            // 无 letterbox）。View 变换方案（v2.14.6）已被实测
             // 否决：内容不随变换缩放、仅被缩小后的边界裁切
             if (tab.viewZoom != 1f) {
                 tab.viewZoom = 1f
@@ -450,7 +452,8 @@ object BrowserEngine {
          * v2.14.5 曾在此注入 viewport 缩放脚本（宽画布方案），v2.14.6 撤销
          * —— 该方案破坏无 viewport PC 页的默认排版；v2.14.6 的 View 变换
          * 缩放亦被 v2.14.7 实测否决（内容不跟随、仅被边界裁切），缩小能力
-         * 现由 ZoomPinchLayout 注入 body.zoom 实现，与页面渲染管线无关。
+         * 现由 ZoomPinchLayout 在捏合期间动态改写 viewport meta 实现
+         * （v2.14.9），默认态与页面渲染管线无关。
          */
         override fun onPageCommitVisible(view: WebView?, url: String?) {
             super.onPageCommitVisible(view, url)
@@ -465,7 +468,8 @@ object BrowserEngine {
             }
 
             // v2.14.5 曾在此注入 viewport 缩放脚本（SPA 兑底），v2.14.6 撤销，
-            // v2.14.7 缩小域改注入 body.zoom（理由同 onPageCommitVisible 注释）
+            // v2.14.9 缩小域改为捏合期间动态改写 viewport meta（理由同
+            // onPageCommitVisible 注释）
 
             // ===== v2.14.2（gamehtml）强制重绘管线 —— 灰屏的真正解法 =====
             // 部分网页（View Transitions SPA / 重 Canvas 页面）加载完成后渲染
@@ -504,7 +508,7 @@ object BrowserEngine {
                 tab.hasLoadedOnce = false
                 tab.lastRequestedUrl = null
                 // v2.14.7：新 WebView 从默认 100% 开始，不继承旧缩放态
-                //（新文档天然无 body.zoom）
+                //（新文档天然无注入）
                 tab.viewZoom = 1f
                 tab.renderEpoch += 1
                 // 若该标签正处视频全屏，同步收起死掉的全屏层
@@ -988,10 +992,12 @@ object BrowserEngine {
              * 2) 实测症状与用户反馈逐条对应：4399 PC 首页按超宽画布排版整页
              *    压扁（排版有问题）、初始即 30% 全览（默认缩放被改）、初始
              *    已是最小值（不能继续缩小）、全览态无滚动余量（往左拉不过去）；
-             * 3) 结论：30%~100% 缩小域改由 ZoomPinchLayout 注入 body.zoom
-             *    实现（v2.14.7，GameBox applyPageZoom 同源方案；v2.14.6 的
-             *    View scale 变换已被实测否决——内容不随变换缩放、仅被缩小
-             *    后的边界裁切），本脚本只负责默认排版 —— 与 v2.14.4 逐字一致；
+             * 3) 结论：30%~100% 缩小域改由 ZoomPinchLayout 在捏合期间动态
+             *    改写 viewport meta 实现（v2.14.9：width=原宽/z + 钳制
+             *    scale = 窗口宽/画布宽，整页等比变小且任何比例下精确铺满
+             *    窗口宽 —— 桌面 Chrome Ctrl+减号 同源语义；v2.14.7/8 的
+             *    body.zoom 方案因 letterbox 灰边被用户否决），本脚本只负责
+             *    默认排版 —— 与 v2.14.4 逐字一致；
              *    ≥100% 放大继续由原生捏合处理（排版重排/文字回流）。
              *
              * 本脚本语义（v2.14.2 起不变）：仅对【无 viewport meta】的 PC 页
