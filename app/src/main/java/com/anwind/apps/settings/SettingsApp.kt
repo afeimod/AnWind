@@ -1274,43 +1274,6 @@ private fun AppsSection() {
     // 浏览器 UA 模式
     val theme = LocalWinTheme.current
 
-    // ===== v2.14 浏览器渲染模式：灰屏修复开关 =====
-    // 硬件加速（默认）：流畅；软件渲染：兼容（部分 MIUI / GPU 驱动上页面有声但灰屏时切换）
-    // 另有灰屏自动检测：连续 2 次采样判定灰屏后自动切换软件渲染并持久化
-    val renderMode by app.settingsStore.browserRenderMode.collectAsState(initial = "hardware")
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(6.dp))
-            .background(theme.cardBackgroundColor)
-            .padding(12.dp)
-    ) {
-        Column {
-            Text(
-                L("浏览器渲染模式"),
-                color = if (theme.isDark) Color.White else Color.Black,
-                fontSize = 13.sp,
-                fontWeight = FontWeight.Medium
-            )
-            Spacer(Modifier.height(4.dp))
-            Text(
-                L("灰屏（有声音无画面）时切换软件渲染，立即生效并自动重载"),
-                color = theme.secondaryTextColor,
-                fontSize = 11.sp
-            )
-            Spacer(Modifier.height(8.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                SegmentedOption(L("硬件加速"), renderMode == "hardware") {
-                    scope0.launch { app.settingsStore.setBrowserRenderMode("hardware") }
-                }
-                SegmentedOption(L("软件渲染（修复灰屏）"), renderMode == "software") {
-                    scope0.launch { app.settingsStore.setBrowserRenderMode("software") }
-                }
-            }
-        }
-    }
-    Spacer(Modifier.height(8.dp))
-
     Box(
         modifier = Modifier
             .fillMaxWidth()

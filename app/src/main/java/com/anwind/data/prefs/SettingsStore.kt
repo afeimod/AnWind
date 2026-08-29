@@ -34,8 +34,6 @@ class SettingsStore(private val context: Context) {
         val DISPLAY_ORIENTATION = stringPreferencesKey("display_orientation")
         // 浏览器桌面/手机模式：desktop / mobile
         val BROWSER_UA_MODE = stringPreferencesKey("browser_ua_mode")
-        // v2.14：浏览器渲染模式：hardware 硬件加速（默认）/ software 软件渲染（修复灰屏）
-        val BROWSER_RENDER_MODE = stringPreferencesKey("browser_render_mode")
 
         // === v2.14：个性化（颜色 / 字体 / 任务栏） ===
         // 颜色模式：auto 跟随主题 / light 强制浅色 / dark 强制深色（作用于所有 Windows 主题）
@@ -163,8 +161,6 @@ class SettingsStore(private val context: Context) {
     val desktopIconOrder: Flow<String> = context.appPrefs.data.map { it[Keys.DESKTOP_ICON_ORDER] ?: "" }
 
     // === v2.14：个性化 ===
-    val browserRenderMode: Flow<String> = context.appPrefs.data
-        .map { it[Keys.BROWSER_RENDER_MODE] ?: "hardware" }
     val appColorMode: Flow<String> = context.appPrefs.data.map { it[Keys.APP_COLOR_MODE] ?: "auto" }
     val appAccent: Flow<String> = context.appPrefs.data.map { it[Keys.APP_ACCENT] ?: "default" }
     val fontScale: Flow<Float> = context.appPrefs.data.map { it[Keys.FONT_SCALE] ?: 1.0f }
@@ -301,11 +297,6 @@ class SettingsStore(private val context: Context) {
     }
 
     // === v2.14：个性化 setter ===
-    suspend fun setBrowserRenderMode(mode: String) {
-        val v = if (mode in setOf("hardware", "software")) mode else "hardware"
-        context.appPrefs.edit { it[Keys.BROWSER_RENDER_MODE] = v }
-    }
-
     suspend fun setAppColorMode(mode: String) {
         val v = if (mode in setOf("auto", "light", "dark")) mode else "auto"
         context.appPrefs.edit { it[Keys.APP_COLOR_MODE] = v }

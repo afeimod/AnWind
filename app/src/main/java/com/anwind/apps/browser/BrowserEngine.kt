@@ -4,7 +4,6 @@ import android.app.DownloadManager
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
-import android.graphics.Canvas
 import android.net.Uri
 import android.net.http.SslError
 import android.os.Build
@@ -31,7 +30,15 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import java.io.ByteArrayInputStream
 import java.lang.ref.WeakReference
+import java.security.SecureRandom
+import java.security.cert.X509Certificate
+import java.util.concurrent.ConcurrentHashMap
+import javax.net.ssl.HostnameVerifier
+import javax.net.ssl.HttpsURLConnection
+import javax.net.ssl.SSLContext
+import javax.net.ssl.X509TrustManager
 
 /**
  * 浏览器内核引擎：WebView 的创建 / 配置 / 销毁，以及 WebViewClient、WebChromeClient。
@@ -48,13 +55,20 @@ import java.lang.ref.WeakReference
  *    现在：弹出的 WebView 直接作为新标签的【真实 WebView】通过 transport 交给
  *    Chromium，导航（GET/POST/JS 重定向）在真实标签中完成，全场景兼容。
  *
- * v2.14 灰屏修复（参考 gamehtml 容器方案 + 灰屏日志分析）：
- * 1. 渲染模式可切换：hardware（默认）/ software（软件渲染兼容）。
- *    日志特征：MIUI ForceDarkHelper 初始化 + 沙盒进程 RSS 飙到 400MB，
- *    页面有声曾但 GPU 合成失败（Surface 不上屏）→ 灰屏。
- * 2. 自动灰屏检测回退：onPageFinished 后采样 48px 缩略图，连续 2 次判定
- *    "整面单色"（方差≈0）→ 自动切换软件渲染 + reload + 持久化记忆。
- * 3. 禁用 WebView 算法暗色（MIUI 强制深色不干预网页渲染）。
+ * v2.14.2 WebView 优化（完整移植 afeimod/gamehtml 容器方案，移除 v2.14 自研
+ * 灰屏像素检测 + 软件渲染切换 hack —— 灰屏是 WebView 自身渲染管线的时序问题，
+ * gamehtml 的解法是强制重绘管线而非切换渲染器）：
+ * 1. 显式硬件加速 LAYER_TYPE_HARDWARE（gamehtml GameWebView.configureSettings）。
+ * 2. 强制重绘：onPageCommitVisible/onPageFinished invalidate + requestLayout +
+ *    延迟 300ms 二次重绘 + document.body.offsetHeight 强制布局 —— 解决
+ *    "页面加载完成（有声音/标题）但 Surface 不上屏"的灰屏问题。
+ * 3. View Transitions API 补丁：WebView 对 startViewTransition 支持不完善，
+ *    SPA 站点会出现回调不执行/页面卡住，polyfill 确保回调同步执行。
+ * 4. Flash 游戏兼容（4399 等）：伪造 navigator.plugins 让页面创建 Flash 元素 +
+ *    Ruffle polyfill（jsdelivr CDN）替换 <object>/<embed> 为 Canvas 播放器 +
+ *    SWF 请求原生拦截（CORS 头 + Cookie 转发 + 防盗链 Referer）。
+ * 5. PC 页面 viewport 自适配（无 viewport meta 的页面按 1200px 基准缩放）。
+ * 6. 禁用 WebView 算法暗色（MIUI 强制深色不介入网页渲染）。
  */
 object BrowserEngine {
 
@@ -84,7 +98,6 @@ object BrowserEngine {
         val existing = tab.webView
         if (existing != null) {
             applyUa(existing, manager.uaMode)
-            applyRenderMode(existing, manager.renderMode)
             return existing
         }
         val wv = WebView(context)
@@ -94,25 +107,6 @@ object BrowserEngine {
         configure(wv, tab, manager)
         tab.webView = wv
         return wv
-    }
-
-    /**
-     * v2.14：应用渲染模式。
-     * - hardware：默认硬件加速（LAYER_TYPE_NONE，交由窗口系统合成）
-     * - software：软件渲染（修复部分 MIUI / GPU 驱动上页面有声曾但灰屏不合成）
-     */
-    fun applyRenderMode(wv: WebView, mode: String) {
-        val layerType = if (mode == "software") {
-            View.LAYER_TYPE_SOFTWARE
-        } else {
-            View.LAYER_TYPE_NONE
-        }
-        if (wv.layerType != layerType) {
-            try {
-                wv.setLayerType(layerType, null)
-            } catch (_: Exception) {
-            }
-        }
     }
 
     private fun applyUa(wv: WebView, uaMode: String) {
@@ -157,14 +151,15 @@ object BrowserEngine {
             userAgentString = desiredUa(manager.uaMode)
         }
 
-        // ⚠️ v2.8：不再调用 setLayerType(LAYER_TYPE_HARDWARE)。
-        // WebView 自身默认硬件加速；强制加离屏硬件层在部分设备（MIUI/部分 GPU 驱动）
-        // 上首帧不合成，表现为页面加载完成（标题更新）但一直黑屏。
+        // v2.14.2（gamehtml GameWebView.configureSettings）：显式硬件加速层。
+        // gamehtml 容器对所有 4399 游戏页面稳定使用硬件层；配合下面的强制重绘
+        // 管线解决首帧不上屏问题，不再切换软件渲染。
+        try {
+            wv.setLayerType(View.LAYER_TYPE_HARDWARE, null)
+        } catch (_: Exception) {
+        }
 
-        // v2.14：渲染模式（软件渲染修复灰屏，见 applyRenderMode）
-        applyRenderMode(wv, manager.renderMode)
-
-        // v2.14：禁用算法暗色 —— MIUI 强制深色会介入 WebView 渲染管线，
+        // v2.14.2：禁用算法暗色 —— MIUI 强制深色会介入 WebView 渲染管线，
         // 配合 GPU 合成问题放大灰屏概率（灰屏日志出现 ForceDarkHelperStubImpl 初始化）
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             runCatching { wv.settings.isAlgorithmicDarkeningAllowed = false }
@@ -290,6 +285,12 @@ object BrowserEngine {
                 }
                 return true
             }
+            // v2.14.2（gamehtml）：直接导航到 .swf 文件 → 不当页面加载，
+            // 用 Ruffle 全屏播放器接管
+            if (newUrl.endsWith(".swf", ignoreCase = true)) {
+                playSwfFullscreen(view, newUrl)
+                return true
+            }
             // 在当前 WebView 内继续加载：登记 lastRequestedUrl 防 update 块重复加载
             tab.lastRequestedUrl = newUrl
             tab.url = newUrl
@@ -327,6 +328,32 @@ object BrowserEngine {
             if (isActive()) {
                 manager.ui?.onError(null)
             }
+
+            // ===== v2.14.2（gamehtml）页面级注入：在页面自身 JS 之前执行 =====
+            if (url != null && (url.startsWith("http") || url.startsWith("file:"))) {
+                // 1) View Transitions API 补丁（所有页面通用，防 SPA 跳转卡死）
+                view?.evaluateJavascript(VIEW_TRANSITION_PATCH_SCRIPT, null)
+                // 2) PC 页面 viewport 自适配（页面自带 viewport 则不动）
+                view?.evaluateJavascript(VIEWPORT_FIT_SCRIPT, null)
+                // 3) Flash 兼容：伪造插件让 4399 等页面创建 <object> Flash 元素（零网络开销）
+                view?.evaluateJavascript(FLASH_FAKE_SUPPORT_SCRIPT, null)
+                //    懒加载探测器：任意页面出现 Flash 元素时动态加载 Ruffle 引擎
+                view?.evaluateJavascript(FLASH_DOM_DETECT_SCRIPT, null)
+                // 4) 4399 系页面：直接预加载 Ruffle（游戏页主体就是 Flash）
+                if (url.contains("4399.com")) {
+                    view?.evaluateJavascript(REFERER_SPOOF_SCRIPT, null)
+                    view?.evaluateJavascript(RUFFLE_LOADER_SCRIPT, null)
+                }
+            }
+        }
+
+        /**
+         * v2.14.2（gamehtml）：首次可见帧强制重绘。
+         * 部分设备上首帧提交后合成器未拉起新帧，invalidate 确保当前帧上屏。
+         */
+        override fun onPageCommitVisible(view: WebView?, url: String?) {
+            super.onPageCommitVisible(view, url)
+            view?.invalidate()
         }
 
         override fun onPageFinished(view: WebView?, url: String?) {
@@ -335,92 +362,23 @@ object BrowserEngine {
                 tab.canGoBack = it.canGoBack()
                 tab.canGoForward = it.canGoForward()
             }
-            // v2.14：灰屏自动检测（仅硬件加速模式，软件渲染已是回退态）
-            if (manager.renderMode == "hardware" && url != null &&
-                url != "about:blank" && !url.startsWith("data:")
-            ) {
-                scheduleBlankDetection(view)
-            }
-        }
 
-        // ====================================================================
-        // v2.14 灰屏自动检测回退（参考 gamehtml 容器思路）
-        //
-        // 原理：页面加载完成（有标题、音频在播）但 GPU 合成失败时，把 WebView
-        // draw 到 48px 宽的软件画布上得到的也是整面单色。采样像素亮度方差≈0
-        // 即判定疑似灰屏；连续 2 次（间隔 1.6s）确认后自动切换软件渲染并重载。
-        // 正常网页缩略图必有文字/图片结构，方差远大于阈值，不会误判。
-        // ====================================================================
-        private val blankCheckDelayMs = 1600L
-
-        private fun scheduleBlankDetection(view: WebView?) {
-            if (view == null || view.tag == TAG_DESTROYED) return
+            // ===== v2.14.2（gamehtml）强制重绘管线 —— 灰屏的真正解法 =====
+            // 部分网页（View Transitions SPA / 重 Canvas 页面）加载完成后渲染
+            // 管线未正确触发重绘，页面“卡住”直到切后台再回来才显示。
+            // invalidate + requestLayout 强制 WebView 重新绘制当前帧。
+            view?.invalidate()
+            view?.requestLayout()
+            // 延迟二次重绘：等注入脚本执行完后再触发一次
             val weak = WeakReference(view)
-            view.postDelayed({
+            view?.postDelayed({
                 val wv = weak.get() ?: return@postDelayed
                 if (wv.tag == TAG_DESTROYED) return@postDelayed
-                val isBlank = runCatching { isViewBlank(wv) }.getOrDefault(false)
-                if (!isBlank) {
-                    tab.blankStrikes = 0
-                    return@postDelayed
-                }
-                tab.blankStrikes++
-                if (tab.blankStrikes >= 2) {
-                    // 两次确认灰屏：自动回退软件渲染 + 持久化 + 重载
-                    tab.blankStrikes = 0
-                    manager.renderMode = "software"
-                    applyRenderMode(wv, "software")
-                    engineScope.launch {
-                        runCatching { AnWindApp.get().settingsStore.setBrowserRenderMode("software") }
-                    }
-                    Toast.makeText(
-                        ctx,
-                        "检测到页面灰屏，已自动切换为软件渲染并重新加载",
-                        Toast.LENGTH_LONG
-                    ).show()
-                    runCatching { wv.reload() }
-                } else {
-                    // 首次疑似：延迟后复检一次，避免纯色开场页误判
-                    scheduleBlankDetection(wv)
-                }
-            }, blankCheckDelayMs)
-        }
-
-        /** 采样 48px 缩略图，判定是否整面单色（灰/白/黑） */
-        private fun isViewBlank(wv: WebView): Boolean {
-            if (wv.width <= 0 || wv.height <= 0) return false
-            val w = 48
-            val h = maxOf(1, 48 * wv.height / wv.width)
-            val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-            val canvas = Canvas(bmp)
-            canvas.save()
-            canvas.scale(w.toFloat() / wv.width, h.toFloat() / wv.height)
-            wv.draw(canvas)
-            canvas.restore()
-            var rSum = 0f; var gSum = 0f; var bSum = 0f
-            var n = 0
-            for (x in 0 until w step 2) {
-                for (y in 0 until h step 2) {
-                    val p = bmp.getPixel(x, y)
-                    rSum += (p shr 16 and 0xFF); gSum += (p shr 8 and 0xFF); bSum += (p and 0xFF)
-                    n++
-                }
-            }
-            if (n == 0) return false
-            val rAvg = rSum / n; val gAvg = gSum / n; val bAvg = bSum / n
-            // 平均色亮度方差：真实网页缩略图 > 6，整面单色 < 2
-            var variance = 0f
-            for (x in 0 until w step 2) {
-                for (y in 0 until h step 2) {
-                    val p = bmp.getPixel(x, y)
-                    val lum = 0.299f * (p shr 16 and 0xFF) + 0.587f * (p shr 8 and 0xFF) + 0.114f * (p and 0xFF)
-                    val avg = 0.299f * rAvg + 0.587f * gAvg + 0.114f * bAvg
-                    variance += (lum - avg) * (lum - avg)
-                }
-            }
-            variance /= n
-            bmp.recycle()
-            return variance < 4f
+                wv.invalidate()
+                wv.evaluateJavascript(
+                    "try{void document.body&&document.body.offsetHeight;}catch(e){}", null
+                )
+            }, 300)
         }
 
         // ====================================================================
@@ -507,7 +465,464 @@ object BrowserEngine {
                     null
                 }
             }
+            // v2.14.2（gamehtml interceptSwf）：拦截远程 SWF 请求。
+            // Ruffle 以 XHR/fetch 从页面所在域跨域拉取 SWF，必须原生下载并附加
+            // CORS 头 + Cookie 转发 + 防盗链 Referer，否则引擎报跨域/403。
+            // 只拦截真正的 SWF 资源请求（含 4399 的 dw-XX 命名模式），不影响普通浏览。
+            val url = uri.toString()
+            val isSwfRequest = url.endsWith(".swf", ignoreCase = true) ||
+                url.contains(".swf?", ignoreCase = true) ||
+                (url.contains("4399.com") &&
+                    (url.contains("/dw-") || url.contains("flash_tm3") || url.contains("flash20")))
+            if (isSwfRequest) {
+                return try {
+                    interceptSwf(url, request)
+                } catch (_: Exception) {
+                    null
+                }
+            }
             return super.shouldInterceptRequest(view, request)
+        }
+
+        /**
+         * v2.14.2（gamehtml playSwfScript）：用 Ruffle 全屏播放器打开 SWF。
+         * 先注入引擎加载器（幂等），就绪后创建 fixed 满屏播放器接管页面。
+         */
+        private fun playSwfFullscreen(view: WebView?, swfUrl: String) {
+            if (view == null || view.tag == TAG_DESTROYED) return
+            val base = try {
+                val u = java.net.URI(swfUrl)
+                "${u.scheme}://${u.host}/"
+            } catch (_: Exception) {
+                null
+            }
+            // 对象字面量插值：base 非空时展开为 , base: 'xxx'（注意是对象属性而非函数实参）
+            val baseArg = base?.let { ", base: '$it'" } ?: ""
+            val js = RUFFLE_LOADER_SCRIPT + "\n" + """
+                (function(){
+                  function go(){
+                    try {
+                      var ruffle = window.RufflePlayer.newest();
+                      if (!ruffle) return;
+                      var player = ruffle.createPlayer();
+                      player.style.cssText = 'position:fixed;left:0;top:0;width:100%;height:100%;z-index:9999;background:#000;';
+                      document.body.appendChild(player);
+                      var opt = { url: '$swfUrl'$baseArg };
+                      player.ruffle().load(opt);
+                    } catch(e) { console.error('[SWF] play error:', e); }
+                  }
+                  if (window.__ruffleLoaded) { go(); return; }
+                  document.addEventListener('ruffleReady', function(){ go(); }, { once: true });
+                })();
+            """.trimIndent()
+            view.evaluateJavascript(js, null)
+        }
+
+        // ====================================================================
+        // v2.14.2（gamehtml interceptSwf）：SWF 原生下载 + CORS 头 + Cookie 转发
+        // ====================================================================
+        private val swfCache = ConcurrentHashMap<String, ByteArray>()
+
+        /** 统一 CORS 响应头：所有 SWF 拦截响应（成功/失败/预检）都带这些头 */
+        private val swfCorsHeaders = mapOf(
+            "Access-Control-Allow-Origin" to "*",
+            "Access-Control-Allow-Methods" to "GET, POST, OPTIONS, HEAD",
+            "Access-Control-Allow-Headers" to "*",
+            "Content-Type" to "application/x-shockwave-flash",
+            "Cache-Control" to "no-cache"
+        )
+
+        /** 信任所有 SSL 证书的 SSLSocketFactory（仅用于 SWF 下载兼容老 CDN） */
+        @Volatile
+        private var sslFactory: javax.net.ssl.SSLSocketFactory? = null
+
+        private fun trustAllSslSocketFactory(): javax.net.ssl.SSLSocketFactory {
+            return sslFactory ?: synchronized(this) {
+                sslFactory ?: try {
+                    val tm = object : X509TrustManager {
+                        override fun checkClientTrusted(chain: Array<out X509Certificate>?, authType: String?) {}
+                        override fun checkServerTrusted(chain: Array<out X509Certificate>?, authType: String?) {}
+                        override fun getAcceptedIssuers(): Array<X509Certificate> = arrayOf()
+                    }
+                    val sslContext = SSLContext.getInstance("TLS")
+                    sslContext.init(null, arrayOf(tm), SecureRandom())
+                    sslContext.socketFactory
+                } catch (_: Exception) {
+                    HttpsURLConnection.getDefaultSSLSocketFactory()
+                }.also { sslFactory = it }
+            }
+        }
+
+        /** 原生下载 SWF，返回带 CORS 头的响应（缓存 + 重试 + SSL 兼容 + 请求头转发） */
+        private fun interceptSwf(url: String, request: WebResourceRequest?): WebResourceResponse? {
+            // 0. CORS 预检（OPTIONS）：直接返回 200 + CORS 头，不下载文件
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && request?.method == "OPTIONS") {
+                return WebResourceResponse(
+                    "text/plain", "UTF-8", 200, "OK",
+                    swfCorsHeaders, ByteArrayInputStream(ByteArray(0))
+                )
+            }
+
+            // 1. 尝试 URL 列表：不强制 HTTP→HTTPS 升级（部分 4399 CDN 不支持 HTTPS）；
+            //    HTTP 先试原始 HTTP，失败再试 HTTPS；HTTPS 直接用
+            val tryUrls = when {
+                url.startsWith("https://") -> listOf(url)
+                url.startsWith("http://") -> listOf(url, "https://" + url.substring(7))
+                else -> listOf(url)
+            }
+
+            // 2. 缓存命中直接返回（Ruffle 可能同时发起多个相同 SWF 请求）
+            for (u in tryUrls) {
+                swfCache[u]?.let { cached ->
+                    return WebResourceResponse(
+                        "application/x-shockwave-flash", null, 200, "OK",
+                        swfCorsHeaders, ByteArrayInputStream(cached)
+                    )
+                }
+            }
+
+            // 3. 逐个 URL 尝试下载（每个最多重试 3 次，服务端 5xx 退避重试）
+            for (swfUrl in tryUrls) {
+                for (attempt in 1..3) {
+                    try {
+                        val conn = java.net.URL(swfUrl).openConnection() as java.net.HttpURLConnection
+                        if (conn is HttpsURLConnection) {
+                            conn.sslSocketFactory = trustAllSslSocketFactory()
+                            conn.hostnameVerifier = HostnameVerifier { _, _ -> true }
+                        }
+                        conn.connectTimeout = 10000
+                        conn.readTimeout = 20000
+                        conn.requestMethod = "GET"
+                        conn.instanceFollowRedirects = true
+
+                        // 转发原始请求头（排除自行设置的/条件请求的/CORS 相关的）
+                        request?.requestHeaders?.forEach { (key, value) ->
+                            val lk = key.lowercase()
+                            if (lk !in setOf(
+                                    "cookie", "referer", "range", "if-modified-since", "if-none-match",
+                                    "accept-encoding", "origin", "access-control-request-method",
+                                    "access-control-request-headers", "host", "content-length"
+                                )
+                            ) {
+                                conn.setRequestProperty(key, value)
+                            }
+                        }
+                        if (request?.requestHeaders?.none { it.key.equals("User-Agent", true) } != false) {
+                            conn.setRequestProperty("User-Agent", DESKTOP_UA)
+                        }
+                        conn.setRequestProperty("Accept", "*/*")
+                        // 不请求 gzip，避免手动解压
+                        conn.setRequestProperty("Accept-Encoding", "identity")
+
+                        // 转发 Cookie（防防盗链/登录态丢失）
+                        try {
+                            val cookies = CookieManager.getInstance().getCookie(swfUrl)
+                            if (!cookies.isNullOrEmpty()) {
+                                conn.setRequestProperty("Cookie", cookies)
+                            }
+                        } catch (_: Exception) {
+                        }
+
+                        // 防盗链 Referer
+                        if (swfUrl.contains("4399.com")) {
+                            conn.setRequestProperty("Referer", "https://www.4399.com/")
+                        } else {
+                            try {
+                                val u = java.net.URI(swfUrl)
+                                conn.setRequestProperty("Referer", "${u.scheme}://${u.host}/")
+                            } catch (_: Exception) {
+                                conn.setRequestProperty("Referer", swfUrl)
+                            }
+                        }
+
+                        conn.connect()
+                        val responseCode = conn.responseCode
+                        if (responseCode in 200..299) {
+                            val data = conn.inputStream.readBytes()
+                            if (swfCache.size >= 10) swfCache.clear()
+                            swfCache[swfUrl] = data
+                            return WebResourceResponse(
+                                "application/x-shockwave-flash", null,
+                                200, "OK", swfCorsHeaders, ByteArrayInputStream(data)
+                            )
+                        } else if (responseCode in 500..599 && attempt < 3) {
+                            Thread.sleep(500L * attempt)
+                            continue
+                        } else {
+                            break // 换下一个 URL（4xx/其他非 5xx 错误不重试）
+                        }
+                    } catch (_: Exception) {
+                        if (attempt < 3) Thread.sleep(500L * attempt)
+                    }
+                }
+                // 重试期间其他线程可能已成功下载
+                swfCache[swfUrl]?.let { cached ->
+                    return WebResourceResponse(
+                        "application/x-shockwave-flash", null, 200, "OK",
+                        swfCorsHeaders, ByteArrayInputStream(cached)
+                    )
+                }
+            }
+
+            // 4. 全部失败：返回 502 + CORS 头（而非 null）——null 会让 WebView 自行
+            //    重发原始请求，页面侧因 Mixed Content/CORS 被阻断且无从感知。
+            return WebResourceResponse(
+                "application/x-shockwave-flash", null, 502, "Bad Gateway",
+                swfCorsHeaders, ByteArrayInputStream(ByteArray(0))
+            )
+        }
+
+        companion object {
+            /** Ruffle 引擎 CDN（gamehtml 默认源） */
+            private const val RUFFLE_SRC = "https://cdn.jsdelivr.net/npm/@ruffle-rs/ruffle@0.3.0/ruffle.min.js"
+
+            /**
+             * View Transitions API 补丁（gamehtml，所有页面通用）。
+             * WebView 对 startViewTransition 支持不完善：回调不执行导致 SPA 无法
+             * 跳转、finished Promise 抛 AbortError。polyfill 确保回调同步执行，
+             * 并强制触发一帧重绘（解决 polyfill 执行后页面"卡住"）。
+             */
+            private const val VIEW_TRANSITION_PATCH_SCRIPT = """
+                (function(){
+                  if (window.__vtPatch) return;
+                  window.__vtPatch = true;
+                  var vtPolyfill = function(callback) {
+                    var result;
+                    try { result = callback ? callback() : undefined; } catch(e) { result = Promise.reject(e); }
+                    var p = (result && typeof result.then === 'function') ? result : Promise.resolve();
+                    requestAnimationFrame(function() {
+                      try { void document.body && document.body.offsetHeight; } catch(e) {}
+                    });
+                    var finished = p.then(undefined, function(err) {
+                      if (err && err.name === 'AbortError') return;
+                      throw err;
+                    });
+                    return { finished: finished, ready: Promise.resolve(),
+                             updateCallbackDone: p, skipTransition: function() {}, types: [] };
+                  };
+                  try {
+                    Object.defineProperty(Document.prototype, 'startViewTransition', {
+                      value: vtPolyfill, writable: true, configurable: true });
+                  } catch(e) {}
+                  try { document.startViewTransition = vtPolyfill; } catch(e) {}
+                  if (!window.__vtRejectionHook) {
+                    window.__vtRejectionHook = true;
+                    window.addEventListener('unhandledrejection', function(event) {
+                      if (event.reason && event.reason.name === 'AbortError') {
+                        var msg = event.reason.message || String(event.reason);
+                        if (msg.indexOf('Transition') >= 0 || msg.indexOf('skipped') >= 0 || msg === 'AbortError') {
+                          event.preventDefault();
+                        }
+                      }
+                    });
+                  }
+                })();
+            """
+
+            /**
+             * PC 页面 viewport 自适配（gamehtml buildViewportScript 自动模式）。
+             * 仅当页面没有自己的 viewport meta 时才补一个（按 1200px 基准缩放），
+             * 移动端适配页自带 viewport → 尊重页面，不动。
+             */
+            private const val VIEWPORT_FIT_SCRIPT = """
+                (function(){
+                  try {
+                    var meta = document.querySelector('meta[name="viewport"]');
+                    if (meta) return;
+                    var head = document.head || document.documentElement;
+                    if (!head) return;
+                    meta = document.createElement('meta');
+                    meta.name = 'viewport';
+                    var sw = window.screen.width || 360;
+                    var scale = Math.max(0.25, Math.min(1, sw / 1200));
+                    meta.content = 'width=device-width, initial-scale=' + scale +
+                        ', minimum-scale=0.01, maximum-scale=10.0, user-scalable=yes';
+                    head.appendChild(meta);
+                  } catch(e) {}
+                })();
+            """
+
+            /**
+             * 伪造 Flash 插件支持（gamehtml FLASH_FAKE_SUPPORT_SCRIPT，完整移植）。
+             * 让 4399 等页面检测到浏览器"有 Flash 插件"，从而创建 <object> 元素；
+             * 之后 Ruffle polyfill 把 <object>/<embed> 替换为 Canvas 播放器。
+             * 必须在页面 JS 执行前注入（onPageStarted），零网络开销。
+             */
+            private const val FLASH_FAKE_SUPPORT_SCRIPT = """
+                (function(){
+                  if (window.__flashFaked) return;
+                  window.__flashFaked = true;
+                  try {
+                    var fakePlugin = {
+                      name: 'Shockwave Flash',
+                      filename: 'libflashplayer.so',
+                      description: 'Shockwave Flash 32.0 r0',
+                      length: 1,
+                      0: { type: 'application/x-shockwave-flash', suffixes: 'swf', description: 'Shockwave Flash' }
+                    };
+                    fakePlugin.namedItem = function(n) { return (n === 'Shockwave Flash') ? fakePlugin : null; };
+                    fakePlugin.item = function(i) { return i === 0 ? fakePlugin : null; };
+                    fakePlugin.refresh = function() {};
+                    var plugins = navigator.plugins || {};
+                    if (plugins.namedItem) { fakePlugin.namedItem = function(n) { return (n === 'Shockwave Flash') ? fakePlugin : plugins.namedItem.call(plugins, n); }; }
+                    if (plugins.item) { fakePlugin.item = function(i) { return i === 0 ? fakePlugin : plugins.item.call(plugins, i); }; }
+                    Object.defineProperty(navigator, 'plugins', {
+                      get: function() {
+                        var p = plugins;
+                        if (!p['Shockwave Flash']) {
+                          try { p['Shockwave Flash'] = fakePlugin; p[0] = fakePlugin; } catch(e) {}
+                        }
+                        p.length = Math.max(p.length || 0, 1);
+                        return p;
+                      },
+                      configurable: true
+                    });
+                    var fakeMime = { type: 'application/x-shockwave-flash', suffixes: 'swf', description: 'Shockwave Flash', enabledPlugin: fakePlugin };
+                    var mimes = navigator.mimeTypes || {};
+                    Object.defineProperty(navigator, 'mimeTypes', {
+                      get: function() {
+                        if (!mimes['application/x-shockwave-flash']) {
+                          try { mimes['application/x-shockwave-flash'] = fakeMime; } catch(e) {}
+                        }
+                        return mimes;
+                      },
+                      configurable: true
+                    });
+                    window.ActiveXObject = function(name) {
+                      if (name && /ShockwaveFlash/i.test(name)) return { SetVariable: function(){} };
+                      throw new Error('Not supported');
+                    };
+                  } catch(e) {}
+                })();
+            """
+
+            /**
+             * Ruffle 引擎加载器（gamehtml RuffleInjector fullInjection）：
+             * 配置（publicPath/polyfills/autoplay…）+ 动态注入引擎 JS。
+             * polyfills:true → 自动替换页面上的 <object>/<embed> Flash 元素。
+             * upgradeToHttps:false → 4399 等 http 游戏 CDN 不强制升级
+             * （拦截器对 http SWF 先试 http）。
+             */
+            private const val RUFFLE_LOADER_SCRIPT = """
+                (function(){
+                  window.RufflePlayer = window.RufflePlayer || {};
+                  window.RufflePlayer.config = {
+                    "publicPath": "https://cdn.jsdelivr.net/npm/@ruffle-rs/ruffle@0.3.0/",
+                    "polyfills": true,
+                    "autoplay": "on",
+                    "unmuteOverlay": "visible",
+                    "letterbox": "fullscreen",
+                    "upgradeToHttps": false,
+                    "allowScriptAccess": true,
+                    "scale": "showAll",
+                    "quality": "high",
+                    "allowFullscreen": true,
+                    "splashScreen": true,
+                    "preloader": true,
+                    "logLevel": "warn",
+                    "maxExecutionDuration": {"secs": 15, "nanos": 0}
+                  };
+                  if (window.__ruffleLoaded) return;
+                  var s = document.createElement('script');
+                  s.src = "$RUFFLE_SRC";
+                  s.async = true;
+                  s.onload = function(){
+                    window.__ruffleLoaded = true;
+                    try {
+                      var r = window.RufflePlayer.newest();
+                      if (r && r.init) r.init();
+                    } catch(e) {}
+                    window.__playSwf = function(url, base){
+                      try {
+                        var ruffle = window.RufflePlayer.newest();
+                        var player = ruffle.createPlayer();
+                        player.style.cssText = 'position:fixed;left:0;top:0;width:100%;height:100%;z-index:9999;background:#000;';
+                        document.body.appendChild(player);
+                        var opt = { url: url };
+                        if (base) opt.base = base;
+                        player.ruffle().load(opt);
+                      } catch(e) { console.error('[SWF] play error:', e); }
+                    };
+                    document.dispatchEvent(new CustomEvent('ruffleReady'));
+                  };
+                  s.onerror = function(e){ console.error('Ruffle load failed:', e); };
+                  (document.head || document.documentElement).appendChild(s);
+                })();
+            """
+
+            /**
+             * Flash 元素懒加载探测器（AnWind 按 gamehtml 思路实现）：
+             * 通用浏览器不能像 gamehtml 那样每页都预载 Flash 引擎（CDN 开销），
+             * 改为 DOMContentLoaded + MutationObserver 监测 —— 页面一旦出现
+             * <object>/<embed> Flash 元素（含 swfobject.embedSWF 动态创建的），
+             * 立即动态加载 Ruffle。4399 域名页面另有 onPageStarted 直载兜底。
+             */
+            private const val FLASH_DOM_DETECT_SCRIPT = """
+                (function(){
+                  if (window.__flashDomDetect) return;
+                  window.__flashDomDetect = true;
+                  var SEL = 'object[type="application/x-shockwave-flash"],embed[type="application/x-shockwave-flash"],object[data$=".swf" i],embed[src$=".swf" i],object[classid*="D27CDB6E" i]';
+                  function loadEngine(){
+                    if (window.__ruffleLoaded || window.__ruffleLoading) return;
+                    window.__ruffleLoading = true;
+                    var s = document.createElement('script');
+                    s.src = "$RUFFLE_SRC";
+                    s.async = true;
+                    s.onload = function(){
+                      window.__ruffleLoaded = true;
+                      window.__ruffleLoading = false;
+                      try {
+                        var r = window.RufflePlayer.newest();
+                        if (r && r.init) r.init();
+                      } catch(e) {}
+                      document.dispatchEvent(new CustomEvent('ruffleReady'));
+                    };
+                    (document.head || document.documentElement).appendChild(s);
+                  }
+                  function check(){
+                    try {
+                      if (document.querySelector(SEL)) {
+                        if (!window.RufflePlayer) {
+                          window.RufflePlayer = {};
+                          window.RufflePlayer.config = {
+                            "publicPath": "https://cdn.jsdelivr.net/npm/@ruffle-rs/ruffle@0.3.0/",
+                            "polyfills": true, "autoplay": "on", "unmuteOverlay": "visible",
+                            "letterbox": "fullscreen", "upgradeToHttps": false,
+                            "allowScriptAccess": true, "scale": "showAll", "quality": "high",
+                            "allowFullscreen": true, "splashScreen": true, "preloader": true,
+                            "logLevel": "warn",
+                            "maxExecutionDuration": {"secs": 15, "nanos": 0}
+                          };
+                        }
+                        loadEngine();
+                      }
+                    } catch(e) {}
+                  }
+                  if (document.readyState === 'loading') {
+                    document.addEventListener('DOMContentLoaded', check);
+                  } else { check(); }
+                  if (window.MutationObserver) {
+                    try {
+                      var mo = new MutationObserver(function(){ check(); });
+                      mo.observe(document.documentElement || document.body, {childList: true, subtree: true});
+                    } catch(e) {}
+                  }
+                })();
+            """
+
+            /**
+             * 4399 防盗链：伪造 document.referrer（gamehtml REFERER_SPOOF_SCRIPT）。
+             */
+            private const val REFERER_SPOOF_SCRIPT = """
+                (function(){
+                  try {
+                    Object.defineProperty(document, 'referrer', {
+                      get: function() { return 'https://www.4399.com/'; },
+                      configurable: true
+                    });
+                  } catch(e) {}
+                })();
+            """
         }
     }
 
@@ -621,6 +1036,21 @@ object BrowserEngine {
 
         // 文件上传回调（input[type=file]）
         private var filePathCallback: android.webkit.ValueCallback<Array<Uri>>? = null
+
+        // v2.14.2（gamehtml GameWebChromeClient）：游戏/网页所需的运行时权限直接授予
+        override fun onPermissionRequest(request: android.webkit.PermissionRequest?) {
+            try {
+                request?.grant(request.resources)
+            } catch (_: Exception) {
+            }
+        }
+
+        override fun onGeolocationPermissionsShowPrompt(
+            origin: String?,
+            callback: android.webkit.GeolocationPermissions.Callback?
+        ) {
+            callback?.invoke(origin, true, false)
+        }
 
         override fun onShowFileChooser(
             webView: WebView?,
