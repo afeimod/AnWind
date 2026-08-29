@@ -63,11 +63,8 @@ class ZoomPinchLayout @JvmOverloads constructor(
     private var webView: WebView? = null
 
     // ===== 手势状态机 =====
-    private companion object {
-        const val MODE_IDLE = 0        // 无双指手势
-        const val MODE_OBSERVE = 1     // 双指观察中（未拦截，原生优先）
-        const val MODE_PINCH = 2       // 已拦截，View 缩放域接管中
-    }
+    // （v2.14.6 CI 修复：Kotlin 每个类仅允许一个 companion object。
+    //  MODE_* 常量已并入文末 companion object，私有可见性不变）
 
     private var mode = MODE_IDLE
     /** 本次手势是否已判定为原生域（放大/原生可响应的缩小） */
@@ -294,6 +291,11 @@ class ZoomPinchLayout @JvmOverloads constructor(
     companion object {
         const val MIN_ZOOM = 0.3f
         const val MAX_ZOOM = 1.0f
+
+        // 手势状态机（v2.14.6 CI 修复：自此合并入唯一 companion object）
+        private const val MODE_IDLE = 0        // 无双指手势
+        private const val MODE_OBSERVE = 1     // 双指观察中（未拦截，原生优先）
+        private const val MODE_PINCH = 2       // 已拦截，View 缩放域接管中
 
         /**
          * 对任意 WebView 施加 View 级缩放（静态入口：引擎导航重置 /
