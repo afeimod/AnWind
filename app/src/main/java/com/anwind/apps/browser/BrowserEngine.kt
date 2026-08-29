@@ -434,8 +434,9 @@ object BrowserEngine {
 
             // v2.14.7：导航重置缩小域缩放（30%~100%）—— 每次新页面默认回到
             // 100% 排版（v2.14.5 教训：默认视觉必须与旧版一致）。新文档天然
-            // 无 body.zoom；同文档锚点导航（onPageStarted 亦触发）由
-            // RESET_SCRIPT 清除内联样式。View 变换方案（v2.14.6）已被实测
+            // 无注入；同文档锚点导航（onPageStarted 亦触发）由 RESET_SCRIPT
+            // 按快照还原内联样式（v2.14.8：钉宽居中五项样式，含页面自设
+            // 内联样式的逐字还原）。View 变换方案（v2.14.6）已被实测
             // 否决：内容不随变换缩放、仅被缩小后的边界裁切
             if (tab.viewZoom != 1f) {
                 tab.viewZoom = 1f

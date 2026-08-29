@@ -4,6 +4,44 @@ plugins {
     id("com.google.devtools.ksp")
 }
 
+// ============================================================
+// v2.14.8：ruffle 资产白名单过滤（打包期剔除仓库残留旧文件）
+// ============================================================
+// 背景：历次交付均为 zip 覆盖 app/，zip 无法表达"删除" —— 仓库
+// assets/ruffle/ 会残留旧引擎文件（0.3.0 的双 wasm + 双 core.js，
+// 约 28MB 死重）。Ruffle 自托管包本身为"双核"结构（ruffle.js 按
+// 设备特性二选一加载 core+wasm），下列白名单即当前引擎的可加载
+// 全集（供给层按文件名映射 assets/ruffle/<file>，加载器只会请求
+// ruffle.js 里固化的哈希名）；白名单之外的文件不可能被请求，
+// 打包期直接剔除，仓库无需手工清理。
+// ============================================================
+val ruffleAssetWhitelist = setOf(
+    "ruffle.js",
+    "simhei.ttf",
+    "1ef41ff58c9763bed027.wasm",
+    "63468f5322aed2e768a8.wasm",
+    "core.ruffle.0875e44536e955474b0c.js",
+    "core.ruffle.831c4f4a93befb9e84af.js"
+)
+val filteredAssetsDir = layout.buildDirectory.dir("filteredAssets")
+val filterRuffleAssets = tasks.register<Sync>("filterRuffleAssets") {
+    description = "同步 src/main/assets 到过滤目录，ruffle/ 只保留白名单文件"
+    into(filteredAssetsDir)
+    from("src/main/assets") {
+        exclude("ruffle/*")
+    }
+    from("src/main/assets/ruffle") {
+        into("ruffle")
+        include(ruffleAssetWhitelist)
+    }
+}
+// 保险丝：preBuild / merge*Assets 先行触发同步（双锚点保证过滤目录在
+// 资源合并前就绪，不依赖单一任务链假设）
+tasks.matching {
+    it.name == "preBuild" ||
+        (it.name.startsWith("merge") && it.name.endsWith("Assets"))
+}.configureEach { dependsOn(filterRuffleAssets) }
+
 android {
     namespace = "com.anwind"
     compileSdk = 34
@@ -12,8 +50,8 @@ android {
         applicationId = "com.anwind"
         minSdk = 24
         targetSdk = 34
-        versionCode = 18
-        versionName = "2.14.7"
+        versionCode = 19
+        versionName = "2.14.8"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -76,6 +114,14 @@ android {
     }
     kotlinOptions {
         jvmTarget = "17"
+    }
+    sourceSets {
+        getByName("main") {
+            // v2.14.8：用白名单过滤目录整体替换默认 assets 源
+            //（Sync 任务产出；上方 preBuild 保险丝保证合并前就绪，
+            // 仓库残留旧 ruffle 文件不再进 APK）
+            assets.setSrcDirs(listOf(filteredAssetsDir))
+        }
     }
     buildFeatures {
         compose = true

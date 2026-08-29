@@ -11,9 +11,9 @@ import kotlin.math.abs
 import kotlin.math.sqrt
 
 /**
- * v2.14.7：双指缩放仲裁容器 —— 弥补 Chromium 无法缩小到 100% 以下的引擎级限制。
+ * v2.14.8：双指缩放仲裁容器 —— 弥补 Chromium 无法缩小到 100% 以下的引擎级限制。
  *
- * ## 方案演进（为什么是 JS body.zoom）
+ * ## 方案演进（为什么是 JS body.zoom + 钉宽居中）
  * - v2.14.5 宽画布 viewport：破坏默认排版（用户否决）；
  * - v2.14.6 WebView View 变换（scaleX/Y）：实测【内容不跟随缩放、仅被缩小后
  *   的边界裁切】（用户截图证实：视口缩了、四周露深灰边，页面内容仍按原尺寸
@@ -26,6 +26,16 @@ import kotlin.math.sqrt
  *   viewport meta 的 4399 页面也生效，立即生效无需 reload（GameBox 注：
  *   "WebKit 私有 API，Chromium WebView 支持，终极方案"）。默认 100% 时
  *   不注入任何东西，默认排版/缩放与 v2.14.4 完全一致。
+ *   实测缺陷：缩放生效但内容钉死左上角、右侧大片空白（用户截图实证）。
+ *   根因：zoom 只缩渲染不改 window.innerWidth —— H5 游戏画布按 JS
+ *   innerWidth 定尺寸，body 坐标系扩宽后画布不重排，钉在原位缩小；
+ * - v2.14.8（钉宽居中）：zoom 同时把 body 钉在设计宽度
+ *   （clientWidth）+ margin:auto 居中 —— body 盒等比缩小后对称 letterbox；
+ *   再加 identity transform 使 body 成为 fixed 后代的包含块，
+ *   position:fixed 游戏全屏层无法逃离 body 盒、一并居中。非满宽 body
+ *   （页面自带显式宽度，如 PC 页 body{width:1200px}）不钉宽、仅
+ *   margin:auto 居中，排版零回流。首次接管快照原内联样式，回 100% 时
+ *   逐字还原（不盲清，防误伤页面自设内联样式）。
  *
  * ## 两段式缩放域
  * - 【100% 以上】放大域：原生 Chromium 双指捏合（排版重排/文字回流），
@@ -55,9 +65,9 @@ import kotlin.math.sqrt
  * ## 附带行为
  * - 缩放状态存于 [BrowserTab.viewZoom]：切标签恢复（重绑后重注入 zoom）、
  *   导航（onPageStarted）重置回 100%（新文档天然无 zoom，同文档锚点
- *   导航由引擎的 reset 脚本清除）；
- * - 缩放值域 [MIN_ZOOM=0.3, 1.0]，达 100% 时移除 zoom 样式（非设为
- *   100%，避免残留内联样式影响页面自身布局）。
+ *   导航由引擎的 reset 脚本还原快照样式）；
+ * - 缩放值域 [MIN_ZOOM=0.3, 1.0]，达 100% 时按快照还原全部注入样式
+ *   （zoom/width/margin/transform，非盲清，防误伤页面自设内联样式）。
  */
 class ZoomPinchLayout @JvmOverloads constructor(
     context: Context,
@@ -314,9 +324,9 @@ class ZoomPinchLayout @JvmOverloads constructor(
     }
 
     /**
-     * 把缩放注入到页面（body.style.zoom）。force=true 精确注入当前值
+     * 把缩放注入到页面（zoom + 钉宽居中）。force=true 精确注入当前值
      * （手势结束/换绑恢复）；否则受 [JS_INTERVAL_MS] 节流。
-     * 100% 时移除 zoom 内联样式（清干净，不留残余影响页面自身布局）。
+     * 100% 时按快照还原全部注入样式（不盲清，防误伤页面自设内联样式）。
      */
     private fun applyZoom(wv: WebView, zoom: Float, force: Boolean) {
         val now = android.os.SystemClock.uptimeMillis()
@@ -343,19 +353,58 @@ class ZoomPinchLayout @JvmOverloads constructor(
 
         /**
          * body.zoom 注入脚本（静态入口：引擎导航重置也用 [RESET_SCRIPT]）。
-         * GameBox applyPageZoom 同源方案：Chromium 原生整页 layout 缩放，
-         * 命中测试/滚动/固定层全部原生正确，带 viewport meta 页面亦生效。
+         * GameBox applyPageZoom 同源方案 + v2.14.8 钉宽居中：
+         * - zoom：Chromium 原生整页 layout 缩放（带 viewport meta 页面亦生效，
+         *   立即生效无需 reload）；
+         * - 钉宽：body 满宽时钉在 clientWidth（设计宽度）—— JS 按 innerWidth
+         *   定尺寸的画布/排版不回流，body 盒随 zoom 等比缩小；
+         * - margin:auto：缩小后的 body 盒在扩展后的包含块中居中 —— 对称
+         *   letterbox（v2.14.7 左上角钉死、右侧大空白的修复）；
+         * - transform:translate(0,0)：identity 变换使 body 成为 fixed 后代
+         *   的包含块 —— position:fixed 游戏全屏层无法逃逸 body 盒，一并
+         *   居中（fixed 默认以视口为包含块，会逃离 margin 居中）；
+         * - 非满宽 body（页面自带显式宽度）不钉宽，仅 margin:auto 居中；
+         * - 首次接管快照 body/html 五项内联样式（window.__az），回 100%/
+         *   导航重置时逐字还原；
+         * - 幂等可重入（捏合节流逐次重注入）：样式决策缓存于 __az，重复
+         *   注入只更新 zoom 值，无重复测量开销。
          */
         fun zoomScript(zoom: Float): String {
             return if (zoom >= 0.999f) RESET_SCRIPT
-            else "(function(){try{var b=document.body;if(b)b.style.zoom='$zoom';" +
-                "else if(document.documentElement)document.documentElement.style.zoom='$zoom';" +
+            else "(function(){try{" +
+                "var d=document,z=$zoom,b=d.body||d.documentElement;if(!b)return;" +
+                "var cw=(d.documentElement&&d.documentElement.clientWidth)||window.innerWidth;" +
+                "var T=['zoom','width','marginLeft','marginRight','transform'];" +
+                "var S=window.__az;" +
+                "if(!S){" +
+                "S={b:{},h:{},full:true};" +
+                "if(d.body){var bs=d.body.style;for(var i=0;i<T.length;i++)S.b[T[i]]=bs[T[i]]||'';}" +
+                "if(d.documentElement){var hs=d.documentElement.style;for(var i=0;i<T.length;i++)S.h[T[i]]=hs[T[i]]||'';}" +
+                "try{if(d.body){var w=parseFloat(window.getComputedStyle(d.body).width);S.full=Math.abs(w-cw)<2;}}catch(e){}" +
+                "window.__az=S;" +
+                "}" +
+                "b.style.zoom=z;" +
+                "if(S.full)b.style.width=cw+'px';" +
+                "b.style.marginLeft='auto';" +
+                "b.style.marginRight='auto';" +
+                "b.style.transform='translate(0,0)';" +
                 "}catch(e){}})()"
         }
 
-        /** 重置缩放脚本：移除 zoom 内联样式（引擎 onPageStarted 导航重置用） */
+        /**
+         * 重置缩放脚本：按快照还原 body/html 五项注入样式（zoom/width/
+         * marginLeft/marginRight/transform），无快照时清空，并清 __az。
+         * 引擎 onPageStarted 导航重置用（新文档天然干净；同文档锚点导航
+         * 由此完整还原页面自设内联样式）。
+         */
         const val RESET_SCRIPT: String =
-            "(function(){try{if(document.body)document.body.style.zoom='';" +
-                "if(document.documentElement)document.documentElement.style.zoom='';}catch(e){}})()"
+            "(function(){try{" +
+                "var d=document,T=['zoom','width','marginLeft','marginRight','transform'],S=window.__az;" +
+                "var els=[d.body,d.documentElement];" +
+                "for(var i=0;i<els.length;i++){var el=els[i];if(!el)continue;" +
+                "var sv=(S?(i==0?S.b:S.h):null)||{};" +
+                "for(var k=0;k<T.length;k++)el.style[T[k]]=sv[T[k]]||'';}" +
+                "window.__az=null;" +
+                "}catch(e){}})()"
     }
 }
