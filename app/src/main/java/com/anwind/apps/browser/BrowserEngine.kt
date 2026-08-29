@@ -415,8 +415,9 @@ object BrowserEngine {
                 view?.evaluateJavascript(WEBGL_GUARD_SCRIPT, null)
                 // 1) View Transitions API 补丁（所有页面通用，防 SPA 跳转卡死）
                 view?.evaluateJavascript(VIEW_TRANSITION_PATCH_SCRIPT, null)
-                // 2) PC 页面 viewport 自适配（页面自带 viewport 则不动）
-                view?.evaluateJavascript(VIEWPORT_FIT_SCRIPT, null)
+                // 2) 双指缩放支持（v2.14.5）：见 ZOOM_VIEWPORT_SCRIPT 注释 ——
+                //    不在此处注入（页面 meta 未解析），改在 onPageCommitVisible /
+                //    onPageFinished 双阶段注入
                 // 3) Flash 兼容：伪造插件让 4399 等页面创建 <object> Flash 元素（零网络开销）
                 view?.evaluateJavascript(FLASH_FAKE_SUPPORT_SCRIPT, null)
                 //    懒加载探测器：任意页面出现 Flash 元素时动态加载 Ruffle 引擎
@@ -432,9 +433,15 @@ object BrowserEngine {
         /**
          * v2.14.2（gamehtml）：首次可见帧强制重绘。
          * 部分设备上首帧提交后合成器未拉起新帧，invalidate 确保当前帧上屏。
+         * v2.14.5：此处同步注入双指缩放支持脚本 —— 首帧前 head 内的 viewport
+         * meta 已解析完毕，此刻改写可让首帧直接按宽画布/放宽后的缩放限制
+         * 渲染，避免先按默认 980 画布出帧再跳变（脚本幂等，重复注入无副作用）。
          */
         override fun onPageCommitVisible(view: WebView?, url: String?) {
             super.onPageCommitVisible(view, url)
+            if (url != null && (url.startsWith("http") || url.startsWith("file:"))) {
+                view?.evaluateJavascript(ZOOM_VIEWPORT_SCRIPT, null)
+            }
             view?.invalidate()
         }
 
@@ -443,6 +450,12 @@ object BrowserEngine {
             view?.let {
                 tab.canGoBack = it.canGoBack()
                 tab.canGoForward = it.canGoForward()
+            }
+
+            // v2.14.5：双指缩放支持第二阶段 —— SPA 动态建 viewport meta 的页面
+            // 在加载完成时才可改写；幂等脚本，与 onPageCommitVisible 重复注入无副作用
+            if (url != null && (url.startsWith("http") || url.startsWith("file:"))) {
+                view?.evaluateJavascript(ZOOM_VIEWPORT_SCRIPT, null)
             }
 
             // ===== v2.14.2（gamehtml）强制重绘管线 —— 灰屏的真正解法 =====
@@ -670,6 +683,13 @@ object BrowserEngine {
          * 与 *.wasm（fetch 跨域 → 必须带 CORS 头；wasm 流式编译 → MIME 必须
          * application/wasm）。文件不存在时返回 404（而非 null），让注入的
          * 加载器链切换到下一个 CDN 后备源。
+         *
+         * v2.14.5（关键修复）：请求路径形如 /ruffle/<file>（RUFFLE_LOCAL_BASE
+         * 以 /ruffle/ 结尾），旧实现未剥离目录前缀，name 含 '/' 被穿越防护
+         * 全量拒绝 → 本地引擎资产 100% 返回 404 → 链式加载器退回 CDN →
+         * 国内网络 TLS 掐断 → Ruffle 预加载器进度条永远卡住（用户实测
+         * "一直进度条加载"）。与 GameBox 的 interceptAsset 对齐：剥离虚拟
+         * 目录前缀后按文件名映射 assets/ruffle/<file>，同时保留穿越防护。
          */
         private fun serveRuffleAsset(path: String?): WebResourceResponse {
             fun notFound() = WebResourceResponse(
@@ -677,7 +697,11 @@ object BrowserEngine {
                 ruffleAssetHeaders, ByteArrayInputStream(ByteArray(0))
             )
             if (path.isNullOrEmpty()) return notFound()
-            val name = path.removePrefix("/").substringBefore("?")
+            var name = path.substringBefore("?").removePrefix("/")
+            // 剥离虚拟目录前缀：/ruffle/ruffle.js → ruffle.js
+            if (name.startsWith("$RUFFLE_ASSET_DIR/")) {
+                name = name.removePrefix("$RUFFLE_ASSET_DIR/")
+            }
             // 路径穿越防护：只允许 assets/ruffle/ 下的直接文件名
             if (name.isEmpty() || name.contains("..") || name.contains('/')) return notFound()
             return try {
@@ -686,6 +710,10 @@ object BrowserEngine {
                     name.endsWith(".wasm", true) -> "application/wasm"
                     name.endsWith(".js", true) -> "text/javascript"
                     name.endsWith(".css", true) -> "text/css"
+                    name.endsWith(".ttf", true) -> "font/ttf"       // v2.14.5：SimHei 字体
+                    name.endsWith(".woff", true) -> "font/woff"
+                    name.endsWith(".woff2", true) -> "font/woff2"
+                    name.endsWith(".otf", true) -> "font/otf"
                     else -> "application/octet-stream"
                 }
                 WebResourceResponse(mime, null, stream).apply {
@@ -934,24 +962,64 @@ object BrowserEngine {
             """
 
             /**
-             * PC 页面 viewport 自适配（gamehtml buildViewportScript 自动模式）。
-             * 仅当页面没有自己的 viewport meta 时才补一个（按 1200px 基准缩放），
-             * 移动端适配页自带 viewport → 尊重页面，不动。
+             * 双指缩放支持脚本（v2.14.5 重写，取代旧 VIEWPORT_FIT_SCRIPT）。
+             *
+             * 背景：旧脚本给无 viewport 的 PC 页注入 width=device-width，
+             * 把布局画布钉死在窗口宽 —— Chromium 的页面最小缩放 =
+             * max(meta minimum-scale, 窗口宽 / 画布宽)，画布=窗口宽时
+             * 最小缩放恒为 100%，双指只能放大不能缩小（用户主诉）。
+             *
+             * 修复（参考 GameBox 的 viewport 放宽思路 + Chromium 画布公式）：
+             * 1) 无 viewport（PC 页）：注入宽画布 width = max(1200, 窗口宽/0.3)，
+             *    最小缩放可达 30%；initial-scale 取全览比例，首屏视觉与旧版
+             *    sw/1200 自适配语义一致（窄窗口全览 PC 布局）。
+             * 2) 已有 viewport：保留页面布局（width / initial-scale 不动），
+             *    仅改写 minimum-scale=0.3 / maximum-scale=10（WebView 允许
+             *    的最大倍率）/ user-scalable=yes。width 为具体值的页面完整
+             *    生效；width=device-width 的移动页受 Chromium 引擎级约束
+             *    （画布=窗口宽时缩小会出现空白边，强制 min=100%），不强行
+             *    改宽以免破坏移动页布局。
+             *
+             * 注入时机：onPageCommitVisible（首帧前，head 内 meta 已解析，
+             * 避免首屏按默认 980 画布渲染后跳变）+ onPageFinished（SPA
+             * 动态建 meta 兕底）。脚本幂等：重复注入时重组结果相同，
+             * 不触发额外重排。不再在 onPageStarted 注入 —— document start
+             * 时页面 meta 未解析，创建的 meta 会与后到的页面 meta 并存，
+             * 覆盖顺序依赖 Blink 实现（last-wins）不可靠。
              */
-            private const val VIEWPORT_FIT_SCRIPT = """
+            private const val ZOOM_VIEWPORT_SCRIPT = """
                 (function(){
                   try {
+                    var MIN = 0.3;
+                    var MAX = 10.0;
+                    var dev = window.innerWidth || document.documentElement.clientWidth || 360;
+                    var W = Math.max(1200, Math.ceil(dev / MIN));
                     var meta = document.querySelector('meta[name="viewport"]');
-                    if (meta) return;
-                    var head = document.head || document.documentElement;
-                    if (!head) return;
-                    meta = document.createElement('meta');
-                    meta.name = 'viewport';
-                    var sw = window.screen.width || 360;
-                    var scale = Math.max(0.25, Math.min(1, sw / 1200));
-                    meta.content = 'width=device-width, initial-scale=' + scale +
-                        ', minimum-scale=0.01, maximum-scale=10.0, user-scalable=yes';
-                    head.appendChild(meta);
+                    if (!meta) {
+                      var head = document.head || document.documentElement;
+                      if (!head) return;
+                      var fit = Math.max(MIN, Math.min(1, dev / W));
+                      meta = document.createElement('meta');
+                      meta.name = 'viewport';
+                      meta.content = 'width=' + W + ', initial-scale=' + fit +
+                          ', minimum-scale=' + MIN + ', maximum-scale=' + MAX + ', user-scalable=yes';
+                      head.appendChild(meta);
+                      return;
+                    }
+                    var c = (meta.content || '').trim();
+                    if (!c) {
+                      meta.content = 'minimum-scale=' + MIN + ', maximum-scale=' + MAX + ', user-scalable=yes';
+                      return;
+                    }
+                    var keep = [];
+                    c.split(',').forEach(function(p){
+                      var k = p.split('=')[0].trim().toLowerCase();
+                      if (k && k !== 'minimum-scale' && k !== 'maximum-scale' && k !== 'user-scalable') {
+                        keep.push(p.trim());
+                      }
+                    });
+                    keep.push('minimum-scale=' + MIN, 'maximum-scale=' + MAX, 'user-scalable=yes');
+                    meta.content = keep.join(', ');
                   } catch(e) {}
                 })();
             """
@@ -1012,10 +1080,16 @@ object BrowserEngine {
 
             /**
              * Ruffle 引擎链式加载器（v2.14.4 重写：本地 assets 优先，
-             * npmmirror / jsdelivr 网络后备）：
+             * npmmirror / jsdelivr 网络后备；v2.14.5 移植 GameBox 字体修复）：
              * 注入为 window.__anwindLoadRuffle()，幂等（加载中/已加载直接返回），
              * 每次尝试同步更新 publicPath（core/wasm 相对它解析）。
              * 旧版固定 jsdelivr —— 国内网络 TLS 掐断时 Flash 游戏区永远空白。
+             *
+             * 字体修复（GameBox RuffleInjector.fontConfigScript 同款）：
+             * Flash 游戏多用设备字体（中文 SWF 无内嵌字形），Ruffle 默认
+             * 只带拉丁字形 → 中文显示方块。fontSources 指向本地 simhei.ttf
+             * （虚拟域供给，与引擎源无关恒本地），defaultFonts 把六类
+             * 设备字体全映射 SimHei，中文正常渲染。
              */
             private const val RUFFLE_CHAIN_SCRIPT = """
                 (function(){
@@ -1033,7 +1107,16 @@ object BrowserEngine {
                     "splashScreen": true,
                     "preloader": true,
                     "logLevel": "warn",
-                    "maxExecutionDuration": {"secs": 15, "nanos": 0}
+                    "maxExecutionDuration": {"secs": 15, "nanos": 0},
+                    "fontSources": ["$RUFFLE_LOCAL_BASE" + "simhei.ttf"],
+                    "defaultFonts": {
+                      "sans": ["SimHei"],
+                      "serif": ["SimHei"],
+                      "typewriter": ["SimHei"],
+                      "japaneseGothic": ["SimHei"],
+                      "japaneseGothicMono": ["SimHei"],
+                      "japaneseMincho": ["SimHei"]
+                    }
                   };
                   var SOURCES = [
                     "$RUFFLE_LOCAL_BASE",
