@@ -103,9 +103,19 @@ private fun FileExplorerContent(scope: WindowContentScope) {
     // ===== v2.14 壁纸选择模式 =====
     // 个性化→壁纸 卡片不再拉起系统文件选择器，而是打开本应用文件资源管理器；
     // pickMode=wallpaper 时：初始直达 Pictures，点击图片 → 设为壁纸 → 关闭窗口。
+    //
+    // ===== v2.14.10 文本/媒体选择模式 =====
+    // 记事本「打开」/ 媒体播放器「打开文件」也不再调用系统文件选择器（SAF）：
+    // pickMode=text → 初始直达 Documents，点击文本文件 → 经 FilePickBus 回传给记事本；
+    // pickMode=media → 初始直达 Music（无则 Movies/Download），点击音频/视频 → 回传给媒体播放器。
+    // 目标窗口已关闭（无监听者）时兜底：直接开新窗口并传 path。
     val app = AnWindApp.get()
     val pickMode = scope.windowState.launchArgs["pickMode"] ?: ""
+    val targetApp = scope.windowState.launchArgs["targetApp"] ?: ""
+    val targetWindow = scope.windowState.launchArgs["targetWindow"] ?: ""
     val wallpaperPick = pickMode == "wallpaper"
+    val textPick = pickMode == "text"
+    val mediaPick = pickMode == "media"
     val scope0 = androidx.compose.runtime.rememberCoroutineScope()
     if (wallpaperPick) {
         // 选择模式：直接进入 Pictures（不存在则内部存储根）
@@ -118,6 +128,22 @@ private fun FileExplorerContent(scope: WindowContentScope) {
             }
             isThisPcHome = false
         }
+    } else if (textPick) {
+        // 文本选择：直达 Documents（不存在则内部存储根）
+        LaunchedEffect(Unit) {
+            val docs = File(storageRoot, "Documents")
+            currentRealDir = if (docs.exists() && docs.isDirectory) docs else storageRoot
+            isThisPcHome = false
+        }
+    } else if (mediaPick) {
+        // 媒体选择：直达 Music → Movies → Download → 内部存储根（第一个存在的）
+        LaunchedEffect(Unit) {
+            val dir = listOf("Music", "Movies", "Download")
+                .map { File(storageRoot, it) }
+                .firstOrNull { it.exists() && it.isDirectory } ?: storageRoot
+            currentRealDir = dir
+            isThisPcHome = false
+        }
     }
 
     /** v2.14：设为壁纸（file:// URI 持久化）并关闭选择窗口 */
@@ -126,6 +152,31 @@ private fun FileExplorerContent(scope: WindowContentScope) {
             app.settingsStore.setCustomWallpaper("file://${file.absolutePath}")
         }
         Toast.makeText(context, "已设为壁纸", Toast.LENGTH_SHORT).show()
+        scope.onClose()
+    }
+
+    /** v2.14.10：把选中的文本/媒体文件回传给发起窗口并关闭选择窗口 */
+    fun pickAndClose(file: File) {
+        val delivered = FilePickBus.deliver(targetApp, targetWindow, file.absolutePath)
+        if (!delivered) {
+            // 发起窗口已关闭/最小化：直接开新窗口承载该文件（与文件双击打开同路径）
+            when (targetApp) {
+                "notepad" -> WindowManager.get().open(
+                    appId = "notepad",
+                    title = file.name,
+                    launchMode = LaunchMode.FLOATING,
+                    launchArgs = mapOf("path" to file.absolutePath)
+                )
+                "media_player" -> WindowManager.get().open(
+                    appId = "media_player",
+                    title = file.name,
+                    launchMode = LaunchMode.FLOATING,
+                    launchArgs = mapOf("path" to file.absolutePath),
+                    initialWidth = 760,
+                    initialHeight = 540
+                )
+            }
+        }
         scope.onClose()
     }
 
@@ -344,7 +395,7 @@ private fun FileExplorerContent(scope: WindowContentScope) {
         }
 
         // ===== v2.14 壁纸选择模式横幅 =====
-        if (wallpaperPick) {
+        if (wallpaperPick || textPick || mediaPick) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -353,13 +404,21 @@ private fun FileExplorerContent(scope: WindowContentScope) {
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Icon(
-                    Icons.Default.Image, null,
+                    when {
+                        wallpaperPick -> Icons.Default.Image
+                        textPick -> Icons.Default.Description
+                        else -> Icons.Default.PlayCircle
+                    }, null,
                     tint = theme.accentColor,
                     modifier = Modifier.size(16.dp)
                 )
                 Spacer(Modifier.width(8.dp))
                 Text(
-                    "点击任意图片，直接设为桌面壁纸",
+                    when {
+                        wallpaperPick -> "点击任意图片，直接设为桌面壁纸"
+                        textPick -> "点击任意文本文件，在记事本中打开"
+                        else -> "点击音频或视频文件进行播放"
+                    },
                     color = if (theme.isDark) Color.White else Color.Black,
                     fontSize = 12.sp
                 )
@@ -432,6 +491,12 @@ private fun FileExplorerContent(scope: WindowContentScope) {
                         if (file.isDirectory) openFolder(file)
                         else if (wallpaperPick && isImageExtension(file.extension)) {
                             setWallpaperAndClose(file)
+                        } else if (textPick) {
+                            if (isTextExtension(file.extension)) pickAndClose(file)
+                            else Toast.makeText(context, "请选择文本文件（txt/log/md/json/xml 等）", Toast.LENGTH_SHORT).show()
+                        } else if (mediaPick) {
+                            if (isMediaExtension(file.extension)) pickAndClose(file)
+                            else Toast.makeText(context, "请选择音频或视频文件", Toast.LENGTH_SHORT).show()
                         } else openRealFile(context, file)
                     }
                 } else {
@@ -439,6 +504,12 @@ private fun FileExplorerContent(scope: WindowContentScope) {
                         if (file.isDirectory) openFolder(file)
                         else if (wallpaperPick && isImageExtension(file.extension)) {
                             setWallpaperAndClose(file)
+                        } else if (textPick) {
+                            if (isTextExtension(file.extension)) pickAndClose(file)
+                            else Toast.makeText(context, "请选择文本文件（txt/log/md/json/xml 等）", Toast.LENGTH_SHORT).show()
+                        } else if (mediaPick) {
+                            if (isMediaExtension(file.extension)) pickAndClose(file)
+                            else Toast.makeText(context, "请选择音频或视频文件", Toast.LENGTH_SHORT).show()
                         } else openRealFile(context, file)
                     }
                 }
@@ -909,13 +980,26 @@ private fun ImageThumbnail(path: String, size: Dp, corner: Dp) {
 private fun isImageExtension(ext: String): Boolean =
     ext.lowercase() in setOf("jpg", "jpeg", "png", "gif", "bmp", "webp")
 
+/** 文本文件扩展名（v2.14.10：记事本「打开」选择模式过滤用） */
+private fun isTextExtension(ext: String): Boolean = ext.lowercase() in setOf(
+    "txt", "log", "md", "json", "xml", "csv", "ini", "cfg", "conf",
+    "properties", "yml", "yaml", "html", "htm", "js", "ts", "css", "java", "kt", "py", "sh", "bat"
+)
+
+/** 媒体文件扩展名（v2.14.10：媒体播放器「打开文件」选择模式过滤用） */
+private fun isMediaExtension(ext: String): Boolean {
+    val e = ext.lowercase()
+    return e in AUDIO_FILE_EXTS || e in VIDEO_FILE_EXTS
+}
+
 /**
  * 打开真实文件：
  * - 图片 → 内置图片查看器
  * - HTML/HTM → 内置浏览器
+ * - 文本 → 内置记事本（v2.14.10，不再调系统应用）
  * - 音频/视频 → 内置媒体播放器（v2.9）
  * - APK → 系统安装器（FileProvider）
- * - 文本/PDF/其他 → 系统 ACTION_VIEW Intent（FileProvider）
+ * - PDF/其他 → 系统 ACTION_VIEW Intent（FileProvider）
  */
 private fun openRealFile(context: Context, file: File) {
     val name = file.name.lowercase()
@@ -930,6 +1014,26 @@ private fun openRealFile(context: Context, file: File) {
                     launchArgs = mapOf("path" to file.absolutePath)
                 )
             }
+            // HTML → 浏览器（须先于文本分支判断，html 也在文本扩展名集合内）
+            ext == "html" || ext == "htm" -> {
+                val uri = FileProvider.getUriForFile(
+                    context, "${context.packageName}.fileprovider", file
+                )
+                WindowManager.get().open(
+                    appId = "browser", title = "Browser",
+                    launchMode = LaunchMode.FLOATING,
+                    launchArgs = mapOf("url" to uri.toString())
+                )
+            }
+            // 文本 → 内置记事本（v2.14.10）
+            isTextExtension(ext) -> {
+                WindowManager.get().open(
+                    appId = "notepad",
+                    title = file.name,
+                    launchMode = LaunchMode.FLOATING,
+                    launchArgs = mapOf("path" to file.absolutePath)
+                )
+            }
             // 音频/视频 → 内置媒体播放器（v2.9）
             ext in AUDIO_FILE_EXTS || ext in VIDEO_FILE_EXTS -> {
                 WindowManager.get().open(
@@ -939,16 +1043,6 @@ private fun openRealFile(context: Context, file: File) {
                     launchArgs = mapOf("path" to file.absolutePath),
                     initialWidth = 760,
                     initialHeight = 540
-                )
-            }
-            ext == "html" || ext == "htm" -> {
-                val uri = FileProvider.getUriForFile(
-                    context, "${context.packageName}.fileprovider", file
-                )
-                WindowManager.get().open(
-                    appId = "browser", title = "Browser",
-                    launchMode = LaunchMode.FLOATING,
-                    launchArgs = mapOf("url" to uri.toString())
                 )
             }
             ext == "apk" -> {

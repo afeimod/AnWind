@@ -5,8 +5,6 @@ import android.net.Uri
 import android.widget.Toast
 import android.widget.VideoView
 import androidx.activity.compose.BackHandler
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -30,8 +28,10 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import com.anwind.apps.filemanager.FilePickBus
 import com.anwind.core.theme.LocalWinTheme
 import com.anwind.core.window.AppDef
+import com.anwind.core.window.AppRegistry
 import com.anwind.core.window.LaunchMode
 import com.anwind.core.window.WindowContentScope
 import com.anwind.core.window.WindowManager
@@ -58,7 +58,8 @@ val MediaPlayerApp = AppDef(
  * - 音乐播放：MediaPlayer + 播放列表（上一曲/下一曲/自动连播）
  * - 视频播放：VideoView + 自定义控制栏（播放/暂停/进度拖拽）
  * - 媒体库：扫描 Music / Movies / Download / DCIM 目录下的音频与视频文件
- * - 打开文件：SAF 选择任意音频/视频文件（含 content:// URI）
+ * - 打开文件：应用内文件资源管理器选择音频/视频（v2.14.10 起不再
+ *   拉起手机系统文件管理器/SAF，与桌面环境体验一致）
  * - 入口：桌面图标、文件资源管理器（点击音频/视频文件）、开始菜单
  */
 private val AUDIO_EXTS = setOf("mp3", "wav", "ogg", "m4a", "flac", "aac", "mid", "wma", "opus")
@@ -264,19 +265,36 @@ private fun MediaPlayerContent(scope: WindowContentScope) {
         }
     }
 
-    // ===== 打开文件（SAF） =====
-    val openFileLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenDocument()
-    ) { uri: Uri? ->
-        if (uri != null) {
-            runCatching {
-                context.contentResolver.takePersistableUriPermission(
-                    uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
-                )
+    // ===== 打开文件（v2.14.10：改用应用内文件资源管理器，不再拉起系统文件选择器） =====
+    // 「打开文件」拉起文件资源管理器媒体选择模式（初始直达 Music）；
+    // 用户点选音频/视频后经 FilePickBus 回传本窗口直接播放；
+    // 本窗口已关闭/最小化时由资源管理器兑底开新窗口（launchArgs.path）。
+    fun openMediaPicker() {
+        wm.open(
+            appId = "file_explorer",
+            title = "选择媒体文件",
+            launchMode = AppRegistry.get("file_explorer")?.launchMode ?: LaunchMode.FLOATING,
+            launchArgs = mapOf(
+                "pickMode" to "media",
+                "targetApp" to "media_player",
+                "targetWindow" to scope.windowState.id
+            ),
+            initialWidth = 920,
+            initialHeight = 620
+        )
+    }
+
+    // 文件选择总线：资源管理器选中媒体文件 → 回传本窗口播放
+    DisposableEffect(Unit) {
+        val unlisten = FilePickBus.listen("media_player", scope.windowState.id) { path ->
+            val f = File(path)
+            if (f.exists() && f.isFile) {
+                playSource(MediaSource(Uri.fromFile(f), f.name, isVideoName(f.name)))
+            } else {
+                Toast.makeText(context, "文件不存在: $path", Toast.LENGTH_SHORT).show()
             }
-            val name = uri.lastPathSegment?.substringAfterLast('/') ?: "本地媒体"
-            playSource(MediaSource(uri, name, isVideoName(name)))
         }
+        onDispose { unlisten() }
     }
 
     // 初始文件（文件资源管理器点击音频/视频打开）
@@ -352,9 +370,7 @@ private fun MediaPlayerContent(scope: WindowContentScope) {
                         Text("媒体库", fontSize = 12.sp)
                     }
                 }
-                TextButton(onClick = {
-                    openFileLauncher.launch(arrayOf("audio/*", "video/*"))
-                }) {
+                TextButton(onClick = { openMediaPicker() }) {
                     Icon(Icons.Default.FolderOpen, null, modifier = Modifier.size(14.dp))
                     Spacer(Modifier.width(4.dp))
                     Text("打开文件", fontSize = 12.sp)
@@ -462,7 +478,7 @@ private fun MediaLibraryView(
                     Text("未找到媒体文件", color = theme.secondaryTextColor, fontSize = 12.sp)
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "点击右上角「打开文件」选择音频或视频",
+                        "点击右上角「打开文件」，从文件资源管理器选择音频或视频",
                         color = theme.secondaryTextColor,
                         fontSize = 11.sp
                     )

@@ -177,21 +177,30 @@ class TabManager {
      * - 当前显示的标签（WebView 仍 attached）：标记 destroyPending，
      *   重组移除 AndroidView 时由 onRelease 统一销毁（避免对 attached WebView
      *   调 destroy 引发 "Application attempted to call on a destroyed WebView"）。
+     *
+     * v2.14.10 关键修复（"关了标签声音还在"）：
+     * - attached 场景【不再提前置空 tab.webView】—— 旧版先置空再等 onRelease，
+     *   而 onRelease 里 `tab.webView?.let { destroyWebView }` 读到 null 直接跳过，
+     *   该 WebView 永远不会被销毁，渲染进程与 HTML5 音频无限存活。
+     *   现在保留引用给 onRelease 销毁，并加 2s 兜底定时器（onRelease 因
+     *   极端重组时序未触发的保险；destroyWebView 幂等，双销毁安全）。
      */
     fun closeTab(id: String) {
         val tab = getTab(id) ?: return
         tab.destroyPending = true
         _tabs.remove(tab)
         val wv = tab.webView
-        tab.webView = null
-        // v2.14.4：claimedByUi=false 的 WebView（含临时挂在 opener 容器里的
-        // 弹窗）从未被 Compose 认领，onRelease 不会触发 → 直接剥离销毁；
-        // destroyWebView 内部先 removeView 再销毁，临时父容器一并处理。
         if (wv != null && (wv.parent == null || !tab.claimedByUi)) {
             // 已脱离视图树（后台标签）/ 从未上屏的弹窗 → 直接销毁
+            tab.webView = null
             BrowserEngine.destroyWebView(wv)
+        } else if (wv != null) {
+            // attached 且已被 UI 认领 → onRelease 销毁；2s 兜底防漏
+            Handler(Looper.getMainLooper()).postDelayed({
+                tab.webView?.let { BrowserEngine.destroyWebView(it) }
+                tab.webView = null
+            }, 2000)
         }
-        // attached 的由 AndroidView onRelease 销毁
         if (activeTabId == id) {
             val next = _tabs.lastOrNull() ?: _tabs.firstOrNull()
             activeTabId = next?.id
@@ -206,7 +215,10 @@ class TabManager {
 
     /**
      * 销毁全部标签与 WebView（浏览器窗口关闭时调用）。
-     * attached 的 WebView 交给 onRelease；1.5s 后兜底强制清理漏网实例。
+     *
+     * v2.14.10：attached 的 WebView【保留 tab.webView 引用】交给 onRelease
+     * 立即销毁（旧版提前置空导致 onRelease 拿到 null 只能等 1.5s 兜底，
+     * 关窗后音频还会响一阵）；1.5s 兜底清理仍保留（幂等，双销毁安全）。
      */
     fun destroyAll() {
         hideCustomView()
@@ -219,11 +231,13 @@ class TabManager {
         all.forEach { tab ->
             tab.destroyPending = true
             val wv = tab.webView
-            tab.webView = null
-            when {
-                wv == null -> Unit
-                wv.parent == null -> BrowserEngine.destroyWebView(wv)
-                else -> pendingDestroy.add(wv) // attached → onRelease 销毁
+            if (wv == null || wv.parent != null) {
+                // attached → 保留引用，onRelease 读取并销毁
+                if (wv != null) pendingDestroy.add(wv)
+            } else {
+                // 后台标签（已脱离视图树）→ 立即销毁
+                tab.webView = null
+                BrowserEngine.destroyWebView(wv)
             }
         }
         if (pendingDestroy.isNotEmpty()) {

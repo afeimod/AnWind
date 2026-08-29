@@ -158,6 +158,9 @@ class ZoomPinchLayout @JvmOverloads constructor(
 
     /** 组合销毁（onRelease）时解除引用，防泄漏；WebView 生命周期由引擎管理 */
     fun detachWebView() {
+        // v2.14.10：先把 WebView 从本容器剥离（彻底脱离视图树），
+        // 避免销毁后的 WebView 仍挂在已废弃容器上阻碍 GC
+        webView?.let { if (it.parent === this) removeView(it) }
         webView = null
     }
 

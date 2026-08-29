@@ -288,8 +288,14 @@ object BrowserEngine {
 
     /**
      * 安全销毁 WebView（幂等）：
-     * onPause 暂停媒体 → stopLoading 中止加载 → 脱离视图树 → destroy 释放原生资源。
-     * （保持旧版"浏览器关了还在响"修复效果，且不会对 attached 视图直接 destroy）
+     * JS 暂停全部媒体 → onPause 挂起渲染 → stopLoading 中止加载 →
+     * 脱离视图树 → destroy 释放原生资源。
+     *
+     * v2.14.10：destroyWebView 曾在部分设备上"关了还在响" —— 一方面调用方
+     * 提前置空 tab.webView 导致销毁链断掉（见 TabManager 修复），另一方面
+     * 部分 WebView 版本 onPause() 不会暂停 HTML5 媒体、destroy() 异步生效
+     * 期间音频继续。现在销毁前先注入 JS 主动 pause 页面上所有
+     * audio/video 元素并取消语音合成，保证立刻静音。
      */
     fun destroyWebView(wv: WebView) {
         if (wv.tag == TAG_DESTROYED) return
@@ -297,6 +303,18 @@ object BrowserEngine {
             wv.tag = TAG_DESTROYED
         } catch (_: Exception) {
         }
+        // 1) 立即静音：JS 主动暂停所有媒体（部分版本 onPause 不暂停媒体）
+        try {
+            wv.evaluateJavascript(
+                "(function(){try{var m=document.querySelectorAll('audio,video');" +
+                    "for(var i=0;i<m.length;i++){try{m[i].pause();m[i].muted=true;}catch(e){}}" +
+                    "if(window.speechSynthesis){try{window.speechSynthesis.cancel();}catch(e){}}" +
+                    "try{if(document.body&&document.body.pause)document.body.pause();}catch(e){}}catch(e){}})()",
+                null
+            )
+        } catch (_: Exception) {
+        }
+        // 2) 挂起 WebView 的额外处理（JS 定时器/布局/媒体管线）
         try {
             wv.onPause()
         } catch (_: Exception) {
@@ -305,7 +323,12 @@ object BrowserEngine {
             wv.stopLoading()
         } catch (_: Exception) {
         }
+        // 3) 脱离视图树并销毁原生资源
         (wv.parent as? ViewGroup)?.removeView(wv)
+        try {
+            wv.removeAllViews()
+        } catch (_: Exception) {
+        }
         try {
             wv.destroy()
         } catch (_: Exception) {
