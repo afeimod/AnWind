@@ -2,6 +2,7 @@ package com.anwind.core.desktop
 
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
@@ -880,7 +881,7 @@ private fun AeroTaskIcon(
             .background(
                 if (active) Brush.verticalGradient(
                     listOf(Color(0x59BEE3FF), Color(0x337FB8E8))
-                ) else Color.Transparent
+                ) else Brush.verticalGradient(listOf(Color.Transparent, Color.Transparent))
             )
             .drawBehind {
                 if (active) {

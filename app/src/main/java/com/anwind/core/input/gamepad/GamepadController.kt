@@ -91,8 +91,8 @@ object GamepadController {
         val control = listOf(
             PadAction.key(KeyEvent.KEYCODE_SPACE, "Space"),
             PadAction.key(KeyEvent.KEYCODE_ENTER, "Enter"),
-            PadAction.key(KeyEvent.KEYCODE_BACKSPACE, "Bksp"),
-            PadAction.key(KeyEvent.KEYCODE_DEL, "Del"),
+            PadAction.key(KeyEvent.KEYCODE_DEL, "Bksp"),
+            PadAction.key(KeyEvent.KEYCODE_FORWARD_DEL, "Del"),
             PadAction.key(KeyEvent.KEYCODE_TAB, "Tab"),
             PadAction.key(KeyEvent.KEYCODE_ESCAPE, "Esc"),
             PadAction.key(KeyEvent.KEYCODE_SHIFT_LEFT, "Shift"),

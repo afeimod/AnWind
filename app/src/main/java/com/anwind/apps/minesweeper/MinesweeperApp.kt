@@ -257,7 +257,7 @@ private class MsSoundPool(context: Context) {
 // ============================================================
 
 /** 扫雷贴图缓存：一次性从 assets 解码全部瓦片/表情/LED 数字 */
-private class MsAssets(context: Context) {
+private class MsAssets(private val context: Context) {
     private fun load(path: String): BitmapPainter? = runCatching {
         context.assets.open(path).use { BitmapPainter(BitmapFactory.decodeStream(it).asImageBitmap()) }
     }.getOrNull()
