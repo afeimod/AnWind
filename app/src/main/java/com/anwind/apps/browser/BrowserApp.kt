@@ -368,6 +368,9 @@ private fun WebViewContainer(
         AndroidView(
             factory = { ctx ->
                 val wv = BrowserEngine.ensureWebView(ctx, tab, tabManager)
+                // v2.14.4：标记已被 AndroidView 认领（弹窗临时挂载场景下，
+                // closeTab 据此判断 onRelease 会不会来，防泄漏/遮挡）
+                tab.claimedByUi = true
                 // 首次加载：推迟到 attach/layout 之后（view.post），
                 // 避免 Chromium 以 0x0 surface 开始加载导致首帧黑屏
                 if (!tab.hasLoadedOnce) {

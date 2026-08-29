@@ -91,6 +91,26 @@ import javax.net.ssl.X509TrustManager
  * 3. onRenderProcessGone 兑底（WebView 自身问题）：不接管会被系统杀进程。
  *    渲染进程崩溃/OOM 后丢弃死亡 WebView，标签重置未加载态并 renderEpoch+1
  *    触发 key() 重组重建新 WebView 自动重载页面。
+ *
+ * v2.14.4 灰屏第二根因修复（网络层证据：ssl_client_socket_impl handshake
+ * failed net_error -100 + miui_contents loadinfo script_count=13/
+ * resource_count=0 + 音频进程活着）—— 页面主文档到达、JS 在跑、音频在播，
+ * 但 CDN 上的引擎/子资源 TLS 被掐断（国内网络对 jsdelivr/unpkg 的典型干扰）：
+ * 1. Ruffle 引擎全量本地化（本次核心）：5 个文件打包进 assets，经虚拟域
+ *    https://anwind.local/ruffle/ 由 shouldInterceptRequest 供给，零 CDN 依赖。
+ *    旧版从 jsdelivr 动态加载 —— TLS 被 RST 时 Flash 游戏区永远空白（灰屏
+ *    有声音），加载器链上再叠 npmmirror/jsdelivr 两级网络后备。
+ * 2. 弹窗 WebView 立即挂载（补齐 v2.14.3 梯子的源头缺口）：onCreateWindow
+ *    在 transport 交接【前】就把弹窗 WebView 临时挂到 opener 的视图容器并
+ *    手动 measure/layout 成 opener 尺寸 —— Chromium 交接后立即在真实 surface
+ *    上开始加载（不再是 0,0-0,0 脱离视图树状态），首帧生产不再落空；Compose
+ *    激活新标签时 factory 剥离临时父容器认领。AndroidViewHolder 只测量/布局
+ *    自己的 typedView，第二个子 View 必须手动 layout。
+ * 3. WebGL 像素管线守卫（HTML5 游戏灰屏兜底）：document-start 探测
+ *    clear→readPixels 是否真的产出像素；损坏（上下文创建成功但像素读回全零，
+ *    嵌入式合成环境的典型症状：游戏跑着、有声音、画面灰）时让
+ *    getContext('webgl') 返回 null —— Ruffle 等引擎自动回退 canvas2d 渲染，
+ *    页面自身也有 2D 回退路径，不再卡死在坏掉的 GPU 合成上。
  */
 object BrowserEngine {
 
@@ -119,6 +139,12 @@ object BrowserEngine {
     fun ensureWebView(context: Context, tab: BrowserTab, manager: TabManager): WebView {
         val existing = tab.webView
         if (existing != null) {
+            // v2.14.4：弹窗 WebView 在 onCreateWindow 时被临时挂在 opener 的
+            // 视图容器里（保证 transport 交接后立即在真实 surface 上加载，
+            // 不再以 0,0-0,0 脱离视图树状态加载导致首帧生产落空）。
+            // AndroidView 认领前必须剥离旧父容器，否则 holder.addView 抛
+            // "The specified child already has a parent"。
+            (existing.parent as? ViewGroup)?.removeView(existing)
             applyUa(existing, manager.uaMode)
             return existing
         }
@@ -384,6 +410,9 @@ object BrowserEngine {
 
             // ===== v2.14.2（gamehtml）页面级注入：在页面自身 JS 之前执行 =====
             if (url != null && (url.startsWith("http") || url.startsWith("file:"))) {
+                // 0) v2.14.4 WebGL 像素管线守卫：检测到坏上下文时让 webgl
+                //    getContext 返回 null，Ruffle/HTML5 游戏自动回退 canvas2d
+                view?.evaluateJavascript(WEBGL_GUARD_SCRIPT, null)
                 // 1) View Transitions API 补丁（所有页面通用，防 SPA 跳转卡死）
                 view?.evaluateJavascript(VIEW_TRANSITION_PATCH_SCRIPT, null)
                 // 2) PC 页面 viewport 自适配（页面自带 viewport 则不动）
@@ -542,6 +571,13 @@ object BrowserEngine {
             view: WebView,
             request: WebResourceRequest
         ): WebResourceResponse? {
+            // v2.14.4：Ruffle 引擎本地化 —— 虚拟域全部从 assets 供给，
+            // 彻底摆脱 jsdelivr/unpkg 在国内网络的 TLS 掐断（日志证据：
+            // ssl_client_socket_impl handshake failed net_error -100，
+            // 页面 JS 在跑、音频在播但引擎子资源全挂 → 灰屏有声音）
+            if (request.url.host == RUFFLE_VIRTUAL_HOST) {
+                return serveRuffleAsset(request.url.path)
+            }
             // 支持本地 content:// URI 的 HTML 文件读取
             val uri = request.url
             if (uri.scheme == "content") {
@@ -619,6 +655,46 @@ object BrowserEngine {
             "Content-Type" to "application/x-shockwave-flash",
             "Cache-Control" to "no-cache"
         )
+
+        /** 本地 Ruffle 资产响应头（CORS + 不缓存，便于版本升级后立即生效） */
+        private val ruffleAssetHeaders = mapOf(
+            "Access-Control-Allow-Origin" to "*",
+            "Access-Control-Allow-Methods" to "GET, OPTIONS, HEAD",
+            "Access-Control-Allow-Headers" to "*",
+            "Cache-Control" to "no-cache"
+        )
+
+        /**
+         * v2.14.4：从 assets/ruffle/ 供给引擎文件。
+         * ruffle.js 加载器会按浏览器特性从 publicPath 拉取 core.ruffle.*.js
+         * 与 *.wasm（fetch 跨域 → 必须带 CORS 头；wasm 流式编译 → MIME 必须
+         * application/wasm）。文件不存在时返回 404（而非 null），让注入的
+         * 加载器链切换到下一个 CDN 后备源。
+         */
+        private fun serveRuffleAsset(path: String?): WebResourceResponse {
+            fun notFound() = WebResourceResponse(
+                "text/plain", "UTF-8", 404, "Not Found",
+                ruffleAssetHeaders, ByteArrayInputStream(ByteArray(0))
+            )
+            if (path.isNullOrEmpty()) return notFound()
+            val name = path.removePrefix("/").substringBefore("?")
+            // 路径穿越防护：只允许 assets/ruffle/ 下的直接文件名
+            if (name.isEmpty() || name.contains("..") || name.contains('/')) return notFound()
+            return try {
+                val stream = ctx.assets.open("$RUFFLE_ASSET_DIR/$name")
+                val mime = when {
+                    name.endsWith(".wasm", true) -> "application/wasm"
+                    name.endsWith(".js", true) -> "text/javascript"
+                    name.endsWith(".css", true) -> "text/css"
+                    else -> "application/octet-stream"
+                }
+                WebResourceResponse(mime, null, stream).apply {
+                    responseHeaders = ruffleAssetHeaders
+                }
+            } catch (_: Exception) {
+                notFound()
+            }
+        }
 
         /** 信任所有 SSL 证书的 SSLSocketFactory（仅用于 SWF 下载兼容老 CDN） */
         @Volatile
@@ -761,8 +837,58 @@ object BrowserEngine {
         }
 
         companion object {
-            /** Ruffle 引擎 CDN（gamehtml 默认源） */
-            private const val RUFFLE_SRC = "https://cdn.jsdelivr.net/npm/@ruffle-rs/ruffle@0.3.0/ruffle.min.js"
+            // ================================================================
+            // v2.14.4：Ruffle 引擎本地化（虚拟域 → assets 拦截，零 CDN 依赖）
+            // ================================================================
+            /** 虚拟域：shouldInterceptRequest 按 host 命中后从 assets 供给 */
+            private const val RUFFLE_VIRTUAL_HOST = "anwind.local"
+
+            /** assets 内引擎目录（ruffle.js + 2×core.js + 2×wasm） */
+            private const val RUFFLE_ASSET_DIR = "ruffle"
+
+            /** 本地虚拟域基址（publicPath + script src 同源，核心/wasm 相对解析） */
+            private const val RUFFLE_LOCAL_BASE = "https://$RUFFLE_VIRTUAL_HOST/ruffle/"
+
+            /** 网络后备源（本地 404/拦截失效时逐级尝试；npmmirror 国内可达性最好） */
+            private const val RUFFLE_CDN_MIRROR = "https://registry.npmmirror.com/@ruffle-rs/ruffle/0.3.0/files/"
+            private const val RUFFLE_CDN_JSDELIVR = "https://cdn.jsdelivr.net/npm/@ruffle-rs/ruffle@0.3.0/"
+
+            /**
+             * WebGL 像素管线守卫（v2.14.4，HTML5 游戏灰屏兑底）：
+             * 嵌入式合成环境下存在"上下文创建成功、绘制调用不报错、但像素
+             * 读回全零"的坏 GPU 路径 —— 游戏照跑（有声音）画面永远空白。
+             * document-start 同步 clear→readPixels 探测；损坏时让
+             * getContext('webgl') 返回 null，Ruffle/页面自动回退 canvas2d。
+             */
+            private const val WEBGL_GUARD_SCRIPT = """
+                (function(){
+                  if (window.__webglGuard) return;
+                  window.__webglGuard = true;
+                  var broken = false;
+                  try {
+                    var c = document.createElement('canvas');
+                    var gl = c.getContext('webgl') || c.getContext('experimental-webgl');
+                    if (gl) {
+                      gl.clearColor(1.0, 0.0, 0.0, 1.0);
+                      gl.clear(gl.COLOR_BUFFER_BIT);
+                      var px = new Uint8Array(4);
+                      gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+                      broken = !(px[0] > 200);
+                      try { gl.getExtension('WEBGL_lose_context').loseContext(); } catch(e) {}
+                    }
+                  } catch(e) { broken = true; }
+                  if (broken) {
+                    try {
+                      var orig = HTMLCanvasElement.prototype.getContext;
+                      HTMLCanvasElement.prototype.getContext = function(type){
+                        if (type && /webgl/i.test(String(type))) return null;
+                        return orig.apply(this, arguments);
+                      };
+                      window.__webglDisabled = true;
+                    } catch(e) {}
+                  }
+                })();
+            """
 
             /**
              * View Transitions API 补丁（gamehtml，所有页面通用）。
@@ -885,17 +1011,16 @@ object BrowserEngine {
             """
 
             /**
-             * Ruffle 引擎加载器（gamehtml RuffleInjector fullInjection）：
-             * 配置（publicPath/polyfills/autoplay…）+ 动态注入引擎 JS。
-             * polyfills:true → 自动替换页面上的 <object>/<embed> Flash 元素。
-             * upgradeToHttps:false → 4399 等 http 游戏 CDN 不强制升级
-             * （拦截器对 http SWF 先试 http）。
+             * Ruffle 引擎链式加载器（v2.14.4 重写：本地 assets 优先，
+             * npmmirror / jsdelivr 网络后备）：
+             * 注入为 window.__anwindLoadRuffle()，幂等（加载中/已加载直接返回），
+             * 每次尝试同步更新 publicPath（core/wasm 相对它解析）。
+             * 旧版固定 jsdelivr —— 国内网络 TLS 掐断时 Flash 游戏区永远空白。
              */
-            private const val RUFFLE_LOADER_SCRIPT = """
+            private const val RUFFLE_CHAIN_SCRIPT = """
                 (function(){
-                  window.RufflePlayer = window.RufflePlayer || {};
-                  window.RufflePlayer.config = {
-                    "publicPath": "https://cdn.jsdelivr.net/npm/@ruffle-rs/ruffle@0.3.0/",
+                  if (window.__anwindLoadRuffle) return;
+                  var BASE = {
                     "polyfills": true,
                     "autoplay": "on",
                     "unmuteOverlay": "visible",
@@ -910,79 +1035,86 @@ object BrowserEngine {
                     "logLevel": "warn",
                     "maxExecutionDuration": {"secs": 15, "nanos": 0}
                   };
-                  if (window.__ruffleLoaded) return;
-                  var s = document.createElement('script');
-                  s.src = "$RUFFLE_SRC";
-                  s.async = true;
-                  s.onload = function(){
-                    window.__ruffleLoaded = true;
-                    try {
-                      var r = window.RufflePlayer.newest();
-                      if (r && r.init) r.init();
-                    } catch(e) {}
-                    window.__playSwf = function(url, base){
-                      try {
-                        var ruffle = window.RufflePlayer.newest();
-                        var player = ruffle.createPlayer();
-                        player.style.cssText = 'position:fixed;left:0;top:0;width:100%;height:100%;z-index:9999;background:#000;';
-                        document.body.appendChild(player);
-                        var opt = { url: url };
-                        if (base) opt.base = base;
-                        player.ruffle().load(opt);
-                      } catch(e) { console.error('[SWF] play error:', e); }
-                    };
-                    document.dispatchEvent(new CustomEvent('ruffleReady'));
+                  var SOURCES = [
+                    "$RUFFLE_LOCAL_BASE",
+                    "$RUFFLE_CDN_MIRROR",
+                    "$RUFFLE_CDN_JSDELIVR"
+                  ];
+                  window.__anwindLoadRuffle = function(){
+                    if (window.__ruffleLoaded || window.__ruffleLoading) return;
+                    window.__ruffleLoading = true;
+                    function attempt(i){
+                      if (i >= SOURCES.length) {
+                        window.__ruffleLoading = false;
+                        console.error('[Ruffle] local assets and all CDN fallbacks failed');
+                        return;
+                      }
+                      window.RufflePlayer = window.RufflePlayer || {};
+                      var cfg = {};
+                      for (var k in BASE) cfg[k] = BASE[k];
+                      cfg.publicPath = SOURCES[i];
+                      window.RufflePlayer.config = cfg;
+                      var s = document.createElement('script');
+                      s.src = SOURCES[i] + 'ruffle.js';
+                      s.async = true;
+                      s.onload = function(){
+                        window.__ruffleLoaded = true;
+                        window.__ruffleLoading = false;
+                        try {
+                          var r = window.RufflePlayer.newest();
+                          if (r && r.init) r.init();
+                        } catch(e) {}
+                        window.__playSwf = function(url, base){
+                          try {
+                            var ruffle = window.RufflePlayer.newest();
+                            var player = ruffle.createPlayer();
+                            player.style.cssText = 'position:fixed;left:0;top:0;width:100%;height:100%;z-index:9999;background:#000;';
+                            document.body.appendChild(player);
+                            var opt = { url: url };
+                            if (base) opt.base = base;
+                            player.ruffle().load(opt);
+                          } catch(e) { console.error('[SWF] play error:', e); }
+                        };
+                        document.dispatchEvent(new CustomEvent('ruffleReady'));
+                      };
+                      s.onerror = function(){
+                        try { s.parentNode && s.parentNode.removeChild(s); } catch(e) {}
+                        attempt(i + 1);
+                      };
+                      (document.head || document.documentElement).appendChild(s);
+                    }
+                    attempt(0);
                   };
-                  s.onerror = function(e){ console.error('Ruffle load failed:', e); };
-                  (document.head || document.documentElement).appendChild(s);
                 })();
             """
 
             /**
-             * Flash 元素懒加载探测器（AnWind 按 gamehtml 思路实现）：
-             * 通用浏览器不能像 gamehtml 那样每页都预载 Flash 引擎（CDN 开销），
-             * 改为 DOMContentLoaded + MutationObserver 监测 —— 页面一旦出现
-             * <object>/<embed> Flash 元素（含 swfobject.embedSWF 动态创建的），
-             * 立即动态加载 Ruffle。4399 域名页面另有 onPageStarted 直载兜底。
+             * Ruffle 引擎加载入口（gamehtml RuffleInjector fullInjection 演化）：
+             * 链式加载器 + 立即触发。4399 域名页 onPageStarted 直载兑底用。
              */
-            private const val FLASH_DOM_DETECT_SCRIPT = """
+            private const val RUFFLE_LOADER_SCRIPT = RUFFLE_CHAIN_SCRIPT + """
+                (function(){
+                  window.__anwindLoadRuffle();
+                })();
+            """
+
+            /**
+             * Flash 元素懒加载探测器（AnWind 按 gamehtml 思路实现，v2.14.4
+             * 接入链式加载器）：
+             * DOMContentLoaded + MutationObserver 监测 —— 页面一旦出现
+             * <object>/<embed> Flash 元素（含 swfobject.embedSWF 动态创建的），
+             * 立即经 __anwindLoadRuffle（本地 assets 优先、CDN 后备）拉起引擎。
+             * 4399 域名页另有 onPageStarted 直载兜底。
+             */
+            private const val FLASH_DOM_DETECT_SCRIPT = RUFFLE_CHAIN_SCRIPT + """
                 (function(){
                   if (window.__flashDomDetect) return;
                   window.__flashDomDetect = true;
                   var SEL = 'object[type="application/x-shockwave-flash"],embed[type="application/x-shockwave-flash"],object[data$=".swf" i],embed[src$=".swf" i],object[classid*="D27CDB6E" i]';
-                  function loadEngine(){
-                    if (window.__ruffleLoaded || window.__ruffleLoading) return;
-                    window.__ruffleLoading = true;
-                    var s = document.createElement('script');
-                    s.src = "$RUFFLE_SRC";
-                    s.async = true;
-                    s.onload = function(){
-                      window.__ruffleLoaded = true;
-                      window.__ruffleLoading = false;
-                      try {
-                        var r = window.RufflePlayer.newest();
-                        if (r && r.init) r.init();
-                      } catch(e) {}
-                      document.dispatchEvent(new CustomEvent('ruffleReady'));
-                    };
-                    (document.head || document.documentElement).appendChild(s);
-                  }
                   function check(){
                     try {
-                      if (document.querySelector(SEL)) {
-                        if (!window.RufflePlayer) {
-                          window.RufflePlayer = {};
-                          window.RufflePlayer.config = {
-                            "publicPath": "https://cdn.jsdelivr.net/npm/@ruffle-rs/ruffle@0.3.0/",
-                            "polyfills": true, "autoplay": "on", "unmuteOverlay": "visible",
-                            "letterbox": "fullscreen", "upgradeToHttps": false,
-                            "allowScriptAccess": true, "scale": "showAll", "quality": "high",
-                            "allowFullscreen": true, "splashScreen": true, "preloader": true,
-                            "logLevel": "warn",
-                            "maxExecutionDuration": {"secs": 15, "nanos": 0}
-                          };
-                        }
-                        loadEngine();
+                      if (document.querySelector(SEL) && window.__anwindLoadRuffle) {
+                        window.__anwindLoadRuffle();
                       }
                     } catch(e) {}
                   }
@@ -1062,6 +1194,31 @@ object BrowserEngine {
             val popupWebView = WebView(ctx)
             val popupTab = manager.openTab("about:blank", popupWebView)
             configure(popupWebView, popupTab, manager)
+            // v2.14.4（核心）：transport 交接【前】立即把弹窗 WebView 挂进真实
+            // 视图树 —— Chromium 收到 transport 后马上开始加载；若此刻脱离视图
+            // 树（ContentCatcher 日志：创建时 0,0-0,0），所有首帧生产落空，
+            // attach 梯子（v2.14.3）只是事后补救。挂到 opener 的容器（真实
+            // attached 视图树），首帧在真实 surface 上产出；openTab 已激活新
+            // 标签，Compose 下一帧重组时 factory 会剥离临时父容器认领。
+            // AndroidViewHolder 只测量/布局自己的 typedView，第二个子 View
+            // 必须手动 measure/layout 成 opener 当前尺寸。
+            try {
+                val holder = view?.parent as? ViewGroup
+                if (holder != null && view.width > 0 && view.height > 0) {
+                    holder.addView(
+                        popupWebView,
+                        ViewGroup.LayoutParams(view.width, view.height)
+                    )
+                    popupWebView.measure(
+                        View.MeasureSpec.makeMeasureSpec(view.width, View.MeasureSpec.EXACTLY),
+                        View.MeasureSpec.makeMeasureSpec(view.height, View.MeasureSpec.EXACTLY)
+                    )
+                    popupWebView.layout(0, 0, view.width, view.height)
+                }
+            } catch (_: Exception) {
+                // opener 脱离视图树/尺寸为 0 的边缘场景：跳过临时挂载，
+                // v2.14.3 的 attach 重绘梯子仍然兜底
+            }
             transport.webView = popupWebView
             resultMsg.sendToTarget()
             return true

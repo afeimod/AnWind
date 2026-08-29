@@ -39,6 +39,15 @@ class BrowserTab(
     var destroyPending: Boolean = false,
     /** 是否为 window.open / target=_blank 弹出的标签 */
     var isPopup: Boolean = false,
+
+    /**
+     * v2.14.4：WebView 是否已被 AndroidView factory 认领（至少上屏过一次）。
+     * 弹窗 WebView 在 onCreateWindow 时会临时挂到 opener 的容器里保证
+     * 立即可见（parent 非空），但若从未被 Compose 认领就被 closeTab，
+     * onRelease 永远不会触发 → 泄漏且遮挡 opener。用此标记区分：
+     * 未认领的 WebView 即使 parent 非空也直接剥离销毁。
+     */
+    var claimedByUi: Boolean = false,
     /** 抑制下一次导航的历史记录（后退/前进/刷新不写入历史） */
     var suppressNextHistory: Boolean = false,
     /**
@@ -162,8 +171,11 @@ class TabManager {
         _tabs.remove(tab)
         val wv = tab.webView
         tab.webView = null
-        if (wv != null && wv.parent == null) {
-            // 已脱离视图树（后台标签 / 尚未上屏的弹窗）→ 直接销毁
+        // v2.14.4：claimedByUi=false 的 WebView（含临时挂在 opener 容器里的
+        // 弹窗）从未被 Compose 认领，onRelease 不会触发 → 直接剥离销毁；
+        // destroyWebView 内部先 removeView 再销毁，临时父容器一并处理。
+        if (wv != null && (wv.parent == null || !tab.claimedByUi)) {
+            // 已脱离视图树（后台标签）/ 从未上屏的弹窗 → 直接销毁
             BrowserEngine.destroyWebView(wv)
         }
         // attached 的由 AndroidView onRelease 销毁
