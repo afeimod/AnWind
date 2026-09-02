@@ -285,7 +285,10 @@ class ZoomPinchLayout @JvmOverloads constructor(
             if (!padPointerIds.contains(ev.getPointerId(i))) freeIndices.add(i)
         }
         if (freeIndices.isEmpty()) {
-            // 只剩手柄指针：无 Chromium 流可维护，吞掉
+            // 只剩手柄指针：无 Chromium 流可维护，吞掉。
+            // 自由流（如有）此刻已无自由指针按着，同步收流，
+            // 防 streamActive 悬挂导致后续自由指 DOWN 被误判为已有活跃流。
+            streamActive = false
             return true
         }
         val cleanedAction: Int
@@ -355,9 +358,12 @@ class ZoomPinchLayout @JvmOverloads constructor(
 
     /**
      * 用原事件的自由指针子集构造剥离后的 MotionEvent。
-     * PointerCoords 拷贝全部轴（x/y/pressure/toolType…），保留 downTime/
-     * eventTime/deviceId 等元数据；历史批次不拷贝（Chromium 对丢历史
-     * 兼容良好，仅轨迹采样略粗）。
+     * PointerCoords 拷贝全部轴（x/y/pressure/toolType…）；历史批次不拷贝
+     * （Chromium 对丢历史兼容良好，仅轨迹采样略粗）。
+     * downTime 修正：POINTER_DOWN 升级为 ACTION_DOWN 时（自由指在摇杆按下
+     * 之后才落下），原始 downTime 是摇杆的按下时刻 —— 若照搬，Chromium
+     * 收到的首个 DOWN 的 downTime 会远早于 eventTime，可能被判为异常而忽略
+     * 这条触摸流。此时用 eventTime 作为 downTime（该自由指此刻才真正落下）。
      */
     private fun buildStrippedEvent(
         ev: MotionEvent,
@@ -371,8 +377,13 @@ class ZoomPinchLayout @JvmOverloads constructor(
             ev.getPointerProperties(freeIndices[j], props[j])
             ev.getPointerCoords(freeIndices[j], coords[j])
         }
+        val downTime = if (action and MotionEvent.ACTION_MASK == MotionEvent.ACTION_DOWN) {
+            ev.eventTime
+        } else {
+            ev.downTime
+        }
         return MotionEvent.obtain(
-            ev.downTime, ev.eventTime, action, n, props, coords,
+            downTime, ev.eventTime, action, n, props, coords,
             ev.metaState, ev.buttonState, ev.xPrecision, ev.yPrecision,
             ev.deviceId, ev.edgeFlags, ev.source, ev.flags
         )
