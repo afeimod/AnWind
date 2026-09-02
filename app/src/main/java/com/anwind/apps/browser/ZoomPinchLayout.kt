@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.util.AttributeSet
 import android.view.MotionEvent
+import android.view.ViewConfiguration
 import android.view.ViewGroup
 import android.webkit.WebView
 import android.widget.FrameLayout
@@ -95,6 +96,19 @@ class ZoomPinchLayout @JvmOverloads constructor(
     var onZoomChanged: ((Float) -> Unit)? = null
 
     private var webView: WebView? = null
+
+    // ===== v2.16.2：鼠标视角（3D 视角旋转）拖动拦截 =====
+    /** 视角模式是否接管本次手势（View3dController.enabled 且单指拖动超 slop） */
+    private var modeLook = false
+    /** 视角拖动中途被多指打断后不再恢复（本次手势内只剩收尾） */
+    private var lookAbandoned = false
+    /** 按下点 / 上帧采样点（view 坐标） */
+    private var lookDownX = 0f
+    private var lookDownY = 0f
+    private var lookLastX = 0f
+    private var lookLastY = 0f
+    /** 触摸 slop（超过才算拖动，保留页面单击/长按点击语义） */
+    private val lookSlop = ViewConfiguration.get(context).scaledTouchSlop
 
     // ===== 手势状态机 =====
     private var mode = MODE_IDLE
@@ -197,6 +211,11 @@ class ZoomPinchLayout @JvmOverloads constructor(
                 baseSpan = 0f
                 lastScale = 0f
                 observeViewDomain = false
+                // v2.16.2：视角模式手势重置
+                modeLook = false
+                lookAbandoned = false
+                lookDownX = ev.x
+                lookDownY = ev.y
             }
             MotionEvent.ACTION_POINTER_DOWN -> {
                 if (ev.pointerCount >= 2) {
@@ -211,6 +230,24 @@ class ZoomPinchLayout @JvmOverloads constructor(
                 }
             }
             MotionEvent.ACTION_MOVE -> {
+                // v2.16.2：鼠标视角接管 —— 单指拖动超过 slop 且视角模式开启时
+                // 拦截事件流（WebView 收 ACTION_CANCEL，不滚动不产生 touch），
+                // 增量经 View3dController 合成 mousemove 注入页面。双指捏合
+                // 仲裁（下方 MODE_OBSERVE 分支）优先级不变，视角拖动只在
+                // pointerCount == 1 时启动。
+                if (!modeLook && !lookAbandoned && mode == MODE_IDLE && !passThrough &&
+                    ev.pointerCount == 1 && View3dController.enabled
+                ) {
+                    val dxTotal = ev.x - lookDownX
+                    val dyTotal = ev.y - lookDownY
+                    if (dxTotal * dxTotal + dyTotal * dyTotal > lookSlop * lookSlop) {
+                        modeLook = true
+                        lookLastX = ev.x
+                        lookLastY = ev.y
+                        View3dController.beginDrag(ev.x, ev.y)
+                        return true
+                    }
+                }
                 if (mode == MODE_OBSERVE && ev.pointerCount == 2 && !passThrough) {
                     val span = spanOf(ev)
                     if (observeViewDomain) {
@@ -273,6 +310,34 @@ class ZoomPinchLayout @JvmOverloads constructor(
 
     @SuppressLint("ClickableViewAccessibility")
     override fun onTouchEvent(ev: MotionEvent): Boolean {
+        // v2.16.2：视角拖动流（拦截接管后事件改道到这里）
+        if (modeLook) {
+            when (ev.actionMasked) {
+                MotionEvent.ACTION_MOVE -> {
+                    if (!lookAbandoned) {
+                        val dx = ev.x - lookLastX
+                        val dy = ev.y - lookLastY
+                        lookLastX = ev.x
+                        lookLastY = ev.y
+                        View3dController.moveDrag(dx, dy)
+                    }
+                }
+                MotionEvent.ACTION_POINTER_DOWN -> {
+                    // 拖动中落下第二指：结束视角（mouseup），本次手势不再
+                    // 恢复视角 —— 把手势还给自然结束，避免拖拽中换手产生跳变
+                    if (!lookAbandoned) {
+                        View3dController.endDrag()
+                        lookAbandoned = true
+                    }
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    if (!lookAbandoned) View3dController.endDrag()
+                    lookAbandoned = false
+                    modeLook = false
+                }
+            }
+            return true
+        }
         // 拦截接管后才收到事件流（WebView 满铺为子 View，单指事件永远命中
         // WebView；此处只需处理 MODE_PINCH 态的捏合流）
         if (mode != MODE_PINCH) return false

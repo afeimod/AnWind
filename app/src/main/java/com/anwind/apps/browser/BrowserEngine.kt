@@ -284,6 +284,12 @@ object BrowserEngine {
 
         wv.webViewClient = TabWebViewClient(ctx, tab, manager)
         wv.webChromeClient = TabChromeClient(ctx, tab, manager)
+
+        // v2.16.2：鼠标视角（3D 视角旋转）JS 桥 —— 页面脚本经
+        // window.__anwindLookBridge.pull() 每帧取走拖动增量并派发
+        // 合成鼠标事件（详见 View3dController）。桥只暴露只读 pull，
+        // 无安全面。
+        runCatching { wv.addJavascriptInterface(View3dController.bridge, "__anwindLookBridge") }
     }
 
     /**
@@ -449,6 +455,9 @@ object BrowserEngine {
                 view?.evaluateJavascript(FLASH_FAKE_SUPPORT_SCRIPT, null)
                 //    懒加载探测器：任意页面出现 Flash 元素时动态加载 Ruffle 引擎
                 view?.evaluateJavascript(FLASH_DOM_DETECT_SCRIPT, null)
+                // 3.5) v2.16.2 鼠标视角（3D 视角旋转）：注入 rAF 轮询循环，
+                //      把 View3dController 累积的拖动增量派发为页面鼠标事件
+                view?.evaluateJavascript(View3dController.LOOK_SETUP_SCRIPT, null)
                 // 4) 4399 系页面：直接预加载 Ruffle（游戏页主体就是 Flash）
                 if (url.contains("4399.com")) {
                     view?.evaluateJavascript(REFERER_SPOOF_SCRIPT, null)

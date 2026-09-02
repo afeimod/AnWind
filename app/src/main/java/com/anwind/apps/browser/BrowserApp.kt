@@ -21,7 +21,6 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -40,7 +39,6 @@ import com.anwind.data.db.entity.BookmarkEntity
 import com.anwind.data.model.DesktopItemType
 import com.anwind.util.ImmersiveMode
 import kotlinx.coroutines.launch
-import kotlin.math.roundToInt
 
 /**
  * 浏览器应用定义。
@@ -57,8 +55,9 @@ import kotlin.math.roundToInt
  * - 真全屏（隐藏状态栏/导航键/任务栏/标签栏/工具栏，左上角悬浮按钮或返回键恢复窗口；
  *   v2.16 已移除旧版“双击页面退出全屏”手势，避免与网页游戏双击操作冲突）
  * - HTML5 视频全屏（DecorView 覆盖层，满屏播放）
- * - v2.16 浏览器设置：3D 视角旋转（X 俯仰 / Y 偏航 / Z 滚转 + 透视视距，
- *   对整个网页做 3D 透视变换，用于电脑网页游戏）
+ * - v2.16.2 浏览器设置：3D 视角旋转（鼠标视角模式）—— 开启后在网页上按住
+ *   拖动 = 按住鼠标移动视角，拖动增量合成 mousemove 事件注入页面，
+ *   由游戏自身旋转相机/视角（用于电脑网页游戏），页面不做任何视觉变换
  */
 val BrowserApp = AppDef(
     id = "browser",
@@ -107,15 +106,18 @@ private fun BrowserContent(scope: WindowContentScope) {
         scope0.launch { app.settingsStore.setBrowserUaMode(next) }
     }
 
-    // ===== v2.16：浏览器设置 —— 3D 视角旋转（用于电脑网页游戏） =====
-    // 启用后对整个网页内容做 X（俯仰）/ Y（偏航）/ Z（滚转）三轴 3D 透视旋转，
-    // 透视视距控制近大远小的强度；全部持久化到 DataStore。
+    // ===== v2.16.2：浏览器设置 —— 3D 视角旋转（鼠标视角模式） =====
+    // 开启后：在网页上按住拖动 = 按住鼠标移动视角（ZoomPinchLayout 拦截
+    // 拖动 → View3dController 累积增量 → 页面 rAF 取走并派发鼠标事件），
+    // 游戏自身完成视角旋转；灵敏度可调，全部持久化到 DataStore。
     val view3dEnabled by app.settingsStore.browser3dEnabled.collectAsState(initial = false)
-    val view3dRotX by app.settingsStore.browser3dRotX.collectAsState(initial = 0f)
-    val view3dRotY by app.settingsStore.browser3dRotY.collectAsState(initial = 0f)
-    val view3dRotZ by app.settingsStore.browser3dRotZ.collectAsState(initial = 0f)
-    val view3dPerspective by app.settingsStore.browser3dPerspective.collectAsState(initial = 800f)
+    val view3dSensitivity by app.settingsStore.browser3dSensitivity.collectAsState(initial = 1f)
     var showView3dSettings by remember { mutableStateOf(false) }
+    // 状态同步到控制器（手势层/JS 桥直接读，避免每帧穿过 Compose）
+    SideEffect {
+        View3dController.enabled = view3dEnabled
+        View3dController.sensitivity = view3dSensitivity
+    }
 
     // 用户设置的主页（默认 AnWind 速度页 anwind://home）
     val defaultHome by app.settingsStore.defaultBrowserHome.collectAsState(initial = "anwind://home")
@@ -189,10 +191,10 @@ private fun BrowserContent(scope: WindowContentScope) {
                         val url = normalizeUrl(tabManager.addressInput)
                         val tab = tabManager.getTab(tabManager.activeTabId)
                         if (tab != null && url.isNotEmpty()) {
-                            // 只更新 tab.url，由 WebViewContainer 的 update 块统一 loadUrl
-                            //（历史记录由引擎在 onPageStarted 统一写入）
-                            tab.url = url
-                            tab.title = url
+                            // v2.16.2：tab.loadUrl 立即加载（已有 WebView 时不再
+                            // 等 update 块重组触发，修复"点前往无反应"；历史记录
+                            // 由引擎在 onPageStarted 统一写入）
+                            tab.loadUrl(url)
                             tabManager.addressInput = url
                         }
                     },
@@ -224,22 +226,13 @@ private fun BrowserContent(scope: WindowContentScope) {
             // v2.16：移除旧版“双击页面退出全屏”手势（与网页游戏的双击操作冲突、
             // 误触率高），退出全屏改用左上角悬浮按钮（见下方 FullscreenExitButton）
             // 或系统返回键。
-            // v2.16 同时新增 3D 视角旋转：启用后对整个网页内容做 X/Y/Z 三轴
-            // 3D 透视旋转（graphicsLayer），用于电脑网页游戏。
+            // v2.16.2：旧版“整页 graphicsLayer 透视旋转”已移除（3D 视角旋转
+            // 重做为鼠标视角模式：拖动注入鼠标事件由游戏自身转视角，见
+            // View3dController）。
             Box(
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth()
-                    .graphicsLayer {
-                        if (view3dEnabled) {
-                            rotationX = view3dRotX
-                            rotationY = view3dRotY
-                            rotationZ = view3dRotZ
-                            // GraphicsLayerScope 自带 Density：把视距 dp 换算为
-                            // 相机距离 px；视距越小透视畸变越强（3D 感越明显）
-                            cameraDistance = view3dPerspective.dp.toPx()
-                        }
-                    }
             ) {
                 val activeTab = tabManager.getTab(tabManager.activeTabId)
                 if (activeTab != null) {
@@ -297,18 +290,13 @@ private fun BrowserContent(scope: WindowContentScope) {
                 )
             }
 
-            // ===== v2.16：浏览器设置 —— 3D 视角旋转面板 =====
+            // ===== v2.16.2：浏览器设置 —— 3D 视角旋转（鼠标视角模式）面板 =====
             if (showView3dSettings) {
                 View3dSettingsPanel(
                     enabled = view3dEnabled,
-                    rotX = view3dRotX,
-                    rotY = view3dRotY,
-                    rotZ = view3dRotZ,
-                    perspective = view3dPerspective,
+                    sensitivity = view3dSensitivity,
                     onEnabled = { v -> scope0.launch { app.settingsStore.setBrowser3dEnabled(v) } },
-                    onRotation = { x, y, z -> scope0.launch { app.settingsStore.setBrowser3dRotation(x, y, z) } },
-                    onPerspective = { v -> scope0.launch { app.settingsStore.setBrowser3dPerspective(v) } },
-                    onReset = { scope0.launch { app.settingsStore.setBrowser3dRotation(0f, 0f, 0f) } },
+                    onSensitivity = { v -> scope0.launch { app.settingsStore.setBrowser3dSensitivity(v) } },
                     onClose = { showView3dSettings = false }
                 )
             }
@@ -942,110 +930,65 @@ private fun HistoryPanel(onSelect: (String) -> Unit, onClose: () -> Unit) {
 }
 
 /**
- * v2.16：浏览器设置面板 —— 3D 视角旋转。
+ * v2.16.2：浏览器设置面板 —— 3D 视角旋转（鼠标视角模式）。
  *
- * 把整个网页内容在 3D 空间中做三轴旋转（俯仰 X / 偏航 Y / 滚转 Z），
- * 配合透视视距调节近大远小的强度；用于电脑网页游戏的 3D 视角观察。
- * 所有设置持久化到 DataStore，重开浏览器仍然生效。
+ * 开启后：在网页上【按住拖动】= 按住鼠标移动视角 —— 拖动增量经
+ * View3dController 合成 mousedown/mousemove/mouseup 注入页面，
+ * 由游戏自身完成相机/视角旋转（上下拖 = 俯仰、左右拖 = 偏航）。
+ * 页面不做任何视觉变换（v2.16 的整页 graphicsLayer 旋转已移除）。
+ * 注意：开启期间网页的单指拖动会被转换为视角控制（页面不滚动、
+ * 不进行拖选），浏览普通网页时可关闭本开关。设置持久化到 DataStore。
  */
 @Composable
 private fun View3dSettingsPanel(
     enabled: Boolean,
-    rotX: Float,
-    rotY: Float,
-    rotZ: Float,
-    perspective: Float,
+    sensitivity: Float,
     onEnabled: (Boolean) -> Unit,
-    onRotation: (Float, Float, Float) -> Unit,
-    onPerspective: (Float) -> Unit,
-    onReset: () -> Unit,
+    onSensitivity: (Float) -> Unit,
     onClose: () -> Unit
 ) {
     val theme = LocalWinTheme.current
     val fg = if (theme.isDark) Color.White else Color.Black
     PopupPanel(title = "浏览器设置 · 3D 视角", onClose = onClose) {
         Text(
-            "把整个网页在 3D 空间中旋转（俯仰/偏航/滚转），用于电脑网页游戏的 3D 视角观察。设置会自动保存，重开浏览器仍生效。",
+            "鼠标视角模式：开启后，在网页上按住并拖动即可旋转游戏视角" +
+                "（上/下 = 抬头低头，左/右 = 左右转向），用于电脑网页游戏。" +
+                "开启期间网页的单指拖动将用于转视角（页面不滚动），浏览普通网页时可临时关闭。",
             color = theme.secondaryTextColor,
             fontSize = 11.sp
         )
         Spacer(Modifier.height(8.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("启用 3D 视角旋转", color = fg, fontSize = 13.sp, modifier = Modifier.weight(1f))
+            Text("启用 3D 视角旋转（鼠标视角）", color = fg, fontSize = 13.sp, modifier = Modifier.weight(1f))
             Switch(checked = enabled, onCheckedChange = { onEnabled(it) })
         }
         HorizontalDivider()
         Spacer(Modifier.height(4.dp))
-        View3dSliderRow(
-            label = "上下俯仰 (X)",
-            value = rotX,
-            valueRange = -60f..60f,
-            display = "${rotX.roundToInt()}°",
-            enabled = enabled,
-            onChange = { v -> onRotation(v, rotY, rotZ) }
-        )
-        View3dSliderRow(
-            label = "左右偏航 (Y)",
-            value = rotY,
-            valueRange = -60f..60f,
-            display = "${rotY.roundToInt()}°",
-            enabled = enabled,
-            onChange = { v -> onRotation(rotX, v, rotZ) }
-        )
-        View3dSliderRow(
-            label = "平面旋转 (Z)",
-            value = rotZ,
-            valueRange = -180f..180f,
-            display = "${rotZ.roundToInt()}°",
-            enabled = enabled,
-            onChange = { v -> onRotation(rotX, rotY, v) }
-        )
-        View3dSliderRow(
-            label = "透视视距",
-            value = perspective,
-            valueRange = 400f..2400f,
-            display = "${perspective.roundToInt()}dp",
-            enabled = enabled,
-            onChange = { onPerspective(it) }
-        )
-        Spacer(Modifier.height(4.dp))
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.End
-        ) {
-            TextButton(onClick = onReset, enabled = enabled) {
-                Text("重置视角", color = theme.accentColor)
-            }
-        }
-    }
-}
-
-/** 3D 视角设置的单行滑杆（标签 + 当前值 + 滑杆） */
-@Composable
-private fun View3dSliderRow(
-    label: String,
-    value: Float,
-    valueRange: ClosedFloatingPointRange<Float>,
-    display: String,
-    enabled: Boolean,
-    onChange: (Float) -> Unit
-) {
-    val theme = LocalWinTheme.current
-    Column {
+        // 灵敏度：拖动像素增量的倍率（0.2x 慢微调 .. 3.0x 甩头快转）
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
-                label,
+                "视角灵敏度",
                 color = if (theme.isDark) Color.White else Color.Black,
                 fontSize = 12.sp,
                 modifier = Modifier.weight(1f)
             )
-            Text(display, color = theme.secondaryTextColor, fontSize = 11.sp)
+            Text(
+                "×" + String.format("%.1f", sensitivity),
+                color = theme.secondaryTextColor,
+                fontSize = 11.sp
+            )
         }
         Slider(
-            value = value,
-            onValueChange = onChange,
-            valueRange = valueRange,
+            value = sensitivity,
+            onValueChange = onSensitivity,
+            valueRange = 0.2f..3f,
             enabled = enabled
+        )
+        Text(
+            "提示：部分游戏需在设置里开启\"按住鼠标拖动转视角\"类选项；" +
+                "双指捏合缩放在本模式下仍可用（先抬手再捏合）。",
+            color = theme.secondaryTextColor,
+            fontSize = 10.sp
         )
     }
 }

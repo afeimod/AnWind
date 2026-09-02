@@ -48,15 +48,13 @@ class SettingsStore(private val context: Context) {
         // 浏览器桌面/手机模式：desktop / mobile
         val BROWSER_UA_MODE = stringPreferencesKey("browser_ua_mode")
 
-        // === 浏览器 3D 视角（v2.16：网页 3D 透视旋转，用于电脑网页游戏） ===
-        // 是否启用 3D 视角旋转（graphicsLayer 对整个网页内容做透视变换）
+        // === 浏览器 3D 视角（v2.16.2：鼠标视角模式，用于电脑网页游戏） ===
+        // 开启后：在网页上按住拖动 = 按住鼠标移动视角（把拖动增量合成
+        // mousemove 事件注入页面，游戏的相机/视角跟随旋转），
+        // 并非对页面做任何视觉变换
         val BROWSER_3D_ENABLED = booleanPreferencesKey("browser_3d_enabled")
-        // 旋转角度（度）：X 上下俯仰 / Y 左右偏航 / Z 平面滚转
-        val BROWSER_3D_ROT_X = floatPreferencesKey("browser_3d_rot_x")
-        val BROWSER_3D_ROT_Y = floatPreferencesKey("browser_3d_rot_y")
-        val BROWSER_3D_ROT_Z = floatPreferencesKey("browser_3d_rot_z")
-        // 透视视距（dp，值越大透视越平缓，400..2400）
-        val BROWSER_3D_PERSPECTIVE = floatPreferencesKey("browser_3d_perspective")
+        // 视角灵敏度（0.2..3.0，拖动像素增量的倍率）
+        val BROWSER_3D_SENSITIVITY = floatPreferencesKey("browser_3d_sensitivity")
 
         // === v2.14：个性化（颜色 / 字体 / 任务栏） ===
         // 颜色模式：auto 跟随主题 / light 强制浅色 / dark 强制深色（作用于所有 Windows 主题）
@@ -176,10 +174,7 @@ class SettingsStore(private val context: Context) {
 
     // === 浏览器 3D 视角（v2.16） ===
     val browser3dEnabled: Flow<Boolean> = context.appPrefs.data.map { it[Keys.BROWSER_3D_ENABLED] ?: false }
-    val browser3dRotX: Flow<Float> = context.appPrefs.data.map { it[Keys.BROWSER_3D_ROT_X] ?: 0f }
-    val browser3dRotY: Flow<Float> = context.appPrefs.data.map { it[Keys.BROWSER_3D_ROT_Y] ?: 0f }
-    val browser3dRotZ: Flow<Float> = context.appPrefs.data.map { it[Keys.BROWSER_3D_ROT_Z] ?: 0f }
-    val browser3dPerspective: Flow<Float> = context.appPrefs.data.map { it[Keys.BROWSER_3D_PERSPECTIVE] ?: 800f }
+    val browser3dSensitivity: Flow<Float> = context.appPrefs.data.map { it[Keys.BROWSER_3D_SENSITIVITY] ?: 1f }
 
     // === 刘海屏 / 任务栏 ===
     val useCutout: Flow<Boolean> = context.appPrefs.data.map { it[Keys.USE_CUTOUT] ?: true }
@@ -305,16 +300,8 @@ class SettingsStore(private val context: Context) {
         context.appPrefs.edit { it[Keys.BROWSER_3D_ENABLED] = enabled }
     }
 
-    suspend fun setBrowser3dRotation(x: Float, y: Float, z: Float) {
-        context.appPrefs.edit {
-            it[Keys.BROWSER_3D_ROT_X] = x.coerceIn(-89f, 89f)
-            it[Keys.BROWSER_3D_ROT_Y] = y.coerceIn(-89f, 89f)
-            it[Keys.BROWSER_3D_ROT_Z] = z.coerceIn(-180f, 180f)
-        }
-    }
-
-    suspend fun setBrowser3dPerspective(distanceDp: Float) {
-        context.appPrefs.edit { it[Keys.BROWSER_3D_PERSPECTIVE] = distanceDp.coerceIn(400f, 2400f) }
+    suspend fun setBrowser3dSensitivity(value: Float) {
+        context.appPrefs.edit { it[Keys.BROWSER_3D_SENSITIVITY] = value.coerceIn(0.2f, 3f) }
     }
 
     // === 刘海屏 / 任务栏 setter ===

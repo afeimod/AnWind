@@ -25,7 +25,7 @@ import java.util.concurrent.ConcurrentHashMap
  */
 class BrowserTab(
     val id: String = UUID.randomUUID().toString(),
-    var url: String,
+    initialUrl: String,
     var title: String = "新标签",
     var canGoBack: Boolean = false,
     var canGoForward: Boolean = false,
@@ -70,6 +70,18 @@ class BrowserTab(
      */
     var viewZoom: Float = 1f
 ) {
+    /**
+     * 当前页面 URL（v2.16.2：改为快照状态 mutableStateOf）。
+     *
+     * 修复"地址栏输入带 scheme 的 URL（addressInput 不变 → 无重组）点前往
+     * 无反应"：旧版 url 是普通字段，写入不触发重组，内容区"首页/网页"
+     * 分支与 WebViewContainer 的 update 块都感知不到变化。可观察后：
+     * 首页 → 网页的内容区分支能立即切换，WebViewContainer 重组也能
+     * 触发 update 块的 loadUrl。注意：委托属性必须在类体（构造参数
+     * 不支持 by 委托）。
+     */
+    var url by mutableStateOf(initialUrl)
+
     /**
      * v2.14.3：WebView 重建纪元（渲染进程崩溃 onRenderProcessGone 时 +1）。
      * 作为 key() 的一部分：变化 → AndroidView 重组 → factory 重建新
@@ -139,7 +151,7 @@ class TabManager {
      */
     fun openTab(initialUrl: String, existingWebView: WebView? = null): BrowserTab {
         val tab = BrowserTab(
-            url = initialUrl,
+            initialUrl = initialUrl,
             title = when {
                 initialUrl == "anwind://home" || initialUrl.isEmpty() -> "新标签"
                 initialUrl == "about:blank" -> "新标签"
@@ -313,12 +325,22 @@ object BrowserSessions {
 /**
  * WebView 操作扩展：通过 command API 触发。
  *
- * loadUrl 只更新 tab.url + tab.title，由 WebViewContainer 的 update 块统一负责
- * 真正的 loadUrl（避免与 lastRequestedUrl 检查冲突导致加载被取消重试）。
+ * v2.16.2：导航改为【立即加载】——旧版只更新 tab.url 等 WebViewContainer
+ * 的 update 块重组触发，但地址栏输入"带 scheme 的完整 URL / 与上次相同
+ * 的 URL"时 addressInput 状态不变 → 可能无重组 → 点前往无反应。
+ * 现在已有 WebView 时直接 loadUrl 并登记 lastRequestedUrl（防 update 块
+ * 重复加载）；无 WebView（如仍在首页）时只登记 url，由 factory 首载 /
+ * 内容区分支切换（url 已可观察）完成。
  */
 fun BrowserTab.loadUrl(url: String) {
     this.url = url
     this.title = url
+    val wv = webView
+    if (wv != null && !url.startsWith("anwind://")) {
+        hasLoadedOnce = true
+        lastRequestedUrl = url
+        runCatching { wv.loadUrl(url) }
+    }
 }
 
 fun BrowserTab.goBack() {
