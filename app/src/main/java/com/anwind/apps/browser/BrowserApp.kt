@@ -55,8 +55,9 @@ import kotlinx.coroutines.launch
  * - 真全屏（隐藏状态栏/导航键/任务栏/标签栏/工具栏，左上角悬浮按钮或返回键恢复窗口；
  *   v2.16 已移除旧版“双击页面退出全屏”手势，避免与网页游戏双击操作冲突）
  * - HTML5 视频全屏（DecorView 覆盖层，满屏播放）
- * - v2.16.2 浏览器设置：3D 视角旋转（鼠标视角模式）—— 开启后在网页上按住
- *   拖动 = 按住鼠标移动视角，拖动增量合成 mousemove 事件注入页面，
+ * - v2.16.3 浏览器设置：3D 视角旋转（鼠标视角模式，参照 GameBox 重做）——
+ *   开启后先点击游戏画面（触发模拟 Pointer Lock 锁定），再按住拖动即可
+ *   旋转游戏视角：拖动增量合成 mousemove(movementX/Y) 注入页面，
  *   由游戏自身旋转相机/视角（用于电脑网页游戏），页面不做任何视觉变换
  */
 val BrowserApp = AppDef(
@@ -106,17 +107,20 @@ private fun BrowserContent(scope: WindowContentScope) {
         scope0.launch { app.settingsStore.setBrowserUaMode(next) }
     }
 
-    // ===== v2.16.2：浏览器设置 —— 3D 视角旋转（鼠标视角模式） =====
-    // 开启后：在网页上按住拖动 = 按住鼠标移动视角（ZoomPinchLayout 拦截
-    // 拖动 → View3dController 累积增量 → 页面 rAF 取走并派发鼠标事件），
-    // 游戏自身完成视角旋转；灵敏度可调，全部持久化到 DataStore。
+    // ===== v2.16.3：浏览器设置 —— 3D 视角旋转（鼠标视角模式，参照 GameBox 重做） =====
+    // 开启后：先点击游戏画面（模拟 Pointer Lock 锁定），再按住拖动 = 转视角
+    //（ZoomPinchLayout 旁路观察拖动 → View3dController 累积增量 → 页面 rAF
+    // 取走并派发 mousemove(movementX/Y)），游戏自身完成视角旋转；
+    // 灵敏度可调，全部持久化到 DataStore。
     val view3dEnabled by app.settingsStore.browser3dEnabled.collectAsState(initial = false)
     val view3dSensitivity by app.settingsStore.browser3dSensitivity.collectAsState(initial = 1f)
     var showView3dSettings by remember { mutableStateOf(false) }
-    // 状态同步到控制器（手势层/JS 桥直接读，避免每帧穿过 Compose）
+    // 状态同步到控制器（手势层/JS 桥直接读，避免每帧穿过 Compose）；
+    // 关闭时同时清空残留增量，避免下次开启时视角跳变
     SideEffect {
         View3dController.enabled = view3dEnabled
         View3dController.sensitivity = view3dSensitivity
+        if (!view3dEnabled) View3dController.reset()
     }
 
     // 用户设置的主页（默认 AnWind 速度页 anwind://home）
@@ -226,9 +230,10 @@ private fun BrowserContent(scope: WindowContentScope) {
             // v2.16：移除旧版“双击页面退出全屏”手势（与网页游戏的双击操作冲突、
             // 误触率高），退出全屏改用左上角悬浮按钮（见下方 FullscreenExitButton）
             // 或系统返回键。
-            // v2.16.2：旧版“整页 graphicsLayer 透视旋转”已移除（3D 视角旋转
+            // v2.16.2：旧版"整页 graphicsLayer 透视旋转"已移除（3D 视角旋转
             // 重做为鼠标视角模式：拖动注入鼠标事件由游戏自身转视角，见
-            // View3dController）。
+            // View3dController；v2.16.3 参照 GameBox 重做为模拟 Pointer Lock
+            // + mousemove(movementX/Y) 派发，触摸旁路不拦截）。
             Box(
                 modifier = Modifier
                     .weight(1f)
@@ -930,14 +935,14 @@ private fun HistoryPanel(onSelect: (String) -> Unit, onClose: () -> Unit) {
 }
 
 /**
- * v2.16.2：浏览器设置面板 —— 3D 视角旋转（鼠标视角模式）。
+ * v2.16.3：浏览器设置面板 —— 3D 视角旋转（鼠标视角模式，参照 GameBox 重做）。
  *
- * 开启后：在网页上【按住拖动】= 按住鼠标移动视角 —— 拖动增量经
- * View3dController 合成 mousedown/mousemove/mouseup 注入页面，
- * 由游戏自身完成相机/视角旋转（上下拖 = 俯仰、左右拖 = 偏航）。
- * 页面不做任何视觉变换（v2.16 的整页 graphicsLayer 旋转已移除）。
- * 注意：开启期间网页的单指拖动会被转换为视角控制（页面不滚动、
- * 不进行拖选），浏览普通网页时可关闭本开关。设置持久化到 DataStore。
+ * 开启后：先点击游戏画面（脚本已 hook requestPointerLock，点击即模拟
+ * 锁定成功），再按住拖动即可旋转游戏视角 —— 拖动增量经 View3dController
+ * 合成 mousemove(movementX/Y) 注入页面，由游戏自身完成相机/视角旋转
+ * （上下拖 = 俯仰、左右拖 = 偏航）。页面不做任何视觉变换；触摸事件
+ * 照常传递页面（tap/click 保留），页面滚动/拖选由注入 CSS 抑制。
+ * 设置持久化到 DataStore。
  */
 @Composable
 private fun View3dSettingsPanel(
@@ -951,9 +956,10 @@ private fun View3dSettingsPanel(
     val fg = if (theme.isDark) Color.White else Color.Black
     PopupPanel(title = "浏览器设置 · 3D 视角", onClose = onClose) {
         Text(
-            "鼠标视角模式：开启后，在网页上按住并拖动即可旋转游戏视角" +
-                "（上/下 = 抬头低头，左/右 = 左右转向），用于电脑网页游戏。" +
-                "开启期间网页的单指拖动将用于转视角（页面不滚动），浏览普通网页时可临时关闭。",
+            "鼠标视角模式：开启后，先【点击一下游戏画面】，再按住拖动即可旋转游戏视角" +
+                "（上/下 = 抬头低头，左/右 = 左右转向），用于电脑网页 FPS/3D 游戏。" +
+                "点击用于锁定视角，拖动用于转动视角；拖动期间页面不会滚动，" +
+                "浏览普通网页时可临时关闭本开关。",
             color = theme.secondaryTextColor,
             fontSize = 11.sp
         )
@@ -985,7 +991,8 @@ private fun View3dSettingsPanel(
             enabled = enabled
         )
         Text(
-            "提示：部分游戏需在设置里开启\"按住鼠标拖动转视角\"类选项；" +
+            "提示：若视角不转，请先在游戏画面上点一下再拖动（游戏需要" +
+                "\"锁定\"后才响应视角移动）；灵敏度可在 0.2×–3.0× 间调节；" +
                 "双指捏合缩放在本模式下仍可用（先抬手再捏合）。",
             color = theme.secondaryTextColor,
             fontSize = 10.sp

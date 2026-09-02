@@ -1,39 +1,48 @@
 package com.anwind.apps.browser
 
-import android.os.SystemClock
 import android.webkit.JavascriptInterface
 
 /**
- * v2.16.2：浏览器"3D 视角旋转"（鼠标视角模式）控制器。
+ * v2.16.3：浏览器"3D 视角旋转"（鼠标视角模式）控制器。
  *
- * ## 功能语义（v2.16.2 重做 —— 取代旧版整页 graphicsLayer 透视旋转）
- * 面向电脑网页游戏：开启后，在网页上【按住并拖动】等价于"按住鼠标移动视角"
- * —— 把手指拖动的像素增量合成为 mousedown / mousemove(movementX/Y) / mouseup
- * 事件注入页面，由游戏自身完成相机/视角旋转（上下拖 = 俯仰，左右拖 = 偏航）。
- * 页面本身不做任何视觉变换。
+ * ## v2.16.3 重做 —— 参照 GameBox（github.com/afeimod/GameBox）实现
+ * v2.16.2 的实现"注入 mousemove 但游戏视角不动"的根因：FPS/3D 网页游戏
+ * （Unity WebGL / Three.js PointerLockControls 等）的标准转视角流程是
+ * 玩家点击画布 → 调用 canvas.requestPointerLock() → 收到 pointerlockchange
+ * 进入锁定态 → 之后才在 mousemove 里读 movementX/movementY 转相机。
+ * Android WebView 不支持 Pointer Lock：游戏锁定永远失败
+ * （pointerLockElement 恒为 null），注入的 mousemove 被游戏忽略。
  *
- * ## 实现结构（低开销双向通道）
- * - Java → 页面：ZoomPinchLayout 在视角模式下拦截单指拖动，把增量喂给
- *   [beginDrag]/[moveDrag]/[endDrag]（UI 线程，只累积不跨 JNI）；
- * - 页面 → Java：引擎在每个页面注入 [LOOK_SETUP_SCRIPT]，脚本用
+ * 参照 GameBox 修复（三个关键点）：
+ * 1. **模拟 Pointer Lock**：hook HTMLElement.prototype.requestPointerLock，
+ *    立即置 document.pointerLockElement 并派发 pointerlockchange —— 游戏
+ *    点击画布即"锁定成功"，后续 mousemove(movementX/Y) 正常被消费；
+ * 2. **派发目标**：mousemove 发到 pointerLockElement || canvas ||
+ *    [id*="game"] || [id*="flash"] || body，并同时派发到 document
+ *    （兼容监听在 document 上的游戏）；clientX/clientY 用屏幕中心；
+ * 3. **旁路不拦截**：Native 侧观察触摸累计增量，触摸事件照常给页面
+ *    （tap/click 不受影响；配合注入 CSS overflow:hidden +
+ *    canvas{touch-action:none} 防止拖动时页面滚动/选择）。
+ *
+ * ## 通道结构（保留 v2.16.2 的高性能双向通道）
+ * - Java → 页面：ZoomPinchLayout 旁路观察单指拖动，把增量喂给
+ *   [accumulate]（UI 线程，只累积不跨 JNI）；
+ * - 页面 → Java：引擎在 onPageFinished 注入 [LOOK_SETUP_SCRIPT]，脚本用
  *   requestAnimationFrame 循环调用 [Bridge.pull]（@JavascriptInterface 同步
- *   JNI 调用，单帧一次，取走累积的增量字符串），在 JS 侧派发鼠标事件。
- *   相比逐 move 事件 evaluateJavascript（跨 JNI 异步队列，60+/s 会排队堆积，
- *   ZoomPinchLayout/GameBox 的既有教训），该通道每帧固定一次同步调用，
- *   开销恒定且不积压。
- * - 仅【可见页面】的 rAF 会运行（后台标签 rAF 被 Chromium 暂停），
- *   因此增量只会被当前显示的页面取走，多标签/多窗口天然安全。
+ *   JNI，单帧一次取走增量字符串），JS 侧派发鼠标事件。
+ *   相比逐 move 事件 evaluateJavascript（每秒 60+ 次跨 JNI 异步排队堆积，
+ *   GameBox 注释里的同款教训），每帧固定一次同步调用，开销恒定不积压。
+ * - 仅可见页面的 rAF 运行（后台标签被 Chromium 暂停）→ 多标签天然安全。
  *
- * ## JS 侧派发细节
- * - mousedown 在按下点（elementFromPoint 命中元素）触发一次并记住该元素，
- *   后续 mousemove 持续派发到同一元素（桌面"按住拖动"语义，bubbles 冒泡
- *   到 document，兼容挂在 document 上的监听）；
- * - mousemove 携带 movementX/movementY（增量）与递推的 clientX/clientY，
- *   同时兼容两类游戏实现（读 movement 的 pointer-lock 类 / 读 clientX 差值的
- *   拖拽类）；支持 PointerEvent 的页面额外派发 pointerdown/pointermove/
- *   pointerup（pointerType=mouse）；
- * - mouseup 后清空按下元素；一次拖动期间页面不产生任何 touch 事件
- *   （拦截后 WebView 收到 ACTION_CANCEL），不会出现"相机 + 滚动"双响应。
+ * ## 小数增量语义（GameBox 同款）
+ * JavaScript MouseEvent.movementX/Y 是整数：native 侧 float 累积，
+ * pull 时取整数部分派发、小数余数保留在累加器 —— 慢速拖动每帧不足
+ * 1px 的增量不会丢失（旧实现 toInt() 后清零，慢拖 movementX 恒 0）。
+ *
+ * ## iframe 传播（GameBox 没有的增强）
+ * 大量 4399 类游戏把游戏本体放在 iframe 里：主 frame 的 rAF pull 取走
+ * 增量后，同时转发给已安装同款函数的 same-origin 子 frame
+ * （低频扫描新 iframe；跨域 frame 静默跳过）。
  */
 object View3dController {
 
@@ -45,71 +54,49 @@ object View3dController {
     @Volatile
     var sensitivity: Float = 1f
 
-    // ===== 拖动状态（UI 线程写，JS 桥线程读 → 统一锁保护） =====
+    // ===== 增量累加器（UI 线程写，JS 桥线程读 → 锁保护） =====
     private val lock = Any()
-    /** 自上次 pull 以来累积的增量（已乘灵敏度） */
+    /** 待派发的增量（已乘灵敏度，float 累积；pull 取整后余数保留） */
     private var accDx = 0f
     private var accDy = 0f
-    /** 一次性标记：本帧取走后自动清除 */
-    private var pressPending = false
-    private var releasePending = false
-    /** 按下点（view 坐标，与 GamepadController 的鼠标派发同一坐标系） */
-    private var pressX = 0f
-    private var pressY = 0f
 
-    /** 视角拖动开始：在按下点派发 mousedown（游戏自此锁定视角控制） */
-    fun beginDrag(x: Float, y: Float) {
+    /**
+     * 视角拖动增量（ZoomPinchLayout 旁路观察 ACTION_MOVE 时喂入）。
+     * 乘灵敏度后累积；不派发 press/release —— pointer-lock 类游戏只需
+     * mousemove（GameBox 同款语义），误发 mousedown 反而会触发游戏点击。
+     */
+    fun accumulate(dx: Float, dy: Float) {
+        if (dx == 0f && dy == 0f) return
+        val s = sensitivity
         synchronized(lock) {
-            pressX = x
-            pressY = y
-            pressPending = true
-            releasePending = false
+            accDx += dx * s
+            accDy += dy * s
+        }
+    }
+
+    /** 模式切换/导航时清空残留增量 */
+    fun reset() {
+        synchronized(lock) {
             accDx = 0f
             accDy = 0f
         }
     }
 
-    /** 视角拖动进行中：累积像素增量（乘灵敏度；每帧由页面 rAF 取走） */
-    fun moveDrag(dx: Float, dy: Float) {
-        if (dx == 0f && dy == 0f) return
-        synchronized(lock) {
-            accDx += dx * sensitivity
-            accDy += dy * sensitivity
-        }
-    }
-
-    /** 视角拖动结束：派发 mouseup */
-    fun endDrag() {
-        synchronized(lock) {
-            releasePending = true
-            pressPending = false
-        }
-    }
-
     /**
      * JS 桥：页面注入脚本每帧调用一次，取走累积的视角增量。
-     * 返回格式："dx,dy,press,pressX,pressY,release"（6 字段字符串），
-     * 取走即清零（读-清原子）。模式关闭时恒返回全 0，脚本零派发。
+     * 返回格式 "dx,dy"（整数；小数余数保留在累加器，慢拖不丢增量）。
+     * 模式关闭时恒返回 "0,0"（脚本零派发）。
      */
     class Bridge {
         @JavascriptInterface
         fun pull(): String {
-            // 模式关闭：不再派发任何事件（脚本空转，无事件开销）
-            if (!enabled) return "0,0,0,0,0,0"
+            if (!enabled) return "0,0"
             return synchronized(View3dController.lock) {
-                val s = buildString {
-                    append(accDx.toInt());append(',')
-                    append(accDy.toInt());append(',')
-                    append(if (pressPending) "1" else "0");append(',')
-                    append(pressX.toInt());append(',')
-                    append(pressY.toInt());append(',')
-                    append(if (releasePending) "1" else "0")
-                }
-                accDx = 0f
-                accDy = 0f
-                pressPending = false
-                releasePending = false
-                s
+                val ix = accDx.toInt()
+                val iy = accDy.toInt()
+                accDx -= ix
+                accDy -= iy
+                "$ix,$iy"
             }
         }
     }
@@ -118,65 +105,146 @@ object View3dController {
     val bridge = Bridge()
 
     /**
-     * 页面注入脚本（onPageStarted，http/file 页）：启动 rAF 轮询循环。
-     * - 幂等（window.__anwindLookLoop 防重复注入）；
-     * - 后台标签 rAF 自动暂停 → 只有可见页消费增量；
-     * - pull 全 0 时直接进入下一帧，零事件开销。
+     * 页面注入脚本（onPageFinished，http/file 页）。幂等。
+     *
+     * 结构（参照 GameBox CAMERA_ROTATION_SCRIPT + 我们的 rAF pull 桥）：
+     * 1. [__anwindSetup]：自包含安装函数 —— 模拟 Pointer Lock API + CSS
+     *    防滚动 + __anwindDispatchLook 派发函数（幂等，可装任意 frame）；
+     * 2. 主 frame：直接执行安装 + rAF 循环 pull 桥增量 → 派发并转发给
+     *    已安装的 same-origin iframe（子 frame 不起 rAF，防抢增量）；
+     * 3. 子 frame 安装：把 __anwindSetup 序列化成源码（toString()）在
+     *    子 frame 全局 eval 执行 —— 函数体内自由变量（window/document/
+     *    HTMLElement 等）绑定到子 frame 的全局（跨域 frame eval 抛异常
+     *    静默跳过）；低频扫描（rAF 计数 + 启动后 1s/3s 兜底）捕捉新 iframe。
      */
-    val LOOK_SETUP_SCRIPT: String =
-        "(function(){try{" +
-            "if(window.__anwindLookLoop)return;" +
-            "var b=window.__anwindLookBridge;" +
-            "if(!b)return;" +
-            "var pos=null,el=null,pressed=false;" +
-            "function fire(type,mx,my){" +
-            "if(!el)return;" +
-            "var up=(type==='mouseup');" +
-            "var init={bubbles:true,cancelable:true,composed:true,view:window," +
-            "clientX:pos[0],clientY:pos[1],screenX:pos[0],screenY:pos[1]," +
-            "button:0,buttons:(up?0:1),movementX:mx||0,movementY:my||0,detail:1};" +
-            "el.dispatchEvent(new MouseEvent(type,init));" +
-            "if(typeof PointerEvent==='function'){" +
-            "try{" +
-            "var pt=(type==='mousedown')?'pointerdown':(up?'pointerup':'pointermove');" +
-            "var p={};for(var k in init)p[k]=init[k];" +
-            "p.pointerId=1;p.pointerType='mouse';p.isPrimary=true;" +
-            "el.dispatchEvent(new PointerEvent(pt,p));" +
-            "}catch(e){}}" +
-            "}" +
-            "function loop(){" +
-            "try{" +
-            "var r=b.pull();" +
-            "if(r&&r!=='0,0,0,0,0,0'){" +
-            "var a=r.split(',');" +
-            "var dx=parseFloat(a[0])||0,dy=parseFloat(a[1])||0;" +
-            "var press=a[2]==='1',up=a[5]==='1';" +
-            "if(press&&!up){" +
-            "pos=[parseFloat(a[3])||0,parseFloat(a[4])||0];" +
-            "el=document.elementFromPoint(pos[0],pos[1])||document.body||document.documentElement||document;" +
-            "pressed=true;fire('mousedown',0,0);" +
-            "}" +
-            "if(pressed&&pos&&(dx!==0||dy!==0)){" +
-            "pos[0]+=dx;pos[1]+=dy;fire('mousemove',dx,dy);" +
-            "}" +
-            "if(up&&pressed){fire('mouseup',0,0);pressed=false;el=null;pos=null;}" +
-            "}" +
-            "}catch(e){}" +
-            "requestAnimationFrame(loop);" +
-            "}" +
-            "window.__anwindLookLoop=true;" +
-            "requestAnimationFrame(loop);" +
-            "}catch(e){}})()"
+    val LOOK_SETUP_SCRIPT: String = """
+        (function(){
+          function __anwindSetup() {
+            if (window.__anwindLook) return;
+            window.__anwindLook = true;
 
-    /** 页面拉取帧的最小理论间隔（仅用于文档说明；实际由 rAF 驱动） */
-    const val FRAME_HINT_MS: Long = 16L
+            // === 模拟 Pointer Lock API（移动端 WebView 不支持原生锁定） ===
+            if (!window.__anwindPointerLockHooked) {
+              window.__anwindPointerLockHooked = true;
+              try {
+                HTMLElement.prototype.requestPointerLock = function() {
+                  window.__anwindLocked = true;
+                  document.pointerLockElement = this;
+                  try { document.dispatchEvent(new Event('pointerlockchange')); } catch(e) {}
+                  return Promise.resolve();
+                };
+              } catch(e) {}
+              try {
+                document.exitPointerLock = function() {
+                  window.__anwindLocked = false;
+                  document.pointerLockElement = null;
+                  try { document.dispatchEvent(new Event('pointerlockchange')); } catch(e) {}
+                };
+              } catch(e) {}
+              try {
+                Object.defineProperty(document, 'pointerLockElement', {
+                  get: function() { return window.__anwindLockEl || null; },
+                  set: function(v) { window.__anwindLockEl = v; },
+                  configurable: true
+                });
+              } catch(e) {}
+            }
 
-    /** 上次视角事件时间戳（调试/日志用途保留） */
-    var lastEventAt: Long = 0L
-        private set
+            // === CSS：禁拖选/禁滚动/canvas 禁默认触摸（旁路模式防双响应） ===
+            try {
+              if (!document.getElementById('__anwindLookStyle')) {
+                var st = document.createElement('style');
+                st.id = '__anwindLookStyle';
+                st.textContent = 'body{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none;overflow:hidden !important;}canvas{touch-action:none !important;}';
+                (document.head || document.documentElement).appendChild(st);
+              }
+            } catch(e) {}
 
-    /** 更新最后事件时间（beginDrag/endDrag 调用） */
-    internal fun touchEventClock() {
-        lastEventAt = SystemClock.uptimeMillis()
-    }
+            // === 视角增量派发（GameBox __cameraRotate 同款目标选择） ===
+            window.__anwindDispatchLook = function(dx, dy) {
+              var target = document.pointerLockElement;
+              if (!target) {
+                target = document.querySelector('canvas') ||
+                         document.querySelector('[id*="game"]') ||
+                         document.querySelector('[id*="flash"]') ||
+                         document.body;
+              }
+              if (!target) return;
+              var evt = new MouseEvent('mousemove', {
+                bubbles: true,
+                cancelable: true,
+                view: window,
+                clientX: window.innerWidth / 2,
+                clientY: window.innerHeight / 2,
+                movementX: Math.round(dx),
+                movementY: Math.round(dy)
+              });
+              try { target.dispatchEvent(evt); } catch(e) {}
+              try { document.dispatchEvent(evt); } catch(e) {}
+            };
+          }
+
+          if (window.__anwindLook) return;
+          __anwindSetup();
+
+          // === same-origin iframe 安装（自包含源码在子 frame 全局 eval） ===
+          window.__anwindLookFrames = [];
+          function installInto(w) {
+            if (!w) return;
+            try { void w.location.href; } catch(e) { return; } // 跨域 → 跳过
+            try {
+              if (!w.__anwindLook) {
+                w.eval('(' + __anwindSetup.toString() + ')()');
+              }
+              if (w.__anwindDispatchLook && window.__anwindLookFrames.indexOf(w) < 0) {
+                window.__anwindLookFrames.push(w);
+              }
+            } catch(e) {}
+          }
+          function scanFrames() {
+            try {
+              var list = document.querySelectorAll('iframe');
+              for (var i = 0; i < list.length; i++) {
+                try { installInto(list[i].contentWindow); } catch(e) {}
+              }
+            } catch(e) {}
+          }
+
+          // === 主 frame：rAF 循环 pull 桥增量（子 frame 不 pull，防抢增量） ===
+          if (window.parent === window) {
+            var b = window.__anwindLookBridge;
+            if (b) {
+              var tick = 0;
+              function loop() {
+                try {
+                  var r = b.pull();
+                  if (r && r !== '0,0') {
+                    var a = r.split(',');
+                    var dx = parseFloat(a[0]) || 0;
+                    var dy = parseFloat(a[1]) || 0;
+                    if (dx !== 0 || dy !== 0) {
+                      window.__anwindDispatchLook(dx, dy);
+                      // 转发给已安装的 same-origin iframe（游戏在 iframe 里的场景）
+                      var fr = window.__anwindLookFrames;
+                      for (var i = 0; i < fr.length; i++) {
+                        var f = fr[i];
+                        if (f && typeof f.__anwindDispatchLook === 'function') {
+                          try { f.__anwindDispatchLook(dx, dy); } catch(e) {}
+                        }
+                      }
+                    }
+                  }
+                  // 低频扫描新 iframe（约每 2s 一次，querySelectorAll 开销可忽略）
+                  if ((++tick % 120) === 0) scanFrames();
+                } catch(e) {}
+                requestAnimationFrame(loop);
+              }
+              requestAnimationFrame(loop);
+              scanFrames();
+              setTimeout(scanFrames, 1000);
+              setTimeout(scanFrames, 3000);
+            }
+          }
+        })();
+    """.trimIndent()
 }

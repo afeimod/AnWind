@@ -285,10 +285,11 @@ object BrowserEngine {
         wv.webViewClient = TabWebViewClient(ctx, tab, manager)
         wv.webChromeClient = TabChromeClient(ctx, tab, manager)
 
-        // v2.16.2：鼠标视角（3D 视角旋转）JS 桥 —— 页面脚本经
+        // v2.16.3：鼠标视角（3D 视角旋转）JS 桥 —— 页面脚本经
         // window.__anwindLookBridge.pull() 每帧取走拖动增量并派发
-        // 合成鼠标事件（详见 View3dController）。桥只暴露只读 pull，
-        // 无安全面。
+        // 合成 mousemove(movementX/Y) 事件（详见 View3dController，
+        // 参照 GameBox：模拟 Pointer Lock + __cameraRotate 派发）。
+        // 桥只暴露只读 pull，无安全面。
         runCatching { wv.addJavascriptInterface(View3dController.bridge, "__anwindLookBridge") }
     }
 
@@ -455,9 +456,6 @@ object BrowserEngine {
                 view?.evaluateJavascript(FLASH_FAKE_SUPPORT_SCRIPT, null)
                 //    懒加载探测器：任意页面出现 Flash 元素时动态加载 Ruffle 引擎
                 view?.evaluateJavascript(FLASH_DOM_DETECT_SCRIPT, null)
-                // 3.5) v2.16.2 鼠标视角（3D 视角旋转）：注入 rAF 轮询循环，
-                //      把 View3dController 累积的拖动增量派发为页面鼠标事件
-                view?.evaluateJavascript(View3dController.LOOK_SETUP_SCRIPT, null)
                 // 4) 4399 系页面：直接预加载 Ruffle（游戏页主体就是 Flash）
                 if (url.contains("4399.com")) {
                     view?.evaluateJavascript(REFERER_SPOOF_SCRIPT, null)
@@ -497,6 +495,16 @@ object BrowserEngine {
             view?.let {
                 tab.canGoBack = it.canGoBack()
                 tab.canGoForward = it.canGoForward()
+            }
+
+            // ===== v2.16.3 鼠标视角（3D 视角旋转）：onPageFinished 注入 =====
+            // 参照 GameBox（GAMEBOX：onPageFinished 注入 CAMERA_ROTATION_SCRIPT，
+            // 注释“导航后会丢失，需重新注入”）：onPageStarted 时 DOM 尚未就绪，
+            // CSS/element 查询会失败；onPageFinished 时 document.head/canvas
+            // 已可用，hook requestPointerLock 也能在用户点击画布前就位。
+            // 脚本幂等（window.__anwindLook 防重复），SPA 锚点导航重复触发安全。
+            if (url != null && (url.startsWith("http") || url.startsWith("file:"))) {
+                view?.evaluateJavascript(View3dController.LOOK_SETUP_SCRIPT, null)
             }
 
             // v2.14.5 曾在此注入 viewport 缩放脚本（SPA 兑底），v2.14.6 撤销，

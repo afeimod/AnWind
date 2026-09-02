@@ -97,17 +97,17 @@ class ZoomPinchLayout @JvmOverloads constructor(
 
     private var webView: WebView? = null
 
-    // ===== v2.16.2：鼠标视角（3D 视角旋转）拖动拦截 =====
-    /** 视角模式是否接管本次手势（View3dController.enabled 且单指拖动超 slop） */
-    private var modeLook = false
-    /** 视角拖动中途被多指打断后不再恢复（本次手势内只剩收尾） */
-    private var lookAbandoned = false
-    /** 按下点 / 上帧采样点（view 坐标） */
-    private var lookDownX = 0f
-    private var lookDownY = 0f
+    // ===== v2.16.3：鼠标视角（3D 视角旋转）旁路观察 =====
+    // 参照 GameBox：不拦截触摸（页面照常收到 tap/click/touch，游戏自身
+    // 触摸逻辑不受影响），父容器只在 onInterceptTouchEvent 里【观察】
+    // 单指拖动增量喂给 View3dController；拖动时页面滚动/拖选由注入的
+    // CSS（body overflow:hidden + canvas touch-action:none）抑制。
+    /** 本手势是否处于视角累计中（超 slop 后启动，多指/抬手结束） */
+    private var lookActive = false
+    /** 上帧采样点（view 坐标） */
     private var lookLastX = 0f
     private var lookLastY = 0f
-    /** 触摸 slop（超过才算拖动，保留页面单击/长按点击语义） */
+    /** 触摸 slop（超过才开始累计，避免点击时的微动转视角） */
     private val lookSlop = ViewConfiguration.get(context).scaledTouchSlop
 
     // ===== 手势状态机 =====
@@ -211,11 +211,10 @@ class ZoomPinchLayout @JvmOverloads constructor(
                 baseSpan = 0f
                 lastScale = 0f
                 observeViewDomain = false
-                // v2.16.2：视角模式手势重置
-                modeLook = false
-                lookAbandoned = false
-                lookDownX = ev.x
-                lookDownY = ev.y
+                // v2.16.3：视角旁路重置（不拦截，只重新观察）
+                lookActive = false
+                lookLastX = ev.x
+                lookLastY = ev.y
             }
             MotionEvent.ACTION_POINTER_DOWN -> {
                 if (ev.pointerCount >= 2) {
@@ -230,22 +229,29 @@ class ZoomPinchLayout @JvmOverloads constructor(
                 }
             }
             MotionEvent.ACTION_MOVE -> {
-                // v2.16.2：鼠标视角接管 —— 单指拖动超过 slop 且视角模式开启时
-                // 拦截事件流（WebView 收 ACTION_CANCEL，不滚动不产生 touch），
-                // 增量经 View3dController 合成 mousemove 注入页面。双指捏合
-                // 仲裁（下方 MODE_OBSERVE 分支）优先级不变，视角拖动只在
-                // pointerCount == 1 时启动。
-                if (!modeLook && !lookAbandoned && mode == MODE_IDLE && !passThrough &&
-                    ev.pointerCount == 1 && View3dController.enabled
-                ) {
-                    val dxTotal = ev.x - lookDownX
-                    val dyTotal = ev.y - lookDownY
-                    if (dxTotal * dxTotal + dyTotal * dyTotal > lookSlop * lookSlop) {
-                        modeLook = true
+                // v2.16.3：鼠标视角旁路观察 —— 不拦截（返回 false，事件照常
+                // 给 WebView，页面 tap/click/touch 全保留），只在单指拖动超
+                // slop 后把增量喂给 View3dController，由注入脚本合成
+                // mousemove(movementX/Y) 转视角。多指（捏合缩放仲裁，下方
+                // MODE_OBSERVE 分支优先）时暂停视角累计，抬回单指可继续。
+                if (View3dController.enabled) {
+                    if (ev.pointerCount >= 2) {
+                        // 双指：暂停视角（捏合缩放优先），期间 WebView 事件不受影响
+                        lookActive = false
+                    } else if (lookActive) {
+                        val dx = ev.x - lookLastX
+                        val dy = ev.y - lookLastY
                         lookLastX = ev.x
                         lookLastY = ev.y
-                        View3dController.beginDrag(ev.x, ev.y)
-                        return true
+                        View3dController.accumulate(dx, dy)
+                    } else if (mode == MODE_IDLE && !passThrough) {
+                        val dxTotal = ev.x - lookLastX
+                        val dyTotal = ev.y - lookLastY
+                        if (dxTotal * dxTotal + dyTotal * dyTotal > lookSlop * lookSlop) {
+                            lookActive = true
+                            lookLastX = ev.x
+                            lookLastY = ev.y
+                        }
                     }
                 }
                 if (mode == MODE_OBSERVE && ev.pointerCount == 2 && !passThrough) {
@@ -303,6 +309,7 @@ class ZoomPinchLayout @JvmOverloads constructor(
                 passThrough = false
                 deadSamples = 0
                 observeViewDomain = false
+                lookActive = false
             }
         }
         return false
@@ -310,36 +317,9 @@ class ZoomPinchLayout @JvmOverloads constructor(
 
     @SuppressLint("ClickableViewAccessibility")
     override fun onTouchEvent(ev: MotionEvent): Boolean {
-        // v2.16.2：视角拖动流（拦截接管后事件改道到这里）
-        if (modeLook) {
-            when (ev.actionMasked) {
-                MotionEvent.ACTION_MOVE -> {
-                    if (!lookAbandoned) {
-                        val dx = ev.x - lookLastX
-                        val dy = ev.y - lookLastY
-                        lookLastX = ev.x
-                        lookLastY = ev.y
-                        View3dController.moveDrag(dx, dy)
-                    }
-                }
-                MotionEvent.ACTION_POINTER_DOWN -> {
-                    // 拖动中落下第二指：结束视角（mouseup），本次手势不再
-                    // 恢复视角 —— 把手势还给自然结束，避免拖拽中换手产生跳变
-                    if (!lookAbandoned) {
-                        View3dController.endDrag()
-                        lookAbandoned = true
-                    }
-                }
-                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                    if (!lookAbandoned) View3dController.endDrag()
-                    lookAbandoned = false
-                    modeLook = false
-                }
-            }
-            return true
-        }
-        // 拦截接管后才收到事件流（WebView 满铺为子 View，单指事件永远命中
-        // WebView；此处只需处理 MODE_PINCH 态的捏合流）
+        // v2.16.3：视角拖动改为旁路观察（onInterceptTouchEvent 里累计增量，
+        // 不再拦截接管 —— 触摸事件照常给 WebView，页面 tap/click/touch 全保留）。
+        // 本方法只处理被拦截接管的捏合缩放流（MODE_PINCH）。
         if (mode != MODE_PINCH) return false
         when (ev.actionMasked) {
             MotionEvent.ACTION_MOVE -> {
