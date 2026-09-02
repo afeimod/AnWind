@@ -504,4 +504,46 @@ object GamepadController {
 
     /** 无目标时是否有接收方（覆盖层可显示提示） */
     fun hasTarget(): Boolean = targetWebView?.get() != null
+
+    // ============================================================
+    // v2.16.4：手柄元素命中几何（窗口坐标 px）
+    // ============================================================
+    // 背景：手柄摇杆/按钮按住时会消费自己的指针变化，而 Compose interop
+    // 过滤器（compose-ui 1.6.8 PointerInteropFilter.dispatchToView）只要
+    // 发现"任何一个指针变化被消费"就停止向 WebView 派发事件 —— 导致
+    // 手柄移动时另一根手指的拖动/点击永远到不了网页（3D 视角旋转失灵）。
+    // 修复链路：GamepadOverlay 用 onGloballyPositioned 把每个元素的
+    // boundsInRoot（窗口坐标）登记到这里；浏览器侧 ZoomPinchLayout 在
+    // dispatchTouchEvent 入口把"落点在手柄元素内"的指针从 MotionEvent
+    // 中剥离，WebView 收到与"手柄不存在"一致的干净流（等效 GameBox 的
+    // 原生 View 分指：手柄按钮和 WebView 各收各的指针）。
+
+    /** 每个手柄元素的命中矩形（窗口坐标 px；仅 UI 线程读写） */
+    private val elementHitRects = HashMap<String, FloatArray>() // [l,t,r,b]
+
+    /** 命中判定外扩（px）：吸收 boundsInRoot 与 View 窗口坐标间的亚像素偏差 */
+    private const val HIT_MARGIN_PX = 12f
+
+    /** 覆盖层布局后登记元素命中矩形（GamepadElementHost 调用） */
+    fun registerElementHit(id: String, l: Float, t: Float, r: Float, b: Float) {
+        elementHitRects[id] = floatArrayOf(l, t, r, b)
+    }
+
+    /** 手柄隐藏/离开组合时清空（防陈旧矩形误剥离正常触摸） */
+    fun clearElementHits() {
+        elementHitRects.clear()
+    }
+
+    /** 是否有可用命中矩形（无 = 手柄未显示，浏览器侧零开销直通） */
+    fun hasElementHits(): Boolean = elementHitRects.isNotEmpty()
+
+    /** 窗口坐标 (x,y) 是否落在任一手柄元素内（含少量外扩） */
+    fun isOverPadElement(x: Float, y: Float): Boolean {
+        for (rect in elementHitRects.values) {
+            if (x >= rect[0] - HIT_MARGIN_PX && x <= rect[2] + HIT_MARGIN_PX &&
+                y >= rect[1] - HIT_MARGIN_PX && y <= rect[3] + HIT_MARGIN_PX
+            ) return true
+        }
+        return false
+    }
 }

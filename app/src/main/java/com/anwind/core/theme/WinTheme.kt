@@ -46,7 +46,7 @@ enum class TaskbarAlignment { LEFT, CENTER }
  * - CLASSIC_95：Win95 灰色立体凹凸任务栏（凸起开始按钮 + 凹陷托盘 + 文字任务按钮）
  * - LUNA_XP：WinXP Luna 蓝色渐变任务栏（绿色圆角开始按钮 + 蓝渐变任务按钮）
  * - AERO_7：Win7 Aero 玻璃任务栏（开始圆球 + 图标式任务栏 + 辉光激活态）
- * - MODERN_10：Win10 深色扁平任务栏（靠左图标 + 搜索框 + 底部下划线激活态）
+ * - MODERN_10：Win10 浅色扁平任务栏（靠左图标 + 搜索框 + 底部下划线激活态）
  * - MICA_11：Win11 Mica 悬浮居中 Dock（本应用标志性现代样式）
  */
 enum class TaskbarStyle { CLASSIC_95, LUNA_XP, AERO_7, MODERN_10, MICA_11 }
@@ -176,7 +176,7 @@ data class WinTheme(
  * - Win95：经典灰色调、Tahoma 字体（保留朴素感）
  * - WinXP：Luna 蓝色色调（去掉了过时的渐变标题栏）
  * - Win7：Aero 玻璃半透明蓝色调
- * - Win10：扁平深色调
+ * - Win10：扁平浅色调（v2.16.4：由深色改亮色，与其他时代一致）
  * - Win11：Mica 浅色调（最贴近视频参考样式）
  */
 object Themes {
@@ -329,44 +329,48 @@ object Themes {
         desktopIconTextColor = Color.White,
         desktopIconTextShadow = true,
         taskbarAlignment = TaskbarAlignment.LEFT,
-        taskbarColor = Color(0xFF101010),
-        taskbarAlpha = 0.92f,
+        // v2.16.4：Win10 浅色主题（Windows 10 Light 同源色板）：
+        // 任务栏 #EEEEEE、开始菜单 #F2F2F2、窗口白底 —— 强调色保留
+        // Win10 标志性蓝 #0078D7，设计语言（扁平、靠左任务栏、
+        // 搜索框、下划线激活态）不变，仅明度与其他时代看齐
+        taskbarColor = Color(0xFFEEEEEE),
+        taskbarAlpha = 0.96f,
         taskbarHeight = 46.dp,
         taskbarStartButtonColor = Color(0xFF0078D7),
-        taskbarIconColor = Color.White,
-        taskbarClockColor = Color.White,
+        taskbarIconColor = Color(0xFF1F1F1F),
+        taskbarClockColor = Color(0xFF1F1F1F),
         startButtonLabel = null,
         taskbarStyle = TaskbarStyle.MODERN_10,
         startMenuWidth = 400.dp,
-        startMenuColor = Color(0xFF202020),
+        startMenuColor = Color(0xFFF2F2F2),
         startMenuAlpha = 0.98f,
         startMenuShape = RoundedCornerShape(8.dp),
         windowChrome = WindowChrome.FLAT,
-        windowTitleBarColor = Color(0xFF2B2B2B),
-        windowTitleBarTextColor = Color.White,
-        windowBackgroundColor = Color(0xFF1F1F1F),
-        windowBorderColor = Color(0xFF3A3A3A),
+        windowTitleBarColor = Color(0xFFF5F5F5),
+        windowTitleBarTextColor = Color(0xFF1F1F1F),
+        windowBackgroundColor = Color(0xFFFAFAFA),
+        windowBorderColor = Color(0xFFDDDDDD),
         windowBorderWidth = 1.dp,
         windowCornerSize = 8.dp,
         windowTitleBarHeight = 36.dp,
         windowControlButtonsOnLeft = false,
         windowShadowElevation = 14.dp,
         windowTitleBarIconColor = Color(0xFF0078D7),
-        buttonBackgroundColor = Color(0xFF2D2D2D),
-        buttonTextColor = Color.White,
+        buttonBackgroundColor = Color(0xFFE9E9E9),
+        buttonTextColor = Color(0xFF1F1F1F),
         buttonCornerSize = 4.dp,
         accentColor = Color(0xFF0078D7),
-        linkColor = Color(0xFF66B2FF),
-        secondaryTextColor = Color(0xFFA0A0A0),
-        dividerColor = Color(0xFF3A3A3A),
-        cardBackgroundColor = Color(0xFF2D2D2D),
+        linkColor = Color(0xFF0067C0),
+        secondaryTextColor = Color(0xFF616161),
+        dividerColor = Color(0xFFE0E0E0),
+        cardBackgroundColor = Color(0xFFF0F0F0),
         fontFamily = FontFamily.SansSerif,
         fontSizeSmall = 12.sp,
         fontSizeBody = 13.sp,
         fontSizeTitle = 16.sp,
         fontWeightTitle = FontWeight.SemiBold,
         startupSoundAsset = "sounds/win10.mp3",
-        isDark = true
+        isDark = false
     )
 
     val Win11 = WinTheme(

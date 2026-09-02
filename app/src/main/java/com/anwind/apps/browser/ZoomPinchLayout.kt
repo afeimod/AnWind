@@ -8,6 +8,7 @@ import android.view.ViewConfiguration
 import android.view.ViewGroup
 import android.webkit.WebView
 import android.widget.FrameLayout
+import com.anwind.core.input.gamepad.GamepadController
 import kotlin.math.abs
 import kotlin.math.sqrt
 
@@ -110,6 +111,25 @@ class ZoomPinchLayout @JvmOverloads constructor(
     /** 触摸 slop（超过才开始累计，避免点击时的微动转视角） */
     private val lookSlop = ViewConfiguration.get(context).scaledTouchSlop
 
+    // ===== v2.16.4：手柄共存 —— 从事件流剥离"手柄指针" =====
+    // 根因（compose-ui 1.6.8 PointerInteropFilter.dispatchToView）：
+    // "任一 PointerInputChange 被消费"就停止向本容器派发，且派发的也是
+    // 全指针原始 MotionEvent —— 虚拟手柄元素按住时必然消费自己的指针，
+    // 导致：① 手柄移动时网页收不到另一根手指的拖动/点击（3D 视角旋转
+    // 失灵的根因）；② 即使派发成功，手柄幽灵指针也会扰乱 Chromium 手势
+    // 判定与本类多指仲裁。
+    // 修复：在本 View 入口把"落点在手柄元素内"的指针（按 pointerId 记忆）
+    // 从 MotionEvent 中剥离，WebView 收到与"手柄不存在"完全一致的干净流
+    // （等效 GameBox 的原生 View 分指：手柄按钮和 WebView 各收各的指针）。
+    // 手柄指针的 DOWN 落在手柄元素上（不同命中子树）不会进入本视图，
+    // 只有其 MOVE/UP 会随自由指针的事件捎带进来 —— 一并剥离。
+    /** 已判定为手柄指针的 pointerId（仅 UI 线程） */
+    private val padPointerIds = HashSet<Int>()
+    /** 已判定为自由指针（非手柄）的 pointerId（仅 UI 线程） */
+    private val freePointerIds = HashSet<Int>()
+    /** 本 View 在窗口内的位置缓存（避免每个事件分配） */
+    private val windowLoc = IntArray(2)
+
     // ===== 手势状态机 =====
     private var mode = MODE_IDLE
     /** 本次手势是否已判定为原生域（放大/原生可响应的缩小） */
@@ -199,6 +219,123 @@ class ZoomPinchLayout @JvmOverloads constructor(
                 onZoomChanged?.invoke(1f)
             }
         }
+    }
+
+    /**
+     * v2.16.4：手柄指针剥离入口。
+     * - 手柄未显示（无命中矩形）→ 原样直通，零行为变化；
+     * - 事件不含手柄指针 → 原样直通（含双指捏合等既有手势）；
+     * - 含手柄指针 → 按上表规则重映射 action 并剥离后派发给 WebView；
+     *   无自由指针时吞掉事件（不派发，Chromium 不感知手柄指针）。
+     */
+    override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+        if (!GamepadController.hasElementHits()) {
+            return super.dispatchTouchEvent(ev)
+        }
+        // 流结束 → 清空指针分类（pointerId 可被新手势复用，必须重置）
+        when (ev.actionMasked) {
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                padPointerIds.clear()
+                freePointerIds.clear()
+            }
+        }
+        // 收集本事件中手柄/自由指针的下标（新出现的 pointerId 按落点判定，
+        // 判定结果按 id 记忆 —— 手指拖进/拖出手柄区域不改变归类）
+        getLocationInWindow(windowLoc)
+        var containsPad = false
+        for (i in 0 until ev.pointerCount) {
+            val id = ev.getPointerId(i)
+            if (!padPointerIds.contains(id) && !freePointerIds.contains(id)) {
+                val overPad = GamepadController.isOverPadElement(
+                    windowLoc[0] + ev.getX(i), windowLoc[1] + ev.getY(i)
+                )
+                if (overPad) padPointerIds.add(id) else freePointerIds.add(id)
+            }
+            if (!containsPad && padPointerIds.contains(id)) containsPad = true
+        }
+        if (!containsPad) {
+            return super.dispatchTouchEvent(ev)
+        }
+
+        // ===== 剥离路径：按 action 重映射 =====
+        val freeIndices = ArrayList<Int>(ev.pointerCount)
+        for (i in 0 until ev.pointerCount) {
+            if (!padPointerIds.contains(ev.getPointerId(i))) freeIndices.add(i)
+        }
+        if (freeIndices.isEmpty()) {
+            // 只剩手柄指针：无 Chromium 流可维护，吞掉
+            return true
+        }
+        val cleanedAction: Int
+        when (ev.actionMasked) {
+            MotionEvent.ACTION_POINTER_DOWN -> {
+                // 新落指针是手柄指针 → 对 Chromium 等效无新指针：降级为 MOVE；
+                // 新落指针是自由指针 → POINTER_DOWN（actionIndex 换算到剥离后数组）
+                val newId = ev.getPointerId(ev.actionIndex)
+                cleanedAction = if (padPointerIds.contains(newId)) MotionEvent.ACTION_MOVE
+                else actionOf(
+                    MotionEvent.ACTION_POINTER_DOWN,
+                    freeIndices.indexOf(ev.actionIndex)
+                )
+            }
+            MotionEvent.ACTION_POINTER_UP -> {
+                val liftedId = ev.getPointerId(ev.actionIndex)
+                if (padPointerIds.contains(liftedId)) {
+                    // 抬起的是手柄指针：Chromium 流无变化 → MOVE
+                    cleanedAction = MotionEvent.ACTION_MOVE
+                } else {
+                    // 抬起的是自由指针：仍有剩余 → POINTER_UP；否则收尾 UP
+                    cleanedAction = if (freeIndices.size > 1) {
+                        actionOf(MotionEvent.ACTION_POINTER_UP, freeIndices.indexOf(ev.actionIndex))
+                    } else {
+                        MotionEvent.ACTION_UP
+                    }
+                }
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                if (padPointerIds.contains(ev.getPointerId(ev.actionIndex))) {
+                    // UP 指针是手柄指针（自由指针早已经 POINTER_UP 收尾）→ 吞掉
+                    return true
+                }
+                cleanedAction = ev.actionMasked
+            }
+            else -> cleanedAction = ev.actionMasked  // DOWN/MOVE 原样
+        }
+        val cleaned = buildStrippedEvent(ev, freeIndices, cleanedAction)
+        return try {
+            super.dispatchTouchEvent(cleaned)
+        } finally {
+            cleaned.recycle()
+        }
+    }
+
+    /** 组装带 actionIndex 的 pointer 事件（index 高位在 ACTION_ 上） */
+    private fun actionOf(base: Int, index: Int): Int =
+        (index shl MotionEvent.ACTION_POINTER_INDEX_SHIFT) or base
+
+    /**
+     * 用原事件的自由指针子集构造剥离后的 MotionEvent。
+     * PointerCoords 拷贝全部轴（x/y/pressure/toolType…），保留 downTime/
+     * eventTime/deviceId 等元数据；历史批次不拷贝（Chromium 对丢历史
+     * 兼容良好，仅轨迹采样略粗）。
+     */
+    private fun buildStrippedEvent(
+        ev: MotionEvent,
+        freeIndices: List<Int>,
+        action: Int
+    ): MotionEvent {
+        val n = freeIndices.size
+        val props = Array(n) { MotionEvent.PointerProperties() }
+        val coords = Array(n) { MotionEvent.PointerCoords() }
+        for (j in 0 until n) {
+            ev.getPointerProperties(freeIndices[j], props[j])
+            ev.getPointerCoords(freeIndices[j], coords[j])
+        }
+        return MotionEvent.obtain(
+            ev.downTime, ev.eventTime, action, n, props, coords,
+            ev.metaState, ev.buttonState, ev.xPrecision, ev.yPrecision,
+            ev.deviceId, ev.edgeFlags, ev.source, ev.flags
+        )
     }
 
     @SuppressLint("ClickableViewAccessibility")

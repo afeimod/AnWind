@@ -28,6 +28,8 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
@@ -66,8 +68,12 @@ fun GamepadOverlay() {
     }
 
     // v2.15.3：手柄隐藏/离开组合时释放全部按下的键（防联键：不留任何"按着"的键）
+    // v2.16.4：同时清空元素命中矩形（防陈旧矩形令浏览器侧误剥离正常触摸）
     DisposableEffect(gamepadEnabled) {
-        onDispose { GamepadController.releaseAllKeys() }
+        onDispose {
+            GamepadController.releaseAllKeys()
+            GamepadController.clearElementHits()
+        }
     }
 
     val scope = rememberCoroutineScope()
@@ -185,6 +191,16 @@ private fun GamepadElementHost(
                 )
             }
             .size(element.sizeDp.dp)
+            // v2.16.4：把元素命中矩形（窗口坐标）登记给 GamepadController，
+            // 浏览器侧 ZoomPinchLayout 据此把"落在手柄元素上"的指针从
+            // MotionEvent 流中剥离，让网页拖动/点击与手柄操作互不干扰
+            .onGloballyPositioned { coords ->
+                val p = coords.positionInWindow()
+                val s = coords.size
+                GamepadController.registerElementHit(
+                    element.id, p.x, p.y, p.x + s.width, p.y + s.height
+                )
+            }
             .then(
                 if (editMode) {
                     // key 必须含 posX/posY：否则手势闭包捕获的是首次组合时的旧基准点，
@@ -345,37 +361,42 @@ private fun JoystickContent(
                 .fillMaxSize()
                 .then(
                     if (inputEnabled) Modifier.pointerInput(currentElement.id, currentElement.dirMode) {
+                        // v2.16.4：重写为 awaitEachGesture 且不再消费事件。
+                        // 根因：摇杆按住时 consume() 会让 Compose interop 过滤器
+                        // （PointerInteropFilter）判定"有指针变化被消费"而停止向
+                        // WebView 派发事件 —— 手柄移动时网页收不到另一根手指的
+                        // 拖动，3D 视角旋转失灵。去消费后 WebView 侧由
+                        // ZoomPinchLayout 剥离手柄指针，两边各收各的指针。
+                        // requireUnconsumed=false：网页先按下（过滤器消费全部变化）
+                        // 后再按摇杆也能响应。摇杆头直接跟随触点位置（相对中心限幅）。
                         // finally 兜底：手势被取消（如切编辑模式）时也清空方向，
                         // 杜绝协程被取消导致的"方向键卡住"（v2.15.3）
-                        try {
-                            detectDragGestures(
-                                onDragStart = { touchPos ->
-                                    stickOffset = Offset.Zero
-                                    val local = touchPos - Offset(radius, radius)
-                                    updateDirs(dirsFromOffset(local))
-                                },
-                                onDrag = { change, amount ->
-                                    change.consume()
-                                    stickOffset += amount
+                        awaitEachGesture {
+                            val down = awaitFirstDown(requireUnconsumed = false)
+                            try {
+                                fun applyPointer(pos: Offset) {
+                                    val center = Offset(size.width / 2f, size.height / 2f)
+                                    var stick = pos - center
                                     val maxStick = radius * 0.72f
-                                    val mag = stickOffset.getDistance()
-                                    if (mag > maxStick) {
-                                        stickOffset = stickOffset / mag * maxStick
+                                    val mag = stick.getDistance()
+                                    if (mag > maxStick && mag > 0f) {
+                                        stick = stick / mag * maxStick
                                     }
-                                    updateDirs(dirsFromOffset(stickOffset))
-                                },
-                                onDragEnd = {
-                                    stickOffset = Offset.Zero
-                                    updateDirs(emptySet())
-                                },
-                                onDragCancel = {
-                                    stickOffset = Offset.Zero
-                                    updateDirs(emptySet())
+                                    stickOffset = stick
+                                    updateDirs(dirsFromOffset(stick))
                                 }
-                            )
-                        } finally {
-                            stickOffset = Offset.Zero
-                            updateDirs(emptySet())
+                                applyPointer(down.position)
+                                while (true) {
+                                    val event = awaitPointerEvent()
+                                    val change = event.changes.firstOrNull { it.id == down.id }
+                                        ?: continue
+                                    if (!change.pressed) break
+                                    applyPointer(change.position)
+                                }
+                            } finally {
+                                stickOffset = Offset.Zero
+                                updateDirs(emptySet())
+                            }
                         }
                     } else Modifier
                 )
@@ -564,7 +585,9 @@ private fun DpadContent(
                                     val pressChange = event.changes.lastOrNull { it.pressed }
                                     if (pressChange == null) break
                                     updateDirs(dirsFromTouch(pressChange.position))
-                                    event.changes.forEach { it.consume() }
+                                    // v2.16.4：不再 consume() —— 消费会让 interop 过滤器
+                                    // 停止向 WebView 派发事件（手柄移动时视角旋转失灵根因）；
+                                    // 本元素的命中子树独占该指针，不消费也不会泄漏给下层
                                 }
                             } finally {
                                 // 任何退出路径（含协程取消）都清空方向 → 发出全部 UP（v2.15.3）
@@ -787,7 +810,8 @@ private fun PadButtonContent(
                                     active = true
                                     pressed = true
                                 }
-                                change.consume()
+                                // v2.16.4：不再 consume()（理由同摇杆/十字键：消费会
+                                // 令 interop 过滤器停止向 WebView 派发事件）
                             }
                         } finally {
                             // 无论正常抬手、滑出后抬手还是手势被取消，UP 必发

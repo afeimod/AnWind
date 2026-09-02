@@ -65,7 +65,7 @@ import kotlin.math.sin
  * - CLASSIC_95：Win95 灰色立体任务栏 —— 凸起开始按钮 / 凹陷托盘 / 文字任务按钮
  * - LUNA_XP：WinXP Luna 蓝色渐变 —— 绿色圆角开始按钮 / 蓝渐变任务按钮 / 渐变托盘
  * - AERO_7：Win7 Aero 玻璃 —— 开始圆球 / 图标式任务栏 / 辉光激活态
- * - MODERN_10：Win10 深色扁平 —— 靠左图标 + 搜索框 + 底部下划线激活态
+ * - MODERN_10：Win10 浅色扁平 —— 靠左图标 + 搜索框 + 底部下划线激活态
  * - MICA_11：Win11 Mica 悬浮居中 Dock（本应用原有标志性样式，保留）
  *
  * 通用能力（所有风格共享）：
@@ -1025,7 +1025,7 @@ private fun TaskbarWin10(
 
             Spacer(Modifier.weight(1f))
 
-            // ===== 托盘 =====
+            // ===== 托盘（v2.16.4：跟随主题配色，适配亮色任务栏） =====
             ModernEraTray(
                 theme = theme,
                 height = taskbarHeight,
@@ -1035,22 +1035,22 @@ private fun TaskbarWin10(
                 onOpenCalendar = onOpenCalendar,
                 onOpenQuickSettings = onOpenQuickSettings,
                 onOpenClockStyle = onOpenClockStyle,
-                iconTint = Color.White,
-                clockColor = Color.White
+                iconTint = theme.taskbarIconColor,
+                clockColor = theme.taskbarClockColor
             )
         }
         }
     }
 }
 
-/** Win10 开始按钮：白色单色四格徽标 */
+/** Win10 开始按钮：白色单色四格徽标（v2.16.4：亮色任务栏，按压态改深色高亮） */
 @Composable
 private fun Win10StartButton(height: Dp, pressed: Boolean, onClick: () -> Unit) {
     Box(
         modifier = Modifier
             .size(height)
             .clip(RoundedCornerShape(4.dp))
-            .background(if (pressed) Color(0x25FFFFFF) else Color.Transparent)
+            .background(if (pressed) Color(0x22000000) else Color.Transparent)
             .clickable(
                 interactionSource = remember { MutableInteractionSource() },
                 indication = null,
@@ -1073,7 +1073,7 @@ private fun Win10StartButton(height: Dp, pressed: Boolean, onClick: () -> Unit) 
     }
 }
 
-/** Win10 搜索框：深色圆角输入框 */
+/** Win10 搜索框：v2.16.4 浅色样式（白底灰框深色文字，Windows 10 Light 同源） */
 @Composable
 private fun Win10SearchBox(
     height: Dp,
@@ -1088,10 +1088,10 @@ private fun Win10SearchBox(
             .width(if (active) 230.dp else 180.dp)
             .height(height)
             .clip(RoundedCornerShape(2.dp))
-            .background(Color(0xFF2B2B2B))
+            .background(Color(0xFFFFFFFF))
             .border(
                 1.dp,
-                if (active) Color(0xFF0078D7) else Color(0xFF454545),
+                if (active) Color(0xFF0078D7) else Color(0xFFCCCCCC),
                 RoundedCornerShape(2.dp)
             )
             .clickable(
@@ -1105,7 +1105,7 @@ private fun Win10SearchBox(
         Icon(
             Icons.Default.Search,
             contentDescription = L("搜索"),
-            tint = Color(0xFFB0B0B0),
+            tint = Color(0xFF666666),
             modifier = Modifier.size(14.dp)
         )
         if (active) {
@@ -1113,7 +1113,7 @@ private fun Win10SearchBox(
                 value = text,
                 onValueChange = onTextChange,
                 singleLine = true,
-                textStyle = TextStyle(color = Color.White, fontSize = 12.sp),
+                textStyle = TextStyle(color = Color(0xFF1F1F1F), fontSize = 12.sp),
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
                 keyboardActions = KeyboardActions(onSearch = { onSubmit() }),
                 modifier = Modifier
@@ -1127,12 +1127,12 @@ private fun Win10SearchBox(
                 cursorBrush = androidx.compose.ui.graphics.SolidColor(Color(0xFF0078D7))
             )
         } else {
-            Text(L("搜索"), color = Color(0xFFA8A8A8), fontSize = 12.sp)
+            Text(L("搜索"), color = Color(0xFF767676), fontSize = 12.sp)
         }
     }
 }
 
-/** Win10 任务图标：运行 = 底部下划线，激活 = 高亮底 + 下划线 */
+/** Win10 任务图标：运行 = 底部下划线，激活 = 高亮底 + 下划线（v2.16.4：亮色适配） */
 @Composable
 private fun Win10TaskIcon(
     iconAsset: String,
@@ -1145,7 +1145,7 @@ private fun Win10TaskIcon(
         modifier = Modifier
             .size(size + 10.dp)
             .clip(RoundedCornerShape(4.dp))
-            .background(if (active) Color(0x2EFFFFFF) else Color.Transparent)
+            .background(if (active) Color(0x24000000) else Color.Transparent)
             .clickable(
                 interactionSource = remember { MutableInteractionSource() },
                 indication = null,
