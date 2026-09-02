@@ -855,7 +855,7 @@ private fun Toolbar(
         // v2.16：浏览器设置（3D 视角旋转）
         IconButton(onClick = onOpenView3d, modifier = Modifier.size(36.dp)) {
             Icon(
-                imageVector = Icons.Default.ThreeDRotation,
+                imageVector = Icons.Default._3dRotation,
                 contentDescription = "浏览器设置（3D 视角）",
                 tint = if (theme.isDark) Color.White else Color.Black
             )
