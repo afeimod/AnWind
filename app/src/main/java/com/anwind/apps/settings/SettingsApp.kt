@@ -672,14 +672,19 @@ private fun DisplaySettingsPage(onBack: () -> Unit) {
                 Slider(
                     value = uiScale,
                     onValueChange = { scope0.launch { app.settingsStore.setUiScale(it) } },
-                    valueRange = 0.6f..1.8f,
+                    // v2.16：范围扩到 0.6..3.0；100% 档位实际渲染为旧版 60% 效果
+                    valueRange = 0.6f..3.0f,
                     modifier = Modifier.weight(1f)
                 )
                 Spacer(Modifier.width(12.dp))
                 Text("${(uiScale * 100).roundToInt()}%", color = theme.secondaryTextColor, fontSize = 11.sp)
             }
             Spacer(Modifier.height(4.dp))
-            Text("缩放整个桌面的图标、文字和窗口大小，立即生效。", color = theme.secondaryTextColor, fontSize = 11.sp)
+            Text(
+                "缩放整个桌面的图标、文字和窗口大小，立即生效。100% 现在为更紧凑的小尺寸布局（相当于旧版 60%），需要更大界面可调至最高 300%。",
+                color = theme.secondaryTextColor,
+                fontSize = 11.sp
+            )
         }
     }
     Spacer(Modifier.height(8.dp))

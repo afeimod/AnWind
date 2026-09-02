@@ -21,6 +21,16 @@ private val Context.appPrefs by preferencesDataStore(name = "anwind_prefs")
  */
 class SettingsStore(private val context: Context) {
 
+    companion object {
+        /**
+         * v2.16 UI 缩放基准系数：100% 档位的实际渲染效果 = 存储值 × 本系数。
+         * 用户反馈旧版 100% 桌面元素过大，现把 100% 档位整体缩小到旧版 60% 的
+         * 视觉效果；设置里仍显示 100%，其余百分比按同一系数等比映射
+         * （如 180% 档 = 旧版 108%，想要旧版大小可调到 300% = 旧版 180%）。
+         */
+        const val UI_SCALE_BASE = 0.6f
+    }
+
     object Keys {
         val CUSTOM_WALLPAPER = stringPreferencesKey("custom_wallpaper")
         val SOUND_ENABLED = booleanPreferencesKey("sound_enabled")
@@ -29,11 +39,24 @@ class SettingsStore(private val context: Context) {
         val ICON_SIZE = floatPreferencesKey("icon_size")
         val DEFAULT_BROWSER_HOME = stringPreferencesKey("default_browser_home")
         // UI 缩放（整体缩放所有 dp/sp，>1 放大，<1 缩小）
+        // v2.16：存储值不变（默认 1.0 = 菜单里仍显示 100%），但实际渲染时
+        // 乘以 UI_SCALE_BASE（0.6），即 100% 档位的视觉效果相当于旧版的 60%，
+        // 整体桌面更紧凑小巧。滑杆范围同步扩展到 0.6..3.0（实际 0.36..1.8）。
         val UI_SCALE = floatPreferencesKey("ui_scale")
         // 显示方向：auto / portrait / landscape
         val DISPLAY_ORIENTATION = stringPreferencesKey("display_orientation")
         // 浏览器桌面/手机模式：desktop / mobile
         val BROWSER_UA_MODE = stringPreferencesKey("browser_ua_mode")
+
+        // === 浏览器 3D 视角（v2.16：网页 3D 透视旋转，用于电脑网页游戏） ===
+        // 是否启用 3D 视角旋转（graphicsLayer 对整个网页内容做透视变换）
+        val BROWSER_3D_ENABLED = booleanPreferencesKey("browser_3d_enabled")
+        // 旋转角度（度）：X 上下俯仰 / Y 左右偏航 / Z 平面滚转
+        val BROWSER_3D_ROT_X = floatPreferencesKey("browser_3d_rot_x")
+        val BROWSER_3D_ROT_Y = floatPreferencesKey("browser_3d_rot_y")
+        val BROWSER_3D_ROT_Z = floatPreferencesKey("browser_3d_rot_z")
+        // 透视视距（dp，值越大透视越平缓，400..2400）
+        val BROWSER_3D_PERSPECTIVE = floatPreferencesKey("browser_3d_perspective")
 
         // === v2.14：个性化（颜色 / 字体 / 任务栏） ===
         // 颜色模式：auto 跟随主题 / light 强制浅色 / dark 强制深色（作用于所有 Windows 主题）
@@ -151,6 +174,13 @@ class SettingsStore(private val context: Context) {
     val browserUaMode: Flow<String> = context.appPrefs.data
         .map { it[Keys.BROWSER_UA_MODE] ?: "desktop" }
 
+    // === 浏览器 3D 视角（v2.16） ===
+    val browser3dEnabled: Flow<Boolean> = context.appPrefs.data.map { it[Keys.BROWSER_3D_ENABLED] ?: false }
+    val browser3dRotX: Flow<Float> = context.appPrefs.data.map { it[Keys.BROWSER_3D_ROT_X] ?: 0f }
+    val browser3dRotY: Flow<Float> = context.appPrefs.data.map { it[Keys.BROWSER_3D_ROT_Y] ?: 0f }
+    val browser3dRotZ: Flow<Float> = context.appPrefs.data.map { it[Keys.BROWSER_3D_ROT_Z] ?: 0f }
+    val browser3dPerspective: Flow<Float> = context.appPrefs.data.map { it[Keys.BROWSER_3D_PERSPECTIVE] ?: 800f }
+
     // === 刘海屏 / 任务栏 ===
     val useCutout: Flow<Boolean> = context.appPrefs.data.map { it[Keys.USE_CUTOUT] ?: true }
     val taskbarHeight: Flow<Float> = context.appPrefs.data.map { it[Keys.TASKBAR_HEIGHT] ?: 0f }
@@ -257,7 +287,9 @@ class SettingsStore(private val context: Context) {
     }
 
     suspend fun setUiScale(scale: Float) {
-        context.appPrefs.edit { it[Keys.UI_SCALE] = scale.coerceIn(0.6f, 1.8f) }
+        // v2.16：上限扩到 3.0（实际效果 1.8，与旧版最大档一致），
+        // 下限 0.6（实际效果 0.36，比旧版最小档更紧凑）
+        context.appPrefs.edit { it[Keys.UI_SCALE] = scale.coerceIn(0.6f, 3.0f) }
     }
 
     suspend fun setDisplayOrientation(orientation: String) {
@@ -266,6 +298,23 @@ class SettingsStore(private val context: Context) {
 
     suspend fun setBrowserUaMode(mode: String) {
         context.appPrefs.edit { it[Keys.BROWSER_UA_MODE] = mode }
+    }
+
+    // === 浏览器 3D 视角 setter（v2.16） ===
+    suspend fun setBrowser3dEnabled(enabled: Boolean) {
+        context.appPrefs.edit { it[Keys.BROWSER_3D_ENABLED] = enabled }
+    }
+
+    suspend fun setBrowser3dRotation(x: Float, y: Float, z: Float) {
+        context.appPrefs.edit {
+            it[Keys.BROWSER_3D_ROT_X] = x.coerceIn(-89f, 89f)
+            it[Keys.BROWSER_3D_ROT_Y] = y.coerceIn(-89f, 89f)
+            it[Keys.BROWSER_3D_ROT_Z] = z.coerceIn(-180f, 180f)
+        }
+    }
+
+    suspend fun setBrowser3dPerspective(distanceDp: Float) {
+        context.appPrefs.edit { it[Keys.BROWSER_3D_PERSPECTIVE] = distanceDp.coerceIn(400f, 2400f) }
     }
 
     // === 刘海屏 / 任务栏 setter ===

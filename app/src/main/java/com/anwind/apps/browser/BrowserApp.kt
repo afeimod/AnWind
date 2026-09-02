@@ -4,13 +4,11 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.awaitEachGesture
-import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
@@ -22,10 +20,8 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.input.pointer.PointerEventPass
-import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -44,6 +40,7 @@ import com.anwind.data.db.entity.BookmarkEntity
 import com.anwind.data.model.DesktopItemType
 import com.anwind.util.ImmersiveMode
 import kotlinx.coroutines.launch
+import kotlin.math.roundToInt
 
 /**
  * 浏览器应用定义。
@@ -57,8 +54,11 @@ import kotlinx.coroutines.launch
  * - 历史记录（持久化到 Room）
  * - 首页快捷导航（百度/B站/GitHub/必应等）
  * - window.open / target=_blank / 表单弹窗 → 真实新标签
- * - 真全屏（隐藏状态栏/导航键/任务栏/标签栏/工具栏，双击或返回键恢复窗口）
+ * - 真全屏（隐藏状态栏/导航键/任务栏/标签栏/工具栏，左上角悬浮按钮或返回键恢复窗口；
+ *   v2.16 已移除旧版“双击页面退出全屏”手势，避免与网页游戏双击操作冲突）
  * - HTML5 视频全屏（DecorView 覆盖层，满屏播放）
+ * - v2.16 浏览器设置：3D 视角旋转（X 俯仰 / Y 偏航 / Z 滚转 + 透视视距，
+ *   对整个网页做 3D 透视变换，用于电脑网页游戏）
  */
 val BrowserApp = AppDef(
     id = "browser",
@@ -107,6 +107,16 @@ private fun BrowserContent(scope: WindowContentScope) {
         scope0.launch { app.settingsStore.setBrowserUaMode(next) }
     }
 
+    // ===== v2.16：浏览器设置 —— 3D 视角旋转（用于电脑网页游戏） =====
+    // 启用后对整个网页内容做 X（俯仰）/ Y（偏航）/ Z（滚转）三轴 3D 透视旋转，
+    // 透视视距控制近大远小的强度；全部持久化到 DataStore。
+    val view3dEnabled by app.settingsStore.browser3dEnabled.collectAsState(initial = false)
+    val view3dRotX by app.settingsStore.browser3dRotX.collectAsState(initial = 0f)
+    val view3dRotY by app.settingsStore.browser3dRotY.collectAsState(initial = 0f)
+    val view3dRotZ by app.settingsStore.browser3dRotZ.collectAsState(initial = 0f)
+    val view3dPerspective by app.settingsStore.browser3dPerspective.collectAsState(initial = 800f)
+    var showView3dSettings by remember { mutableStateOf(false) }
+
     // 用户设置的主页（默认 AnWind 速度页 anwind://home）
     val defaultHome by app.settingsStore.defaultBrowserHome.collectAsState(initial = "anwind://home")
 
@@ -139,7 +149,8 @@ private fun BrowserContent(scope: WindowContentScope) {
         }
     }
 
-    // 真全屏时的返回键 → 退出全屏恢复窗口（双击页面同样恢复，见内容区手势）
+    // 真全屏时的返回键 → 退出全屏恢复窗口
+    //（v2.16：双击页面退出已移除，改用左上角悬浮按钮，见下方 FullscreenExitButton）
     BackHandler(enabled = isFullscreen) {
         wm.toggleTrueFullscreen(scope.windowState.id)
     }
@@ -162,7 +173,7 @@ private fun BrowserContent(scope: WindowContentScope) {
                 )
             }
 
-            // ===== 工具栏（真全屏时隐藏；双击页面或按返回键恢复窗口） =====
+            // ===== 工具栏（真全屏时隐藏；点左上角悬浮按钮或按返回键恢复窗口） =====
             if (!isFullscreen) {
                 Toolbar(
                     address = tabManager.addressInput,
@@ -204,42 +215,29 @@ private fun BrowserContent(scope: WindowContentScope) {
                     uaMode = uaMode,
                     onToggleUaMode = { toggleUaMode() },
                     isFullscreen = isFullscreen,
-                    onToggleFullscreen = { wm.toggleTrueFullscreen(scope.windowState.id) }
+                    onToggleFullscreen = { wm.toggleTrueFullscreen(scope.windowState.id) },
+                    onOpenView3d = { showView3dSettings = true }
                 )
             }
 
             // ===== 内容区 =====
-            // 真全屏时：双击内容区恢复窗口（Initial pass 只观察不消费，
-            // 不影响网页的正常触摸/滚动/点击）
+            // v2.16：移除旧版“双击页面退出全屏”手势（与网页游戏的双击操作冲突、
+            // 误触率高），退出全屏改用左上角悬浮按钮（见下方 FullscreenExitButton）
+            // 或系统返回键。
+            // v2.16 同时新增 3D 视角旋转：启用后对整个网页内容做 X/Y/Z 三轴
+            // 3D 透视旋转（graphicsLayer），用于电脑网页游戏。
             Box(
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth()
-                    .pointerInput(isFullscreen) {
-                        if (!isFullscreen) return@pointerInput
-                        var lastTapUptime = 0L
-                        var lastTapPos = Offset.Zero
-                        awaitEachGesture {
-                            val down = awaitFirstDown(
-                                requireUnconsumed = false,
-                                pass = PointerEventPass.Initial
-                            )
-                            val downTime = down.uptimeMillis
-                            val downPos = down.position
-                            val up = waitForUpOrCancellation(pass = PointerEventPass.Initial)
-                            if (up != null) {
-                                val dt = downTime - lastTapUptime
-                                if (dt in 0..350 && (downPos - lastTapPos).getDistance() < 120f) {
-                                    lastTapUptime = 0L
-                                    // 视频全屏覆盖层在前台时把双击留给视频自身处理
-                                    if (tabManager.customView == null) {
-                                        wm.toggleTrueFullscreen(scope.windowState.id)
-                                    }
-                                } else {
-                                    lastTapUptime = downTime
-                                    lastTapPos = downPos
-                                }
-                            }
+                    .graphicsLayer {
+                        if (view3dEnabled) {
+                            rotationX = view3dRotX
+                            rotationY = view3dRotY
+                            rotationZ = view3dRotZ
+                            // GraphicsLayerScope 自带 Density：把视距 dp 换算为
+                            // 相机距离 px；视距越小透视畸变越强（3D 感越明显）
+                            cameraDistance = view3dPerspective.dp.toPx()
                         }
                     }
             ) {
@@ -298,7 +296,37 @@ private fun BrowserContent(scope: WindowContentScope) {
                     onClose = { showHistory = false }
                 )
             }
+
+            // ===== v2.16：浏览器设置 —— 3D 视角旋转面板 =====
+            if (showView3dSettings) {
+                View3dSettingsPanel(
+                    enabled = view3dEnabled,
+                    rotX = view3dRotX,
+                    rotY = view3dRotY,
+                    rotZ = view3dRotZ,
+                    perspective = view3dPerspective,
+                    onEnabled = { v -> scope0.launch { app.settingsStore.setBrowser3dEnabled(v) } },
+                    onRotation = { x, y, z -> scope0.launch { app.settingsStore.setBrowser3dRotation(x, y, z) } },
+                    onPerspective = { v -> scope0.launch { app.settingsStore.setBrowser3dPerspective(v) } },
+                    onReset = { scope0.launch { app.settingsStore.setBrowser3dRotation(0f, 0f, 0f) } },
+                    onClose = { showView3dSettings = false }
+                )
+            }
         } // end Column
+
+        // ===== v2.16：真全屏时的悬浮退出按钮（左上角小圆钮） =====
+        // 旧版“双击页面退出全屏”已移除（与网页游戏双击操作冲突），
+        // 改由本按钮或系统返回键退出全屏。
+        // 视频全屏（DecorView 覆盖层）期间本按钮被系统覆盖层遮挡，
+        // 此时用返回键退出视频全屏。
+        if (isFullscreen) {
+            FullscreenExitButton(
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(start = 10.dp, top = 10.dp),
+                onExit = { wm.toggleTrueFullscreen(scope.windowState.id) }
+            )
+        }
     } // end Box (browser root)
 }
 
@@ -721,7 +749,8 @@ private fun Toolbar(
     uaMode: String = "desktop",
     onToggleUaMode: () -> Unit = {},
     isFullscreen: Boolean = false,
-    onToggleFullscreen: () -> Unit = {}
+    onToggleFullscreen: () -> Unit = {},
+    onOpenView3d: () -> Unit = {}
 ) {
     val theme = LocalWinTheme.current
     Row(
@@ -823,6 +852,14 @@ private fun Toolbar(
             Icon(Icons.Default.History, contentDescription = "History",
                 tint = if (theme.isDark) Color.White else Color.Black)
         }
+        // v2.16：浏览器设置（3D 视角旋转）
+        IconButton(onClick = onOpenView3d, modifier = Modifier.size(36.dp)) {
+            Icon(
+                imageVector = Icons.Default.ThreeDRotation,
+                contentDescription = "浏览器设置（3D 视角）",
+                tint = if (theme.isDark) Color.White else Color.Black
+            )
+        }
         // 桌面/手机模式切换
         IconButton(onClick = onToggleUaMode, modifier = Modifier.size(36.dp)) {
             Icon(
@@ -832,7 +869,7 @@ private fun Toolbar(
             )
         }
         // 真全屏切换（F11 风格）：隐藏状态栏/导航键/任务栏/标签栏/工具栏，浏览器占满整屏；
-        // 全屏中双击页面或按返回键恢复窗口
+        // v2.16：全屏中点左上角悬浮按钮或按返回键恢复窗口（双击退出已移除）
         IconButton(onClick = onToggleFullscreen, modifier = Modifier.size(36.dp)) {
             Icon(
                 imageVector = if (isFullscreen) Icons.Default.FullscreenExit else Icons.Default.Fullscreen,
@@ -901,6 +938,141 @@ private fun HistoryPanel(onSelect: (String) -> Unit, onClose: () -> Unit) {
                 }
             }
         }
+    }
+}
+
+/**
+ * v2.16：浏览器设置面板 —— 3D 视角旋转。
+ *
+ * 把整个网页内容在 3D 空间中做三轴旋转（俯仰 X / 偏航 Y / 滚转 Z），
+ * 配合透视视距调节近大远小的强度；用于电脑网页游戏的 3D 视角观察。
+ * 所有设置持久化到 DataStore，重开浏览器仍然生效。
+ */
+@Composable
+private fun View3dSettingsPanel(
+    enabled: Boolean,
+    rotX: Float,
+    rotY: Float,
+    rotZ: Float,
+    perspective: Float,
+    onEnabled: (Boolean) -> Unit,
+    onRotation: (Float, Float, Float) -> Unit,
+    onPerspective: (Float) -> Unit,
+    onReset: () -> Unit,
+    onClose: () -> Unit
+) {
+    val theme = LocalWinTheme.current
+    val fg = if (theme.isDark) Color.White else Color.Black
+    PopupPanel(title = "浏览器设置 · 3D 视角", onClose = onClose) {
+        Text(
+            "把整个网页在 3D 空间中旋转（俯仰/偏航/滚转），用于电脑网页游戏的 3D 视角观察。设置会自动保存，重开浏览器仍生效。",
+            color = theme.secondaryTextColor,
+            fontSize = 11.sp
+        )
+        Spacer(Modifier.height(8.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("启用 3D 视角旋转", color = fg, fontSize = 13.sp, modifier = Modifier.weight(1f))
+            Switch(checked = enabled, onCheckedChange = { onEnabled(it) })
+        }
+        HorizontalDivider()
+        Spacer(Modifier.height(4.dp))
+        View3dSliderRow(
+            label = "上下俯仰 (X)",
+            value = rotX,
+            valueRange = -60f..60f,
+            display = "${rotX.roundToInt()}°",
+            enabled = enabled,
+            onChange = { v -> onRotation(v, rotY, rotZ) }
+        )
+        View3dSliderRow(
+            label = "左右偏航 (Y)",
+            value = rotY,
+            valueRange = -60f..60f,
+            display = "${rotY.roundToInt()}°",
+            enabled = enabled,
+            onChange = { v -> onRotation(rotX, v, rotZ) }
+        )
+        View3dSliderRow(
+            label = "平面旋转 (Z)",
+            value = rotZ,
+            valueRange = -180f..180f,
+            display = "${rotZ.roundToInt()}°",
+            enabled = enabled,
+            onChange = { v -> onRotation(rotX, rotY, v) }
+        )
+        View3dSliderRow(
+            label = "透视视距",
+            value = perspective,
+            valueRange = 400f..2400f,
+            display = "${perspective.roundToInt()}dp",
+            enabled = enabled,
+            onChange = { onPerspective(it) }
+        )
+        Spacer(Modifier.height(4.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.End
+        ) {
+            TextButton(onClick = onReset, enabled = enabled) {
+                Text("重置视角", color = theme.accentColor)
+            }
+        }
+    }
+}
+
+/** 3D 视角设置的单行滑杆（标签 + 当前值 + 滑杆） */
+@Composable
+private fun View3dSliderRow(
+    label: String,
+    value: Float,
+    valueRange: ClosedFloatingPointRange<Float>,
+    display: String,
+    enabled: Boolean,
+    onChange: (Float) -> Unit
+) {
+    val theme = LocalWinTheme.current
+    Column {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                label,
+                color = if (theme.isDark) Color.White else Color.Black,
+                fontSize = 12.sp,
+                modifier = Modifier.weight(1f)
+            )
+            Text(display, color = theme.secondaryTextColor, fontSize = 11.sp)
+        }
+        Slider(
+            value = value,
+            onValueChange = onChange,
+            valueRange = valueRange,
+            enabled = enabled
+        )
+    }
+}
+
+/**
+ * v2.16：真全屏时的悬浮退出按钮（左上角小圆钮，半透明不遮挡页面主体）。
+ * 取代旧版"双击页面退出全屏"手势 —— 双击与网页游戏操作冲突。
+ */
+@Composable
+private fun FullscreenExitButton(
+    modifier: Modifier = Modifier,
+    onExit: () -> Unit
+) {
+    Box(
+        modifier = modifier
+            .size(30.dp)
+            .background(Color.Black.copy(alpha = 0.45f), CircleShape)
+            .border(1.dp, Color.White.copy(alpha = 0.35f), CircleShape)
+            .clickable(onClick = onExit),
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(
+            Icons.Default.FullscreenExit,
+            contentDescription = "退出全屏",
+            tint = Color.White.copy(alpha = 0.92f),
+            modifier = Modifier.size(16.dp)
+        )
     }
 }
 

@@ -42,6 +42,8 @@ class MainActivity : ComponentActivity() {
             val customWallpaper by settingsStore.customWallpaper.collectAsState(initial = null)
             val soundEnabled by settingsStore.soundEnabled.collectAsState(initial = true)
             // 全局 UI 缩放（乘到密度上，同时缩放所有 dp/sp）
+            // v2.16：UI_SCALE_BASE = 0.6，100% 档位现在以旧版 60% 的效果渲染，
+            // 整体桌面更紧凑；设置里仍显示 100%，各档位等比映射
             val uiScale by settingsStore.uiScale.collectAsState(initial = 1f)
             val orientation by settingsStore.displayOrientation.collectAsState(initial = "auto")
             // 刘海屏占用开关（个性化设置）
@@ -85,11 +87,13 @@ class MainActivity : ComponentActivity() {
             }
 
             // 通过覆盖 LocalDensity 实现全局 UI 缩放 + 字体大小缩放（v2.14）
+            // v2.16：密度额外乘 SettingsStore.UI_SCALE_BASE（0.6），
+            // 100% 档位的实际渲染效果 = 旧版 60%，视觉整体缩小
             val baseDensity = LocalDensity.current
             val baseTextStyle = androidx.compose.material3.LocalTextStyle.current
             CompositionLocalProvider(
                 LocalDensity provides Density(
-                    density = baseDensity.density * uiScale,
+                    density = baseDensity.density * uiScale * SettingsStore.UI_SCALE_BASE,
                     fontScale = baseDensity.fontScale * fontScale
                 ),
                 // v2.14：全局字体样式（衬线/等宽）—— 未显式指定样式的 Text 全部跟随；

@@ -73,7 +73,12 @@ data class DesktopContextMenuData(
 )
 
 /**
- * 桌面右键上下文菜单（v2.11 全面重构，Win11 标准布局）。
+ * 桌面右键上下文菜单（v2.11 全面重构，Win11 标准布局；v2.16 整体尺寸缩小约一半）。
+ *
+ * v2.16 尺寸调整：用户反馈菜单太宽太大 —— 宽 216→112dp、行高 30→17dp、
+ * 字号 12→9.5sp、图标 14→10dp，整体面积约为旧版一半；
+ * 所有尺寸仍为 dp/sp，在全局 UI 缩放（LocalDensity 覆盖）下渲染，
+ * 因此与整体缩放比例自动同步缩小和放大。
  *
  * 桌面空白处（双指轻点）：
  * - 查看        → 子菜单：大/中等/小图标（写入 iconSize 设置，与设置中心一致）
@@ -115,9 +120,10 @@ fun DesktopContextMenu(
     ) {
         Column(
             modifier = modifier
-                .width(216.dp)
-                .background(theme.windowBackgroundColor, RoundedCornerShape(6.dp))
-                .padding(4.dp)
+                // v2.16：216→112dp（约一半宽），内边距/圆角同步缩小
+                .width(112.dp)
+                .background(theme.windowBackgroundColor, RoundedCornerShape(4.dp))
+                .padding(3.dp)
         ) {
             if (data.iconItem != null) {
                 // ==================== 图标右键菜单 ====================
@@ -375,7 +381,7 @@ private class ClampedMenuPositionProvider(
 // 菜单项组件
 // ============================================================
 
-/** 普通菜单项：图标 + 文字，按压时高亮，点击执行动作（紧凑 Windows 尺寸） */
+/** 普通菜单项：图标 + 文字，按压时高亮，点击执行动作（v2.16 紧凑尺寸：行高 30→17dp、字 12→9.5sp、图标 14→10dp） */
 @Composable
 private fun ContextMenuEntry(
     icon: ImageVector,
@@ -389,27 +395,28 @@ private fun ContextMenuEntry(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .height(30.dp)
-            .clip(RoundedCornerShape(4.dp))
+            .height(17.dp)
+            .clip(RoundedCornerShape(3.dp))
             .background(if (pressed) theme.accentColor.copy(alpha = 0.14f) else Color.Transparent)
             .clickable(
                 interactionSource = interaction,
                 indication = null,
                 onClick = onClick
             )
-            .padding(horizontal = 8.dp),
+            .padding(horizontal = 5.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Icon(
             icon, null,
             tint = if (theme.isDark) Color(0xCCFFFFFF) else Color(0x99000000),
-            modifier = Modifier.size(14.dp)
+            modifier = Modifier.size(10.dp)
         )
-        Spacer(Modifier.width(8.dp))
+        Spacer(Modifier.width(5.dp))
         Text(
             text = label,
             color = fg,
-            fontSize = 12.sp
+            fontSize = 9.5.sp,
+            lineHeight = 11.sp
         )
     }
 }
@@ -431,8 +438,8 @@ private fun SubmenuEntry(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(30.dp)
-                .clip(RoundedCornerShape(4.dp))
+                .height(17.dp)
+                .clip(RoundedCornerShape(3.dp))
                 .background(
                     when {
                         expanded -> theme.accentColor.copy(alpha = 0.10f)
@@ -445,26 +452,27 @@ private fun SubmenuEntry(
                     indication = null,
                     onClick = onToggle
                 )
-                .padding(horizontal = 8.dp),
+                .padding(horizontal = 5.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Icon(
                 icon, null,
                 tint = if (theme.isDark) Color(0xCCFFFFFF) else Color(0x99000000),
-                modifier = Modifier.size(14.dp)
+                modifier = Modifier.size(10.dp)
             )
-            Spacer(Modifier.width(8.dp))
+            Spacer(Modifier.width(5.dp))
             Text(
                 text = label,
                 color = fg,
-                fontSize = 12.sp,
+                fontSize = 9.5.sp,
+                lineHeight = 11.sp,
                 modifier = Modifier.weight(1f)
             )
             Icon(
                 Icons.Default.ExpandMore, null,
                 tint = if (theme.isDark) Color(0x99FFFFFF) else Color(0x66000000),
                 modifier = Modifier
-                    .size(15.dp)
+                    .size(11.dp)
                     .rotate(if (expanded) 180f else 0f)
             )
         }
@@ -472,7 +480,7 @@ private fun SubmenuEntry(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(start = 12.dp)
+                    .padding(start = 8.dp)
             ) {
                 content()
             }
@@ -490,8 +498,8 @@ private fun RadioOption(label: String, selected: Boolean, onClick: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .height(26.dp)
-            .clip(RoundedCornerShape(4.dp))
+            .height(15.dp)
+            .clip(RoundedCornerShape(3.dp))
             .background(
                 when {
                     selected -> theme.accentColor.copy(alpha = 0.12f)
@@ -504,24 +512,25 @@ private fun RadioOption(label: String, selected: Boolean, onClick: () -> Unit) {
                 indication = null,
                 onClick = onClick
             )
-            .padding(horizontal = 8.dp),
+            .padding(horizontal = 5.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         // 勾选标记占位（保持文字对齐）
-        Box(modifier = Modifier.size(13.dp), contentAlignment = Alignment.Center) {
+        Box(modifier = Modifier.size(9.dp), contentAlignment = Alignment.Center) {
             if (selected) {
                 Icon(
                     Icons.Default.Check, null,
                     tint = theme.accentColor,
-                    modifier = Modifier.size(12.dp)
+                    modifier = Modifier.size(8.dp)
                 )
             }
         }
-        Spacer(Modifier.width(8.dp))
+        Spacer(Modifier.width(5.dp))
         Text(
             text = label,
             color = fg,
-            fontSize = 11.5.sp
+            fontSize = 9.sp,
+            lineHeight = 10.5.sp
         )
     }
 }
@@ -532,7 +541,7 @@ private fun ContextMenuDivider() {
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 6.dp, vertical = 2.5.dp)
+            .padding(horizontal = 4.dp, vertical = 1.5.dp)
             .height(1.dp)
             .background(theme.windowBorderColor.copy(alpha = 0.35f))
     )
