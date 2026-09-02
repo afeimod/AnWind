@@ -129,6 +129,18 @@ class ZoomPinchLayout @JvmOverloads constructor(
     private val freePointerIds = HashSet<Int>()
     /** 本 View 在窗口内的位置缓存（避免每个事件分配） */
     private val windowLoc = IntArray(2)
+    /**
+     * v2.16.5：是否已向 WebView 派发未结束的触摸流（DOWN 后未 UP/CANCEL）。
+     * 背景（用户实测）：旋转手先按下 → 手柄可用；松开旋转手后，手柄仍按着
+     * 时再滑动 → 失效。根因：此时新手指到达本容器的事件是 ACTION_POINTER_DOWN
+     * （窗口流里手柄手指还按着），而本容器上一条 Chromium 流已经 UP 结束、
+     * ViewGroup 的 mFirstTouchTarget 已清空 —— ViewGroup 规则是"无 DOWN 直接触
+     * 目标的 POINTER_DOWN/MOVE 一律丢弃（intercepted=true 直落自身 onTouchEvent）"，
+     * onInterceptTouchEvent 不会被调用 → 视角增量丢失、WebView 也收不到触摸。
+     * 修复：无活跃流时把剥离后的 POINTER_DOWN 升级为 ACTION_DOWN 开新流
+     * （等效 GameBox 原生 View 每指独立起流）。
+     */
+    private var streamActive = false
 
     // ===== 手势状态机 =====
     private var mode = MODE_IDLE
@@ -232,9 +244,13 @@ class ZoomPinchLayout @JvmOverloads constructor(
         if (!GamepadController.hasElementHits()) {
             return super.dispatchTouchEvent(ev)
         }
-        // 流结束 → 清空指针分类（pointerId 可被新手势复用，必须重置）
+        // 指针分类生命周期：窗口级 ACTION_DOWN = 全新手势流（此刻不可能有
+        // 任何指针按着，否则窗口 action 会是 POINTER_DOWN）→ 记忆的旧分类
+        // 全部过期（手柄手指的 UP 不经过本视图，其 pointerId 之后会被新
+        // 手指复用，不清理会把新自由指误判成手柄指而吞掉整个点击）；
+        // UP/CANCEL = 流结束，同样清空。v2.16.5 补上 DOWN 清理。
         when (ev.actionMasked) {
-            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+            MotionEvent.ACTION_DOWN, MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                 padPointerIds.clear()
                 freePointerIds.clear()
             }
@@ -254,6 +270,12 @@ class ZoomPinchLayout @JvmOverloads constructor(
             if (!containsPad && padPointerIds.contains(id)) containsPad = true
         }
         if (!containsPad) {
+            // 直通路径也要维护流状态（后续剥离路径的 POINTER_DOWN→DOWN
+            // 升级判断依赖它）：DOWN 起流、UP/CANCEL 收流
+            when (ev.actionMasked) {
+                MotionEvent.ACTION_DOWN -> streamActive = true
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> streamActive = false
+            }
             return super.dispatchTouchEvent(ev)
         }
 
@@ -269,14 +291,24 @@ class ZoomPinchLayout @JvmOverloads constructor(
         val cleanedAction: Int
         when (ev.actionMasked) {
             MotionEvent.ACTION_POINTER_DOWN -> {
-                // 新落指针是手柄指针 → 对 Chromium 等效无新指针：降级为 MOVE；
-                // 新落指针是自由指针 → POINTER_DOWN（actionIndex 换算到剥离后数组）
+                // 新落指针是手柄指针 → 对 Chromium 等效无新指针：维持自由指流 MOVE；
+                // 新落指针是自由指针：
+                //   有活跃流 → POINTER_DOWN（actionIndex 换算到剥离后数组）；
+                //   无活跃流 → v2.16.5 关键修复：升级为 ACTION_DOWN 开新流。
+                //   （上一条流已 UP、ViewGroup 无触摸目标，POINTER_DOWN 是
+                //   死流：不进拦截器、不下发 WebView —— "松开旋转手后，手柄
+                //   按住时再滑动失效"的根因）
                 val newId = ev.getPointerId(ev.actionIndex)
-                cleanedAction = if (padPointerIds.contains(newId)) MotionEvent.ACTION_MOVE
-                else actionOf(
-                    MotionEvent.ACTION_POINTER_DOWN,
-                    freeIndices.indexOf(ev.actionIndex)
-                )
+                cleanedAction = if (padPointerIds.contains(newId)) {
+                    MotionEvent.ACTION_MOVE
+                } else if (streamActive) {
+                    actionOf(
+                        MotionEvent.ACTION_POINTER_DOWN,
+                        freeIndices.indexOf(ev.actionIndex)
+                    )
+                } else {
+                    MotionEvent.ACTION_DOWN
+                }
             }
             MotionEvent.ACTION_POINTER_UP -> {
                 val liftedId = ev.getPointerId(ev.actionIndex)
@@ -294,12 +326,20 @@ class ZoomPinchLayout @JvmOverloads constructor(
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                 if (padPointerIds.contains(ev.getPointerId(ev.actionIndex))) {
-                    // UP 指针是手柄指针（自由指针早已经 POINTER_UP 收尾）→ 吞掉
+                    // UP 指针是手柄指针（自由指针早已经 POINTER_UP 收尾）→ 吞掉；
+                    // 防御性收流（正常时序下流已结束，此处兜底防状态悬挂）
+                    streamActive = false
                     return true
                 }
                 cleanedAction = ev.actionMasked
             }
             else -> cleanedAction = ev.actionMasked  // DOWN/MOVE 原样
+        }
+        // v2.16.5：流状态簿记（与剥离后事件的 action 一致）：DOWN 起流、
+        // UP/CANCEL 收流（掩码取低 8 位，抹掉 POINTER_*/INDEX 高位）
+        when (cleanedAction and MotionEvent.ACTION_MASK) {
+            MotionEvent.ACTION_DOWN -> streamActive = true
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> streamActive = false
         }
         val cleaned = buildStrippedEvent(ev, freeIndices, cleanedAction)
         return try {
