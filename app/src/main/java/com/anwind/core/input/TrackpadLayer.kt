@@ -19,7 +19,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.PointerEventType
-import androidx.compose.ui.input.pointer.PointerInputScope
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.dp
@@ -90,11 +89,16 @@ private fun Modifier.trackpadGate(view: View): Modifier = pointerInput(view) {
         val first = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
 
         // 注入流 / 已被更高层消费的流：放行，不参与指针控制
-        // 注意：drainStream / drainRealUntilUp 提升为文件级 PointerInputScope 扩展函数，
-        // 因为 PointerInputScope 是 @RestrictsSuspension，其内部的 suspend 调用必须是该
-        // scope 的成员或扩展；本地 suspend fun 不满足该约束（v2.19 编译错误根因）
+        // 必须 inline 排空（不能提取为本地 suspend fun 或文件级扩展）：
+        // PointerInputScope 标注 @RestrictsSuspension，其内的 suspend 调用
+        // 只能是 PointerInputScope 的直接成员调用；本地 fun / 文件级扩展
+        // 都无法在该 scope 内合法调用 awaitPointerEvent。
         if (first.id.value >= INJECTED_POINTER_ID.toLong() || first.isConsumed) {
-            drainStream()
+            while (true) {
+                val ev = awaitPointerEvent(pass = PointerEventPass.Initial)
+                if (ev.type == PointerEventType.Scroll) continue
+                if (ev.changes.none { it.pressed }) break
+            }
             return@awaitEachGesture
         }
 
@@ -182,7 +186,13 @@ private fun Modifier.trackpadGate(view: View): Modifier = pointerInput(view) {
 
         when (decision) {
             -1 -> {
-                drainRealUntilUp()
+                // 内联 drainRealUntilUp（同样受 @RestrictsSuspension 约束）
+                while (true) {
+                    val ev = awaitPointerEvent(pass = PointerEventPass.Initial)
+                    if (ev.type == PointerEventType.Scroll) continue
+                    val real = ev.changes.filter { it.id.value < INJECTED_POINTER_ID.toLong() }
+                    if (real.isNotEmpty() && real.none { it.pressed }) break
+                }
                 gestureEnded = true
             }
             3 -> {
@@ -212,7 +222,13 @@ private fun Modifier.trackpadGate(view: View): Modifier = pointerInput(view) {
                         val cursor = MouseController.position
                         TrackpadController.injectDragUp(view, cursor.x, cursor.y)
                     }
-                    drainRealUntilUp()
+                    // 内联 drainRealUntilUp（@RestrictsSuspension 约束）
+                    while (true) {
+                        val dev = awaitPointerEvent(pass = PointerEventPass.Initial)
+                        if (dev.type == PointerEventType.Scroll) continue
+                        val dreal = dev.changes.filter { it.id.value < INJECTED_POINTER_ID.toLong() }
+                        if (dreal.isNotEmpty() && dreal.none { it.pressed }) break
+                    }
                     break
                 }
                 real.forEach { it.consume() }
@@ -259,36 +275,6 @@ private fun Modifier.trackpadGate(view: View): Modifier = pointerInput(view) {
                 }
             }
         }
-    }
-}
-
-/**
- * 排空当前手势流（不消费 —— 让注入流完整到达下层窗口）。
- *
- * 必须为 PointerInputScope 顶层扩展函数：PointerInputScope 标注 @RestrictsSuspension，
- * 其内的 suspend 调用（awaitPointerEvent）只能由该 scope 的成员或扩展发起；本地
- * suspend fun 不具备该 receiver，会导致 "Restricted suspending functions can
- * only invoke member or extension suspending functions on their restricted coroutine
- * scope" 编译错误。
- */
-private suspend fun PointerInputScope.drainStream() {
-    while (true) {
-        val ev = awaitPointerEvent(pass = PointerEventPass.Initial)
-        if (ev.type == PointerEventType.Scroll) continue
-        if (ev.changes.none { it.pressed }) return
-    }
-}
-
-/**
- * 等真实手指全部抬起（不消费，留给拥有该流的高层）。同样必须是 PointerInputScope
- * 顶层扩展以满足 @RestrictsSuspension 约束。
- */
-private suspend fun PointerInputScope.drainRealUntilUp() {
-    while (true) {
-        val ev = awaitPointerEvent(pass = PointerEventPass.Initial)
-        if (ev.type == PointerEventType.Scroll) continue
-        val real = ev.changes.filter { it.id.value < INJECTED_POINTER_ID.toLong() }
-        if (real.isNotEmpty() && real.none { it.pressed }) return
     }
 }
 
