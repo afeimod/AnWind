@@ -9,6 +9,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.produceState
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -53,9 +54,9 @@ fun WallpaperLayer(
             Color(0xFF1A1A2E)  // 兜底深蓝灰色
         )
     ) {
-        if (painter != null) {
+        painter?.let { p ->
             Image(
-                painter = painter,
+                painter = p,
                 contentDescription = "Wallpaper",
                 contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxSize()
@@ -79,30 +80,30 @@ private fun decodeWallpaper(
 }
 
 /** 按 URI 解码：file:// 直读文件（v2.14 起壁纸存真实路径），兼容 content:// 与裸路径 */
-private fun decodeFromUri(context: Context, uriStr: String): BitmapPainter? = runCatching {
+private fun decodeFromUri(context: Context, uriStr: String): BitmapPainter? {
     val opener: (() -> InputStream?)? = when {
-        uriStr.startsWith("file://") -> {
-            val path = Uri.parse(uriStr).path
-            val file = path?.let { p -> File(p) }?.takeIf { f -> f.exists() }
-            if (file != null) {
-                { file.inputStream() }   // 无参 lambda 捕获 val file
-            } else null
-        }
+        uriStr.startsWith("file://") -> fileOpener(Uri.parse(uriStr).path)
         // 兼容历史上可能写入的裸绝对路径
-        uriStr.startsWith("/") -> {
-            val file = File(uriStr).takeIf { f -> f.exists() }
-            if (file != null) {
-                { file.inputStream() }
-            } else null
-        }
-        else -> {
-            // 系统 SAF 选择的历史 content URI（兼容旧数据）；打开失败返回 null 而不是抛异常
-            val uri = Uri.parse(uriStr)
-            { runCatching { context.contentResolver.openInputStream(uri) }.getOrNull() }
-        }
-    } ?: return@runCatching null
-    decodeSampled(opener)?.asImageBitmap()?.let { BitmapPainter(it) }
-}.getOrNull()
+        uriStr.startsWith("/") -> fileOpener(uriStr)
+        // 系统 SAF 选择的历史 content URI（兼容旧数据）
+        else -> contentOpener(context, uriStr)
+    }
+    if (opener == null) return null
+    val bitmap = runCatching { decodeSampled(opener) }.getOrNull() ?: return null
+    return BitmapPainter(bitmap.asImageBitmap())
+}
+
+/** 本地文件打开器：路径为空或文件不存在时返回 null */
+private fun fileOpener(path: String?): (() -> InputStream?)? {
+    val file = path?.let { File(it) }?.takeIf { it.exists() } ?: return null
+    return { file.inputStream() }
+}
+
+/** content:// 打开器：打开失败返回 null 而不是抛异常 */
+private fun contentOpener(context: Context, uriStr: String): () -> InputStream? {
+    val uri = Uri.parse(uriStr)
+    return { runCatching { context.contentResolver.openInputStream(uri) }.getOrNull() }
+}
 
 /**
  * 大图采样解码：先读 bounds 计算最长边，超过 2400px 时按 2 的幂采样。

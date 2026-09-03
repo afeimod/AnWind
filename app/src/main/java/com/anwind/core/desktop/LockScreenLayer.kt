@@ -1,5 +1,6 @@
 package com.anwind.core.desktop
 
+import android.graphics.SurfaceTexture
 import android.media.MediaPlayer
 import android.view.Surface
 import android.view.TextureView
@@ -45,7 +46,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.layout.AndroidView
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp

@@ -48,6 +48,7 @@ import com.anwind.core.theme.WinTheme
 import com.anwind.core.window.AppRegistry
 import com.anwind.core.window.WindowManager
 import com.anwind.util.L
+import com.anwind.util.L10n
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -300,7 +301,7 @@ fun StartMenu(
                         .clickable {
                             wm.open(
                                 appId = "settings",
-                                title = L("设置"),
+                                title = L10n.t("设置"),
                                 launchMode = com.anwind.core.window.LaunchMode.FLOATING,
                                 launchArgs = mapOf("section" to "desktop"),
                                 initialWidth = 880,

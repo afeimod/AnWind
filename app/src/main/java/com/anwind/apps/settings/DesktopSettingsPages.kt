@@ -57,6 +57,7 @@ import com.anwind.core.window.AppRegistry
 import com.anwind.core.window.LaunchMode
 import com.anwind.core.window.WindowManager
 import com.anwind.util.L
+import com.anwind.util.L10n
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
@@ -136,7 +137,7 @@ internal fun LockSettingsPage() {
                 onClick = {
                     wm.open(
                         appId = "file_explorer",
-                        title = L("选择锁屏图片"),
+                        title = L10n.t("选择锁屏图片"),
                         launchMode = AppRegistry.get("file_explorer")?.launchMode
                             ?: LaunchMode.FLOATING,
                         launchArgs = mapOf("pickMode" to "lock_wallpaper"),
@@ -154,7 +155,7 @@ internal fun LockSettingsPage() {
                 onClick = {
                     wm.open(
                         appId = "file_explorer",
-                        title = L("选择锁屏视频"),
+                        title = L10n.t("选择锁屏视频"),
                         launchMode = AppRegistry.get("file_explorer")?.launchMode
                             ?: LaunchMode.FLOATING,
                         launchArgs = mapOf("pickMode" to "lock_wallpaper_video"),
@@ -207,7 +208,7 @@ internal fun LockSettingsPage() {
                     OutlinedButton(
                         onClick = {
                             scope0.launch { app.settingsStore.setLockPinHash("") }
-                            Toast.makeText(context, L10nToast(L("已移除锁屏密码")), Toast.LENGTH_SHORT).show()
+                            Toast.makeText(context, L10n.t("已移除锁屏密码"), Toast.LENGTH_SHORT).show()
                         },
                         shape = RoundedCornerShape(6.dp)
                     ) {
@@ -257,15 +258,15 @@ internal fun LockSettingsPage() {
                     onClick = {
                         when {
                             pin1.length < 4 ->
-                                Toast.makeText(context, L10nToast(L("密码至少 4 位数字")), Toast.LENGTH_SHORT).show()
+                                Toast.makeText(context, L10n.t("密码至少 4 位数字"), Toast.LENGTH_SHORT).show()
                             pin1 != pin2 ->
-                                Toast.makeText(context, L10nToast(L("两次输入的密码不一致")), Toast.LENGTH_SHORT).show()
+                                Toast.makeText(context, L10n.t("两次输入的密码不一致"), Toast.LENGTH_SHORT).show()
                             else -> {
                                 scope0.launch { app.settingsStore.setLockPinHash(hashPin(pin1)) }
                                 pinEditing = false
                                 pin1 = ""
                                 pin2 = ""
-                                Toast.makeText(context, L10nToast(L("锁屏密码已设置")), Toast.LENGTH_SHORT).show()
+                                Toast.makeText(context, L10n.t("锁屏密码已设置"), Toast.LENGTH_SHORT).show()
                             }
                         }
                     },
@@ -322,9 +323,6 @@ internal fun LockSettingsPage() {
         onClick = { LockController.lock() }
     )
 }
-
-/** Toast 取词（非组合环境） */
-private fun L10nToast(text: String): String = com.anwind.util.L10n.t(text)
 
 // ============================================================
 // v2.17 桌面设置（设置中心左导航"桌面设置"，替代旧"账户"页）
@@ -436,7 +434,7 @@ internal fun DesktopSettingsSection() {
                 onClick = {
                     scope0.launch {
                         app.settingsStore.setUserName(nameInput)
-                        Toast.makeText(context, L10nToast(L("已保存")), Toast.LENGTH_SHORT).show()
+                        Toast.makeText(context, L10n.t("已保存"), Toast.LENGTH_SHORT).show()
                     }
                 },
                 shape = RoundedCornerShape(6.dp)
@@ -472,7 +470,7 @@ internal fun DesktopSettingsSection() {
             onClick = {
                 scope0.launch {
                     app.settingsStore.setDesktopIconOrder("")
-                    Toast.makeText(context, L10nToast(L("已重置图标顺序")), Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, L10n.t("已重置图标顺序"), Toast.LENGTH_SHORT).show()
                 }
             }
         )

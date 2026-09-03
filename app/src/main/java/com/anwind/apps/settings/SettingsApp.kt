@@ -49,6 +49,7 @@ import com.anwind.core.window.WindowManager
 import com.anwind.core.window.WindowContentScope
 import com.anwind.util.ImmersiveMode
 import com.anwind.util.L
+import com.anwind.util.L10n
 import com.anwind.util.SystemControl
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
@@ -1051,7 +1052,7 @@ private fun PersonalizationSection() {
         title = L("锁屏界面"),
         subtitle = L("锁屏壁纸（图片/视频）、密码、自动锁定、开关"),
         onClick = {
-            openSettingsSection("lock_settings", L("锁屏设置"), 560, 640)
+            openSettingsSection("lock_settings", L10n.t("锁屏设置"), 560, 640)
         }
     )
     Spacer(Modifier.height(8.dp))

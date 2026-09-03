@@ -6,6 +6,7 @@ import android.content.pm.ApplicationInfo
 import android.content.pm.ResolveInfo
 import android.graphics.Bitmap
 import android.graphics.Canvas
+import android.graphics.drawable.Drawable
 import android.os.Build
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -90,7 +91,7 @@ object AndroidApps {
     fun invalidate() { cached = null }
 
     /** Drawable → 96x96 Bitmap（含 AdaptiveIcon 兼容，直接画到画布即可） */
-    private fun decodeIcon(drawable: android.graphics.Drawable): Bitmap {
+    private fun decodeIcon(drawable: Drawable): Bitmap {
         val size = 96
         val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(bitmap)
