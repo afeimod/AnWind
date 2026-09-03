@@ -308,17 +308,32 @@ object TrackpadController {
         pressing = false
     }
 
-    /** 在指定 View 上注入一次完整点击（DOWN → UP，间隔 60ms 事件时间） */
+    /**
+     * 在指定 View 上注入一次完整点击（DOWN → UP，间隔 60ms 事件时间）。
+     *
+     * ⚠️ v2.19.1 关键修复：必须通过 view.post { ... } 延迟到下一个 looper
+     * 迭代再派发。原因是 injectClick 从门禁的 pointerInput 协程内部（finishGesture
+     * → tapClick → injectClick）被调用，此时 Compose 的 PointerInputEventProcessor
+     * 正在处理「真实手指的 UP 事件」，处于忙碌状态。直接同步调用
+     * view.dispatchTouchEvent(event) 是重入调用 —— PointerInputEventProcessor 的
+     * 内部忙碌保护会静默丢弃重入事件，子 View 收不到注入的 DOWN/UP，点击无效。
+     *
+     * view.post 把派发推迟到下一个 looper 迭代：此时门禁协程已经从
+     * finishGesture 返回、awaitEachGesture 循环回到 awaitFirstDown 并挂起。
+     * 注入的 DOWN 到达时，门禁的 awaitFirstDown 收到它（id=99），guard 进入
+     * drain（不消费）→ 子 View 在 Main pass 收到未消费的 DOWN/UP → 正常触发点击。
+     */
     fun injectClick(view: View, x: Float, y: Float) {
         val now = SystemClock.uptimeMillis()
         injectGuardUntil = now + 200L
-        try {
-            dispatchTouch(view, MotionEvent.ACTION_DOWN, now, 0L, x, y)
-            dispatchTouch(view, MotionEvent.ACTION_UP, now, 60L, x, y)
-        } catch (_: Exception) {
-        } finally {
-            // 事件时间上的"流"在 now+60 结束，多留余量
-            injectGuardUntil = SystemClock.uptimeMillis() + 120L
+        view.post {
+            try {
+                dispatchTouch(view, MotionEvent.ACTION_DOWN, now, 0L, x, y)
+                dispatchTouch(view, MotionEvent.ACTION_UP, now, 60L, x, y)
+            } catch (_: Exception) {
+            } finally {
+                injectGuardUntil = SystemClock.uptimeMillis() + 120L
+            }
         }
     }
 
@@ -328,23 +343,34 @@ object TrackpadController {
     fun injectDragDown(view: View, x: Float, y: Float) {
         dragDownTime = SystemClock.uptimeMillis()
         injectGuardUntil = dragDownTime + 250L
-        runCatching { dispatchTouch(view, MotionEvent.ACTION_DOWN, dragDownTime, 0L, x, y) }
+        val dt = dragDownTime
+        view.post {
+            runCatching { dispatchTouch(view, MotionEvent.ACTION_DOWN, dt, 0L, x, y) }
+        }
     }
 
     fun injectDragMove(view: View, x: Float, y: Float) {
         if (dragDownTime == 0L) return
-        runCatching {
-            dispatchTouch(view, MotionEvent.ACTION_MOVE, dragDownTime, SystemClock.uptimeMillis() - dragDownTime, x, y)
+        val dt = dragDownTime
+        val elapsed = SystemClock.uptimeMillis() - dragDownTime
+        view.post {
+            runCatching {
+                dispatchTouch(view, MotionEvent.ACTION_MOVE, dt, elapsed, x, y)
+            }
         }
     }
 
     fun injectDragUp(view: View, x: Float, y: Float) {
         if (dragDownTime == 0L) return
-        runCatching {
-            dispatchTouch(view, MotionEvent.ACTION_UP, dragDownTime, SystemClock.uptimeMillis() - dragDownTime, x, y)
-        }
+        val dt = dragDownTime
+        val elapsed = SystemClock.uptimeMillis() - dragDownTime
         dragDownTime = 0L
-        injectGuardUntil = SystemClock.uptimeMillis() + 120L
+        view.post {
+            runCatching {
+                dispatchTouch(view, MotionEvent.ACTION_UP, dt, elapsed, x, y)
+            }
+            injectGuardUntil = SystemClock.uptimeMillis() + 120L
+        }
     }
 
     /**
@@ -370,26 +396,29 @@ object TrackpadController {
         val c0 = coords(x - 16f, y)
         val c1 = coords(x + 16f, y)
         val idx1 = 1 shl MotionEvent.ACTION_POINTER_INDEX_SHIFT
-        try {
-            dispatchTouchAt(
-                view, multiTouch(now, now, MotionEvent.ACTION_DOWN, arrayOf(p0), arrayOf(c0)), x, y
-            )
-            dispatchTouchAt(
-                view,
-                multiTouch(now, now + 40L, MotionEvent.ACTION_POINTER_DOWN or idx1, arrayOf(p0, p1), arrayOf(c0, c1)),
-                x, y
-            )
-            dispatchTouchAt(
-                view,
-                multiTouch(now, now + 90L, MotionEvent.ACTION_POINTER_UP or idx1, arrayOf(p0, p1), arrayOf(c0, c1)),
-                x, y
-            )
-            dispatchTouchAt(
-                view, multiTouch(now, now + 130L, MotionEvent.ACTION_UP, arrayOf(p0), arrayOf(c0)), x, y
-            )
-        } catch (_: Exception) {
-        } finally {
-            injectGuardUntil = SystemClock.uptimeMillis() + 120L
+        // 同样通过 view.post 延迟，避免重入 PointerInputEventProcessor
+        view.post {
+            try {
+                dispatchTouchAt(
+                    view, multiTouch(now, now, MotionEvent.ACTION_DOWN, arrayOf(p0), arrayOf(c0)), x, y
+                )
+                dispatchTouchAt(
+                    view,
+                    multiTouch(now, now + 40L, MotionEvent.ACTION_POINTER_DOWN or idx1, arrayOf(p0, p1), arrayOf(c0, c1)),
+                    x, y
+                )
+                dispatchTouchAt(
+                    view,
+                    multiTouch(now, now + 90L, MotionEvent.ACTION_POINTER_UP or idx1, arrayOf(p0, p1), arrayOf(c0, c1)),
+                    x, y
+                )
+                dispatchTouchAt(
+                    view, multiTouch(now, now + 130L, MotionEvent.ACTION_UP, arrayOf(p0), arrayOf(c0)), x, y
+                )
+            } catch (_: Exception) {
+            } finally {
+                injectGuardUntil = SystemClock.uptimeMillis() + 120L
+            }
         }
     }
 
@@ -415,30 +444,32 @@ object TrackpadController {
             setAxisValue(MotionEvent.AXIS_HSCROLL, dx / 60f)
             setAxisValue(MotionEvent.AXIS_VSCROLL, dy / 60f)
         }
-        try {
-            val ev = MotionEvent.obtain(
-                now, now, MotionEvent.ACTION_SCROLL,
-                1, arrayOf(p), arrayOf(c),
-                0, 0, 1f, 1f, 0, 0, InputDevice.SOURCE_MOUSE, 0
-            )
-            val target = deepestViewAt(view, x, y)
-            if (target is WebView) {
-                // 坐标换算到目标 View 局部
-                val rootLoc = IntArray(2); view.getLocationInWindow(rootLoc)
-                val tgtLoc = IntArray(2); target.getLocationInWindow(tgtLoc)
-                ev.offsetLocation(
-                    -(tgtLoc[0] - rootLoc[0]).toFloat(),
-                    -(tgtLoc[1] - rootLoc[1]).toFloat()
+        view.post {
+            try {
+                val ev = MotionEvent.obtain(
+                    now, now, MotionEvent.ACTION_SCROLL,
+                    1, arrayOf(p), arrayOf(c),
+                    0, 0, 1f, 1f, 0, 0, InputDevice.SOURCE_MOUSE, 0
                 )
-                target.dispatchGenericMotionEvent(ev)
-            } else {
-                // 滚轮属通用（generic）motion 事件：Compose 滚动组件按鼠标
-                // 滚轮路径响应
-                view.dispatchGenericMotionEvent(ev)
+                val target = deepestViewAt(view, x, y)
+                if (target is WebView) {
+                    // 坐标换算到目标 View 局部
+                    val rootLoc = IntArray(2); view.getLocationInWindow(rootLoc)
+                    val tgtLoc = IntArray(2); target.getLocationInWindow(tgtLoc)
+                    ev.offsetLocation(
+                        -(tgtLoc[0] - rootLoc[0]).toFloat(),
+                        -(tgtLoc[1] - rootLoc[1]).toFloat()
+                    )
+                    target.dispatchGenericMotionEvent(ev)
+                } else {
+                    // 滚轮属通用（generic）motion 事件：Compose 滚动组件按鼠标
+                    // 滚轮路径响应
+                    view.dispatchGenericMotionEvent(ev)
+                }
+            } catch (_: Exception) {
+            } finally {
+                injectGuardUntil = SystemClock.uptimeMillis() + 80L
             }
-        } catch (_: Exception) {
-        } finally {
-            injectGuardUntil = SystemClock.uptimeMillis() + 80L
         }
     }
 
