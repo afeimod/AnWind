@@ -19,6 +19,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.PointerInputScope
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.dp
@@ -88,29 +89,13 @@ private fun Modifier.trackpadGate(view: View): Modifier = pointerInput(view) {
     awaitEachGesture {
         val first = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
 
-        /** 排空当前手势流（不消费 —— 让注入流完整到达下层窗口） */
-        suspend fun drainStream() {
-            while (true) {
-                val ev = awaitPointerEvent(pass = PointerEventPass.Initial)
-                if (ev.type == PointerEventType.Scroll) continue
-                if (ev.changes.none { it.pressed }) return
-            }
-        }
-
         // 注入流 / 已被更高层消费的流：放行，不参与指针控制
-        if (first.id >= INJECTED_POINTER_ID || first.isConsumed) {
+        // 注意：drainStream / drainRealUntilUp 提升为文件级 PointerInputScope 扩展函数，
+        // 因为 PointerInputScope 是 @RestrictsSuspension，其内部的 suspend 调用必须是该
+        // scope 的成员或扩展；本地 suspend fun 不满足该约束（v2.19 编译错误根因）
+        if (first.id.value >= INJECTED_POINTER_ID.toLong() || first.isConsumed) {
             drainStream()
             return@awaitEachGesture
-        }
-
-        /** 等真实手指全部抬起（不消费，留给拥有该流的高层） */
-        suspend fun drainRealUntilUp() {
-            while (true) {
-                val ev = awaitPointerEvent(pass = PointerEventPass.Initial)
-                if (ev.type == PointerEventType.Scroll) continue
-                val real = ev.changes.filter { it.id < INJECTED_POINTER_ID }
-                if (real.isNotEmpty() && real.none { it.pressed }) return
-            }
         }
 
         val tapSlopPx = 24.dp.toPx()
@@ -144,7 +129,7 @@ private fun Modifier.trackpadGate(view: View): Modifier = pointerInput(view) {
             while (true) {
                 val event = awaitPointerEvent(pass = PointerEventPass.Initial)
                 if (event.type == PointerEventType.Scroll) continue
-                val real = event.changes.filter { it.id < INJECTED_POINTER_ID }
+                val real = event.changes.filter { it.id.value < INJECTED_POINTER_ID.toLong() }
                 if (real.isEmpty()) continue
                 if (real.any { it.isConsumed }) {
                     result = -1
@@ -218,7 +203,7 @@ private fun Modifier.trackpadGate(view: View): Modifier = pointerInput(view) {
             while (true) {
                 val event = awaitPointerEvent(pass = PointerEventPass.Initial)
                 if (event.type == PointerEventType.Scroll) continue
-                val real = event.changes.filter { it.id < INJECTED_POINTER_ID }
+                val real = event.changes.filter { it.id.value < INJECTED_POINTER_ID.toLong() }
                 if (real.isEmpty()) continue
                 if (real.any { it.isConsumed }) {
                     // 键盘/手柄等更高层接管：先释放可能按下的拖拽再排空
@@ -274,6 +259,36 @@ private fun Modifier.trackpadGate(view: View): Modifier = pointerInput(view) {
                 }
             }
         }
+    }
+}
+
+/**
+ * 排空当前手势流（不消费 —— 让注入流完整到达下层窗口）。
+ *
+ * 必须为 PointerInputScope 顶层扩展函数：PointerInputScope 标注 @RestrictsSuspension，
+ * 其内的 suspend 调用（awaitPointerEvent）只能由该 scope 的成员或扩展发起；本地
+ * suspend fun 不具备该 receiver，会导致 "Restricted suspending functions can
+ * only invoke member or extension suspending functions on their restricted coroutine
+ * scope" 编译错误。
+ */
+private suspend fun PointerInputScope.drainStream() {
+    while (true) {
+        val ev = awaitPointerEvent(pass = PointerEventPass.Initial)
+        if (ev.type == PointerEventType.Scroll) continue
+        if (ev.changes.none { it.pressed }) return
+    }
+}
+
+/**
+ * 等真实手指全部抬起（不消费，留给拥有该流的高层）。同样必须是 PointerInputScope
+ * 顶层扩展以满足 @RestrictsSuspension 约束。
+ */
+private suspend fun PointerInputScope.drainRealUntilUp() {
+    while (true) {
+        val ev = awaitPointerEvent(pass = PointerEventPass.Initial)
+        if (ev.type == PointerEventType.Scroll) continue
+        val real = ev.changes.filter { it.id.value < INJECTED_POINTER_ID.toLong() }
+        if (real.isNotEmpty() && real.none { it.pressed }) return
     }
 }
 

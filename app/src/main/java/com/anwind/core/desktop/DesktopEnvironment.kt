@@ -500,7 +500,7 @@ private fun Modifier.desktopGestures(
         // v2.19 触控板模式：真实手指流已被 TrackpadGate 消费（本层收到的
         // 是“已消费”事件）—— 跳过，只处理触控板注入的合成流（id ≥ 99），
         // 把注入的单指轻点 / 双指轻点还原为桌面点击 / 右键菜单
-        if (trackpadMode && first.id < INJECTED_POINTER_ID) {
+        if (trackpadMode && first.id.value < INJECTED_POINTER_ID.toLong()) {
             while (true) {
                 val ev = awaitPointerEvent()
                 if (ev.changes.none { it.pressed }) break
