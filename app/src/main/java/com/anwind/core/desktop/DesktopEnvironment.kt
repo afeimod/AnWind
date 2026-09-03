@@ -233,10 +233,34 @@ fun DesktopEnvironment(
         val taskbarVisible = !anyTrueFullscreen && (!taskbarAutohide || taskbarShown || startMenuOpen)
         val taskbarOffsetY = if (taskbarVisible) 0 else with(density) { taskbarHeight.toPx() }.toInt()
 
+        // v2.19.4：桌面右键菜单回调（双指轻点命中）。
+        // 本层位于根 (0,0)，局部坐标与图标上报的 boundsInRoot 根坐标一致，
+        // 可直接命中检测。触控板模式下由 TrackpadGate 双指轻点直接回调
+        // （不再注入合成双指流）；touch 模式下仍由 desktopGestures 触发。
+        // v2.19.5：remember 化 —— 捕获的 startMenuOpen/contextMenu/iconBounds
+        // 均为 remember 的 State 对象，写入路径稳定；lambda 实例不再随重组
+        // 变化（旧版每次重组产生新实例，作为 pointerInput key 曾导致触控板
+        // 门禁协程被反复取消重建）。
+        val openContextMenu: (Offset) -> Unit = remember {
+            { offset ->
+                val hit = iconBounds.entries.firstOrNull { it.value.second.contains(offset) }
+                startMenuOpen = false
+                contextMenu = DesktopContextMenuData(
+                    x = offset.x,
+                    y = offset.y,
+                    iconItem = hit?.value?.first
+                )
+            }
+        }
+
         // ===== v2.19 触控板门禁（祖先层）：包裹壁纸～右键菜单 —— trackpad 模式下
         // 在 Initial pass 消费真实触摸（下层收不到），注入的合成事件则放行直达
         // 窗口；touch 模式为纯容器零开销。（内容缩进保持原样，仅加包裹层）
-        TrackpadGate(modifier = Modifier.fillMaxSize()) {
+        // v2.19.4：onTwoFingerTap 直连双指轻点右键菜单（零注入、零耦合）
+        TrackpadGate(
+            modifier = Modifier.fillMaxSize(),
+            onTwoFingerTap = openContextMenu
+        ) {
 
         // ===== 1. 壁纸层 =====
         WallpaperLayer(
@@ -248,16 +272,7 @@ fun DesktopEnvironment(
         // ===== 2. 桌面图标层（占据任务栏上方） =====
         // v2.11 手势：双指轻点 = 右键菜单（命中图标 → 图标菜单，否则 → 桌面菜单）；单指轻点 = 关闭菜单
         // v2.13：右键手势可设（双指轻点 / 长按），图标打开方式可设（单击 / 双击）
-        val openContextMenu: (Offset) -> Unit = { offset ->
-            // 本层位于根 (0,0)，局部坐标与图标上报的 boundsInRoot 根坐标一致，可直接命中检测。
-            val hit = iconBounds.entries.firstOrNull { it.value.second.contains(offset) }
-            startMenuOpen = false
-            contextMenu = DesktopContextMenuData(
-                x = offset.x,
-                y = offset.y,
-                iconItem = hit?.value?.first
-            )
-        }
+        // v2.19.4：openContextMenu 上移至 TrackpadGate 之前（触控板双指轻点直连回调）
         Box(
             modifier = Modifier
                 .fillMaxWidth()

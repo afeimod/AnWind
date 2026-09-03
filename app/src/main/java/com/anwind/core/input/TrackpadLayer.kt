@@ -6,75 +6,94 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.webkit.WebView
-import androidx.compose.foundation.gestures.awaitEachGesture
-import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.State
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.pointer.PointerEventPass
-import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.PointerId
+import androidx.compose.ui.input.pointer.PointerInputChange
+import androidx.compose.ui.input.pointer.changedToDownIgnoreConsumed
+import androidx.compose.ui.input.pointer.changedToUpIgnoreConsumed
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.dp
 import com.anwind.AnWindApp
-import kotlinx.coroutines.withTimeoutOrNull
+import com.anwind.apps.browser.ZoomPinchLayout
 import kotlin.math.abs
 
 /**
  * 注入合成事件使用的指针 id 基线。
- * 真实手指的 pointer id 恒为 0..9；所有合成事件（点击/拖动/双指轻点）
- * 一律使用 id ≥ [INJECTED_POINTER_ID] 的指针 —— 触控板门禁据此区分
- * "真实手指（拦截）" 与 "自己注入的事件（放行给下层窗口）"。
+ * 真实手指的 pointer id 恒为 0..9；所有合成事件（点击/拖动）
+ * 一律使用 id ≥ [INJECTED_POINTER_ID] 的指针 —— 门禁据此区分
+ * "真实手指（拦截消费）" 与 "自己注入的事件（完全无视，放行给下层窗口）"。
  */
 internal const val INJECTED_POINTER_ID = 99
 
 /**
- * v2.19 触控板（Trackpad）指针移动模式 —— 门禁层。
+ * 触控板（Trackpad）指针移动模式 —— 门禁层。
  *
- * ## v2.19 架构修复（v2.18 "操作完全无效"的根因）
- * v2.18 把触控板层做成【全屏兄弟节点】盖在窗口层之上：Compose 命中测试
- * 只沿"最顶层命中链"派发事件，覆盖层一旦存在，其下的窗口/图标全部离开
- * 命中路径 —— 真实触摸被吃掉、注入的合成事件也只回到覆盖层自身被 guard
- * 吞掉，下层什么都收不到。
+ * ## v2.19.5 重写：对齐 termux-x11 的「同步事件泵 + Handler 定时器」架构
+ * （termux-x11 的 TouchInputHandler / TapGestureDetector，源自 Chromium remoting）
  *
- * v2.19 改为【祖先门禁】（[TrackpadGate] 包裹壁纸~右键菜单全部桌面内容）：
- * - 门禁是所有内容的祖先 → 任何真实触摸的事件都会经过它（祖先永远在
- *   命中路径上），在 Initial pass（先于全部子节点）消费 → 下层窗口在
- *   Main pass 看到已消费事件，标准手势检测器全部跳过 —— 触控板完全接管；
- * - 注入的合成事件（指针 id ≥ 99）门禁【不消费】→ 同一次派发继续流向
- *   下层窗口/WebView（PointerInterop 桥只挡"被消费"的事件）→ 点击、
- *   拖拽、滚动真实到达目标控件；
- * - 虚拟键盘/手柄/指针/锁屏是门禁的【兄弟】且 z 序更高，命中它们时门禁
- *   不在命中路径上 → 键盘手柄锁屏完全不受影响。
+ * v2.19.0~2.19.4 反复失灵的根因（"点击一次就退化成普通触摸"）：
+ * 1. 【致命】门禁在 awaitPointerEventScope 内使用了 kotlinx.coroutines 的
+ *    withTimeoutOrNull。Compose 的 handler 协程运行在 restricted suspension
+ *    上下文（EmptyCoroutineContext：无父 Job、无调度器），kotlinx 的超时到期
+ *    后在【Timer 线程】上同步内联恢复挂起的 awaitPointerEvent —— 门禁状态机
+ *    从此跨线程执行：pointerAwaiter/awaitPass 的注册（Timer 线程）与事件派发
+ *    （主线程 offerPointerEvent）变成无锁竞争，事件被静默跳过/丢失，真实触摸
+ *    未经消费漏到下层 UI = "普通触摸逻辑"。长按（>320ms 静止）必然触发该路径。
+ * 2. pointerInput(view, onTwoFingerTap) 把每次重组都是新实例的 lambda 当 key，
+ *    SuspendPointerInputElement.equals 只比较 keys → 桌面每次重组（开窗口/
+ *    弹菜单等）都触发 resetPointerInputHandler，门禁协程被反复取消重建。
+ * 3. 多阶段 await 状态机（超时判定窗 + 主循环 + 收尾排水）跨阶段契约脆弱，
+ *    历史上"不设防窗口""重入丢弃"等缺陷均源于此结构。
+ *
+ * termux-x11 的稳定之道（本次照搬）：
+ * - 手势机是【同步事件泵】：每个事件到达后当场消费、当场分类，全程唯一的
+ *   挂起点是 awaitPointerEvent —— 没有任何 withTimeout / delay / 嵌套等待；
+ * - 长按用【Handler 定时器】（view.postDelayed），与事件泵同在主线程，
+ *   天然串行互斥：定时器只可能在两次事件派发之间触发，不存在竞态；
+ * - 手势机输出"鼠标语义动作"给独立注入器（本文件 TrackpadController，
+ *   相当于 termux-x11 的 InputEventSender / X server），注入流按 pointer id
+ *   与手势机彻底解耦，手势机永远看不到自己的输出。
  *
  * ## 手势集（真实手指 → 指针动作）
  * - 单指滑动：指针相对移动（× [TrackpadController.SENSITIVITY]）；
- * - 轻点（< 260ms 且位移 < 24dp）：指针处注入单击（连点两下 = 双击，
+ * - 轻点（< 320ms 且各指位移 < 24dp）：指针处注入单击（连点两下 = 双击，
  *   由目标控件自行判定）；
  * - 按住不动 ≥ 320ms：进入拖拽 —— 注入 ACTION_DOWN，之后滑动 = 按住
  *   拖拽（拖窗口/拖滑块/划词），抬手注入 ACTION_UP；
- * - 双指滑动：指针处注入滚轮（WebView 优先直达，60px = 1 tick）；
- * - 双指轻点：指针处注入双指轻点 → 桌面手势层弹右键菜单。
+ * - 双指滑动（超 16dp slop）：指针处注入滚轮（WebView 优先直达，60px = 1 tick）；
+ * - 双指轻点（< 450ms、未滚动、未超 slop）：直接回调 onTwoFingerTap
+ *   （DesktopEnvironment 直连 openContextMenu，零注入）。
  */
 @Composable
 fun TrackpadGate(
     modifier: Modifier = Modifier,
+    onTwoFingerTap: ((Offset) -> Unit)? = null,
     content: @Composable BoxScope.() -> Unit
 ) {
     val app = remember { AnWindApp.get() }
     val controlMode by app.settingsStore.mouseControlMode.collectAsState(initial = "touch")
     val view = LocalView.current
 
+    // v2.19.5：回调经 rememberUpdatedState 以稳定 State 引用传入门禁。
+    // pointerInput 只以 view 为 key —— 桌面重组不再取消/重启门禁协程
+    // （旧版以不稳定 lambda 为 key，每次重组都 reset 门禁 —— 根因之二）。
+    val twoFingerTapState = rememberUpdatedState(onTwoFingerTap)
+
     Box(
         modifier = modifier.then(
             // touch 模式 = 纯容器零开销；trackpad 模式挂上门禁
-            if (controlMode == "trackpad") Modifier.trackpadGate(view) else Modifier
+            if (controlMode == "trackpad") Modifier.trackpadGate(view, twoFingerTapState) else Modifier
         )
     ) {
         content()
@@ -82,38 +101,65 @@ fun TrackpadGate(
 }
 
 /**
- * 触控板门禁手势机（Initial pass 消费真实事件 + 相对手势判定 + 合成注入）。
+ * 触控板门禁（v2.19.5 同步事件泵版）。
+ *
+ * 与 termux-x11 的对应关系：
+ * - 主循环            ↔ TouchInputHandler.handleTouchEvent（每事件同步走完）
+ * - 逐指 slop 检测    ↔ TapGestureDetector.trackMoveEvent / mInitialPositions
+ * - 长按定时器        ↔ TapGestureDetector 的 mHandler.sendEmptyMessageDelayed
+ * - 单指滑动 → 指针   ↔ GestureListener.onScroll → moveCursorByOffset
+ * - 双指滑动 → 滚轮   ↔ GestureListener.onScroll(2指) → InputStrategy.onScroll
+ * - 轻点 → 单击       ↔ TapGestureDetector.onTap(1指) → TrackpadInputStrategy.onTap
+ * - 双指轻点 → 右键   ↔ TapGestureDetector.onTap(2指) → BUTTON_RIGHT
+ * - 长按 → 按住拖拽   ↔ onLongPress → onPressAndHold（mousedown 起流）
+ *
+ * 事件泵不变式：
+ * 1. 真实手指（id < 99）的每一个事件都在 Initial pass 被无条件消费 ——
+ *    等待按下、手势进行、残余收尾，无一例外，不存在"不设防窗口"；
+ * 2. 注入流（id ≥ 99，含滚轮）零耦合：一眼过滤、不等待、不消费；
+ * 3. 除 awaitPointerEvent 外无任何挂起点/定时等待 —— 状态机永远只在主线程
+ *    的事件派发切片内执行。
  */
-private fun Modifier.trackpadGate(view: View): Modifier = pointerInput(view) {
-    awaitEachGesture {
-        val first = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+private fun Modifier.trackpadGate(
+    view: View,
+    twoFingerTapState: State<((Offset) -> Unit)?>
+): Modifier = pointerInput(view) {
+    val touchSlopPx = 24.dp.toPx()
+    val scrollSlopPx = 16.dp.toPx()
+    val longPressMs = 320L
+    val twoFingerTapMs = 450L
 
-        // 注入流 / 已被更高层消费的流：放行，不参与指针控制
-        // 必须 inline 排空（不能提取为本地 suspend fun 或文件级扩展）：
-        // PointerInputScope 标注 @RestrictsSuspension，其内的 suspend 调用
-        // 只能是 PointerInputScope 的直接成员调用；本地 fun / 文件级扩展
-        // 都无法在该 scope 内合法调用 awaitPointerEvent。
-        if (first.id.value >= INJECTED_POINTER_ID.toLong() || first.isConsumed) {
-            while (true) {
-                val ev = awaitPointerEvent(pass = PointerEventPass.Initial)
-                if (ev.type == PointerEventType.Scroll) continue
-                if (ev.changes.none { it.pressed }) break
+    awaitPointerEventScope {
+        // ===== 手势会话状态（termux-x11 TapGestureDetector 的对应物）=====
+        var inGesture = false          // 当前是否有手势会话
+        var maxPointers = 1            // 本会话出现过的最大按指数
+        var moved = false              // 任一指超出各自起点 slop（tap 候选作废）
+        var scrollMode = false         // 双指滚动已接管
+        var dragMode = false           // 长按拖拽进行中（已注入 DOWN）
+        var livePressed = 0            // 当前按着的真实指数（定时器防火墙）
+        var gestureStartMs = 0L        // 会话起点事件时间戳
+        var lastCentroid = Offset.Zero // 多指质心（滚轮增量基准）
+        val startPositions = HashMap<PointerId, Offset>() // 每指起点（slop 检测）
+        val lastPositions = HashMap<PointerId, Offset>()  // 每指上帧位置（增量基准）
+
+        // ===== 长按定时器（termux-x11 TapGestureDetector 的 Handler 方案）=====
+        // 主线程 postDelayed：只可能在两次事件派发之间触发，与事件泵天然互斥；
+        // 到点时核对会话状态，满足"单指、未动、未滚、未拖"才进入拖拽。
+        val longPressRunnable = Runnable {
+            if (inGesture && !dragMode && !scrollMode && !moved &&
+                maxPointers == 1 && livePressed == 1
+            ) {
+                dragMode = true
+                moved = true
+                MouseController.press(true)
+                val cursor = MouseController.position
+                TrackpadController.injectDragDown(view, cursor.x, cursor.y)
             }
-            return@awaitEachGesture
         }
 
-        val tapSlopPx = 24.dp.toPx()
-        val scrollSlopPx = 16.dp.toPx()
-        val longPressMs = 320L
-        val startMs = first.uptimeMillis
-        val startPos = first.position
-        var lastPos = first.position
-        var lastPointerId = first.id
-        var lastCentroid = first.position
-        var maxPointers = 1
-        var scrollMode = false
-        var dragMode = false
-        var gestureEnded = false
+        fun cancelLongPress() {
+            view.removeCallbacks(longPressRunnable)
+        }
 
         /** 指针相对移动（灵敏度放大 + clamp 屏内） */
         fun moveCursorBy(delta: Offset) {
@@ -126,173 +172,158 @@ private fun Modifier.trackpadGate(view: View): Modifier = pointerInput(view) {
             MouseController.update(nx, ny)
         }
 
-        // ===== 阶段 A：按下后 longPressMs 内判定意图 =====
-        // null = 静止超时（→ 拖拽）；1 = 移动；2 = 双指；3 = 已抬手（待判轻点）；-1 = 被高层接管
-        val decision: Int? = withTimeoutOrNull(longPressMs) {
-            var result = 1
-            while (true) {
-                val event = awaitPointerEvent(pass = PointerEventPass.Initial)
-                if (event.type == PointerEventType.Scroll) continue
-                val real = event.changes.filter { it.id.value < INJECTED_POINTER_ID.toLong() }
-                if (real.isEmpty()) continue
-                if (real.any { it.isConsumed }) {
-                    result = -1
-                    return@withTimeoutOrNull result
-                }
-                real.forEach { it.consume() }
-                val pressed = real.count { it.pressed }
-                if (pressed > maxPointers) maxPointers = pressed
-                if (pressed == 0) {
-                    result = 3
-                    return@withTimeoutOrNull result
-                }
-                if (pressed >= 2) {
-                    result = 2
-                    return@withTimeoutOrNull result
-                }
-                val change = real.first { it.pressed }
-                if (change.id != lastPointerId) {
-                    // 指数切换：重置基线不跳变
-                    lastPointerId = change.id
-                    lastPos = change.position
-                    continue
-                }
-                val delta = change.position - lastPos
-                lastPos = change.position
-                moveCursorBy(delta)
-                if ((change.position - startPos).getDistance() > tapSlopPx) {
-                    result = 1
-                    return@withTimeoutOrNull result
-                }
+        /** 多指质心（滚轮增量基准） */
+        fun centroidOf(changes: List<PointerInputChange>): Offset {
+            var x = 0f
+            var y = 0f
+            changes.forEach { c ->
+                x += c.position.x
+                y += c.position.y
             }
-            @Suppress("UNREACHABLE_CODE")
-            result
+            return Offset(x / changes.size, y / changes.size)
         }
 
-        /** 手势收尾：按累计状态判定轻点/双指轻点，并处理拖拽释放 */
-        fun finishGesture() {
-            val duration = SystemClock.uptimeMillis() - startMs
-            val moveDist = (lastPos - startPos).getDistance()
+        /** 手势收尾：按会话累计状态判定轻点/双指轻点，并处理拖拽释放 */
+        fun endGesture(nowMs: Long) {
+            cancelLongPress()
+            val duration = nowMs - gestureStartMs
             val cursor = MouseController.position
-            if (dragMode) {
-                MouseController.press(false)
-                TrackpadController.injectDragUp(view, cursor.x, cursor.y)
-            } else if (maxPointers == 1 && duration < 260L && moveDist < tapSlopPx) {
-                TrackpadController.tapClick(view, cursor.x, cursor.y)
-            } else if (maxPointers == 2 && !scrollMode && duration < 450L && moveDist < tapSlopPx) {
-                TrackpadController.injectTwoFingerTap(view, cursor.x, cursor.y)
-            }
-        }
-
-        when (decision) {
-            -1 -> {
-                // 内联 drainRealUntilUp（同样受 @RestrictsSuspension 约束）
-                while (true) {
-                    val ev = awaitPointerEvent(pass = PointerEventPass.Initial)
-                    if (ev.type == PointerEventType.Scroll) continue
-                    val real = ev.changes.filter { it.id.value < INJECTED_POINTER_ID.toLong() }
-                    if (real.isNotEmpty() && real.none { it.pressed }) break
+            when {
+                dragMode -> {
+                    // 拖拽收尾：视觉松压 + 注入 ACTION_UP
+                    dragMode = false
+                    MouseController.press(false)
+                    TrackpadController.injectDragUp(view, cursor.x, cursor.y)
                 }
-                gestureEnded = true
+                maxPointers == 1 && !moved && duration < longPressMs ->
+                    // 单指轻点 = 指针处单击（tap 窗口对齐长按阈值，无缝隙）
+                    TrackpadController.tapClick(view, cursor.x, cursor.y)
+                maxPointers == 2 && !scrollMode && !moved && duration < twoFingerTapMs ->
+                    // 双指轻点 = 右键菜单：直接回调，不注入合成流
+                    twoFingerTapState.value?.invoke(cursor)
             }
-            3 -> {
-                finishGesture()
-                gestureEnded = true
-            }
-            null -> {
-                // 静止超时 → 进入拖拽：视觉按压 + 注入 ACTION_DOWN
-                dragMode = true
-                MouseController.press(true)
-                val cursor = MouseController.position
-                TrackpadController.injectDragDown(view, cursor.x, cursor.y)
-            }
-            // 1（移动）/ 2（双指）→ 进入阶段 B 主循环
         }
 
-        if (!gestureEnded) {
+        try {
+            // ===== 主循环：同步事件泵 =====
             while (true) {
-                val event = awaitPointerEvent(pass = PointerEventPass.Initial)
-                if (event.type == PointerEventType.Scroll) continue
-                val real = event.changes.filter { it.id.value < INJECTED_POINTER_ID.toLong() }
+                val event = awaitPointerEvent(PointerEventPass.Initial)
+                val real = event.changes.filter { it.id.value < INJECTED_POINTER_ID }
+                // 纯注入事件（点击/拖拽/滚轮流）：完全无视，放行给下层
                 if (real.isEmpty()) continue
-                if (real.any { it.isConsumed }) {
-                    // 键盘/手柄等更高层接管：先释放可能按下的拖拽再排空
-                    if (dragMode) {
-                        MouseController.press(false)
-                        val cursor = MouseController.position
-                        TrackpadController.injectDragUp(view, cursor.x, cursor.y)
-                    }
-                    // 内联 drainRealUntilUp（@RestrictsSuspension 约束）
-                    while (true) {
-                        val dev = awaitPointerEvent(pass = PointerEventPass.Initial)
-                        if (dev.type == PointerEventType.Scroll) continue
-                        val dreal = dev.changes.filter { it.id.value < INJECTED_POINTER_ID.toLong() }
-                        if (dreal.isNotEmpty() && dreal.none { it.pressed }) break
-                    }
-                    break
-                }
+                // 触控板模式：真实手指永远不到下层（无差别消费）
                 real.forEach { it.consume() }
-                val pressed = real.count { it.pressed }
-                if (pressed > maxPointers) maxPointers = pressed
 
-                if (pressed == 0) {
-                    finishGesture()
-                    break
+                val downs = real.filter { it.changedToDownIgnoreConsumed() }
+                val ups = real.filter { it.changedToUpIgnoreConsumed() }
+                val pressed = real.filter { it.pressed }
+                livePressed = pressed.size
+
+                // ---- 会话种子：新手势（carryOver 语义内联在此）----
+                if (!inGesture) {
+                    val seed = downs.firstOrNull() ?: continue // 残余 MOVE/UP：已消费，丢弃
+                    inGesture = true
+                    maxPointers = 1
+                    moved = false
+                    scrollMode = false
+                    dragMode = false
+                    startPositions.clear()
+                    lastPositions.clear()
+                    gestureStartMs = seed.uptimeMillis
+                    lastCentroid = seed.position
+                    view.postDelayed(longPressRunnable, longPressMs)
+                }
+                // 同帧多指落下（含 seed）逐指登记起点
+                downs.forEach { d ->
+                    startPositions.putIfAbsent(d.id, d.position)
+                    lastPositions.putIfAbsent(d.id, d.position)
                 }
 
-                if (pressed >= 2) {
-                    // ===== 双指：滑动 = 滚轮；静止短促 = 待抬手判右键 =====
-                    val pts = real.filter { it.pressed }
-                    if (pts.isNotEmpty()) {
-                        val cx = pts.sumOf { it.position.x.toDouble() }.toFloat() / pts.size
-                        val cy = pts.sumOf { it.position.y.toDouble() }.toFloat() / pts.size
-                        val centroid = Offset(cx, cy)
-                        val d = centroid - lastCentroid
-                        if (!scrollMode && d.getDistance() > scrollSlopPx) {
-                            scrollMode = true
-                            lastCentroid = centroid
-                        } else if (scrollMode) {
-                            val cursor = MouseController.position
-                            TrackpadController.injectScroll(view, cursor.x, cursor.y, d.x, d.y)
-                            lastCentroid = centroid
+                // ---- 指数升级：进入多指（单指长按拖拽作废、质心重播种）----
+                if (pressed.size > maxPointers) {
+                    maxPointers = pressed.size
+                    if (maxPointers >= 2) {
+                        cancelLongPress()
+                        lastCentroid = centroidOf(pressed)
+                    }
+                }
+
+                // ---- 逐指 slop 检测（TapGestureDetector.trackMoveEvent）----
+                if (!moved) {
+                    for (c in pressed) {
+                        val start = startPositions[c.id]
+                        if (start != null && (c.position - start).getDistance() > touchSlopPx) {
+                            moved = true
+                            cancelLongPress()
+                            break
                         }
                     }
-                } else {
-                    // ===== 单指：移动指针；拖拽态同时注入 MOVE =====
-                    val change = real.first { it.pressed }
-                    if (change.id != lastPointerId) {
-                        lastPointerId = change.id
-                        lastPos = change.position
-                        continue
+                }
+
+                if (pressed.size >= 2) {
+                    // ---- 双指：滑动 = 滚轮（onScroll → wheel）----
+                    val centroid = centroidOf(pressed)
+                    val d = centroid - lastCentroid
+                    if (!scrollMode) {
+                        if (d.getDistance() > scrollSlopPx) {
+                            scrollMode = true
+                            moved = true
+                            cancelLongPress()
+                        }
+                    } else if (d.getDistance() > 0f) {
+                        val cursor = MouseController.position
+                        TrackpadController.injectScroll(view, cursor.x, cursor.y, d.x, d.y)
                     }
-                    val delta = change.position - lastPos
-                    lastPos = change.position
-                    moveCursorBy(delta)
+                    lastCentroid = centroid
+                } else if (pressed.size == 1) {
+                    // ---- 单指：移动指针；拖拽态同时注入 MOVE ----
+                    // put 返回旧值：首见指只登记不移动（指数切换零跳变）
+                    val c = pressed.first()
+                    val last = lastPositions.put(c.id, c.position)
+                    if (last != null) moveCursorBy(c.position - last)
                     if (dragMode) {
                         val cursor = MouseController.position
                         TrackpadController.injectDragMove(view, cursor.x, cursor.y)
                     }
                 }
+
+                // ---- 抬起的指移出登记表（后续增量基准不再引用）----
+                ups.forEach { u ->
+                    startPositions.remove(u.id)
+                    lastPositions.remove(u.id)
+                }
+
+                // ---- 全部抬起：收尾分类，会话结束 ----
+                if (pressed.isEmpty()) {
+                    endGesture(real.maxOf { it.uptimeMillis })
+                    inGesture = false
+                }
+            }
+        } finally {
+            // 门禁销毁（模式切换 / 节点 detach / 重组重置）：撤定时器并释放
+            // 注入中的拖拽流，防止"幽灵长按"漏出一条没有 UP 的按下指针
+            cancelLongPress()
+            if (dragMode) {
+                dragMode = false
+                MouseController.press(false)
+                val cursor = MouseController.position
+                TrackpadController.injectDragUp(view, cursor.x, cursor.y)
             }
         }
     }
 }
 
 /**
- * 触控板注入器：把指针动作合成为真实 MotionEvent / 滚轮事件派发给 Compose 根 View。
- * 所有触摸型注入使用 id ≥ [INJECTED_POINTER_ID] 的合成指针（门禁据此放行）。
+ * 触控板注入器：把指针动作合成为真实 MotionEvent / 滚轮事件派发给目标窗口。
+ * 所有触摸型注入使用 id ≥ [INJECTED_POINTER_ID] 的合成指针（门禁据此无视）。
+ *
+ * 相当于 termux-x11 架构中的 InputEventSender（动作的独立接收端）：无论事件
+ * 走根 View 还是浏览器旁路容器，门禁状态机对注入流零耦合、不受任何影响。
  */
 object TrackpadController {
 
     /** 指针移动灵敏度（手指像素 → 指针像素倍率） */
     const val SENSITIVITY = 1.6f
-
-    /**
-     * 注入保护时间戳（uptimeMillis）：该时刻之前开始的手势流视为注入流，
-     * 直接忽略。0 = 无保护。仅主线程读写。
-     */
-    @Volatile
-    var injectGuardUntil: Long = 0L
 
     /** 当前指针是否被触控板按住（视觉按压效果） */
     var pressing: Boolean
@@ -311,28 +342,20 @@ object TrackpadController {
     /**
      * 在指定 View 上注入一次完整点击（DOWN → UP，间隔 60ms 事件时间）。
      *
-     * ⚠️ v2.19.1 关键修复：必须通过 view.post { ... } 延迟到下一个 looper
-     * 迭代再派发。原因是 injectClick 从门禁的 pointerInput 协程内部（finishGesture
-     * → tapClick → injectClick）被调用，此时 Compose 的 PointerInputEventProcessor
-     * 正在处理「真实手指的 UP 事件」，处于忙碌状态。直接同步调用
-     * view.dispatchTouchEvent(event) 是重入调用 —— PointerInputEventProcessor 的
-     * 内部忙碌保护会静默丢弃重入事件，子 View 收不到注入的 DOWN/UP，点击无效。
-     *
-     * view.post 把派发推迟到下一个 looper 迭代：此时门禁协程已经从
-     * finishGesture 返回、awaitEachGesture 循环回到 awaitFirstDown 并挂起。
-     * 注入的 DOWN 到达时，门禁的 awaitFirstDown 收到它（id=99），guard 进入
-     * drain（不消费）→ 子 View 在 Main pass 收到未消费的 DOWN/UP → 正常触发点击。
+     * ⚠️ 必须通过 view.post { ... } 延迟到下一个 looper 迭代再派发：
+     * injectClick 从门禁事件泵内部被调用时，Compose 的
+     * PointerInputEventProcessor 正在处理「真实手指的 UP 事件」，直接同步
+     * dispatchTouchEvent 是重入调用，会被内部忙碌保护静默丢弃。
+     * view.post 把派发推迟到下一个 looper 迭代（门禁对注入事件零耦合、
+     * 完全无视），点击流直达目标控件。
      */
     fun injectClick(view: View, x: Float, y: Float) {
         val now = SystemClock.uptimeMillis()
-        injectGuardUntil = now + 200L
         view.post {
             try {
                 dispatchTouch(view, MotionEvent.ACTION_DOWN, now, 0L, x, y)
                 dispatchTouch(view, MotionEvent.ACTION_UP, now, 60L, x, y)
             } catch (_: Exception) {
-            } finally {
-                injectGuardUntil = SystemClock.uptimeMillis() + 120L
             }
         }
     }
@@ -342,7 +365,6 @@ object TrackpadController {
 
     fun injectDragDown(view: View, x: Float, y: Float) {
         dragDownTime = SystemClock.uptimeMillis()
-        injectGuardUntil = dragDownTime + 250L
         val dt = dragDownTime
         view.post {
             runCatching { dispatchTouch(view, MotionEvent.ACTION_DOWN, dt, 0L, x, y) }
@@ -369,56 +391,6 @@ object TrackpadController {
             runCatching {
                 dispatchTouch(view, MotionEvent.ACTION_UP, dt, elapsed, x, y)
             }
-            injectGuardUntil = SystemClock.uptimeMillis() + 120L
-        }
-    }
-
-    /**
-     * 注入一次双指轻点（DOWN → POINTER_DOWN → POINTER_UP → UP），
-     * 两指关于指针位置对称，质心即指针位置 —— 桌面手势层
-     * （desktopGestures 的 onTwoFingerTap）据此在指针处弹出右键菜单。
-     */
-    fun injectTwoFingerTap(view: View, x: Float, y: Float) {
-        val now = SystemClock.uptimeMillis()
-        injectGuardUntil = now + 300L
-        val p0 = MotionEvent.PointerProperties().apply {
-            id = INJECTED_POINTER_ID
-            toolType = MotionEvent.TOOL_TYPE_FINGER
-        }
-        val p1 = MotionEvent.PointerProperties().apply {
-            id = INJECTED_POINTER_ID + 1
-            toolType = MotionEvent.TOOL_TYPE_FINGER
-        }
-        fun coords(px: Float, py: Float) = MotionEvent.PointerCoords().apply {
-            // this. 前缀必须显式：外层函数参数 x/y 会遮蔽接收者同名成员
-            this.x = px; this.y = py; this.pressure = 1f; this.size = 1f
-        }
-        val c0 = coords(x - 16f, y)
-        val c1 = coords(x + 16f, y)
-        val idx1 = 1 shl MotionEvent.ACTION_POINTER_INDEX_SHIFT
-        // 同样通过 view.post 延迟，避免重入 PointerInputEventProcessor
-        view.post {
-            try {
-                dispatchTouchAt(
-                    view, multiTouch(now, now, MotionEvent.ACTION_DOWN, arrayOf(p0), arrayOf(c0)), x, y
-                )
-                dispatchTouchAt(
-                    view,
-                    multiTouch(now, now + 40L, MotionEvent.ACTION_POINTER_DOWN or idx1, arrayOf(p0, p1), arrayOf(c0, c1)),
-                    x, y
-                )
-                dispatchTouchAt(
-                    view,
-                    multiTouch(now, now + 90L, MotionEvent.ACTION_POINTER_UP or idx1, arrayOf(p0, p1), arrayOf(c0, c1)),
-                    x, y
-                )
-                dispatchTouchAt(
-                    view, multiTouch(now, now + 130L, MotionEvent.ACTION_UP, arrayOf(p0), arrayOf(c0)), x, y
-                )
-            } catch (_: Exception) {
-            } finally {
-                injectGuardUntil = SystemClock.uptimeMillis() + 120L
-            }
         }
     }
 
@@ -433,9 +405,9 @@ object TrackpadController {
     fun injectScroll(view: View, x: Float, y: Float, dx: Float, dy: Float) {
         if (abs(dx) < 0.4f && abs(dy) < 0.4f) return
         val now = SystemClock.uptimeMillis()
-        injectGuardUntil = now + 120L
+        // 滚轮事件同样携带合成指针 id（门禁与手势层按 id < 99 过滤真实指针）
         val p = MotionEvent.PointerProperties().apply {
-            id = 0
+            id = INJECTED_POINTER_ID
             toolType = MotionEvent.TOOL_TYPE_MOUSE
         }
         val c = MotionEvent.PointerCoords().apply {
@@ -467,8 +439,6 @@ object TrackpadController {
                     view.dispatchGenericMotionEvent(ev)
                 }
             } catch (_: Exception) {
-            } finally {
-                injectGuardUntil = SystemClock.uptimeMillis() + 80L
             }
         }
     }
@@ -503,6 +473,12 @@ object TrackpadController {
      * （WindowManagerGlobal.mViews，后加入者 z 序更高），命中最顶层的
      * 一个派发（坐标同步换算）；反射失败回退主窗口。真实多窗口路由
      * 语义与系统一致：点在弹窗上 → 弹窗处理；点在弹窗外 → 主窗口处理。
+     *
+     * v2.19.3 起：落点在原生 interop 容器（[ZoomPinchLayout]，浏览器画布）
+     * 上时【旁路派发】——直接 dispatchTouchEvent 给容器，绕开 Compose
+     * 门禁与 PointerInteropFilter（否则过滤器在门禁消费真实手指后会把
+     * 注入流闩死并向 WebView 发 CANCEL）。v2.19.4 起门禁对注入流零耦合，
+     * 本旁路只服务 interop 过滤器，仍是必需的。
      */
     private fun dispatchTouchAt(view: View, event: MotionEvent, x: Float, y: Float) {
         try {
@@ -515,8 +491,18 @@ object TrackpadController {
                 val lx = x + mainLoc[0] - loc[0]
                 val ly = y + mainLoc[1] - loc[1]
                 if (lx >= 0f && ly >= 0f && lx < root.width && ly < root.height) {
-                    event.offsetLocation(lx - event.x, ly - event.y)
-                    root.dispatchTouchEvent(event)
+                    val bypass = findBypassTarget(root, lx, ly)
+                    if (bypass != null) {
+                        // 换算到容器局部坐标后直接派发（绕过 interop 过滤器）
+                        val bLoc = IntArray(2); bypass.getLocationOnScreen(bLoc)
+                        val bx = x + mainLoc[0] - bLoc[0]
+                        val by = y + mainLoc[1] - bLoc[1]
+                        event.offsetLocation(bx - event.x, by - event.y)
+                        bypass.dispatchTouchEvent(event)
+                    } else {
+                        event.offsetLocation(lx - event.x, ly - event.y)
+                        root.dispatchTouchEvent(event)
+                    }
                     return
                 }
                 i--
@@ -524,6 +510,22 @@ object TrackpadController {
         } catch (_: Exception) {
         }
         view.dispatchTouchEvent(event)
+    }
+
+    /**
+     * 查找 (x,y)（root 局部坐标）处可旁路的原生 interop 容器。
+     * 自最深可见子 View 沿 parent 上溯，命中 [ZoomPinchLayout] 即返回
+     * （浏览器画布）；到达 root 仍未命中 → null（走普通根派发路径）。
+     * 其它 AndroidView（如有）不上溯命中，保持原有行为。
+     */
+    private fun findBypassTarget(root: View, x: Float, y: Float): View? {
+        val deepest = deepestViewAt(root, x, y) ?: return null
+        var cur: View = deepest
+        while (cur !== root) {
+            if (cur is ZoomPinchLayout) return cur
+            cur = cur.parent as? View ?: return null
+        }
+        return null
     }
 
     /** 本进程全部已 attach 的窗口根 View（主窗口 + Popup/Dialog 子窗口） */
@@ -542,18 +544,6 @@ object TrackpadController {
             listOf(fallback)
         }
     }
-
-    /** 多指触摸注入（PointerProperties 14 参重载） */
-    private fun multiTouch(
-        downTime: Long,
-        eventTime: Long,
-        action: Int,
-        props: Array<MotionEvent.PointerProperties>,
-        coords: Array<MotionEvent.PointerCoords>
-    ): MotionEvent = MotionEvent.obtain(
-        downTime, eventTime, action, props.size, props, coords,
-        0, 0, 1f, 1f, 0, 0, InputDevice.SOURCE_TOUCHSCREEN, 0
-    )
 
     /**
      * 找到根 View 坐标系下 (x,y) 处的最深可见子 View（供滚轮直达 WebView）。

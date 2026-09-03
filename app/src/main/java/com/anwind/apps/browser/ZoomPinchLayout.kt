@@ -8,6 +8,7 @@ import android.view.ViewConfiguration
 import android.view.ViewGroup
 import android.webkit.WebView
 import android.widget.FrameLayout
+import com.anwind.core.input.INJECTED_POINTER_ID
 import com.anwind.core.input.gamepad.GamepadController
 import kotlin.math.abs
 import kotlin.math.sqrt
@@ -100,9 +101,12 @@ class ZoomPinchLayout @JvmOverloads constructor(
 
     // ===== v2.16.3：鼠标视角（3D 视角旋转）旁路观察 =====
     // 参照 GameBox：不拦截触摸（页面照常收到 tap/click/touch，游戏自身
-    // 触摸逻辑不受影响），父容器只在 onInterceptTouchEvent 里【观察】
-    // 单指拖动增量喂给 View3dController；拖动时页面滚动/拖选由注入的
-    // CSS（body overflow:hidden + canvas touch-action:none）抑制。
+    // 触摸逻辑不受影响），把单指拖动增量喂给 View3dController；拖动时
+    // 页面滚动/拖选由注入的 CSS（body overflow:hidden + canvas
+    // touch-action:none）抑制。
+    // v2.19.2：采集点自 onInterceptTouchEvent 移至 dispatchTouchEvent
+    // 入口的 feedLookFromEvent（不依赖触摸目标存在，且在剥离后的
+    // 自由指干净流上计算，与手柄彻底解耦）。
     /** 本手势是否处于视角累计中（超 slop 后启动，多指/抬手结束） */
     private var lookActive = false
     /** 上帧采样点（view 坐标） */
@@ -139,6 +143,26 @@ class ZoomPinchLayout @JvmOverloads constructor(
      * onInterceptTouchEvent 不会被调用 → 视角增量丢失、WebView 也收不到触摸。
      * 修复：无活跃流时把剥离后的 POINTER_DOWN 升级为 ACTION_DOWN 开新流
      * （等效 GameBox 原生 View 每指独立起流）。
+     *
+     * v2.19.2 补充（"必须先点一下屏幕才能转视角"根因之一）：
+     * 分类记忆（padPointerIds/freePointerIds）原来只在 raw ACTION_DOWN/UP/CANCEL
+     * 清空 —— 手柄手指按住期间，自由指事件全是 POINTER_DOWN/POINTER_UP，永不
+     * 清理；且手柄指针的 UP 走手柄命中路径、不经过本容器。Android 会复用已
+     * 抬起指针的 id：复用 id 的新自由指继承陈旧"手柄指"分类 → 事件被剥离吞掉
+     * （页面什么都收不到、视角不动），直到一次裸点击（raw ACTION_DOWN）触发
+     * 清空 —— 与用户实测完全吻合；反向残留则让手柄幽灵指针泄漏进 WebView 流。
+     * 修复见 dispatchTouchEvent 内的分类修剪（retainAll 仍按着的指针）。
+     *
+     * v2.19.3 补充（"视角旋转还是不能和手柄一起用"根因之三 —— 捏合误接管）：
+     * onInterceptTouchEvent/onTouchEvent 收到的是【未剥离的全指针原始事件】，
+     * 摇杆/按钮按住时其幽灵变化也随窗口流捎带进来。原仲裁用 pointerCount≥2
+     * 判捏合、spanOf(ev) 算指距 —— "摇杆 + 单根旋转指"被当成双指捏合，
+     * 旋转中两指距离一变（±5%/15% 阈值）就 beginPinch 接管：WebView 收
+     * ACTION_CANCEL 断流、MODE_PINCH 阻断 feedLookFromEvent 采集，且接管
+     * 还会误改页面缩放。表现为旋转与手柄同时使用时随机失灵（越用越容易
+     * 触发，因为接管过一次页面进了缩小域，阈值收紧到 ±5%）。修复：捏合
+     * 全链路（观察进入/MOVE 判定/重基线/接管 seed/缩放过程）改用
+     * freeIndicesOf/freeSpanOf 只统计自由指，自由指不足 2 根一律不接管。
      */
     private var streamActive = false
 
@@ -242,6 +266,8 @@ class ZoomPinchLayout @JvmOverloads constructor(
      */
     override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
         if (!GamepadController.hasElementHits()) {
+            // v2.19.2：视角采集移到任何事件必经的 dispatchTouchEvent 入口
+            feedLookFromEvent(ev)
             return super.dispatchTouchEvent(ev)
         }
         // 指针分类生命周期：窗口级 ACTION_DOWN = 全新手势流（此刻不可能有
@@ -255,6 +281,25 @@ class ZoomPinchLayout @JvmOverloads constructor(
                 freePointerIds.clear()
             }
         }
+        // v2.19.2：分类记忆修剪（"必须先点一下屏幕"根因一，见 streamActive 注释）。
+        // 手柄指针只要还按着，其幽灵 change 必随自由指事件捎带进来（Compose
+        // 事件携带全窗口指针），因此"不在本事件按着"的 id 一律视为已抬起遗忘，
+        // 复用 id 的新指针从源头不可能误判。 liftedIdx = POINTER_UP 的抬起指。
+        if (padPointerIds.isNotEmpty() || freePointerIds.isNotEmpty()) {
+            val live = HashSet<Int>(ev.pointerCount)
+            if (ev.actionMasked != MotionEvent.ACTION_UP &&
+                ev.actionMasked != MotionEvent.ACTION_CANCEL
+            ) {
+                val liftedIdx = if (ev.actionMasked == MotionEvent.ACTION_POINTER_UP) {
+                    ev.actionIndex
+                } else -1
+                for (i in 0 until ev.pointerCount) {
+                    if (i != liftedIdx) live.add(ev.getPointerId(i))
+                }
+            }
+            padPointerIds.retainAll(live)
+            freePointerIds.retainAll(live)
+        }
         // 收集本事件中手柄/自由指针的下标（新出现的 pointerId 按落点判定，
         // 判定结果按 id 记忆 —— 手指拖进/拖出手柄区域不改变归类）
         getLocationInWindow(windowLoc)
@@ -262,9 +307,18 @@ class ZoomPinchLayout @JvmOverloads constructor(
         for (i in 0 until ev.pointerCount) {
             val id = ev.getPointerId(i)
             if (!padPointerIds.contains(id) && !freePointerIds.contains(id)) {
-                val overPad = GamepadController.isOverPadElement(
-                    windowLoc[0] + ev.getX(i), windowLoc[1] + ev.getY(i)
-                )
+                // v2.19.4：触控板注入指针（id ≥ 99，点击落在指针位置）一律
+                // 归类为自由指 —— 虚拟鼠标点击的是“指针下方的内容”，即使
+                // 该位置恰好被手柄元素覆盖也不能被剥离吞掉（否则指针悬停
+                // 在摇杆/按钮区域时触控板点击全部失效）。手柄元素只由真实
+                // 手指直接按压触发。
+                val overPad = if (id >= INJECTED_POINTER_ID) {
+                    false
+                } else {
+                    GamepadController.isOverPadElement(
+                        windowLoc[0] + ev.getX(i), windowLoc[1] + ev.getY(i)
+                    )
+                }
                 if (overPad) padPointerIds.add(id) else freePointerIds.add(id)
             }
             if (!containsPad && padPointerIds.contains(id)) containsPad = true
@@ -276,6 +330,8 @@ class ZoomPinchLayout @JvmOverloads constructor(
                 MotionEvent.ACTION_DOWN -> streamActive = true
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> streamActive = false
             }
+            // v2.19.2：视角采集（直通流 = 无手柄指针参与的原始流）
+            feedLookFromEvent(ev)
             return super.dispatchTouchEvent(ev)
         }
 
@@ -345,10 +401,58 @@ class ZoomPinchLayout @JvmOverloads constructor(
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> streamActive = false
         }
         val cleaned = buildStrippedEvent(ev, freeIndices, cleanedAction)
+        // v2.19.2：视角采集（剥离后的自由指干净流 —— 与手柄彻底解耦）
+        feedLookFromEvent(cleaned)
         return try {
             super.dispatchTouchEvent(cleaned)
         } finally {
             cleaned.recycle()
+        }
+    }
+
+    /**
+     * v2.19.2：3D 视角（鼠标视角模式）增量采集 —— 自 dispatchTouchEvent
+     * 入口调用（原在 onInterceptTouchEvent：依赖 WebView 触摸目标存在，
+     * interop 过滤器 stopDispatching / 无目标 MOVE 等场景下永不触发，
+     * "必须先点一下屏幕才能转视角"的根因之二）。
+     *
+     * 语义与原实现一致：旁路观察不拦截（页面照常收到 tap/click/touch），
+     * 单指拖动超 slop 后把增量喂给 View3dController 合成
+     * mousemove(movementX/Y)；多指（捏合仲裁优先）暂停，抬回单指可继续；
+     * 捏合接管态（MODE_PINCH）不采集。传入剥离后的自由指干净流时同样适用。
+     */
+    private fun feedLookFromEvent(ev: MotionEvent) {
+        if (!View3dController.enabled) return
+        when (ev.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                lookActive = false
+                lookLastX = ev.x
+                lookLastY = ev.y
+            }
+            MotionEvent.ACTION_MOVE -> {
+                if (mode == MODE_PINCH) return
+                if (ev.pointerCount >= 2) {
+                    // 多指：暂停视角（捏合缩放仲裁优先）
+                    lookActive = false
+                } else if (lookActive) {
+                    val dx = ev.x - lookLastX
+                    val dy = ev.y - lookLastY
+                    lookLastX = ev.x
+                    lookLastY = ev.y
+                    View3dController.accumulate(dx, dy)
+                } else if (mode == MODE_IDLE && !passThrough) {
+                    val dxTotal = ev.x - lookLastX
+                    val dyTotal = ev.y - lookLastY
+                    if (dxTotal * dxTotal + dyTotal * dyTotal > lookSlop * lookSlop) {
+                        lookActive = true
+                        lookLastX = ev.x
+                        lookLastY = ev.y
+                    }
+                }
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                lookActive = false
+            }
         }
     }
 
@@ -399,51 +503,39 @@ class ZoomPinchLayout @JvmOverloads constructor(
                 baseSpan = 0f
                 lastScale = 0f
                 observeViewDomain = false
-                // v2.16.3：视角旁路重置（不拦截，只重新观察）
-                lookActive = false
-                lookLastX = ev.x
-                lookLastY = ev.y
+                // v2.19.2：视角旁路重置已移入 feedLookFromEvent（dispatchTouchEvent）
             }
             MotionEvent.ACTION_POINTER_DOWN -> {
-                if (ev.pointerCount >= 2) {
+                // v2.19.3：只有 ≥2 根“自由指”才进入捏合观察 —— 手柄指针
+                // （摇杆/按钮按住时捎带进来的幽灵变化）不算捏合指，
+                // “摇杆 + 单根旋转指”不再被误判成双指捏合（原 pointerCount≥2
+                // 判定是视角旋转与手柄冲突、随机 beginPinch 断流的根因）。
+                if (freeIndicesOf(ev).size >= 2) {
                     if (passThrough) return false
                     // 不在第二指落下瞬间拦截 —— 缩小态下运行的双拇指游戏
                     // （两指静止/同步移动）不应被断流；观察指距实际变化后再接管
                     mode = MODE_OBSERVE
                     observeViewDomain = viewZoom < 1f
-                    baseSpan = spanOf(ev)
+                    baseSpan = freeSpanOf(ev)
                     lastScale = webView?.scale ?: 0f
                     deadSamples = 0
                 }
             }
             MotionEvent.ACTION_MOVE -> {
-                // v2.16.3：鼠标视角旁路观察 —— 不拦截（返回 false，事件照常
-                // 给 WebView，页面 tap/click/touch 全保留），只在单指拖动超
-                // slop 后把增量喂给 View3dController，由注入脚本合成
-                // mousemove(movementX/Y) 转视角。多指（捏合缩放仲裁，下方
-                // MODE_OBSERVE 分支优先）时暂停视角累计，抬回单指可继续。
-                if (View3dController.enabled) {
-                    if (ev.pointerCount >= 2) {
-                        // 双指：暂停视角（捏合缩放优先），期间 WebView 事件不受影响
-                        lookActive = false
-                    } else if (lookActive) {
-                        val dx = ev.x - lookLastX
-                        val dy = ev.y - lookLastY
-                        lookLastX = ev.x
-                        lookLastY = ev.y
-                        View3dController.accumulate(dx, dy)
-                    } else if (mode == MODE_IDLE && !passThrough) {
-                        val dxTotal = ev.x - lookLastX
-                        val dyTotal = ev.y - lookLastY
-                        if (dxTotal * dxTotal + dyTotal * dyTotal > lookSlop * lookSlop) {
-                            lookActive = true
-                            lookLastX = ev.x
-                            lookLastY = ev.y
-                        }
+                // v2.19.2：视角旁路采集已移入 feedLookFromEvent（在任何事件
+                // 必经的 dispatchTouchEvent 入口、剥离后的干净流上计算）。
+                // 原实现在此采集有两个缺陷：① 依赖 WebView 触摸目标存在，
+                // interop 过滤器 stopDispatching 后 MOVE 无目标 → 永不触发；
+                // ② 手柄指针剥离发生在 dispatchTouchEvent，此处收到的事件
+                // 仍可能含幽灵指针，基线被污染。本方法只负责双指捏合仲裁。
+                if (mode == MODE_OBSERVE && !passThrough) {
+                    // v2.19.3：改用自由指指距（幽灵指针剔除）。自由指不足
+                    // 2 根 = 本事件无捏合可能 → 退回 IDLE，绝不拦截断流。
+                    val span = freeSpanOf(ev)
+                    if (span <= 0f) {
+                        mode = MODE_IDLE
+                        return false
                     }
-                }
-                if (mode == MODE_OBSERVE && ev.pointerCount == 2 && !passThrough) {
-                    val span = spanOf(ev)
                     if (observeViewDomain) {
                         // 已在缩小域：指距任一方向实质变化即接管（放大向回
                         // 100%，缩小向 30%）。meta 已把 scale 钳死在
@@ -478,12 +570,14 @@ class ZoomPinchLayout @JvmOverloads constructor(
                 }
             }
             MotionEvent.ACTION_POINTER_UP -> {
-                val remaining = ev.pointerCount - 1
+                // v2.19.3：剩余“自由指”（排除抬起指、剔除幽灵指针）< 2 才收捏合
+                val liftedIdx = ev.actionIndex
+                val remaining = freeIndicesOf(ev, liftedIdx).size
                 if (remaining < 2) {
                     mode = MODE_IDLE
                 } else if (mode == MODE_OBSERVE) {
                     // 指数变化（3 指余 2）：重基线，不丢失后续合法捏合
-                    baseSpan = spanOf(ev)
+                    baseSpan = freeSpanOf(ev, liftedIdx)
                     lastScale = webView?.scale ?: 0f
                     deadSamples = 0
                 }
@@ -505,21 +599,25 @@ class ZoomPinchLayout @JvmOverloads constructor(
 
     @SuppressLint("ClickableViewAccessibility")
     override fun onTouchEvent(ev: MotionEvent): Boolean {
-        // v2.16.3：视角拖动改为旁路观察（onInterceptTouchEvent 里累计增量，
-        // 不再拦截接管 —— 触摸事件照常给 WebView，页面 tap/click/touch 全保留）。
+        // v2.16.3：视角拖动为旁路观察（v2.19.2 起采集点移至
+        // dispatchTouchEvent 的 feedLookFromEvent，不再依赖拦截器），
+        // 触摸事件照常给 WebView，页面 tap/click/touch 全保留。
         // 本方法只处理被拦截接管的捏合缩放流（MODE_PINCH）。
         if (mode != MODE_PINCH) return false
         when (ev.actionMasked) {
             MotionEvent.ACTION_MOVE -> {
-                if (ev.pointerCount >= 2) {
+                // v2.19.3：捏合过程同样只看自由指指距（幽灵指针剔除），
+                // 手柄按住时缩放值不再被幽灵指距污染；不足 2 根自由指跳过。
+                val span = freeSpanOf(ev)
+                if (span > 0f) {
                     if (rebasePending) {
                         // 指数集变化后的首个 MOVE：重置增量基准，防止
                         //（新/旧）指数集的 span 跳变引起缩放跳变
                         rebasePending = false
-                        seedSpan = spanOf(ev)
+                        seedSpan = span
                         seedZoom = viewZoom
                     } else if (seedSpan > 0f) {
-                        setZoom(seedZoom * (spanOf(ev) / seedSpan))
+                        setZoom(seedZoom * (span / seedSpan))
                     }
                 }
             }
@@ -528,7 +626,8 @@ class ZoomPinchLayout @JvmOverloads constructor(
                 rebasePending = true
             }
             MotionEvent.ACTION_POINTER_UP -> {
-                if (ev.pointerCount - 1 < 2) {
+                // v2.19.3：剩余自由指不足 2 才算手势实质结束
+                if (freeIndicesOf(ev, ev.actionIndex).size < 2) {
                     // 抬指后不足双指：手势实质结束，精确应用最终值
                     finishPinch()
                     mode = MODE_IDLE
@@ -546,10 +645,20 @@ class ZoomPinchLayout @JvmOverloads constructor(
         return true
     }
 
-    /** 从观察/空闲态切入缩小域（此刻 WebView 收到 ACTION_CANCEL） */
+    /**
+     * 从观察/空闲态切入缩小域（此刻 WebView 收到 ACTION_CANCEL）
+     *
+     * v2.19.3 注意：本方法只允许在【真实双自由指捏合】时调用 ——
+     * 手柄幽灵指针参与的伪双指（摇杆 + 单根旋转指）绝不可走到这里，
+     * 否则 WebView 被断流（CANCEL）、MODE_PINCH 阻断视角采集，
+     * 表现为“3D 视角旋转和手柄不能同时用”。入口判定见
+     * onInterceptTouchEvent 的 freeIndicesOf/freeSpanOf。
+     */
     private fun beginPinch(ev: MotionEvent): Boolean {
         mode = MODE_PINCH
-        seedSpan = spanOf(ev)
+        // v2.19.3：基准必须与后续 onTouchEvent 的自由指指距同源
+        //（freeSpanOf），否则手柄幽灵指针会让首个缩放步进跳变。
+        seedSpan = freeSpanOf(ev)
         seedZoom = viewZoom
         rebasePending = false
         // 接管即应用一次（消除从原生地板到缩小域第一跳的延迟感）
@@ -587,6 +696,41 @@ class ZoomPinchLayout @JvmOverloads constructor(
             for (j in i + 1 until n) {
                 val dx = ev.getX(i) - ev.getX(j)
                 val dy = ev.getY(i) - ev.getY(j)
+                val d = sqrt(dx * dx + dy * dy)
+                if (d > max) max = d
+            }
+        }
+        return if (max > 1f) max else 1f
+    }
+
+    // ===== v2.19.3：捏合仲裁的“自由指”感知（手柄幽灵指针剔除） =====
+    // 背景：摇杆/按钮按住时，其指针变化随窗口多点流捎带进本容器
+    // （onInterceptTouchEvent/onTouchEvent 收到的是未剥离的全指针原始
+    // 事件）。“摇杆 + 单根旋转指”被 pointerCount≥2 误判成双指捏合，
+    // 旋转拖动中两指距离一变即 beginPinch 接管 → WebView 收 CANCEL、
+    // MODE_PINCH 阻断视角采集 —— 3D 视角旋转与手柄同时使用时随机失灵。
+    // 修复：捏合全链路只统计自由指（padPointerIds 在 dispatchTouchEvent
+    // 分类，先于 super.dispatchTouchEvent 内部的拦截器回调，此处可用）。
+
+    /** 当前事件中“自由指”（非手柄指针）的下标列表（可排除指定下标） */
+    private fun freeIndicesOf(ev: MotionEvent, excludeIdx: Int = -1): List<Int> {
+        val out = ArrayList<Int>(ev.pointerCount)
+        for (i in 0 until ev.pointerCount) {
+            if (i == excludeIdx) continue
+            if (!padPointerIds.contains(ev.getPointerId(i))) out.add(i)
+        }
+        return out
+    }
+
+    /** 自由指两两最大指距；自由指不足 2 根返回 0f（本事件无捏合可能） */
+    private fun freeSpanOf(ev: MotionEvent, excludeIdx: Int = -1): Float {
+        val idx = freeIndicesOf(ev, excludeIdx)
+        if (idx.size < 2) return 0f
+        var max = 0f
+        for (a in idx.indices) {
+            for (b in a + 1 until idx.size) {
+                val dx = ev.getX(idx[a]) - ev.getX(idx[b])
+                val dy = ev.getY(idx[a]) - ev.getY(idx[b])
                 val d = sqrt(dx * dx + dy * dy)
                 if (d > max) max = d
             }
