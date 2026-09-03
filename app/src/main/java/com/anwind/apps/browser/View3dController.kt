@@ -150,15 +150,30 @@ object View3dController {
               } catch(e) {}
             }
 
-            // === CSS：禁拖选/禁滚动/canvas 禁默认触摸（旁路模式防双响应） ===
+            // === CSS：禁拖选/禁滚动/canvas 禁默认触摸（v2.18 改为动态开合） ===
+            // 样式表常驻，内容由“视角拖动进行中”动态切换：拖动中启用
+            // 防滚动/禁选，拖动结束或模式关闭即恢复 —— 普通网页全程可正常
+            // 滚动与选择（v2.18 修复“部分网页无法上下滑动”）。
             try {
               if (!document.getElementById('__anwindLookStyle')) {
                 var st = document.createElement('style');
                 st.id = '__anwindLookStyle';
-                st.textContent = 'body{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none;overflow:hidden !important;}canvas{touch-action:none !important;}';
+                st.textContent = '';
+                window.__anwindLookStyleEl = st;
                 (document.head || document.documentElement).appendChild(st);
               }
             } catch(e) {}
+            window.__anwindLookApplyLock = function(on) {
+              try {
+                var el = window.__anwindLookStyleEl ||
+                         document.getElementById('__anwindLookStyle');
+                if (el) {
+                  el.textContent = on
+                    ? 'body{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none;overflow:hidden !important;}canvas{touch-action:none !important;}'
+                    : '';
+                }
+              } catch(e) {}
+            };
 
             // === 视角增量派发（GameBox __cameraRotate 同款目标选择） ===
             window.__anwindDispatchLook = function(dx, dy) {
@@ -215,9 +230,16 @@ object View3dController {
             var b = window.__anwindLookBridge;
             if (b) {
               var tick = 0;
+              var lockOn = false;
               function loop() {
                 try {
                   var r = b.pull();
+                  // v2.18：防滚动 CSS 随拖动状态动态开合（非拖动时页面可滚动）
+                  var active = !!(r && r !== '0,0');
+                  if (active !== lockOn) {
+                    lockOn = active;
+                    window.__anwindLookApplyLock(active);
+                  }
                   if (r && r !== '0,0') {
                     var a = r.split(',');
                     var dx = parseFloat(a[0]) || 0;

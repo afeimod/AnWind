@@ -108,6 +108,8 @@ class SettingsStore(private val context: Context) {
         val MOUSE_CLICK_MODE = stringPreferencesKey("mouse_click_mode")
         // 右键手势：twofinger 双指轻点 / longpress 长按（默认 twofinger）
         val MOUSE_RIGHT_CLICK = stringPreferencesKey("mouse_right_click")
+        // v2.18 指针移动方式：touch 指针跟随手指 / trackpad 触控板（滑动相对控制指针）
+        val MOUSE_CONTROL_MODE = stringPreferencesKey("mouse_control_mode")
 
         // === 虚拟键盘（v2.13：全键盘） ===
         // 总开关：off 时文本框回退系统输入法
@@ -226,6 +228,8 @@ class SettingsStore(private val context: Context) {
     val mouseCursorSize: Flow<Float> = context.appPrefs.data.map { it[Keys.MOUSE_CURSOR_SIZE] ?: 26f }
     val mouseClickMode: Flow<String> = context.appPrefs.data.map { it[Keys.MOUSE_CLICK_MODE] ?: "single" }
     val mouseRightClick: Flow<String> = context.appPrefs.data.map { it[Keys.MOUSE_RIGHT_CLICK] ?: "twofinger" }
+    // v2.18 指针移动方式：touch 跟随手指 / trackpad 触控板（默认 touch）
+    val mouseControlMode: Flow<String> = context.appPrefs.data.map { it[Keys.MOUSE_CONTROL_MODE] ?: "touch" }
 
     // === 虚拟键盘（v2.13） ===
     // v2.13.2：keyboardMaster 默认关闭 —— 大多数场景手机系统输入法更顺手，
@@ -434,6 +438,24 @@ class SettingsStore(private val context: Context) {
     suspend fun setMouseRightClick(mode: String) {
         val v = if (mode in setOf("twofinger", "longpress")) mode else "twofinger"
         context.appPrefs.edit { it[Keys.MOUSE_RIGHT_CLICK] = v }
+    }
+
+    /**
+     * v2.18：指针移动方式（touch 跟随手指 / trackpad 触控板）。
+     * 切到 trackpad 时按用户约定同时落地"双击打开 + 双指右键"默认习惯；
+     * 切回 touch 时恢复"单击打开"（右键手势保持双指轻点）。
+     */
+    suspend fun setMouseControlMode(mode: String) {
+        val v = if (mode == "trackpad") "trackpad" else "touch"
+        context.appPrefs.edit { prefs ->
+            prefs[Keys.MOUSE_CONTROL_MODE] = v
+            if (v == "trackpad") {
+                prefs[Keys.MOUSE_CLICK_MODE] = "double"
+                prefs[Keys.MOUSE_RIGHT_CLICK] = "twofinger"
+            } else {
+                prefs[Keys.MOUSE_CLICK_MODE] = "single"
+            }
+        }
     }
 
     // === 虚拟键盘 setter（v2.13） ===

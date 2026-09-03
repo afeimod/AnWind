@@ -950,13 +950,14 @@ private fun PersonalizationSection() {
     Spacer(Modifier.height(16.dp))
 
     // 背景（v2.14：壁纸改从应用内文件资源管理器选择，不再拉起手机系统文件管理器）
+    // v2.18：壁纸支持图片与视频（视频 = DreamScene 风格动态桌面，静音循环播放）
     Text(L("背景"), color = if (theme.isDark) Color.White else Color.Black, fontSize = 14.sp, fontWeight = FontWeight.Medium)
     Spacer(Modifier.height(8.dp))
     SettingsCard(
         icon = Icons.Default.Image,
         iconBackgroundColor = Color(0xFF0078D7),
         title = L("壁纸"),
-        subtitle = L("从文件资源管理器选择图片"),
+        subtitle = L("从文件资源管理器选择图片或视频"),
         onClick = {
             wm.open(
                 appId = "file_explorer",
@@ -964,6 +965,26 @@ private fun PersonalizationSection() {
                 launchMode = AppRegistry.get("file_explorer")?.launchMode
                     ?: com.anwind.core.window.LaunchMode.FLOATING,
                 launchArgs = mapOf("pickMode" to "wallpaper"),
+                initialWidth = 920,
+                initialHeight = 620
+            )
+        }
+    )
+    Spacer(Modifier.height(8.dp))
+
+    // v2.18：视频桌面壁纸（直达 Movies 文件夹选择视频文件）
+    SettingsCard(
+        icon = Icons.Default.PlayCircle,
+        iconBackgroundColor = Color(0xFF10893E),
+        title = L("视频壁纸"),
+        subtitle = L("选择视频作为动态桌面壁纸（静音循环，更耗电）"),
+        onClick = {
+            wm.open(
+                appId = "file_explorer",
+                title = "选择视频壁纸",
+                launchMode = AppRegistry.get("file_explorer")?.launchMode
+                    ?: com.anwind.core.window.LaunchMode.FLOATING,
+                launchArgs = mapOf("pickMode" to "wallpaper_video"),
                 initialWidth = 920,
                 initialHeight = 620
             )

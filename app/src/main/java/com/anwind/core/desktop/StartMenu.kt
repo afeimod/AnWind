@@ -3,6 +3,7 @@ package com.anwind.core.desktop
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
@@ -126,14 +127,17 @@ fun StartMenu(
             .clip(theme.startMenuShape)
             .background(theme.startMenuColor.copy(alpha = theme.startMenuAlpha))
             .border(1.dp, theme.windowBorderColor, theme.startMenuShape)
+            // v2.18 修复：应用列表无法滚动 —— 旧版这里用 awaitPointerEventScope
+            // 无差别消费全部指针事件（含滑动 move），阻断了对 LazyVerticalGrid
+            // 的滚动判定。改为 detectTapGestures 空回调：只消费轻点/双击/长按
+            //（防止点击菜单空白处时触发背景遮罩的关闭），滑动不再被消费，
+            // 应用网格恢复正常滚动。
             .pointerInput(Unit) {
-                // 阻止点击菜单自身时关闭
-                awaitPointerEventScope {
-                    while (true) {
-                        val event = awaitPointerEvent()
-                        event.changes.forEach { it.consume() }
-                    }
-                }
+                detectTapGestures(
+                    onTap = { },
+                    onDoubleTap = { },
+                    onLongPress = { }
+                )
             }
     ) {
         Column(modifier = Modifier.fillMaxSize()) {

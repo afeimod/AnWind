@@ -503,9 +503,12 @@ internal fun hashPin(pin: String): String = runCatching {
  * - TextureView 手动计算 cover 缩放（视频宽高比 vs 容器宽高比取大者），
  *   铺满整屏不变形（等效 ContentScale.Crop）；
  * - 组件销毁（解锁）时释放 MediaPlayer，避免后台占用解码器。
+ *
+ * v2.18：改为 internal —— 桌面壁纸层（WallpaperLayer）复用同一实现
+ * 支持"视频桌面壁纸"（DreamScene 风格）。
  */
 @Composable
-private fun LockVideoWallpaper(path: String, modifier: Modifier = Modifier) {
+internal fun LockVideoWallpaper(path: String, modifier: Modifier = Modifier) {
     var videoW by remember(path) { mutableFloatStateOf(0f) }
     var videoH by remember(path) { mutableFloatStateOf(0f) }
     val player = remember(path) { MediaPlayer() }

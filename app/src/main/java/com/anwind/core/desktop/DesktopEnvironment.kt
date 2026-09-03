@@ -21,6 +21,7 @@ import androidx.compose.ui.unit.dp
 import com.anwind.AnWindApp
 import com.anwind.core.input.MouseController
 import com.anwind.core.input.MouseCursorOverlay
+import com.anwind.core.input.TrackpadInputOverlay
 import com.anwind.core.input.VirtualKeyboardController
 import com.anwind.core.input.VirtualKeyboardOverlay
 import com.anwind.core.input.gamepad.GamepadOverlay
@@ -69,6 +70,8 @@ fun DesktopEnvironment(
     val mouseCursorEnabled by app.settingsStore.mouseCursorEnabled.collectAsState(initial = true)
     val mouseRightClick by app.settingsStore.mouseRightClick.collectAsState(initial = "twofinger")
     val mouseClickMode by app.settingsStore.mouseClickMode.collectAsState(initial = "single")
+    // v2.18 指针移动方式：touch 跟随手指 / trackpad 触控板
+    val mouseControlMode by app.settingsStore.mouseControlMode.collectAsState(initial = "touch")
 
     // 任务栏自动隐藏：只在与阈值交界处翻转，避免每次指针移动都触发整体重组
     var taskbarShown by remember { mutableStateOf(true) }
@@ -165,10 +168,12 @@ fun DesktopEnvironment(
                     }
                 }
             }
-            // v2.13 虚拟鼠标指针跟踪：纯观察者（从不消费事件），
-            // 指针贴手指移动，快速轻点时触发点击涟漪
-            .pointerInput(mouseCursorEnabled) {
-                if (mouseCursorEnabled) {
+            // v2.13 虚拟鼠标指针跟踪（touch 模式）：纯观察者（从不消费事件），
+            // 指针贴手指移动，快速轻点时触发点击涟漪。
+            // v2.18：trackpad 模式下本观察者不工作 —— 指针由 TrackpadInputOverlay
+            // 以相对增量驱动，手指不再直接点按 UI。
+            .pointerInput(mouseCursorEnabled, mouseControlMode) {
+                if (mouseCursorEnabled && mouseControlMode != "trackpad") {
                     awaitPointerEventScope {
                         while (true) {
                             val event = awaitPointerEvent()
@@ -384,6 +389,10 @@ fun DesktopEnvironment(
                     .align(Alignment.TopStart)
             )
         }
+
+        // ===== 6.5 v2.18 触控板输入层（trackpad 模式：滑动控指针 + 注入点击/滚动） =====
+        // 位于窗口/任务栏/开始菜单之上，虚拟键盘/手柄/指针/锁屏之下
+        TrackpadInputOverlay()
 
         // ===== 7. 虚拟键盘层（v2.13：全键盘，可拖动） =====
         VirtualKeyboardOverlay()

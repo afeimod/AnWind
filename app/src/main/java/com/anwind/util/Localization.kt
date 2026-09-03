@@ -270,7 +270,20 @@ object L10n {
         "锁屏与密码" to "Lock screen & password",
         "锁屏壁纸、锁屏密码、自动锁定定时" to "Lock wallpaper, password, auto-lock timer",
         "清除浏览历史" to "Clear browsing history",
-        "删除浏览器的访问历史记录（书签保留）" to "Delete browser history (bookmarks are kept)"
+        "删除浏览器的访问历史记录（书签保留）" to "Delete browser history (bookmarks are kept)",
+
+        // ===== v2.18 视频桌面壁纸 / 触控板模式 =====
+        "从文件资源管理器选择图片或视频" to "Pick an image or video from File Explorer",
+        "视频壁纸" to "Video wallpaper",
+        "选择视频作为动态桌面壁纸（静音循环，更耗电）" to "Use a video as live desktop wallpaper (muted loop, uses more battery)",
+        "移动方式" to "Pointer movement",
+        "触控" to "Touch",
+        "触控板" to "Trackpad",
+        "整个屏幕当作触控板：滑动移动指针，轻点 = 单击，快速连点两下 = 双击，双指轻点 = 右键，双指滑动 = 滚动页面" to
+            "Use the whole screen as a trackpad: slide to move the pointer, tap = click, quick double tap = double-click, two-finger tap = right-click, two-finger slide = scroll",
+        "指针跟随手指移动（默认，触屏习惯）" to "Pointer follows your finger (default, touch habit)",
+        "触控板模式已自动设为：双击打开 + 双指右键" to "Trackpad mode defaults applied: double-click to open + two-finger right-click",
+        "双击桌面图标打开（经典桌面鼠标习惯；触控板模式默认此项）" to "Double-click desktop icons to open (classic desktop habit; trackpad default)"
     )
 }
 

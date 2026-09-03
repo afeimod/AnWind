@@ -148,6 +148,8 @@ internal fun MouseSettingsPage(onBack: () -> Unit) {
     val clickMode by app.settingsStore.mouseClickMode.collectAsState(initial = "single")
     val rightClick by app.settingsStore.mouseRightClick.collectAsState(initial = "twofinger")
     val speed by app.settingsStore.mousePointerSpeed.collectAsState(initial = 1.0f)
+    // v2.18 指针移动方式：touch 跟随手指 / trackpad 触控板
+    val controlMode by app.settingsStore.mouseControlMode.collectAsState(initial = "touch")
 
     SubPageHeader("鼠标设置", onBack)
 
@@ -168,6 +170,32 @@ internal fun MouseSettingsPage(onBack: () -> Unit) {
                 }
             }
         )
+        Spacer(Modifier.height(10.dp))
+
+        // ===== v2.18 移动方式（触控 / 触控板） =====
+        SettingsBlock("移动方式") {
+            SegmentedControl(
+                options = listOf("touch" to "触控", "trackpad" to "触控板"),
+                selected = controlMode
+            ) { mode -> scope.launch { app.settingsStore.setMouseControlMode(mode) } }
+            Spacer(Modifier.height(6.dp))
+            Text(
+                if (controlMode == "trackpad")
+                    "整个屏幕当作触控板：滑动移动指针，轻点 = 单击，快速连点两下 = 双击，双指轻点 = 右键，双指滑动 = 滚动页面"
+                else
+                    "指针跟随手指移动（默认，触屏习惯）",
+                color = theme.secondaryTextColor,
+                fontSize = 11.sp
+            )
+            if (controlMode == "trackpad") {
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "触控板模式已自动设为：双击打开 + 双指右键",
+                    color = theme.accentColor,
+                    fontSize = 11.sp
+                )
+            }
+        }
         Spacer(Modifier.height(10.dp))
 
         // ===== 指针主题 =====
@@ -226,7 +254,7 @@ internal fun MouseSettingsPage(onBack: () -> Unit) {
             Spacer(Modifier.height(6.dp))
             Text(
                 if (clickMode == "single") "单击桌面图标立即打开（触屏推荐，Windows 平板默认）"
-                else "双击桌面图标打开（经典桌面鼠标习惯）",
+                else "双击桌面图标打开（经典桌面鼠标习惯；触控板模式默认此项）",
                 color = theme.secondaryTextColor,
                 fontSize = 11.sp
             )

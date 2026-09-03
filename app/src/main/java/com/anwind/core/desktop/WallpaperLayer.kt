@@ -32,6 +32,10 @@ import java.io.InputStream
  * - 大图按最长边 2400px 采样（inSampleSize），4K 照片不再 OOM；
  * - 解码失败（文件被移动/删除、URI 权限回收）自动回退主题默认壁纸，
  *   不再退到纯色背景。
+ *
+ * v2.18 新增视频壁纸：customWallpaperUri 为 video:// 前缀时渲染视频
+ * （TextureView + MediaPlayer 静音循环铺满，复用锁屏视频壁纸实现），
+ * Windows DreamScene 风格动态桌面。
  */
 @Composable
 fun WallpaperLayer(
@@ -40,6 +44,19 @@ fun WallpaperLayer(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
+
+    // ===== v2.18：视频壁纸分支（video:// 本地文件） =====
+    if (customWallpaperUri?.startsWith("video://") == true) {
+        val videoPath = customWallpaperUri.removePrefix("video://")
+        Box(modifier = modifier.background(Color(0xFF1A1A2E))) {
+            LockVideoWallpaper(
+                path = videoPath,
+                modifier = Modifier.fillMaxSize()
+            )
+        }
+        return
+    }
+
     val painter by produceState<BitmapPainter?>(
         initialValue = null,
         themeWallpaper, customWallpaperUri

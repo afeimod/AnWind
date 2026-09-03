@@ -113,13 +113,24 @@ private fun FileExplorerContent(scope: WindowContentScope) {
     val pickMode = scope.windowState.launchArgs["pickMode"] ?: ""
     val targetApp = scope.windowState.launchArgs["targetApp"] ?: ""
     val targetWindow = scope.windowState.launchArgs["targetWindow"] ?: ""
-    val wallpaperPick = pickMode == "wallpaper"
+    // v2.18 桌面壁纸选择：wallpaper = 图片或视频均可；wallpaper_video = 仅视频
+    val wallpaperPick = pickMode == "wallpaper" || pickMode == "wallpaper_video"
+    val wallpaperVideoOnlyPick = pickMode == "wallpaper_video"
     // v2.17 锁屏壁纸选择：图片 / 视频
     val lockWallpaperPick = pickMode == "lock_wallpaper"
     val lockWallpaperVideoPick = pickMode == "lock_wallpaper_video"
     val textPick = pickMode == "text"
     val mediaPick = pickMode == "media"
-    if (wallpaperPick || lockWallpaperPick) {
+    if (wallpaperVideoOnlyPick) {
+        // v2.18 桌面视频壁纸：直达 Movies → DCIM → Download → 内部存储根
+        LaunchedEffect(Unit) {
+            val dir = listOf("Movies", "DCIM", "Download")
+                .map { File(storageRoot, it) }
+                .firstOrNull { it.exists() && it.isDirectory } ?: storageRoot
+            currentRealDir = dir
+            isThisPcHome = false
+        }
+    } else if (wallpaperPick || lockWallpaperPick) {
         // 选择模式：直接进入 Pictures（不存在则内部存储根）
         LaunchedEffect(Unit) {
             val pics = File(storageRoot, "Pictures")
@@ -158,18 +169,25 @@ private fun FileExplorerContent(scope: WindowContentScope) {
     }
 
     /**
-     * v2.14：设为壁纸（file:// URI 持久化）并关闭选择窗口。
+     * v2.14：设为壁纸并关闭选择窗口。
+     * v2.18：支持视频壁纸（isVideo=true 时写 video:// 前缀，
+     * WallpaperLayer 渲染 TextureView + MediaPlayer 动态桌面）。
      *
      * v2.17 修复"选择图片自定义桌面壁纸不生效"：旧版用 rememberCoroutineScope
      * （绑定窗口组合）启动 DataStore 写入后立即 scope.onClose() 关窗，窗口
      * 组合销毁会取消协程，写入随机丢失。改用应用级 applicationScope，
      * 保证写入必定完成后窗口才被移除。
      */
-    fun setWallpaperAndClose(file: File) {
+    fun setWallpaperAndClose(file: File, isVideo: Boolean = false) {
+        val uri = if (isVideo) "video://${file.absolutePath}" else "file://${file.absolutePath}"
         app.applicationScope.launch {
-            app.settingsStore.setCustomWallpaper("file://${file.absolutePath}")
+            app.settingsStore.setCustomWallpaper(uri)
         }
-        Toast.makeText(context, "已设为壁纸", Toast.LENGTH_SHORT).show()
+        Toast.makeText(
+            context,
+            if (isVideo) "已设为视频壁纸" else "已设为壁纸",
+            Toast.LENGTH_SHORT
+        ).show()
         scope.onClose()
     }
 
@@ -433,7 +451,9 @@ private fun FileExplorerContent(scope: WindowContentScope) {
             ) {
                 Icon(
                     when {
-                        wallpaperPick -> Icons.Default.Image
+                        wallpaperPick ->
+                            if (wallpaperVideoOnlyPick) Icons.Default.PlayCircle
+                            else Icons.Default.Image
                         lockWallpaperPick -> Icons.Default.Image
                         lockWallpaperVideoPick -> Icons.Default.PlayCircle
                         textPick -> Icons.Default.Description
@@ -445,7 +465,8 @@ private fun FileExplorerContent(scope: WindowContentScope) {
                 Spacer(Modifier.width(8.dp))
                 Text(
                     when {
-                        wallpaperPick -> "点击任意图片，直接设为桌面壁纸"
+                        wallpaperVideoOnlyPick -> "点击任意视频文件，直接设为桌面动态壁纸"
+                        wallpaperPick -> "点击任意图片或视频，直接设为桌面壁纸"
                         lockWallpaperPick -> "点击任意图片，直接设为锁屏壁纸"
                         lockWallpaperVideoPick -> "点击任意视频文件，直接设为锁屏动态壁纸"
                         textPick -> "点击任意文本文件，在记事本中打开"
@@ -523,6 +544,9 @@ private fun FileExplorerContent(scope: WindowContentScope) {
                         if (file.isDirectory) openFolder(file)
                         else if (wallpaperPick && isImageExtension(file.extension)) {
                             setWallpaperAndClose(file)
+                        } else if (wallpaperPick && isVideoExtension(file.extension)) {
+                            // v2.18：壁纸模式点击视频 → 设为动态桌面壁纸
+                            setWallpaperAndClose(file, isVideo = true)
                         } else if (lockWallpaperPick && isImageExtension(file.extension)) {
                             setLockWallpaperAndClose(file, isVideo = false)
                         } else if (lockWallpaperVideoPick && isVideoExtension(file.extension)) {
@@ -540,6 +564,8 @@ private fun FileExplorerContent(scope: WindowContentScope) {
                         if (file.isDirectory) openFolder(file)
                         else if (wallpaperPick && isImageExtension(file.extension)) {
                             setWallpaperAndClose(file)
+                        } else if (wallpaperPick && isVideoExtension(file.extension)) {
+                            setWallpaperAndClose(file, isVideo = true)
                         } else if (lockWallpaperPick && isImageExtension(file.extension)) {
                             setLockWallpaperAndClose(file, isVideo = false)
                         } else if (lockWallpaperVideoPick && isVideoExtension(file.extension)) {
