@@ -162,10 +162,12 @@ internal fun DrawScope.drawCursor(path: Path, theme: MouseCursorTheme, strokePx:
 fun MouseCursorOverlay() {
     val app = AnWindApp.get()
     val enabled by app.settingsStore.mouseCursorEnabled.collectAsState(initial = true)
+    // v2.19：触控板模式下指针就是鼠标本体，强制显示
+    val controlMode by app.settingsStore.mouseControlMode.collectAsState(initial = "touch")
     val themeId by app.settingsStore.mouseCursorTheme.collectAsState(initial = "white")
     val sizeDp by app.settingsStore.mouseCursorSize.collectAsState(initial = 26f)
 
-    if (!enabled || !MouseController.initialized) return
+    if ((!enabled && controlMode != "trackpad") || !MouseController.initialized) return
 
     val theme = remember(themeId) { cursorThemeOf(themeId) }
     val density = LocalDensity.current

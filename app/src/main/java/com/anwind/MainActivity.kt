@@ -3,25 +3,42 @@ package com.anwind
 import android.content.pm.ActivityInfo
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.Column
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import com.anwind.core.theme.ThemeOverlay
 import com.anwind.core.theme.WinThemeScope
 import com.anwind.core.desktop.DesktopEnvironment
 import com.anwind.data.prefs.SettingsStore
 import com.anwind.util.ImmersiveMode
+import com.anwind.util.L
 import com.anwind.util.L10n
 import com.anwind.util.LocalAppLanguage
+import com.anwind.util.StorageAccess
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
 
@@ -114,6 +131,82 @@ class MainActivity : ComponentActivity() {
                         customWallpaperUri = customWallpaper,
                         soundEnabled = soundEnabled
                     )
+
+                    // ===== v2.19 首次启动存储权限引导 =====
+                    // 文件管理器/自定义壁纸/视频壁纸都依赖真实存储访问；
+                    // 首启弹一次说明对话框，拒绝后不再骚扰（可在系统设置里随时补授）
+                    val scope = rememberCoroutineScope()
+                    val storageAsked by settingsStore.storagePermAsked.collectAsState(initial = false)
+                    var storageGranted by remember {
+                        mutableStateOf(StorageAccess.hasAccess(this@MainActivity))
+                    }
+                    var showStorageDialog by remember { mutableStateOf(false) }
+
+                    // Android 10 及以下：运行时权限对话框；11+：跳系统设置页
+                    val permLauncher = rememberLauncherForActivityResult(
+                        ActivityResultContracts.RequestMultiplePermissions()
+                    ) {
+                        storageGranted = StorageAccess.hasAccess(this@MainActivity)
+                        if (storageGranted) {
+                            scope.launch { settingsStore.setStoragePermAsked() }
+                        }
+                    }
+
+                    // 从系统设置页返回（ON_RESUME）后重新判定授权状态
+                    DisposableEffectSafely(
+                        onRecheck = {
+                            storageGranted = StorageAccess.hasAccess(this@MainActivity)
+                        }
+                    )
+                    LaunchedEffect(storageAsked) {
+                        if (!storageAsked) {
+                            delay(600) // 等桌面首帧稳定后再弹，避免启动竞态
+                            if (!StorageAccess.hasAccess(this@MainActivity)) {
+                                showStorageDialog = true
+                            }
+                        }
+                    }
+                    LaunchedEffect(storageGranted) {
+                        if (storageGranted) showStorageDialog = false
+                    }
+
+                    if (showStorageDialog && !storageGranted) {
+                        AlertDialog(
+                            onDismissRequest = {
+                                showStorageDialog = false
+                                scope.launch { settingsStore.setStoragePermAsked() }
+                            },
+                            title = { Text(L("存储权限")) },
+                            text = {
+                                Column {
+                                    Text(
+                                        L(
+                                            "AnWind 需要存储权限才能使用文件管理器、自定义壁纸、视频壁纸等功能，建议授予“访问所有文件”权限。"
+                                        )
+                                    )
+                                }
+                            },
+                            confirmButton = {
+                                TextButton(onClick = {
+                                    showStorageDialog = false
+                                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                                        val intent = runCatching {
+                                            StorageAccess.manageIntent(this@MainActivity)
+                                        }.getOrElse { StorageAccess.manageFallbackIntent() }
+                                        runCatching { startActivity(intent) }
+                                    } else {
+                                        permLauncher.launch(StorageAccess.legacyPermissions())
+                                    }
+                                }) { Text(L("去授权")) }
+                            },
+                            dismissButton = {
+                                TextButton(onClick = {
+                                    showStorageDialog = false
+                                    scope.launch { settingsStore.setStoragePermAsked() }
+                                }) { Text(L("稍后")) }
+                            }
+                        )
+                    }
                 }
             }
         }
@@ -128,6 +221,23 @@ class MainActivity : ComponentActivity() {
         super.onWindowFocusChanged(hasFocus)
         if (hasFocus) {
             ImmersiveMode.applyTo(window)
+        }
+    }
+
+    /**
+     * v2.19：从系统设置页（所有文件访问）返回后重新判定授权状态。
+     * 单独的小组合函数：在 setContent 内声明生命周期观察者用。
+     */
+    @androidx.compose.runtime.Composable
+    private fun DisposableEffectSafely(onRecheck: () -> Unit) {
+        androidx.compose.runtime.DisposableEffect(Unit) {
+            val observer = LifecycleEventObserver { _, event ->
+                if (event == Lifecycle.Event.ON_RESUME) {
+                    onRecheck()
+                }
+            }
+            lifecycle.addObserver(observer)
+            onDispose { lifecycle.removeObserver(observer) }
         }
     }
 

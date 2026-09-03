@@ -19,9 +19,10 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import com.anwind.AnWindApp
+import com.anwind.core.input.INJECTED_POINTER_ID
 import com.anwind.core.input.MouseController
 import com.anwind.core.input.MouseCursorOverlay
-import com.anwind.core.input.TrackpadInputOverlay
+import com.anwind.core.input.TrackpadGate
 import com.anwind.core.input.VirtualKeyboardController
 import com.anwind.core.input.VirtualKeyboardOverlay
 import com.anwind.core.input.gamepad.GamepadOverlay
@@ -156,12 +157,17 @@ fun DesktopEnvironment(
             .fillMaxSize()
             .background(Color.Black)
             // 仅在开启自动隐藏时监听指针位置（不消费事件），用于底部边缘呼出任务栏
-            .pointerInput(taskbarAutohide) {
+            // v2.19：触控板模式下跟随“指针”而非手指（手指只是驱动指针的触控板）
+            .pointerInput(taskbarAutohide, mouseControlMode) {
                 if (taskbarAutohide) {
                     awaitPointerEventScope {
                         while (true) {
                             val event = awaitPointerEvent()
-                            val y = event.changes.firstOrNull()?.position?.y ?: continue
+                            val y = if (mouseControlMode == "trackpad") {
+                                MouseController.position.y
+                            } else {
+                                event.changes.firstOrNull()?.position?.y ?: continue
+                            }
                             val visible = y >= bottomThresholdPx
                             if (visible != taskbarShown) taskbarShown = visible
                         }
@@ -170,8 +176,8 @@ fun DesktopEnvironment(
             }
             // v2.13 虚拟鼠标指针跟踪（touch 模式）：纯观察者（从不消费事件），
             // 指针贴手指移动，快速轻点时触发点击涟漪。
-            // v2.18：trackpad 模式下本观察者不工作 —— 指针由 TrackpadInputOverlay
-            // 以相对增量驱动，手指不再直接点按 UI。
+            // v2.18/2.19：trackpad 模式下本观察者不工作 —— 指针由 TrackpadGate
+            // 门禁以相对增量驱动，手指不再直接点按 UI。
             .pointerInput(mouseCursorEnabled, mouseControlMode) {
                 if (mouseCursorEnabled && mouseControlMode != "trackpad") {
                     awaitPointerEventScope {
@@ -214,7 +220,8 @@ fun DesktopEnvironment(
         // 同时初始化虚拟鼠标指针位置（首次进入桌面时置于屏幕中部偏上）
         SideEffect {
             bottomThresholdPx = with(density) { fullHeight.toPx() } - with(density) { 28.dp.toPx() }
-            if (mouseCursorEnabled) {
+            // v2.19：触控板模式强制需要指针（指针就是鼠标本体）
+            if (mouseCursorEnabled || mouseControlMode == "trackpad") {
                 MouseController.initialize(
                     with(density) { maxWidth.toPx() } * 0.4f,
                     with(density) { fullHeight.toPx() } * 0.32f
@@ -225,6 +232,11 @@ fun DesktopEnvironment(
         // 任务栏可见性：真全屏时彻底隐藏；否则按自动隐藏策略
         val taskbarVisible = !anyTrueFullscreen && (!taskbarAutohide || taskbarShown || startMenuOpen)
         val taskbarOffsetY = if (taskbarVisible) 0 else with(density) { taskbarHeight.toPx() }.toInt()
+
+        // ===== v2.19 触控板门禁（祖先层）：包裹壁纸～右键菜单 —— trackpad 模式下
+        // 在 Initial pass 消费真实触摸（下层收不到），注入的合成事件则放行直达
+        // 窗口；touch 模式为纯容器零开销。（内容缩进保持原样，仅加包裹层）
+        TrackpadGate(modifier = Modifier.fillMaxSize()) {
 
         // ===== 1. 壁纸层 =====
         WallpaperLayer(
@@ -258,8 +270,14 @@ fun DesktopEnvironment(
                     },
                     onTwoFingerTap = openContextMenu,
                     enableTwoFinger = mouseRightClick == "twofinger",
-                    enableLongPress = mouseRightClick == "longpress",
-                    onLongPress = openContextMenu
+                    // v2.19：触控板模式长按 = 拖拽（门禁层），不再触发右键
+                    enableLongPress = mouseRightClick == "longpress" &&
+                        mouseControlMode != "trackpad",
+                    onLongPress = openContextMenu,
+                    // v2.19：触控板模式下本层只处理注入的合成流（真实手指
+                    // 已被门禁拦截），注入的单指轻点/双指轻点经此还原为
+                    // 桌面点击 / 右键菜单
+                    trackpadMode = mouseControlMode == "trackpad"
                 )
         ) {
             // key(refreshTick)：右键菜单"刷新"时重建网格，重新加载图标位图
@@ -390,9 +408,7 @@ fun DesktopEnvironment(
             )
         }
 
-        // ===== 6.5 v2.18 触控板输入层（trackpad 模式：滑动控指针 + 注入点击/滚动） =====
-        // 位于窗口/任务栏/开始菜单之上，虚拟键盘/手柄/指针/锁屏之下
-        TrackpadInputOverlay()
+        } // end TrackpadGate
 
         // ===== 7. 虚拟键盘层（v2.13：全键盘，可拖动） =====
         VirtualKeyboardOverlay()
@@ -476,10 +492,21 @@ private fun Modifier.desktopGestures(
     onTwoFingerTap: (Offset) -> Unit,
     enableTwoFinger: Boolean,
     enableLongPress: Boolean,
-    onLongPress: (Offset) -> Unit
-): Modifier = pointerInput(enableTwoFinger, enableLongPress) {
+    onLongPress: (Offset) -> Unit,
+    trackpadMode: Boolean = false
+): Modifier = pointerInput(enableTwoFinger, enableLongPress, trackpadMode) {
     awaitEachGesture {
         val first = awaitFirstDown(requireUnconsumed = false)
+        // v2.19 触控板模式：真实手指流已被 TrackpadGate 消费（本层收到的
+        // 是“已消费”事件）—— 跳过，只处理触控板注入的合成流（id ≥ 99），
+        // 把注入的单指轻点 / 双指轻点还原为桌面点击 / 右键菜单
+        if (trackpadMode && first.id < INJECTED_POINTER_ID) {
+            while (true) {
+                val ev = awaitPointerEvent()
+                if (ev.changes.none { it.pressed }) break
+            }
+            return@awaitEachGesture
+        }
         val startTime = first.uptimeMillis
         val startPositions = mutableMapOf(first.id to first.position)
         var maxPointers = 1

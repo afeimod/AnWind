@@ -199,12 +199,23 @@ object View3dController {
             };
           }
 
-          if (window.__anwindLook) return;
-          __anwindSetup();
+          if (!window.__anwindLook) __anwindSetup();
+
+          // === v2.19：停止 pull 循环（模式关闭时由 native 调用，普通网页零开销） ===
+          window.__anwindLookStop = function() {
+            try {
+              if (window.__anwindLookRaf) {
+                cancelAnimationFrame(window.__anwindLookRaf);
+              }
+            } catch(e) {}
+            window.__anwindLookRaf = 0;
+            try { window.__anwindLookApplyLock(false); } catch(e) {}
+          };
 
           // === same-origin iframe 安装（自包含源码在子 frame 全局 eval） ===
+          // v2.19：挂在 window 上，重复注入时复用（rAF 循环引用 window 版本）
           window.__anwindLookFrames = [];
-          function installInto(w) {
+          window.__anwindInstallInto = function(w) {
             if (!w) return;
             try { void w.location.href; } catch(e) { return; } // 跨域 → 跳过
             try {
@@ -215,18 +226,26 @@ object View3dController {
                 window.__anwindLookFrames.push(w);
               }
             } catch(e) {}
-          }
-          function scanFrames() {
+          };
+          window.__anwindScanFrames = function() {
             try {
               var list = document.querySelectorAll('iframe');
               for (var i = 0; i < list.length; i++) {
-                try { installInto(list[i].contentWindow); } catch(e) {}
+                try { window.__anwindInstallInto(list[i].contentWindow); } catch(e) {}
               }
             } catch(e) {}
-          }
+          };
 
           // === 主 frame：rAF 循环 pull 桥增量（子 frame 不 pull，防抢增量） ===
+          // v2.19：每次注入都（重）启动循环 —— 关闭时 __anwindLookStop 停掉，
+          // 再次开启重新注入即可恢复；普通页面全程不注入、零开销
           if (window.parent === window) {
+            try {
+              if (window.__anwindLookRaf) {
+                cancelAnimationFrame(window.__anwindLookRaf);
+              }
+            } catch(e) {}
+            window.__anwindLookRaf = 0;
             var b = window.__anwindLookBridge;
             if (b) {
               var tick = 0;
@@ -257,14 +276,20 @@ object View3dController {
                     }
                   }
                   // 低频扫描新 iframe（约每 2s 一次，querySelectorAll 开销可忽略）
-                  if ((++tick % 120) === 0) scanFrames();
+                  if ((++tick % 120) === 0 && window.__anwindScanFrames) {
+                    window.__anwindScanFrames();
+                  }
                 } catch(e) {}
-                requestAnimationFrame(loop);
+                window.__anwindLookRaf = requestAnimationFrame(loop);
               }
-              requestAnimationFrame(loop);
-              scanFrames();
-              setTimeout(scanFrames, 1000);
-              setTimeout(scanFrames, 3000);
+              window.__anwindLookRaf = requestAnimationFrame(loop);
+              if (window.__anwindScanFrames) window.__anwindScanFrames();
+              setTimeout(function() {
+                try { window.__anwindScanFrames && window.__anwindScanFrames(); } catch(e) {}
+              }, 1000);
+              setTimeout(function() {
+                try { window.__anwindScanFrames && window.__anwindScanFrames(); } catch(e) {}
+              }, 3000);
             }
           }
         })();

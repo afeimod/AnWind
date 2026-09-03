@@ -110,6 +110,8 @@ class SettingsStore(private val context: Context) {
         val MOUSE_RIGHT_CLICK = stringPreferencesKey("mouse_right_click")
         // v2.18 指针移动方式：touch 指针跟随手指 / trackpad 触控板（滑动相对控制指针）
         val MOUSE_CONTROL_MODE = stringPreferencesKey("mouse_control_mode")
+        // v2.19 首次启动存储权限引导：是否已经提示过（避免每次启动都弹）
+        val STORAGE_PERM_ASKED = booleanPreferencesKey("storage_perm_asked")
 
         // === 虚拟键盘（v2.13：全键盘） ===
         // 总开关：off 时文本框回退系统输入法
@@ -230,6 +232,9 @@ class SettingsStore(private val context: Context) {
     val mouseRightClick: Flow<String> = context.appPrefs.data.map { it[Keys.MOUSE_RIGHT_CLICK] ?: "twofinger" }
     // v2.18 指针移动方式：touch 跟随手指 / trackpad 触控板（默认 touch）
     val mouseControlMode: Flow<String> = context.appPrefs.data.map { it[Keys.MOUSE_CONTROL_MODE] ?: "touch" }
+
+    // === v2.19 首次启动存储权限引导 ===
+    val storagePermAsked: Flow<Boolean> = context.appPrefs.data.map { it[Keys.STORAGE_PERM_ASKED] ?: false }
 
     // === 虚拟键盘（v2.13） ===
     // v2.13.2：keyboardMaster 默认关闭 —— 大多数场景手机系统输入法更顺手，
@@ -456,6 +461,12 @@ class SettingsStore(private val context: Context) {
                 prefs[Keys.MOUSE_CLICK_MODE] = "single"
             }
         }
+    }
+
+    // === v2.19 存储权限引导 ===
+    /** 首启引导已展示过（用户选了"稍后"或已授权），不再重复弹出 */
+    suspend fun setStoragePermAsked() {
+        context.appPrefs.edit { it[Keys.STORAGE_PERM_ASKED] = true }
     }
 
     // === 虚拟键盘 setter（v2.13） ===

@@ -33,6 +33,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
@@ -43,7 +44,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.viewinterop.AndroidView
@@ -500,20 +500,30 @@ internal fun hashPin(pin: String): String = runCatching {
 
 /**
  * 视频壁纸：本地文件路径，静音循环播放。
- * - TextureView 手动计算 cover 缩放（视频宽高比 vs 容器宽高比取大者），
- *   铺满整屏不变形（等效 ContentScale.Crop）；
- * - 组件销毁（解锁）时释放 MediaPlayer，避免后台占用解码器。
+ *
+ * v2.19 重做（修复旧实现两个问题）：
+ * 1. 「铺不满屏」：旧版用均匀 graphicsLayer 缩放做 cover，无法兼顾铺满与
+ *    不变形；新版按视频宽高比计算【溢出容器】的 View 尺寸（等效
+ *    ContentScale.Crop：短边贴齐、长边溢出居中裁切），TextureView 把画面
+ *    拉伸到自身尺寸即可既铺满又不变形；
+ * 2. 「换视频卡住」：AndroidView 的 factory 不随 path 重跑，换壁纸时
+ *    TextureView 被复用 —— 它的 SurfaceTexture 已存在，
+ *    onSurfaceTextureAvailable 不再触发，新播放器永远拿不到 Surface，
+ *    画面冻结直到重启。新版 key(path) 强制整棵视图按路径重建，
+ *    新 TextureView → 新 Surface → 新播放器立即开播；旧播放器由
+ *    DisposableEffect(path) 及时释放。
  *
  * v2.18：改为 internal —— 桌面壁纸层（WallpaperLayer）复用同一实现
- * 支持"视频桌面壁纸"（DreamScene 风格）。
+ * 支持"视频桌面壁纸"（DreamScene 风格）；锁屏视频壁纸同步受益。
  */
 @Composable
 internal fun LockVideoWallpaper(path: String, modifier: Modifier = Modifier) {
-    var videoW by remember(path) { mutableFloatStateOf(0f) }
-    var videoH by remember(path) { mutableFloatStateOf(0f) }
+    // 视频宽高（prepare 后可得；未知时先按容器尺寸拉伸铺满）
+    var videoW by remember(path) { mutableIntStateOf(0) }
+    var videoH by remember(path) { mutableIntStateOf(0) }
     val player = remember(path) { MediaPlayer() }
 
-    // 离开组合（解锁）时释放播放器
+    // 离开组合（解锁 / 换壁纸 / 换回图片壁纸）时释放播放器
     DisposableEffect(path) {
         onDispose {
             runCatching { player.stop() }
@@ -525,9 +535,30 @@ internal fun LockVideoWallpaper(path: String, modifier: Modifier = Modifier) {
         val density = LocalDensity.current
         val containerW = with(density) { maxWidth.toPx() }
         val containerH = with(density) { maxHeight.toPx() }
-        val coverScale = if (videoW > 0f && videoH > 0f) {
-            maxOf(containerW / videoW, containerH / videoH)
-        } else 1f
+
+        // cover 尺寸：等比放大视频直到铺满容器（短边贴齐、长边溢出居中裁掉）
+        val viewW: Float
+        val viewH: Float
+        if (videoW > 0 && videoH > 0) {
+            val videoAspect = videoW.toFloat() / videoH.toFloat()
+            val boxAspect = containerW / containerH
+            if (videoAspect > boxAspect) {
+                // 视频更宽：以高为准铺满，宽度溢出
+                viewH = containerH
+                viewW = containerH * videoAspect
+            } else {
+                // 视频更高：以宽为准铺满，高度溢出
+                viewW = containerW
+                viewH = containerW / videoAspect
+            }
+        } else {
+            viewW = containerW
+            viewH = containerH
+        }
+
+        // key(path)：换视频时整棵 AndroidView 重建（SurfaceTexture 属于旧
+        // 播放器，复用 TextureView 会让新播放器拿不到 Surface 而"卡住"）
+        key(path) {
 
         AndroidView(
             factory = { ctx ->
@@ -540,14 +571,11 @@ internal fun LockVideoWallpaper(path: String, modifier: Modifier = Modifier) {
                                 player.setSurface(Surface(surface))
                                 player.setDataSource(path)
                                 player.isLooping = true
-                                player.setVideoScalingMode(
-                                    MediaPlayer.VIDEO_SCALING_MODE_SCALE_TO_FIT
-                                )
-                                // 静音：锁屏壁纸不需要声音
+                                // 静音：壁纸不需要声音
                                 player.setVolume(0f, 0f)
                                 player.setOnPreparedListener { mp ->
-                                    videoW = mp.videoWidth.toFloat().coerceAtLeast(1f)
-                                    videoH = mp.videoHeight.toFloat().coerceAtLeast(1f)
+                                    videoW = mp.videoWidth.coerceAtLeast(1)
+                                    videoH = mp.videoHeight.coerceAtLeast(1)
                                     mp.isLooping = true
                                     mp.start()
                                 }
@@ -572,12 +600,12 @@ internal fun LockVideoWallpaper(path: String, modifier: Modifier = Modifier) {
                 }
             },
             modifier = Modifier
-                .fillMaxSize()
-                .graphicsLayer {
-                    scaleX = coverScale
-                    scaleY = coverScale
-                    transformOrigin = TransformOrigin(0.5f, 0.5f)
-                }
+                .align(Alignment.Center)
+                .size(
+                    width = with(density) { viewW.toDp() },
+                    height = with(density) { viewH.toDp() }
+                )
         )
+        } // end key(path)
     }
 }

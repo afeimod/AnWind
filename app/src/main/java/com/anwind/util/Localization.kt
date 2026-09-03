@@ -279,11 +279,18 @@ object L10n {
         "移动方式" to "Pointer movement",
         "触控" to "Touch",
         "触控板" to "Trackpad",
-        "整个屏幕当作触控板：滑动移动指针，轻点 = 单击，快速连点两下 = 双击，双指轻点 = 右键，双指滑动 = 滚动页面" to
-            "Use the whole screen as a trackpad: slide to move the pointer, tap = click, quick double tap = double-click, two-finger tap = right-click, two-finger slide = scroll",
+        "整个屏幕当作触控板：滑动移动指针，轻点 = 单击，快速连点两下 = 双击，按住不动后拖动 = 按住拖拽，双指轻点 = 右键，双指滑动 = 滚动页面" to
+            "Use the whole screen as a trackpad: slide to move the pointer, tap = click, quick double tap = double-click, press & hold then drag = drag, two-finger tap = right-click, two-finger slide = scroll",
         "指针跟随手指移动（默认，触屏习惯）" to "Pointer follows your finger (default, touch habit)",
         "触控板模式已自动设为：双击打开 + 双指右键" to "Trackpad mode defaults applied: double-click to open + two-finger right-click",
-        "双击桌面图标打开（经典桌面鼠标习惯；触控板模式默认此项）" to "Double-click desktop icons to open (classic desktop habit; trackpad default)"
+        "双击桌面图标打开（经典桌面鼠标习惯；触控板模式默认此项）" to "Double-click desktop icons to open (classic desktop habit; trackpad default)",
+
+        // ===== v2.19 首次启动存储权限引导 =====
+        "存储权限" to "Storage permission",
+        "AnWind 需要存储权限才能使用文件管理器、自定义壁纸、视频壁纸等功能，建议授予“访问所有文件”权限。" to
+            "AnWind needs storage access for File Explorer, custom & video wallpapers and more. All-files access is recommended.",
+        "去授权" to "Grant access",
+        "稍后" to "Later"
     )
 }
 

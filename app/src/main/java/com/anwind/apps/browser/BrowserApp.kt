@@ -117,10 +117,32 @@ private fun BrowserContent(scope: WindowContentScope) {
     var showView3dSettings by remember { mutableStateOf(false) }
     // 状态同步到控制器（手势层/JS 桥直接读，避免每帧穿过 Compose）；
     // 关闭时同时清空残留增量，避免下次开启时视角跳变
+    // v2.19：开关切换时对已加载页面补注入/停止 rAF pull 循环 ——
+    // onPageFinished 只覆盖之后的导航，且普通页面不该常驻每帧 JNI
     SideEffect {
+        val wasEnabled = View3dController.enabled
         View3dController.enabled = view3dEnabled
         View3dController.sensitivity = view3dSensitivity
-        if (!view3dEnabled) View3dController.reset()
+        if (!view3dEnabled) {
+            View3dController.reset()
+            tabManager.tabs.forEach { t ->
+                t.webView?.let { wv ->
+                    runCatching {
+                        wv.evaluateJavascript(
+                            "try{window.__anwindLookStop&&window.__anwindLookStop()}catch(e){}", null
+                        )
+                    }
+                }
+            }
+        } else if (!wasEnabled) {
+            tabManager.tabs.forEach { t ->
+                t.webView?.let { wv ->
+                    runCatching {
+                        wv.evaluateJavascript(View3dController.LOOK_SETUP_SCRIPT, null)
+                    }
+                }
+            }
+        }
     }
 
     // 用户设置的主页（默认 AnWind 速度页 anwind://home）
@@ -484,6 +506,9 @@ private fun WebViewContainer(
                 com.anwind.core.input.gamepad.GamepadController.attachWebView(it)
             }
         }
+
+        // v2.19：左缘悬浮滚动条（指针悬停显示，点击跳转 / 拖动滚动）
+        BrowserScrollbarOverlay(tab = tab)
 
         // 加载进度条
         if (progress in 1 until 100) {

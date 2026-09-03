@@ -30,6 +30,7 @@ import com.anwind.core.input.MouseCursorPreview
 import com.anwind.core.input.keyboardAware
 import com.anwind.core.input.keyboardAwareEditor
 import com.anwind.core.theme.LocalWinTheme
+import com.anwind.util.L
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
@@ -181,9 +182,9 @@ internal fun MouseSettingsPage(onBack: () -> Unit) {
             Spacer(Modifier.height(6.dp))
             Text(
                 if (controlMode == "trackpad")
-                    "整个屏幕当作触控板：滑动移动指针，轻点 = 单击，快速连点两下 = 双击，双指轻点 = 右键，双指滑动 = 滚动页面"
+                    L("整个屏幕当作触控板：滑动移动指针，轻点 = 单击，快速连点两下 = 双击，按住不动后拖动 = 按住拖拽，双指轻点 = 右键，双指滑动 = 滚动页面")
                 else
-                    "指针跟随手指移动（默认，触屏习惯）",
+                    L("指针跟随手指移动（默认，触屏习惯）"),
                 color = theme.secondaryTextColor,
                 fontSize = 11.sp
             )

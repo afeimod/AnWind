@@ -148,7 +148,7 @@ object BrowserEngine {
             applyUa(existing, manager.uaMode)
             return existing
         }
-        val wv = WebView(context)
+        val wv = ExposedWebView(context)
         if (defaultMobileUa == null) {
             defaultMobileUa = wv.settings.userAgentString
         }
@@ -245,6 +245,15 @@ object BrowserEngine {
         } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             @Suppress("DEPRECATION")
             runCatching { wv.settings.forceDark = WebSettings.FORCE_DARK_OFF }
+        }
+
+        // v2.19：渲染进程优先级拉满 —— 多窗口/多标签场景下 Chromium 可能
+        // 因可见性判定降级渲染优先级导致前台滚动卡顿；deferred=false 保持
+        // 常驻优先级（配合 largeHeap，多标签内存压力可控）
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N_MR1) {
+            runCatching {
+                wv.setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, false)
+            }
         }
 
         // 启用 WebView 内部数据库 (WebStorage) 自动管理
@@ -503,7 +512,12 @@ object BrowserEngine {
             // CSS/element 查询会失败；onPageFinished 时 document.head/canvas
             // 已可用，hook requestPointerLock 也能在用户点击画布前就位。
             // 脚本幂等（window.__anwindLook 防重复），SPA 锚点导航重复触发安全。
-            if (url != null && (url.startsWith("http") || url.startsWith("file:"))) {
+            // v2.19：只在 3D 视角模式开启时注入 —— 脚本的 rAF pull 循环每帧
+            // 跨 JNI 一次，重型门户页（qqgame 等）上徒增渲染压力；关闭时
+            // 普通网页全程零注入零开销（开启时由 BrowserContent 补注入）
+            if (View3dController.enabled &&
+                url != null && (url.startsWith("http") || url.startsWith("file:"))
+            ) {
                 view?.evaluateJavascript(View3dController.LOOK_SETUP_SCRIPT, null)
             }
 
