@@ -6,6 +6,9 @@ import androidx.room.Room
 import com.anwind.data.db.AppDatabase
 import com.anwind.data.prefs.SettingsStore
 import com.anwind.core.theme.ThemeManager
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 
 /**
  * 应用入口：初始化 Room DB、ThemeManager、SettingsStore 等单例。
@@ -17,6 +20,16 @@ class AnWindApp : Application() {
     lateinit var database: AppDatabase
     lateinit var themeManager: ThemeManager
     lateinit var settingsStore: SettingsStore
+
+    /**
+     * v2.17 应用级协程作用域：生命周期与应用进程一致，不随任何窗口/组合销毁。
+     *
+     * 修复“选择图片自定义桌面壁纸不生效”：旧版在窗口内用
+     * rememberCoroutineScope 启动 DataStore 写入后立即关窗，窗口组合销毁时
+     * 协程被取消，写入随机丢失。涉及持久化的操作（设壁纸/锁屏壁纸等）
+     * 一律改用本作用域。
+     */
+    val applicationScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     override fun onCreate() {
         super.onCreate()

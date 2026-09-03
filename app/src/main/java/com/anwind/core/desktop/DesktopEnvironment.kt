@@ -27,9 +27,13 @@ import com.anwind.core.input.gamepad.GamepadOverlay
 import com.anwind.core.input.gamepad.GamepadSettingsWindow
 import com.anwind.core.theme.LocalWinTheme
 import com.anwind.core.theme.WinTheme
+import com.anwind.core.window.AppRegistry
 import com.anwind.core.window.WindowHost
 import com.anwind.core.window.WindowManager
 import com.anwind.data.model.DesktopItem
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import java.io.IOException
 
 /**
@@ -52,6 +56,7 @@ fun DesktopEnvironment(
     val wm = remember { WindowManager.get() }
     val app = AnWindApp.get()
     val density = LocalDensity.current
+    val composeScope = rememberCoroutineScope()
 
     // 显示设置
     val taskbarAutohide by app.settingsStore.taskbarAutohide.collectAsState(initial = false)
@@ -72,6 +77,12 @@ fun DesktopEnvironment(
     // v2.14：任务栏图标对齐（居中 Win11 / 靠左经典）
     val taskbarCentered by app.settingsStore.taskbarCentered.collectAsState(initial = true)
 
+    // ===== v2.17 锁屏设置：开关 / 锁屏壁纸 / PIN / 自动锁屏定时 =====
+    val lockEnabled by app.settingsStore.lockEnabled.collectAsState(initial = true)
+    val lockWallpaper by app.settingsStore.lockWallpaper.collectAsState(initial = null)
+    val lockPinHash by app.settingsStore.lockPinHash.collectAsState(initial = "")
+    val autoLockMinutes by app.settingsStore.autoLockMinutes.collectAsState(initial = 0)
+
     // 监听 WindowManager 变化：用于检测是否有窗口进入真全屏（F11），
     // 真全屏时隐藏任务栏 + 让浮动窗口层占满整屏
     var wmRevision by remember { mutableStateOf(0) }
@@ -82,6 +93,38 @@ fun DesktopEnvironment(
     LaunchedEffect(theme.variant) {
         if (soundEnabled) {
             theme.startupSoundAsset?.let { playStartupSound(context, it) }
+        }
+    }
+
+    // ===== v2.17 自动锁屏定时：空闲达到设定分钟数且锁屏开启时锁定 =====
+    LaunchedEffect(lockEnabled, autoLockMinutes) {
+        if (!lockEnabled || autoLockMinutes <= 0) return@LaunchedEffect
+        val timeoutMs = autoLockMinutes * 60_000L
+        while (true) {
+            if (!LockController.locked && AutoLockController.idleMs() >= timeoutMs) {
+                LockController.lock()
+            }
+            delay(5_000)
+        }
+    }
+
+    // ===== v2.17 开机自启动应用：读取 AUTOSTART_APPS 一次性打开 =====
+    // AutoStartRunner.launched 防止 Activity 重建时重复拉起
+    LaunchedEffect(Unit) {
+        val ids = runCatching { app.settingsStore.autostartApps.first() }.getOrDefault("")
+        if (ids.isNotBlank() && !AutoStartRunner.launched) {
+            AutoStartRunner.launched = true
+            ids.split(",").map { it.trim() }.filter { it.isNotEmpty() }.forEach { id ->
+                AppRegistry.get(id)?.let { def ->
+                    wm.open(
+                        appId = def.id,
+                        title = def.displayName,
+                        launchMode = def.launchMode,
+                        initialWidth = def.defaultWidth.value.toInt(),
+                        initialHeight = def.defaultHeight.value.toInt()
+                    )
+                }
+            }
         }
     }
 
@@ -135,6 +178,18 @@ fun DesktopEnvironment(
                                 MouseController.update(change.position.x, change.position.y)
                             }
                             MouseController.press(event.changes.any { it.pressed })
+                        }
+                    }
+                }
+            }
+            // ===== v2.17 自动锁屏交互监听：纯观察者（从不消费事件），
+            // 任何指针事件都刷新 AutoLockController 的最后交互时间 =====
+            .pointerInput(Unit) {
+                awaitPointerEventScope {
+                    while (true) {
+                        val event = awaitPointerEvent()
+                        if (event.changes.isNotEmpty()) {
+                            AutoLockController.onInteraction()
                         }
                     }
                 }
@@ -342,15 +397,30 @@ fun DesktopEnvironment(
 
         // ===== 9. 锁屏层（v2.14：设置→个性化→锁屏界面 / 开始菜单电源→锁定） =====
         // 放在键盘/鼠标层之上，拦截一切交互，只允许上滑或点击解锁
+        // v2.17：独立锁屏壁纸（图片/视频） + PIN 密码验证 + 自动锁屏（见上方定时协程）
         if (LockController.locked) {
             LockScreenLayer(
                 theme = theme,
-                customWallpaperUri = customWallpaperUri,
+                lockWallpaperUri = lockWallpaper,
+                desktopWallpaperUri = customWallpaperUri,
                 timeFormat24h = timeFormat24h,
+                pinHash = lockPinHash.ifBlank { null },
+                onClearPin = {
+                    // 忘记密码兑底：应用级作用域写库（窗口/组合销毁不影响）
+                    composeScope.launch { app.settingsStore.setLockPinHash("") }
+                },
                 onUnlock = { LockController.unlock() }
             )
         }
     }
+}
+
+/**
+ * v2.17：开机自启动防重复标记（Activity 重建时不重复拉起应用）。
+ */
+private object AutoStartRunner {
+    @Volatile
+    var launched = false
 }
 
 /**

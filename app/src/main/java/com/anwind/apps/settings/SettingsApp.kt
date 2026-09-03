@@ -173,7 +173,7 @@ private fun SettingsContent(scope: WindowContentScope) {
                 textStyle = LocalTextStyle.current.copy(fontSize = 12.sp)
             )
 
-            // 导航项列表（按搜索关键字过滤）
+            // 导航项列表（按搜索关键字过滤）；v2.17："账户"替换为"桌面设置"
             val allNavItems = remember {
                 listOf(
                     Triple("system", "系统", Icons.Default.Computer),
@@ -181,7 +181,7 @@ private fun SettingsContent(scope: WindowContentScope) {
                     Triple("network", "网络和 Internet", Icons.Default.Wifi),
                     Triple("personalization", "个性化", Icons.Default.Palette),
                     Triple("apps", "应用", Icons.Default.Apps),
-                    Triple("accounts", "账户", Icons.Default.Person),
+                    Triple("desktop", "桌面设置", Icons.Default.DesktopWindows),
                     Triple("time", "时间和语言", Icons.Default.Schedule),
                     Triple("gaming", "游戏", Icons.Default.SportsEsports),
                     Triple("accessibility", "辅助功能", Icons.Default.Accessibility),
@@ -224,7 +224,8 @@ private fun SettingsContent(scope: WindowContentScope) {
                     "network" -> NetworkInternetSection()
                     "personalization" -> PersonalizationSection()
                     "apps" -> AppsSection()
-                    "accounts" -> AccountsSection()
+                    // v2.17："账户"替换为桌面设置（不再跳转手机系统设置）
+                    "desktop" -> DesktopSettingsSection()
                     "time" -> TimeLanguageSection()
                     "gaming" -> GamingSection()
                     "accessibility" -> AccessibilitySection()
@@ -238,6 +239,8 @@ private fun SettingsContent(scope: WindowContentScope) {
                     "mobile_data" -> MobileDataPage()
                     "airplane" -> AirplanePage()
                     "hotspot" -> HotspotPage()
+                    // v2.17：锁屏设置独立小窗（设置→个性化→锁屏界面）
+                    "lock_settings" -> LockSettingsPage()
                 }
             }
         }
@@ -1041,13 +1044,15 @@ private fun PersonalizationSection() {
     }
     Spacer(Modifier.height(8.dp))
 
-    // ===== 锁屏界面（v2.14：真实锁屏，点击立即锁定） =====
+    // ===== 锁屏界面（v2.17：打开锁屏设置 —— 壁纸/密码/自动锁定/开关） =====
     SettingsCard(
         icon = Icons.Default.Lock,
         iconBackgroundColor = Color(0xFF00B294),
         title = L("锁屏界面"),
-        subtitle = L("点击立即锁定，上滑解锁"),
-        onClick = { com.anwind.core.desktop.LockController.lock() }
+        subtitle = L("锁屏壁纸（图片/视频）、密码、自动锁定、开关"),
+        onClick = {
+            openSettingsSection("lock_settings", L("锁屏设置"), 560, 640)
+        }
     )
     Spacer(Modifier.height(8.dp))
 
@@ -1347,87 +1352,6 @@ private fun AppsSection() {
 }
 
 @Composable
-private fun AccountsSection() {
-    val context = LocalContext.current
-
-    SectionHeader("账户", "账户信息、登录选项、邮箱、同步")
-
-    // 用户卡片
-    SettingsCard(
-        icon = Icons.Default.AccountCircle,
-        iconBackgroundColor = Color(0xFF0078D7),
-        title = "AnWind 用户",
-        subtitle = "本地账户 · 管理员权限"
-    )
-    Spacer(Modifier.height(8.dp))
-
-    SettingsCard(
-        icon = Icons.Default.Login,
-        iconBackgroundColor = Color(0xFF00B294),
-        title = "登录选项",
-        subtitle = "PIN、密码、生物识别（打开系统安全设置）",
-        onClick = {
-            openSystemPanel(context, AndroidSettings.ACTION_SECURITY_SETTINGS, "系统安全设置")
-        }
-    )
-    Spacer(Modifier.height(8.dp))
-
-    SettingsCard(
-        icon = Icons.Default.Email,
-        iconBackgroundColor = Color(0xFF8764B8),
-        title = "电子邮件和账户",
-        subtitle = "添加系统账户（邮箱、Exchange 等）",
-        onClick = {
-            // ACTION_ADD_ACCOUNT_SETTINGS 常量是 AOSP 隐藏 API，不在公开 android.jar 中，
-            // 直接使用官方 action 字符串（系统设置均支持）；不支持时回退主设置页
-            openSystemPanel(
-                context,
-                "android.settings.ADD_ACCOUNT_SETTINGS",
-                "添加账户",
-                fallbackAction = AndroidSettings.ACTION_SETTINGS
-            )
-        }
-    )
-    Spacer(Modifier.height(8.dp))
-
-    SettingsCard(
-        icon = Icons.Default.Sync,
-        iconBackgroundColor = Color(0xFFCA5010),
-        title = "同步你的设置",
-        subtitle = "打开系统账户与同步设置",
-        onClick = {
-            openSystemPanel(context, AndroidSettings.ACTION_SYNC_SETTINGS, "账户同步设置")
-        }
-    )
-    Spacer(Modifier.height(8.dp))
-
-    SettingsCard(
-        icon = Icons.Default.FamilyRestroom,
-        iconBackgroundColor = Color(0xFF6B69D6),
-        title = "家庭和家庭安全",
-        subtitle = "管理家庭成员、儿童安全设置",
-        onClick = {
-            // ACTION_USER_SETTINGS 常量是 AOSP 隐藏 API，直接使用官方 action 字符串；
-            // 不支持时回退主设置页
-            openSystemPanel(
-                context,
-                "android.settings.USER_SETTINGS",
-                "用户管理",
-                fallbackAction = AndroidSettings.ACTION_SETTINGS
-            )
-        }
-    )
-    Spacer(Modifier.height(8.dp))
-
-    SettingsCard(
-        icon = Icons.Default.Schedule,
-        iconBackgroundColor = Color(0xFF00B7C3),
-        title = "Windows 备份",
-        subtitle = "备份账户和设置到云（可在“关于”中导出本地备份）"
-    )
-}
-
-@Composable
 private fun TimeLanguageSection() {
     val app = AnWindApp.get()
     val context = LocalContext.current
@@ -1587,64 +1511,187 @@ private fun GamingSection() {
 
 @Composable
 private fun AccessibilitySection() {
-    val context = LocalContext.current
+    val app = AnWindApp.get()
+    val scope0 = rememberCoroutineScope()
+    val theme = LocalWinTheme.current
 
-    SectionHeader("辅助功能", "视觉、听觉、交互辅助")
+    // v2.17：全部改为对 AnWind 桌面真实生效的设置（不再跳转手机系统辅助功能）
+    val fontScale by app.settingsStore.fontScale.collectAsState(initial = 1f)
+    val uiScale by app.settingsStore.uiScale.collectAsState(initial = 1f)
+    val cursorSize by app.settingsStore.mouseCursorSize.collectAsState(initial = 26f)
+    val cursorTheme by app.settingsStore.mouseCursorTheme.collectAsState(initial = "white")
+    val clickMode by app.settingsStore.mouseClickMode.collectAsState(initial = "single")
+    val rightClick by app.settingsStore.mouseRightClick.collectAsState(initial = "twofinger")
+    val vibration by app.settingsStore.keyboardVibration.collectAsState(initial = true)
+    val touchFeedback by app.settingsStore.touchFeedback.collectAsState(initial = false)
 
-    SettingsCard(
-        icon = Icons.Default.Visibility,
-        iconBackgroundColor = Color(0xFF0078D7),
-        title = "视觉",
-        subtitle = "文本大小、对比度、滤镜（打开系统辅助功能）",
-        onClick = {
-            openSystemPanel(context, AndroidSettings.ACTION_ACCESSIBILITY_SETTINGS, "辅助功能设置")
+    SectionHeader("辅助功能", "视觉、交互、反馈（对 AnWind 桌面生效）")
+
+    // ===== 视觉 =====
+    SettingsBlock(L("视觉")) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                L("字体大小"),
+                color = if (theme.isDark) Color.White else Color.Black,
+                fontSize = 12.sp,
+                modifier = Modifier.weight(1f)
+            )
+            Text("${(fontScale * 100).roundToInt()}%", color = theme.secondaryTextColor, fontSize = 11.sp)
         }
-    )
-    Spacer(Modifier.height(8.dp))
-
-    SettingsCard(
-        icon = Icons.Default.Hearing,
-        iconBackgroundColor = Color(0xFF00B294),
-        title = "听觉",
-        subtitle = "字幕、单声道音频（打开系统辅助功能）",
-        onClick = {
-            openSystemPanel(context, AndroidSettings.ACTION_ACCESSIBILITY_SETTINGS, "辅助功能设置")
+        androidx.compose.material3.Slider(
+            value = fontScale,
+            onValueChange = { scope0.launch { app.settingsStore.setFontScale(it) } },
+            valueRange = 0.85f..1.4f,
+            steps = 10
+        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                L("UI 缩放"),
+                color = if (theme.isDark) Color.White else Color.Black,
+                fontSize = 12.sp,
+                modifier = Modifier.weight(1f)
+            )
+            Text("${(uiScale * 100).roundToInt()}%", color = theme.secondaryTextColor, fontSize = 11.sp)
         }
-    )
-    Spacer(Modifier.height(8.dp))
-
-    SettingsCard(
-        icon = Icons.Default.AccessibilityNew,
-        iconBackgroundColor = Color(0xFF8764B8),
-        title = "交互",
-        subtitle = "语音、键盘、鼠标（打开系统辅助功能）",
-        onClick = {
-            openSystemPanel(context, AndroidSettings.ACTION_ACCESSIBILITY_SETTINGS, "辅助功能设置")
+        androidx.compose.material3.Slider(
+            value = uiScale,
+            onValueChange = { scope0.launch { app.settingsStore.setUiScale(it) } },
+            valueRange = 0.6f..3.0f
+        )
+        Spacer(Modifier.height(6.dp))
+        Text(
+            L("鼠标指针大小"),
+            color = if (theme.isDark) Color.White else Color.Black,
+            fontSize = 12.sp
+        )
+        androidx.compose.material3.Slider(
+            value = cursorSize,
+            onValueChange = { scope0.launch { app.settingsStore.setMouseCursorSize(it) } },
+            valueRange = 16f..48f
+        )
+        Text(
+            L("指针颜色"),
+            color = theme.secondaryTextColor,
+            fontSize = 11.sp
+        )
+        Spacer(Modifier.height(6.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            SegmentedOption(L("经典白"), cursorTheme == "white") {
+                scope0.launch { app.settingsStore.setMouseCursorTheme("white") }
+            }
+            SegmentedOption(L("经典黑"), cursorTheme == "black") {
+                scope0.launch { app.settingsStore.setMouseCursorTheme("black") }
+            }
+            SegmentedOption(L("蓝色"), cursorTheme == "blue") {
+                scope0.launch { app.settingsStore.setMouseCursorTheme("blue") }
+            }
+            SegmentedOption(L("高对比绿"), cursorTheme == "green") {
+                scope0.launch { app.settingsStore.setMouseCursorTheme("green") }
+            }
         }
-    )
-    Spacer(Modifier.height(8.dp))
+    }
+    Spacer(Modifier.height(10.dp))
 
-    SettingsCard(
-        icon = Icons.Default.Psychology,
-        iconBackgroundColor = Color(0xFFCA5010),
-        title = "认知",
-        subtitle = "减少动画、关注指示器（打开系统辅助功能）",
-        onClick = {
-            openSystemPanel(context, AndroidSettings.ACTION_ACCESSIBILITY_SETTINGS, "辅助功能设置")
+    // ===== 交互 =====
+    SettingsBlock(L("交互")) {
+        Text(
+            L("图标打开方式"),
+            color = theme.secondaryTextColor,
+            fontSize = 11.sp
+        )
+        Spacer(Modifier.height(6.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            SegmentedOption(L("单击打开"), clickMode == "single") {
+                scope0.launch { app.settingsStore.setMouseClickMode("single") }
+            }
+            SegmentedOption(L("双击打开"), clickMode == "double") {
+                scope0.launch { app.settingsStore.setMouseClickMode("double") }
+            }
         }
-    )
+        Spacer(Modifier.height(10.dp))
+        Text(
+            L("右键手势"),
+            color = theme.secondaryTextColor,
+            fontSize = 11.sp
+        )
+        Spacer(Modifier.height(6.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            SegmentedOption(L("双指轻点"), rightClick == "twofinger") {
+                scope0.launch { app.settingsStore.setMouseRightClick("twofinger") }
+            }
+            SegmentedOption(L("长按"), rightClick == "longpress") {
+                scope0.launch { app.settingsStore.setMouseRightClick("longpress") }
+            }
+        }
+    }
+    Spacer(Modifier.height(10.dp))
+
+    // ===== 听觉与反馈 =====
+    SettingsBlock(L("听觉与反馈")) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                L("虚拟键盘按键振动"),
+                color = if (theme.isDark) Color.White else Color.Black,
+                fontSize = 12.sp,
+                modifier = Modifier.weight(1f)
+            )
+            ToggleSwitch(vibration) { v -> scope0.launch { app.settingsStore.setKeyboardVibration(v) } }
+        }
+        Spacer(Modifier.height(8.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                L("按键触摸反馈动画"),
+                color = if (theme.isDark) Color.White else Color.Black,
+                fontSize = 12.sp,
+                modifier = Modifier.weight(1f)
+            )
+            ToggleSwitch(touchFeedback) { v -> scope0.launch { app.settingsStore.setTouchFeedback(v) } }
+        }
+    }
 }
 
 @Composable
 private fun PrivacySection() {
     val app = AnWindApp.get()
+    val context = LocalContext.current
     val scope0 = rememberCoroutineScope()
     val location by app.settingsStore.locationEnabled.collectAsState(initial = false)
     val camera by app.settingsStore.cameraAccess.collectAsState(initial = true)
     val mic by app.settingsStore.microphoneAccess.collectAsState(initial = true)
     val diagnostics by app.settingsStore.diagnosticsOptIn.collectAsState(initial = false)
 
-    SectionHeader("隐私和安全", "位置、相机、麦克风、诊断")
+    SectionHeader("隐私和安全", "锁屏、浏览数据、应用权限、诊断")
+
+    // v2.17：锁屏与密码（桌面级真实入口）
+    SettingsCard(
+        icon = Icons.Default.Lock,
+        iconBackgroundColor = Color(0xFF0078D7),
+        title = "锁屏与密码",
+        subtitle = "锁屏壁纸、锁屏密码、自动锁定定时",
+        onClick = { openSettingsSection("lock_settings", "锁屏设置", 560, 640) }
+    )
+    Spacer(Modifier.height(8.dp))
+
+    // v2.17：真实清除浏览历史（Room HistoryDao.clearAll）
+    SettingsCard(
+        icon = Icons.Default.DeleteSweep,
+        iconBackgroundColor = Color(0xFFC42B1C),
+        title = "清除浏览历史",
+        subtitle = "删除浏览器的访问历史记录（书签保留）",
+        onClick = {
+            scope0.launch {
+                val ok = runCatching {
+                    AnWindApp.get().database.historyDao().clearAll()
+                }.isSuccess
+                Toast.makeText(
+                    context,
+                    if (ok) "已清除浏览历史" else "清除失败，请重试",
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
+        }
+    )
+    Spacer(Modifier.height(8.dp))
 
     SettingsCard(
         icon = Icons.Default.Security,

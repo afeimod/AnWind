@@ -34,6 +34,15 @@
     <uses-permission android:name="android.permission.WRITE_SETTINGS"
         tools:ignore="ProtectedPermissions" />
 
+    <!-- v2.17 开始菜单读取手机应用：声明查询带启动入口的应用（Android 11+ 包可见性）。
+         作为 Launcher 使用 MAIN/LAUNCHER intent-filter 查询，无需 QUERY_ALL_PACKAGES 宽限权限 -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+    </queries>
+
     <application
         android:name=".AnWindApp"
         android:allowBackup="true"

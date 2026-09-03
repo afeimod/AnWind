@@ -114,10 +114,12 @@ private fun FileExplorerContent(scope: WindowContentScope) {
     val targetApp = scope.windowState.launchArgs["targetApp"] ?: ""
     val targetWindow = scope.windowState.launchArgs["targetWindow"] ?: ""
     val wallpaperPick = pickMode == "wallpaper"
+    // v2.17 锁屏壁纸选择：图片 / 视频
+    val lockWallpaperPick = pickMode == "lock_wallpaper"
+    val lockWallpaperVideoPick = pickMode == "lock_wallpaper_video"
     val textPick = pickMode == "text"
     val mediaPick = pickMode == "media"
-    val scope0 = androidx.compose.runtime.rememberCoroutineScope()
-    if (wallpaperPick) {
+    if (wallpaperPick || lockWallpaperPick) {
         // 选择模式：直接进入 Pictures（不存在则内部存储根）
         LaunchedEffect(Unit) {
             val pics = File(storageRoot, "Pictures")
@@ -126,6 +128,15 @@ private fun FileExplorerContent(scope: WindowContentScope) {
             } else {
                 currentRealDir = storageRoot
             }
+            isThisPcHome = false
+        }
+    } else if (lockWallpaperVideoPick) {
+        // 锁屏视频壁纸：直达 Movies → DCIM → Download → 内部存储根
+        LaunchedEffect(Unit) {
+            val dir = listOf("Movies", "DCIM", "Download")
+                .map { File(storageRoot, it) }
+                .firstOrNull { it.exists() && it.isDirectory } ?: storageRoot
+            currentRealDir = dir
             isThisPcHome = false
         }
     } else if (textPick) {
@@ -146,12 +157,29 @@ private fun FileExplorerContent(scope: WindowContentScope) {
         }
     }
 
-    /** v2.14：设为壁纸（file:// URI 持久化）并关闭选择窗口 */
+    /**
+     * v2.14：设为壁纸（file:// URI 持久化）并关闭选择窗口。
+     *
+     * v2.17 修复"选择图片自定义桌面壁纸不生效"：旧版用 rememberCoroutineScope
+     * （绑定窗口组合）启动 DataStore 写入后立即 scope.onClose() 关窗，窗口
+     * 组合销毁会取消协程，写入随机丢失。改用应用级 applicationScope，
+     * 保证写入必定完成后窗口才被移除。
+     */
     fun setWallpaperAndClose(file: File) {
-        scope0.launch {
+        app.applicationScope.launch {
             app.settingsStore.setCustomWallpaper("file://${file.absolutePath}")
         }
         Toast.makeText(context, "已设为壁纸", Toast.LENGTH_SHORT).show()
+        scope.onClose()
+    }
+
+    /** v2.17：设为锁屏独立壁纸（file:// 图片 / video:// 视频，持久化）并关闭选择窗口 */
+    fun setLockWallpaperAndClose(file: File, isVideo: Boolean) {
+        val uri = if (isVideo) "video://${file.absolutePath}" else "file://${file.absolutePath}"
+        app.applicationScope.launch {
+            app.settingsStore.setLockWallpaper(uri)
+        }
+        Toast.makeText(context, "已设为锁屏壁纸", Toast.LENGTH_SHORT).show()
         scope.onClose()
     }
 
@@ -394,8 +422,8 @@ private fun FileExplorerContent(scope: WindowContentScope) {
             }
         }
 
-        // ===== v2.14 壁纸选择模式横幅 =====
-        if (wallpaperPick || textPick || mediaPick) {
+        // ===== v2.14 壁纸选择模式横幅（v2.17：兼容锁屏壁纸/锁屏视频壁纸） =====
+        if (wallpaperPick || lockWallpaperPick || lockWallpaperVideoPick || textPick || mediaPick) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -406,6 +434,8 @@ private fun FileExplorerContent(scope: WindowContentScope) {
                 Icon(
                     when {
                         wallpaperPick -> Icons.Default.Image
+                        lockWallpaperPick -> Icons.Default.Image
+                        lockWallpaperVideoPick -> Icons.Default.PlayCircle
                         textPick -> Icons.Default.Description
                         else -> Icons.Default.PlayCircle
                     }, null,
@@ -416,6 +446,8 @@ private fun FileExplorerContent(scope: WindowContentScope) {
                 Text(
                     when {
                         wallpaperPick -> "点击任意图片，直接设为桌面壁纸"
+                        lockWallpaperPick -> "点击任意图片，直接设为锁屏壁纸"
+                        lockWallpaperVideoPick -> "点击任意视频文件，直接设为锁屏动态壁纸"
                         textPick -> "点击任意文本文件，在记事本中打开"
                         else -> "点击音频或视频文件进行播放"
                     },
@@ -491,6 +523,10 @@ private fun FileExplorerContent(scope: WindowContentScope) {
                         if (file.isDirectory) openFolder(file)
                         else if (wallpaperPick && isImageExtension(file.extension)) {
                             setWallpaperAndClose(file)
+                        } else if (lockWallpaperPick && isImageExtension(file.extension)) {
+                            setLockWallpaperAndClose(file, isVideo = false)
+                        } else if (lockWallpaperVideoPick && isVideoExtension(file.extension)) {
+                            setLockWallpaperAndClose(file, isVideo = true)
                         } else if (textPick) {
                             if (isTextExtension(file.extension)) pickAndClose(file)
                             else Toast.makeText(context, "请选择文本文件（txt/log/md/json/xml 等）", Toast.LENGTH_SHORT).show()
@@ -504,6 +540,10 @@ private fun FileExplorerContent(scope: WindowContentScope) {
                         if (file.isDirectory) openFolder(file)
                         else if (wallpaperPick && isImageExtension(file.extension)) {
                             setWallpaperAndClose(file)
+                        } else if (lockWallpaperPick && isImageExtension(file.extension)) {
+                            setLockWallpaperAndClose(file, isVideo = false)
+                        } else if (lockWallpaperVideoPick && isVideoExtension(file.extension)) {
+                            setLockWallpaperAndClose(file, isVideo = true)
                         } else if (textPick) {
                             if (isTextExtension(file.extension)) pickAndClose(file)
                             else Toast.makeText(context, "请选择文本文件（txt/log/md/json/xml 等）", Toast.LENGTH_SHORT).show()
@@ -979,6 +1019,10 @@ private fun ImageThumbnail(path: String, size: Dp, corner: Dp) {
 
 private fun isImageExtension(ext: String): Boolean =
     ext.lowercase() in setOf("jpg", "jpeg", "png", "gif", "bmp", "webp")
+
+/** 视频文件扩展名（v2.17：锁屏视频壁纸选择模式过滤用） */
+private fun isVideoExtension(ext: String): Boolean =
+    ext.lowercase() in setOf("mp4", "mkv", "avi", "mov", "webm", "3gp", "m4v", "ts")
 
 /** 文本文件扩展名（v2.14.10：记事本「打开」选择模式过滤用） */
 private fun isTextExtension(ext: String): Boolean = ext.lowercase() in setOf(

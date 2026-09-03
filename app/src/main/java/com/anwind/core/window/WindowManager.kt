@@ -231,6 +231,25 @@ class WindowManager {
         }
     }
 
+    /**
+     * v2.17：程序化调整窗口尺寸（如扫雷切换难度后棋盘变大，窗口自动扩展）。
+     *
+     * - 尺寸下限与手动缩放一致（200x140dp）；
+     * - 同步更新 prevWidth/prevHeight，最大化还原后同样生效；
+     * - 不改变窗口位置；超出工作区的部分由 WindowChrome 渲染时自动钳制。
+     */
+    fun resizeWindow(windowId: String, widthDp: Int, heightDp: Int) {
+        _windows.firstOrNull { it.id == windowId }?.let { w ->
+            val nw = widthDp.coerceAtLeast(200)
+            val nh = heightDp.coerceAtLeast(140)
+            w.width = nw
+            w.height = nh
+            w.prevWidth = nw
+            w.prevHeight = nh
+            notifyChanged()
+        }
+    }
+
     /** 任务栏点击某窗口的行为：可见则最小化，最小化则还原+聚焦 */
     fun taskbarClick(windowId: String) {
         val w = _windows.firstOrNull { it.id == windowId } ?: return

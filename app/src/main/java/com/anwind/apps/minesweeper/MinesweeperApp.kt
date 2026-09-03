@@ -51,8 +51,9 @@ val MinesweeperApp = AppDef(
     displayName = "扫雷",
     iconAsset = "app:minesweeper",
     launchMode = LaunchMode.FLOATING,
-    defaultWidth = 480.dp,
-    defaultHeight = 620.dp,
+    // v2.17：与初级 9x9 的目标窗口尺寸一致（msWindowSize），切换到中级/高级时自动扩展
+    defaultWidth = 366.dp,
+    defaultHeight = 488.dp,
     pinnedToDesktop = true,
     pinnedToTaskbar = true
 ) { scope ->
@@ -287,6 +288,25 @@ private class MsAssets(private val context: Context) {
 // 主界面
 // ============================================================
 
+/**
+ * v2.17：按难度计算窗口目标尺寸（dp）。
+ *
+ * 单元格基准：初级 36dp / 中级 31dp / 高级 27dp（30 列手机竖屏必然超出
+ * 工作区，WindowChrome 会钳制到工作区宽度，棋盘区自带滚动兼容）。
+ * 额外空间：棋盘内边距 26 + 顶栏 ≈64 + 底部工具栏 ≈58 + 窗口内边距 ≈16。
+ */
+private fun msWindowSize(d: MsDifficulty): Pair<Int, Int> {
+    val cell = when {
+        d.cols >= 24 -> 27
+        d.cols >= 16 -> 31
+        else -> 36
+    }
+    val boardW = cell * d.cols + 26
+    val boardH = cell * d.rows + 26
+    val chromeH = 64 + 58 + 16
+    return (boardW + 16) to (boardH + chromeH)
+}
+
 @Composable
 private fun MinesweeperContent(scope: WindowContentScope) {
     val theme = LocalWinTheme.current
@@ -308,6 +328,18 @@ private fun MinesweeperContent(scope: WindowContentScope) {
     var flagMode by remember { mutableStateOf(false) }
     /** 笑脸按钮按压状态（显示 confused） */
     var facePressed by remember { mutableStateOf(false) }
+
+    // ===== v2.17：难度变化时窗口自动扩展/收缩 =====
+    // 初级 9x9 窗口最小，中级 16x16 / 高级 30x16 棋盘变大，
+    // 旧版窗口固定 480x620 导致高级棋盘大量滚动；这里按难度目标尺寸重设窗口。
+    // 注意：只在目标尺寸与当前不同时提交，避免每次重组都触发刷新。
+    LaunchedEffect(difficultyIdx) {
+        val (w, h) = msWindowSize(MS_DIFFICULTIES[difficultyIdx])
+        val state = scope.windowState
+        if (state.width != w || state.height != h) {
+            com.anwind.core.window.WindowManager.get().resizeWindow(state.id, w, h)
+        }
+    }
 
     // 计时器：开始后每秒 +1，游戏结束停止
     LaunchedEffect(started, gameState, difficultyIdx) {

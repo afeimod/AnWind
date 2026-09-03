@@ -156,6 +156,21 @@ class SettingsStore(private val context: Context) {
         // === Windows Update ===
         val AUTO_UPDATE = booleanPreferencesKey("auto_update")
         val UPDATE_CHANNEL = stringPreferencesKey("update_channel")  // stable / beta / dev
+
+        // === v2.17 锁屏设置 ===
+        // 锁屏总开关：关闭后自动锁屏停用、开始菜单不再显示“锁定”
+        val LOCK_ENABLED = booleanPreferencesKey("lock_enabled")
+        // 锁屏独立壁纸：null 跟随桌面壁纸；"file://..." 图片；"video://..." 视频
+        val LOCK_WALLPAPER = stringPreferencesKey("lock_wallpaper")
+        // 锁屏密码哈希（SHA-256，前缀盐）；空串 = 未设置密码
+        val LOCK_PIN_HASH = stringPreferencesKey("lock_pin_hash")
+        // 自动锁屏空闲分钟数：0 = 从不，1/5/15/30/60
+        val AUTO_LOCK_MINUTES = intPreferencesKey("auto_lock_minutes")
+
+        // === v2.17 桌面设置（原“账户”页桌面化） ===
+        // 开始菜单底部显示的用户名 / 头像 emoji（空 = 默认图标）
+        val USER_NAME = stringPreferencesKey("user_name")
+        val USER_AVATAR = stringPreferencesKey("user_avatar")
     }
 
     // === 基础设置 ===
@@ -252,6 +267,16 @@ class SettingsStore(private val context: Context) {
     // === Windows Update ===
     val autoUpdate: Flow<Boolean> = context.appPrefs.data.map { it[Keys.AUTO_UPDATE] ?: true }
     val updateChannel: Flow<String> = context.appPrefs.data.map { it[Keys.UPDATE_CHANNEL] ?: "stable" }
+
+    // === v2.17 锁屏设置 ===
+    val lockEnabled: Flow<Boolean> = context.appPrefs.data.map { it[Keys.LOCK_ENABLED] ?: true }
+    val lockWallpaper: Flow<String?> = context.appPrefs.data.map { it[Keys.LOCK_WALLPAPER] }
+    val lockPinHash: Flow<String> = context.appPrefs.data.map { it[Keys.LOCK_PIN_HASH] ?: "" }
+    val autoLockMinutes: Flow<Int> = context.appPrefs.data.map { it[Keys.AUTO_LOCK_MINUTES] ?: 0 }
+
+    // === v2.17 桌面设置 ===
+    val userName: Flow<String> = context.appPrefs.data.map { it[Keys.USER_NAME] ?: "AnWind" }
+    val userAvatar: Flow<String> = context.appPrefs.data.map { it[Keys.USER_AVATAR] ?: "" }
 
     // === 基础 setter ===
     suspend fun setCustomWallpaper(uri: String?) {
@@ -480,6 +505,15 @@ class SettingsStore(private val context: Context) {
         context.appPrefs.edit { it[Keys.DEFAULT_FILE_MANAGER] = id }
     }
 
+    /** v2.17：开机自动启动的应用列表（逗号分隔的 app id） */
+    suspend fun setAutostartApps(ids: List<String>) {
+        context.appPrefs.edit { prefs ->
+            val joined = ids.filter { it.isNotBlank() }.distinct().joinToString(",")
+            if (joined.isEmpty()) prefs.remove(Keys.AUTOSTART_APPS)
+            else prefs[Keys.AUTOSTART_APPS] = joined
+        }
+    }
+
     // === 时间与语言 setter ===
     suspend fun setTimeFormat24h(enabled: Boolean) {
         context.appPrefs.edit { it[Keys.TIME_FORMAT_24H] = enabled }
@@ -513,6 +547,47 @@ class SettingsStore(private val context: Context) {
 
     suspend fun setUpdateChannel(channel: String) {
         context.appPrefs.edit { it[Keys.UPDATE_CHANNEL] = channel }
+    }
+
+    // === v2.17 锁屏设置 setter ===
+    suspend fun setLockEnabled(enabled: Boolean) {
+        context.appPrefs.edit { it[Keys.LOCK_ENABLED] = enabled }
+    }
+
+    suspend fun setLockWallpaper(uri: String?) {
+        context.appPrefs.edit { prefs ->
+            if (uri.isNullOrEmpty()) prefs.remove(Keys.LOCK_WALLPAPER)
+            else prefs[Keys.LOCK_WALLPAPER] = uri
+        }
+    }
+
+    suspend fun setLockPinHash(hash: String) {
+        context.appPrefs.edit { prefs ->
+            if (hash.isBlank()) prefs.remove(Keys.LOCK_PIN_HASH)
+            else prefs[Keys.LOCK_PIN_HASH] = hash
+        }
+    }
+
+    suspend fun setAutoLockMinutes(minutes: Int) {
+        // 只接受白名单值，其余视为“从不”
+        val v = if (minutes in setOf(0, 1, 5, 15, 30, 60)) minutes else 0
+        context.appPrefs.edit { it[Keys.AUTO_LOCK_MINUTES] = v }
+    }
+
+    // === v2.17 桌面设置 setter ===
+    suspend fun setUserName(name: String) {
+        context.appPrefs.edit { prefs ->
+            val trimmed = name.trim()
+            if (trimmed.isEmpty() || trimmed == "AnWind") prefs.remove(Keys.USER_NAME)
+            else prefs[Keys.USER_NAME] = trimmed
+        }
+    }
+
+    suspend fun setUserAvatar(avatar: String) {
+        context.appPrefs.edit { prefs ->
+            if (avatar.isBlank()) prefs.remove(Keys.USER_AVATAR)
+            else prefs[Keys.USER_AVATAR] = avatar
+        }
     }
 
     /**
