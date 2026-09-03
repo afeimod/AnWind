@@ -1,6 +1,7 @@
 package com.anwind.core.input
 
 import android.os.SystemClock
+import android.view.InputDevice
 import android.view.MotionEvent
 import android.view.View
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -97,23 +98,25 @@ object TrackpadController {
             toolType = MotionEvent.TOOL_TYPE_FINGER
         }
         fun coords(px: Float, py: Float) = MotionEvent.PointerCoords().apply {
-            x = px; y = py; pressure = 1f; size = 1f
+            // this. 前缀必须显式：外层函数参数 x/y 会遮蔽接收者同名成员
+            //（Kotlin 局部名优先于隐式接收者成员，裸写 x= 会命中参数 val）
+            this.x = px; this.y = py; this.pressure = 1f; this.size = 1f
         }
         val c0 = coords(x - 16f, y)
         val c1 = coords(x + 16f, y)
         val idx1 = 1 shl MotionEvent.ACTION_POINTER_INDEX_SHIFT
         try {
             view.dispatchTouchEvent(
-                MotionEvent.obtain(now, now, MotionEvent.ACTION_DOWN, 1, arrayOf(p0), arrayOf(c0), 0, 0, 1f, 1f, 0, 0)
+                MotionEvent.obtain(now, now, MotionEvent.ACTION_DOWN, 1, arrayOf(p0), arrayOf(c0), 0, 0, 1f, 1f, 0, 0, InputDevice.SOURCE_TOUCHSCREEN, 0)
             )
             view.dispatchTouchEvent(
-                MotionEvent.obtain(now, now + 40L, MotionEvent.ACTION_POINTER_DOWN or idx1, 2, arrayOf(p0, p1), arrayOf(c0, c1), 0, 0, 1f, 1f, 0, 0)
+                MotionEvent.obtain(now, now + 40L, MotionEvent.ACTION_POINTER_DOWN or idx1, 2, arrayOf(p0, p1), arrayOf(c0, c1), 0, 0, 1f, 1f, 0, 0, InputDevice.SOURCE_TOUCHSCREEN, 0)
             )
             view.dispatchTouchEvent(
-                MotionEvent.obtain(now, now + 90L, MotionEvent.ACTION_POINTER_UP or idx1, 2, arrayOf(p0, p1), arrayOf(c0, c1), 0, 0, 1f, 1f, 0, 0)
+                MotionEvent.obtain(now, now + 90L, MotionEvent.ACTION_POINTER_UP or idx1, 2, arrayOf(p0, p1), arrayOf(c0, c1), 0, 0, 1f, 1f, 0, 0, InputDevice.SOURCE_TOUCHSCREEN, 0)
             )
             view.dispatchTouchEvent(
-                MotionEvent.obtain(now, now + 130L, MotionEvent.ACTION_UP, 1, arrayOf(p0), arrayOf(c0), 0, 0, 1f, 1f, 0, 0)
+                MotionEvent.obtain(now, now + 130L, MotionEvent.ACTION_UP, 1, arrayOf(p0), arrayOf(c0), 0, 0, 1f, 1f, 0, 0, InputDevice.SOURCE_TOUCHSCREEN, 0)
             )
         } catch (_: Exception) {
         } finally {
@@ -135,15 +138,16 @@ object TrackpadController {
             toolType = MotionEvent.TOOL_TYPE_MOUSE
         }
         val c = MotionEvent.PointerCoords().apply {
-            x = x; y = y; pressure = 1f; size = 1f
-            setAxis(MotionEvent.AXIS_HSCROLL, dx / 60f)
-            setAxis(MotionEvent.AXIS_VSCROLL, dy / 60f)
+            // this. 前缀必须显式：函数参数 x/y 会遮蔽接收者同名成员
+            this.x = x; this.y = y; this.pressure = 1f; this.size = 1f
+            setAxisValue(MotionEvent.AXIS_HSCROLL, dx / 60f)
+            setAxisValue(MotionEvent.AXIS_VSCROLL, dy / 60f)
         }
         try {
             val ev = MotionEvent.obtain(
                 now, now, MotionEvent.ACTION_SCROLL,
                 1, arrayOf(p), arrayOf(c),
-                0, 0, 1f, 1f, 0, 0
+                0, 0, 1f, 1f, 0, 0, InputDevice.SOURCE_MOUSE, 0
             )
             // 滚轮属通用（generic）motion 事件：Compose 滚动组件与 WebView
             // 均按鼠标滚轮路径响应
@@ -152,6 +156,17 @@ object TrackpadController {
         } finally {
             injectGuardUntil = SystemClock.uptimeMillis() + 80L
         }
+    }
+
+    /**
+     * 轻点板面 = 指针处一次完整单击。
+     * 视觉按压（pressing 的 setter 为私有，仅 object 内可写）与事件注入
+     * 绑定为一个原子动作，供覆盖层调用 —— 避免外部直接给 pressing 赋值。
+     */
+    fun tapClick(view: View, x: Float, y: Float) {
+        pressing = true
+        injectClick(view, x, y)
+        pressing = false
     }
 }
 
@@ -237,9 +252,7 @@ fun TrackpadInputOverlay() {
                             val cursor = MouseController.position
                             if (maxPointers == 1 && duration < 260L && smallMove) {
                                 // 单指轻点 → 指针处单击（视觉按压 + 涟漪）
-                                TrackpadController.pressing = true
-                                TrackpadController.injectClick(view, cursor.x, cursor.y)
-                                TrackpadController.pressing = false
+                                TrackpadController.tapClick(view, cursor.x, cursor.y)
                             } else if (maxPointers == 2 && !scrollMode &&
                                 duration < 450L && smallMove
                             ) {
