@@ -354,29 +354,34 @@ private fun MusicContent(scope: WindowContentScope) {
             }
 
             // ===== 3D 歌词秀覆盖层 =====
-            AnimatedVisibility(
-                visible = showLyrics,
-                enter = fadeIn(),
-                exit = fadeOut(),
-                modifier = Modifier.fillMaxSize()
-            ) {
-                Lyrics3DPage(
-                    song = engine.currentSong,
-                    positionMs = engine.positionMs,
-                    durationMs = engine.durationMs,
-                    isPlaying = engine.isPlaying,
-                    isPreparing = engine.isPreparing,
-                    lyric = lyricDoc,
-                    lyricLoading = lyricLoading,
-                    playMode = engine.playMode,
-                    onSeek = { engine.seekTo(it) },
-                    onToggle = { engine.toggle() },
-                    onNext = { engine.next() },
-                    onPrev = { engine.prev() },
-                    onCycleMode = { engine.cycleMode() },
-                    onDownloadLyric = { downloadLyricFile(engine.currentSong) },
-                    onClose = { showLyrics = false }
-                )
+            // 注意：AnimatedVisibility 是 ColumnScope 扩展，此处外层为 Box(内含 Column)，
+            // 必须用显式 Column 提供最近的 ColumnScope 接收者，否则编译报
+            // "can't be called in this context by implicit receiver"
+            Column(Modifier.fillMaxSize()) {
+                AnimatedVisibility(
+                    visible = showLyrics,
+                    enter = fadeIn(),
+                    exit = fadeOut(),
+                    modifier = Modifier.fillMaxSize()
+                ) {
+                    Lyrics3DPage(
+                        song = engine.currentSong,
+                        positionMs = engine.positionMs,
+                        durationMs = engine.durationMs,
+                        isPlaying = engine.isPlaying,
+                        isPreparing = engine.isPreparing,
+                        lyric = lyricDoc,
+                        lyricLoading = lyricLoading,
+                        playMode = engine.playMode,
+                        onSeek = { engine.seekTo(it) },
+                        onToggle = { engine.toggle() },
+                        onNext = { engine.next() },
+                        onPrev = { engine.prev() },
+                        onCycleMode = { engine.cycleMode() },
+                        onDownloadLyric = { downloadLyricFile(engine.currentSong) },
+                        onClose = { showLyrics = false }
+                    )
+                }
             }
         }
 

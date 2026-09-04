@@ -172,9 +172,10 @@ fun AsyncCover(
             bmp = CoverCache.get(url)
         }
     }
-    if (bmp != null) {
+    val currentBmp = bmp
+    if (currentBmp != null) {
         Image(
-            bitmap = bmp.asImageBitmap(),
+            bitmap = currentBmp.asImageBitmap(),
             contentDescription = null,
             modifier = modifier,
             contentScale = ContentScale.Crop

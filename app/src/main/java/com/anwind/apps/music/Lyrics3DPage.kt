@@ -1,6 +1,6 @@
 package com.anwind.apps.music
 
-import androidx.compose.animation.Animatable
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
@@ -399,7 +399,7 @@ private fun LyricLineItem(
     val active = distance == 0
 
     val scale = if (active) 1.18f else (1f - (absDist * 0.05f)).coerceIn(0.78f, 1f)
-    val alpha = if (active) 1f else (1f - absDist * 0.17f).coerceIn(0.12f, 1f)
+    val lineAlpha = if (active) 1f else (1f - absDist * 0.17f).coerceIn(0.12f, 1f)
 
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -412,7 +412,7 @@ private fun LyricLineItem(
                 cameraDistance = 1000f * density
                 scaleX = scale
                 scaleY = scale
-                alpha = alpha
+                alpha = lineAlpha
             }
     ) {
         Text(

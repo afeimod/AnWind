@@ -51,11 +51,15 @@ class MusicEngine(context: Context) {
     var playMode by mutableStateOf(store.loadPlayMode())
         private set
 
+    private val volumeState = mutableStateOf(0.8f)
+
     /** 音量 0..1 */
-    var volume by mutableStateOf(0.8f)
+    var volume: Float
+        get() = volumeState.value
         set(value) {
-            field = value.coerceIn(0f, 1f)
-            runCatching { player.setVolume(field, field) }
+            val v = value.coerceIn(0f, 1f)
+            volumeState.value = v
+            runCatching { player.setVolume(v, v) }
         }
 
     /** 当前播放队列与索引（供上一曲/下一曲可用性判断） */
