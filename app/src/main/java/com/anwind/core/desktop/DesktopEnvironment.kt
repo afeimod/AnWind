@@ -13,13 +13,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.PointerType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import com.anwind.AnWindApp
-import com.anwind.core.input.INJECTED_POINTER_ID
 import com.anwind.core.input.MouseController
 import com.anwind.core.input.MouseCursorOverlay
 import com.anwind.core.input.TrackpadGate
@@ -513,9 +513,11 @@ private fun Modifier.desktopGestures(
     awaitEachGesture {
         val first = awaitFirstDown(requireUnconsumed = false)
         // v2.19 触控板模式：真实手指流已被 TrackpadGate 消费（本层收到的
-        // 是“已消费”事件）—— 跳过，只处理触控板注入的合成流（id ≥ 99），
-        // 把注入的单指轻点 / 双指轻点还原为桌面点击 / 右键菜单
-        if (trackpadMode && first.id.value < INJECTED_POINTER_ID.toLong()) {
+        // 是“已消费”事件）—— 跳过，只处理触控板注入的合成流。
+        // 判定改用 type == PointerType.Touch：Compose 的 MotionEventAdapter 会把
+        // 注入的原始 id=99 重映射为自增小数字，id<99 不可靠（详见 TrackpadLayer
+        // 的 INJECTED_POINTER_ID 注释）；注入流 toolType=MOUSE → type=Mouse。
+        if (trackpadMode && first.type == PointerType.Touch) {
             while (true) {
                 val ev = awaitPointerEvent()
                 if (ev.changes.none { it.pressed }) break

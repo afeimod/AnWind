@@ -19,6 +19,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.PointerId
 import androidx.compose.ui.input.pointer.PointerInputChange
+import androidx.compose.ui.input.pointer.PointerType
 import androidx.compose.ui.input.pointer.changedToDownIgnoreConsumed
 import androidx.compose.ui.input.pointer.changedToUpIgnoreConsumed
 import androidx.compose.ui.input.pointer.pointerInput
@@ -29,10 +30,26 @@ import com.anwind.apps.browser.ZoomPinchLayout
 import kotlin.math.abs
 
 /**
- * 注入合成事件使用的指针 id 基线。
- * 真实手指的 pointer id 恒为 0..9；所有合成事件（点击/拖动）
- * 一律使用 id ≥ [INJECTED_POINTER_ID] 的指针 —— 门禁据此区分
- * "真实手指（拦截消费）" 与 "自己注入的事件（完全无视，放行给下层窗口）"。
+ * 注入合成事件在【原生 View 层】使用的指针 id 基线。
+ *
+ * ⚠️ 重要：Compose 1.6.8 的 [MotionEventAdapter] 维护一个
+ * `motionEventToComposePointerIdMap`（SparseLongArray），把 MotionEvent 的
+ * 原始 pointerId 映射为内部自增 id（`nextId` 从 0 递增、永不回落）。
+ * 因此注入事件的原始 id=99 进入 Compose 后会被重映射成 0/1/2… 的
+ * 小数字 —— Compose 层（门禁、桌面手势层）**无法再用 `id < 99` 区分**
+ * 注入流与真实手指，否则会把注入点击当真实手指消费 → endGesture→
+ * tapClick 再注入 → 状态机错乱/循环，最终门禁失效、真实触摸泄漏
+ * （"鼠标点一下就不动了，恢复成普通触控"的根因）。
+ *
+ * 正确判别维度是 [PointerType]：
+ * - 真实手指：toolType=FINGER → Compose `type == PointerType.Touch`
+ * - 注入合成（点击/拖拽）：toolType=MOUSE → `type == PointerType.Mouse`
+ * - 注入滚轮：ACTION_SCROLL + SOURCE_MOUSE → Scroll 事件
+ *
+ * Compose 层一律按 `type == PointerType.Touch` 判定真实手指；
+ * 原生 View 层（[com.anwind.apps.browser.ZoomPinchLayout] 等
+ * dispatchTouchEvent 入口）拿到的是未经映射的原始 MotionEvent，
+ * 仍可用 `MotionEvent.getPointerId() >= INJECTED_POINTER_ID` 判定注入指针。
  */
 internal const val INJECTED_POINTER_ID = 99
 
@@ -208,7 +225,13 @@ private fun Modifier.trackpadGate(
             // ===== 主循环：同步事件泵 =====
             while (true) {
                 val event = awaitPointerEvent(PointerEventPass.Initial)
-                val real = event.changes.filter { it.id.value < INJECTED_POINTER_ID }
+                // 真实手指 = Touch 型指针。注入流（Mouse 型点击/拖拽、Scroll 型滚轮）
+                // 一律放行给下层窗口 —— 不能用 id<99 判定：Compose 的
+                // MotionEventAdapter 会把注入的原始 id=99 重映射为自增小数字
+                //（详见 INJECTED_POINTER_ID 注释），id 维度无法区分注入与真实。
+                val real = event.changes.filter {
+                    it.type == PointerType.Touch && it.id.value < INJECTED_POINTER_ID
+                }
                 // 纯注入事件（点击/拖拽/滚轮流）：完全无视，放行给下层
                 if (real.isEmpty()) continue
                 // 触控板模式：真实手指永远不到下层（无差别消费）
@@ -443,12 +466,18 @@ object TrackpadController {
         }
     }
 
-    /** 单指触摸注入（合成指针 id = INJECTED_POINTER_ID） */
+    /**
+     * 单指触摸注入（合成指针 id = INJECTED_POINTER_ID，toolType = MOUSE）。
+     * toolType 用 MOUSE 而非 FINGER：Compose 的 MotionEventAdapter 会把原始
+     * pointerId=99 重映射为自增小数字，id 维度无法区分注入与真实手指；改用
+     * MOUSE 后 Compose 的 PointerInputChange.type = PointerType.Mouse，门禁与
+     * 桌面手势层据此（type == PointerType.Touch）可靠区分，注入流不再被误吞。
+     */
     private fun dispatchTouch(view: View, action: Int, downTime: Long, eventDelta: Long, x: Float, y: Float) {
         val props = arrayOf(
             MotionEvent.PointerProperties().apply {
                 id = INJECTED_POINTER_ID
-                toolType = MotionEvent.TOOL_TYPE_FINGER
+                toolType = MotionEvent.TOOL_TYPE_MOUSE
             }
         )
         val coords = arrayOf(
