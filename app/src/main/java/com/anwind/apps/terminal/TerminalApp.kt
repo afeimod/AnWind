@@ -196,7 +196,7 @@ private fun executeCommand(cmd: String, currentPath: String, app: AnWindApp): Li
             "  cd <path> 切换目录",
             "  cls       清屏",
             "  theme <variant>  切换主题(win95/xp/win7/win10/win11)",
-            "  start <app> 启动应用(browser/files/notepad/calc)",
+            "  start <app> 启动应用(browser/files/notepad/calc/settings/music)",
             "  exit      关闭终端"
         )
         "ver" -> listOf("AnWind [版本 1.0.0]", "(c) AnWind Corporation.")
@@ -238,6 +238,7 @@ private fun executeCommand(cmd: String, currentPath: String, app: AnWindApp): Li
                 "notepad" -> "notepad"
                 "calc", "calculator" -> "calculator"
                 "settings" -> "settings"
+                "music", "yinyue", "cloudmusic" -> "music"
                 else -> null
             }
             if (target != null) {

@@ -39,6 +39,7 @@ object ThemeIcons {
         "notepad" to "icons/notepad.png",
         "image_viewer" to "icons/image_viewer.png",
         "media_player" to "icons/music.png",
+        "music" to "icons/music_online.png",
         "minesweeper" to "icons/minesweeper_48.png",
         "clock" to "emoji:🕐",
         "terminal" to "emoji:💻",
