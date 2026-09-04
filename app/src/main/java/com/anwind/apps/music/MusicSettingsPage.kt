@@ -50,13 +50,14 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
 /**
- * 播放器设置中心（v2.18 新增）：
- * - 外观：主页背景（默认/纯色/渐变/自定义图片 + 压暗）
+ * 播放器设置中心（v2.18 新增，v2.19 更新）：
+ * - 外观：主页背景（默认/纯色/渐变/自定义图片 + 压暗）—— v2.19 起全局生效
+ *   （侧栏/底栏半透明融合），图片/文件夹选择均拉起 AnWind 桌面文件资源管理器
  * - 歌词秀：背景自定义、3D 倾斜度（每行折角/最大倾角/歌词墙视角）、字号、
  *   行切换动画、高亮发光、翻译显示
  * - 词源：智能回退 / 酷我 / 网易云 / QQ 音乐 / LRCLIB 优先级
  * - 本地扫描：全库 / 仅指定目录（目录列表 + 文件夹选择 + 手动输入）
- * 所有修改即时持久化（onChange → saveMusicSettings）。
+ * 所有修改即时持久化（onChange → saveMusicSettings），滑条拖动过程中实时生效。
  */
 @Composable
 fun SettingsPage(
@@ -112,7 +113,7 @@ fun SettingsPage(
                     )
                 }
             }
-            Caption("浅色预设适配白底界面；选深色时文字仍为深色，建议搭配浅色图片或低压暗")
+            Caption("背景全局生效：侧栏与底栏自动变半透明融入；选深色时文字仍为深色，建议搭配浅色图片或低压暗")
         }
 
         SettingsSection("歌词秀背景") {
@@ -143,7 +144,7 @@ fun SettingsPage(
                     onClear = { onChange(settings.copy(lyricBgImage = null)) }
                 )
             }
-            Caption("封面模糊为默认效果；其余模式仍会叠加轻微暗层保证歌词可读性")
+            Caption("封面模糊为默认效果；其余模式仍会叠加轻微暗层保证歌词可读性；点击选择拉起桌面文件资源管理器")
         }
 
         SettingsSection("3D 歌词") {
@@ -243,7 +244,7 @@ fun SettingsPage(
                     )
                     Spacer(Modifier.width(6.dp))
                     Text(
-                        text = "选择文件夹",
+                        text = "在文件资源管理器中选择文件夹",
                         fontSize = 13.sp,
                         color = Mc.red,
                         fontWeight = FontWeight.Medium,
@@ -278,13 +279,13 @@ fun SettingsPage(
             }
             Caption(
                 "指定目录模式只扫描你选择的文件夹，避免把铃声/语音等无关音频扫进曲库；" +
-                    "需要授予“所有文件访问”权限（本应用已声明）"
+                    "点击选择会拉起桌面【文件资源管理器】，浏览到目标文件夹后点「选定此目录」回传"
             )
         }
 
         SettingsSection("关于") {
             Caption("音源：酷我（搜索 / 播放 / 下载） · 词源：酷我 / 网易云 / QQ 音乐 / LRCLIB")
-            Caption("AnWind 云音乐 v2.18 · 界面对照网易云音乐 PC 版 · 3D 歌词秀")
+            Caption("AnWind 云音乐 v2.19 · 界面对照网易云音乐 PC 版 · 3D 歌词秀")
         }
         Spacer(Modifier.height(20.dp))
     }
@@ -420,7 +421,7 @@ private fun ImagePickRow(picked: Boolean, onPick: () -> Unit, onClear: () -> Uni
         )
         Spacer(Modifier.width(8.dp))
         Text(
-            text = if (picked) "已选择图片（点击可更换）" else "从相册/文件选择图片",
+            text = if (picked) "已选择图片（点击可更换）" else "点击打开文件资源管理器选择图片",
             fontSize = 13.sp,
             color = Mc.textPrimary,
             modifier = Modifier
@@ -444,7 +445,7 @@ private fun ImagePickRow(picked: Boolean, onPick: () -> Unit, onClear: () -> Uni
     }
 }
 
-/** 滑条设置行（拖动实时预览，松手才写入持久化） */
+/** 滑条设置行（v2.19：拖动过程中实时 onChange 立即生效并持久化，松手再补一次收尾提交） */
 @Composable
 private fun SettingSlider(
     title: String,
@@ -473,6 +474,9 @@ private fun SettingSlider(
             onValueChange = {
                 dragging = true
                 dragValue = it
+                // v2.19：拖动实时提交 —— 预览立即生效，且即使 onValueChangeFinished
+                // 在个别机型上不回调，最终值也已由最后一次 onValueChange 兼底
+                onChange(it)
             },
             onValueChangeFinished = {
                 dragging = false

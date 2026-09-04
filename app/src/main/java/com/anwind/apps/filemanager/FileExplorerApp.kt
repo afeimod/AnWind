@@ -77,6 +77,12 @@ val FileExplorerApp = AppDef(
  * - 主体：左侧导航栏 + 文件网格/列表（黄色文件夹图标网格，符合 Win11 视觉）
  * - 需 MANAGE_EXTERNAL_STORAGE 权限；未授权时显示授权提示
  * - 直接读取 /storage/emulated/0，不调用系统文件管理器
+ *
+ * v2.19 选择模式新增（云音乐接入桌面选择总线）：
+ * - pickMode=image：背景图片选择（云音乐主页/歌词秀背景），直达 Pictures，
+ *   点击图片文件 → 经 FilePickBus 回传 targetApp="music" 的发起窗口
+ * - pickMode=dir：目录选择（云音乐本地扫描目录），从内部存储根浏览，
+ *   横幅提供「选定此目录」按钮，点击将当前所在目录绝对路径回传发起窗口
  */
 @Composable
 private fun FileExplorerContent(scope: WindowContentScope) {
@@ -121,6 +127,9 @@ private fun FileExplorerContent(scope: WindowContentScope) {
     val lockWallpaperVideoPick = pickMode == "lock_wallpaper_video"
     val textPick = pickMode == "text"
     val mediaPick = pickMode == "media"
+    // v2.19 云音乐选择模式：image = 背景图片；dir = 本地扫描目录（选定当前所在文件夹）
+    val imagePick = pickMode == "image"
+    val dirPick = pickMode == "dir"
     if (wallpaperVideoOnlyPick) {
         // v2.18 桌面视频壁纸：直达 Movies → DCIM → Download → 内部存储根
         LaunchedEffect(Unit) {
@@ -164,6 +173,20 @@ private fun FileExplorerContent(scope: WindowContentScope) {
                 .map { File(storageRoot, it) }
                 .firstOrNull { it.exists() && it.isDirectory } ?: storageRoot
             currentRealDir = dir
+            isThisPcHome = false
+        }
+    } else if (imagePick) {
+        // v2.19 图片选择（云音乐背景）：直达 Pictures（不存在则内部存储根）
+        LaunchedEffect(Unit) {
+            val pics = File(storageRoot, "Pictures")
+            currentRealDir = if (pics.exists() && pics.isDirectory) pics else storageRoot
+            isThisPcHome = false
+        }
+    } else if (dirPick) {
+        // v2.19 目录选择（云音乐扫描目录）：从内部存储根开始浏览，
+        // 用户浏览到目标文件夹后点横幅「选定此目录」回传
+        LaunchedEffect(Unit) {
+            currentRealDir = storageRoot
             isThisPcHome = false
         }
     }
@@ -221,7 +244,17 @@ private fun FileExplorerContent(scope: WindowContentScope) {
                     initialWidth = 760,
                     initialHeight = 540
                 )
+                else -> Toast.makeText(context, "发起窗口已关闭，已取消选择", Toast.LENGTH_SHORT).show()
             }
+        }
+        scope.onClose()
+    }
+
+    /** v2.19：目录选择模式 —— 把当前所在目录绝对路径回传给发起窗口并关闭 */
+    fun pickDirAndClose(dir: File) {
+        val delivered = FilePickBus.deliver(targetApp, targetWindow, dir.absolutePath)
+        if (!delivered) {
+            Toast.makeText(context, "发起窗口已关闭，已取消选择", Toast.LENGTH_SHORT).show()
         }
         scope.onClose()
     }
@@ -440,8 +473,9 @@ private fun FileExplorerContent(scope: WindowContentScope) {
             }
         }
 
-        // ===== v2.14 壁纸选择模式横幅（v2.17：兼容锁屏壁纸/锁屏视频壁纸） =====
-        if (wallpaperPick || lockWallpaperPick || lockWallpaperVideoPick || textPick || mediaPick) {
+        // ===== v2.14 壁纸选择模式横幅（v2.17：兼容锁屏壁纸/锁屏视频壁纸；
+        //       v2.19：新增云音乐 image/dir 选择模式） =====
+        if (wallpaperPick || lockWallpaperPick || lockWallpaperVideoPick || textPick || mediaPick || imagePick || dirPick) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -457,6 +491,8 @@ private fun FileExplorerContent(scope: WindowContentScope) {
                         lockWallpaperPick -> Icons.Default.Image
                         lockWallpaperVideoPick -> Icons.Default.PlayCircle
                         textPick -> Icons.Default.Description
+                        imagePick -> Icons.Default.Image
+                        dirPick -> Icons.Default.FolderOpen
                         else -> Icons.Default.PlayCircle
                     }, null,
                     tint = theme.accentColor,
@@ -470,11 +506,34 @@ private fun FileExplorerContent(scope: WindowContentScope) {
                         lockWallpaperPick -> "点击任意图片，直接设为锁屏壁纸"
                         lockWallpaperVideoPick -> "点击任意视频文件，直接设为锁屏动态壁纸"
                         textPick -> "点击任意文本文件，在记事本中打开"
+                        imagePick -> "点击任意图片文件，选为播放器自定义背景"
+                        dirPick -> "浏览到目标文件夹后，点右侧「选定此目录」回传给云音乐"
                         else -> "点击音频或视频文件进行播放"
                     },
                     color = if (theme.isDark) Color.White else Color.Black,
                     fontSize = 12.sp
                 )
+                if (dirPick) {
+                    Spacer(Modifier.weight(1f))
+                    Text(
+                        text = "选定此目录",
+                        color = Color.White,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(theme.accentColor)
+                            .clickable {
+                                val dir = currentRealDir
+                                if (dir == null) {
+                                    Toast.makeText(context, "请先进入要选择的文件夹", Toast.LENGTH_SHORT).show()
+                                } else {
+                                    pickDirAndClose(dir)
+                                }
+                            }
+                            .padding(horizontal = 12.dp, vertical = 4.dp)
+                    )
+                }
             }
         }
 
@@ -554,6 +613,11 @@ private fun FileExplorerContent(scope: WindowContentScope) {
                         } else if (textPick) {
                             if (isTextExtension(file.extension)) pickAndClose(file)
                             else Toast.makeText(context, "请选择文本文件（txt/log/md/json/xml 等）", Toast.LENGTH_SHORT).show()
+                        } else if (imagePick) {
+                            if (isImageExtension(file.extension)) pickAndClose(file)
+                            else Toast.makeText(context, "请选择图片文件（jpg/png/webp/gif 等）", Toast.LENGTH_SHORT).show()
+                        } else if (dirPick) {
+                            Toast.makeText(context, "目录选择模式：请点上方「选定此目录」回传当前文件夹", Toast.LENGTH_SHORT).show()
                         } else if (mediaPick) {
                             if (isMediaExtension(file.extension)) pickAndClose(file)
                             else Toast.makeText(context, "请选择音频或视频文件", Toast.LENGTH_SHORT).show()
@@ -573,6 +637,11 @@ private fun FileExplorerContent(scope: WindowContentScope) {
                         } else if (textPick) {
                             if (isTextExtension(file.extension)) pickAndClose(file)
                             else Toast.makeText(context, "请选择文本文件（txt/log/md/json/xml 等）", Toast.LENGTH_SHORT).show()
+                        } else if (imagePick) {
+                            if (isImageExtension(file.extension)) pickAndClose(file)
+                            else Toast.makeText(context, "请选择图片文件（jpg/png/webp/gif 等）", Toast.LENGTH_SHORT).show()
+                        } else if (dirPick) {
+                            Toast.makeText(context, "目录选择模式：请点上方「选定此目录」回传当前文件夹", Toast.LENGTH_SHORT).show()
                         } else if (mediaPick) {
                             if (isMediaExtension(file.extension)) pickAndClose(file)
                             else Toast.makeText(context, "请选择音频或视频文件", Toast.LENGTH_SHORT).show()

@@ -1,10 +1,7 @@
 package com.anwind.apps.music
 
-import android.content.Intent
-import android.net.Uri
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -65,19 +62,27 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.anwind.apps.filemanager.FilePickBus
+import com.anwind.core.window.AppRegistry
 import com.anwind.core.window.LaunchMode
 import com.anwind.core.window.AppDef
 import com.anwind.core.window.WindowContentScope
+import com.anwind.core.window.WindowManager
 import java.io.File
 import kotlinx.coroutines.launch
-import android.widget.Toast
 
 /**
- * 云音乐（v2.17 新增应用）：
+ * 云音乐（v2.17 新增应用；v2.19 设置体验完善）：
  * - 界面对照网易云音乐 PC 版（需求图2）：左侧导航栏 + 中部歌曲列表 + 底部播放条
  * - 在线音乐与歌词数据源移植自用户提供的 linboxyy.py（酷我搜索/播放链接/歌词 + 网易云歌词兜底）
  * - 歌词秀为 3D 透视样式（需求图1），见 [Lyrics3DPage]
  * - 支持搜索播放、我喜欢、最近播放、本地音乐（MediaStore）、歌曲/歌词下载
+ *
+ * v2.19 变更：
+ * - 背景图片/扫描目录选择改由桌面【文件资源管理器】窗口完成（FilePickBus 回传），
+ *   不再拉起手机自带的 SAF 文件选择器
+ * - 主页自定义背景全局生效：侧栏/底栏半透明融入（不再只显示在内容区）
+ * - 3D 歌词设置（倾斜/视角/发光等）改为快照状态直读，改动立即生效
  */
 val MusicPlayerApp = AppDef(
     id = "music",
@@ -160,36 +165,48 @@ private fun MusicContent(scope: WindowContentScope) {
         if (musicSettings.scanMode == MusicSettings.SCAN_DIRS) scanLocal()
     }
 
-    // 背景图 / 扫描目录选择器
-    fun persistUri(uri: Uri) {
-        runCatching {
-            context.contentResolver.takePersistableUriPermission(
-                uri, Intent.FLAG_GRANT_READ_URI_PERMISSION
-            )
-        }
+    // ===== v2.19 桌面文件资源管理器选择（替代系统 SAF 选择器） =====
+    // 背景图片/扫描目录不再拉起手机自带文件管理器，改为打开 AnWind 桌面自带的
+    // 【文件资源管理器】选择窗口（pickMode=image/dir），用户选中后经 FilePickBus
+    // 精确回传本窗口。pendingPick 记录本次选择用途（图片归属/目录），回传时按用途分发。
+    var pendingPick by remember { mutableStateOf<String?>(null) }
+
+    fun openDesktopPicker(kind: String, title: String, mode: String) {
+        pendingPick = kind
+        WindowManager.get().open(
+            appId = "file_explorer",
+            title = title,
+            launchMode = AppRegistry.get("file_explorer")?.launchMode ?: LaunchMode.FLOATING,
+            launchArgs = mapOf(
+                "pickMode" to mode,
+                "targetApp" to "music",
+                "targetWindow" to scope.windowState.id
+            ),
+            initialWidth = 920,
+            initialHeight = 620
+        )
     }
-    val lyricImagePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        uri?.let {
-            persistUri(it)
-            updateSettings(musicSettings.copy(lyricBgImage = it.toString(), lyricBgMode = MusicSettings.BG_IMAGE))
-        }
-    }
-    val homeImagePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        uri?.let {
-            persistUri(it)
-            updateSettings(musicSettings.copy(homeBgImage = it.toString(), homeBgMode = MusicSettings.BG_IMAGE))
-        }
-    }
-    val folderPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
-        uri?.let { u ->
-            persistUri(u)
-            val path = treeUriToDirPath(u)
-            if (path == null) {
-                toast("无法解析该目录路径，请改用手动输入路径添加")
-            } else if (!musicSettings.scanDirs.contains(path)) {
-                updateSettings(musicSettings.copy(scanDirs = musicSettings.scanDirs + path))
+
+    // 文件资源管理器选中文件/目录后回传本窗口（DisposableEffect 内注册一次，
+    // lambda 经委托读到的都是最新 musicSettings / pendingPick）
+    DisposableEffect(Unit) {
+        val unlisten = FilePickBus.listen("music", scope.windowState.id) { path ->
+            when (pendingPick) {
+                "homeImage" -> updateSettings(
+                    musicSettings.copy(homeBgImage = path, homeBgMode = MusicSettings.BG_IMAGE)
+                )
+                "lyricImage" -> updateSettings(
+                    musicSettings.copy(lyricBgImage = path, lyricBgMode = MusicSettings.BG_IMAGE)
+                )
+                "folder" -> {
+                    if (!musicSettings.scanDirs.contains(path)) {
+                        updateSettings(musicSettings.copy(scanDirs = musicSettings.scanDirs + path))
+                    }
+                }
             }
+            pendingPick = null
         }
+        onDispose { unlisten() }
     }
 
     // ===== 下载 =====
@@ -291,7 +308,9 @@ private fun MusicContent(scope: WindowContentScope) {
     // 返回键：歌词页优先退出
     BackHandler(enabled = showLyrics) { showLyrics = false }
 
-    // ===== 布局：[侧栏 | 主区(歌词页覆盖)] + 底栏（v2.18 背景可自定义） =====
+    // ===== 布局：[侧栏 | 主区(歌词页覆盖)] + 底栏（v2.18 背景可自定义，
+    // v2.19 起全局生效：侧栏/底栏半透明融入自定义背景） =====
+    val homeCustomBg = musicSettings.homeBgMode != MusicSettings.HOME_BG_DEFAULT
     val homeBgModifier = when (musicSettings.homeBgMode) {
         MusicSettings.BG_SOLID -> Modifier.background(Color(musicSettings.homeBgColor))
         MusicSettings.BG_GRADIENT -> {
@@ -318,7 +337,7 @@ private fun MusicContent(scope: WindowContentScope) {
         ) {
         Box(Modifier.weight(1f)) {
             Row(Modifier.fillMaxSize()) {
-                Sidebar(page = page, onPageChange = { page = it })
+                Sidebar(page = page, onPageChange = { page = it }, customBg = homeCustomBg)
                 Box(Modifier.weight(1f)) {
                     when (page) {
                         Page.SEARCH -> SearchPage(
@@ -421,9 +440,9 @@ private fun MusicContent(scope: WindowContentScope) {
                         Page.SETTINGS -> SettingsPage(
                             settings = musicSettings,
                             onChange = { updateSettings(it) },
-                            onPickLyricImage = { lyricImagePicker.launch(arrayOf("image/*")) },
-                            onPickHomeImage = { homeImagePicker.launch(arrayOf("image/*")) },
-                            onPickFolder = { folderPicker.launch(null) },
+                            onPickLyricImage = { openDesktopPicker("lyricImage", "选择歌词秀背景图片", "image") },
+                            onPickHomeImage = { openDesktopPicker("homeImage", "选择主页背景图片", "image") },
+                            onPickFolder = { openDesktopPicker("folder", "选择要扫描的音乐文件夹", "dir") },
                             onRescan = { scanLocal() }
                         )
                     }
@@ -450,7 +469,7 @@ private fun MusicContent(scope: WindowContentScope) {
                         lyric = lyricDoc,
                         lyricLoading = lyricLoading,
                         playMode = engine.playMode,
-                        settings = musicSettings,
+                        settingsProvider = { musicSettings },
                         onSeek = { engine.seekTo(it) },
                         onToggle = { engine.toggle() },
                         onNext = { engine.next() },
@@ -467,6 +486,7 @@ private fun MusicContent(scope: WindowContentScope) {
         PlayerBar(
             engine = engine,
             isFav = engine.currentSong?.let { favKeys.contains(it.key) } ?: false,
+            customBg = homeCustomBg,
             onToggleFav = {
                 engine.currentSong?.let { song ->
                     engine.store.toggleFavorite(song)
@@ -485,12 +505,17 @@ private fun MusicContent(scope: WindowContentScope) {
 // ==================== 左侧导航栏 ====================
 
 @Composable
-private fun Sidebar(page: Page, onPageChange: (Page) -> Unit) {
+private fun Sidebar(
+    page: Page,
+    onPageChange: (Page) -> Unit,
+    customBg: Boolean
+) {
     Column(
         Modifier
             .width(170.dp)
             .fillMaxSize()
-            .background(Mc.sidebarBg)
+            // v2.19：自定义主页背景时侧栏半透明白，让背景全局透出（含菜单区）
+            .background(if (customBg) Color.White.copy(alpha = 0.72f) else Mc.sidebarBg)
             .padding(vertical = 14.dp, horizontal = 10.dp)
     ) {
         // Logo
@@ -535,7 +560,7 @@ private fun Sidebar(page: Page, onPageChange: (Page) -> Unit) {
 
         Spacer(Modifier.height(10.dp))
         Text(
-            text = "音源：酷我 / 网易云 / QQ / LRCLIB\nAnWind v2.18",
+            text = "音源：酷我 / 网易云 / QQ / LRCLIB\nAnWind v2.19",
             fontSize = 10.sp,
             lineHeight = 15.sp,
             color = Mc.textTertiary
@@ -592,6 +617,7 @@ private fun NavItem(
 private fun PlayerBar(
     engine: MusicEngine,
     isFav: Boolean,
+    customBg: Boolean,
     onToggleFav: () -> Unit,
     lyricsOpen: Boolean,
     onToggleLyrics: () -> Unit
@@ -603,7 +629,8 @@ private fun PlayerBar(
     Column(
         Modifier
             .fillMaxWidth()
-            .background(Color.White)
+            // v2.19：自定义主页背景时底栏半透明白，让背景全局透出（含控制区）
+            .background(if (customBg) Color.White.copy(alpha = 0.80f) else Color.White)
             .padding(top = 6.dp)
     ) {
         // 进度条（细线，红色）
@@ -797,25 +824,4 @@ private fun PlayerBar(
             )
         }
     }
-}
-
-// ==================== SAF 目录 URI 解析（v2.18 本地扫描指定目录） ====================
-
-/**
- * 将 OpenDocumentTree 返回的 tree URI 解析为真实目录绝对路径。
- * 仅支持主存储（primary）的 externalstorage provider：
- * content://com.android.externalstorage.documents/tree/primary%3AMusic → /storage/emulated/0/Music
- * 其他 provider（如 Downloads、第三方文档应用）无法映射为路径，返回 null（提示用户手动输入）。
- */
-private fun treeUriToDirPath(uri: Uri): String? {
-    return runCatching {
-        val tree = uri.path?.substringAfter("tree/", "") ?: return null
-        val decoded = Uri.decode(tree)               // "primary:Music/我的音乐"
-        val root = decoded.substringBefore(":", "").lowercase()
-        val rest = decoded.substringAfter(":", "")
-        when (root) {
-            "primary" -> "/storage/emulated/0" + (if (rest.isNotEmpty()) "/$rest" else "")
-            else -> null
-        }
-    }.getOrNull()
 }

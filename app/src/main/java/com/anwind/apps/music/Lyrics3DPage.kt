@@ -70,13 +70,21 @@ import com.anwind.apps.music.MusicStore as Store
 import kotlin.math.roundToInt
 
 /**
- * 3D 歌词秀（v2.17，对应需求图1）：
+ * 3D 歌词秀（v2.17，对应需求图1；v2.19 设置即时生效重构）：
  * - 深色沉浸背景：封面大图模糊铺底 + 黑色渐变压暗
  * - 左侧：圆角封面卡片 + 右后方旋转 CD 光盘（播放时旋转，暂停即停）
  * - 右侧：3D 透视歌词墙 —— 当前行放大高亮发光，其余行按距离做
  *   rotationX 倾斜 + 缩放 + 渐隐，整面墙带 rotateY 视角；
  *   行切换时用 animateFloatAsState 平滑过渡，点击任意行跳转播放
  * - 左上角《歌名》— 歌手标题，右下角模式/上一首/播放/下一首/歌词下载控制
+ *
+ * v2.19 修复“倾斜/视角等设置改动不立即生效”：settings 改为 () -> MusicSettings
+ * 提供者 lambda。关键点：
+ * - 组合期读取（背景模式/字号/发光/翻译）：在自身重组作用域内调用 settingsProvider()，
+ *   读的是快照 State，变更直接失效所在作用域，不再依赖整条参数传递链的重组；
+ * - 绘制期读取（倾斜/视角）：在 graphicsLayer 块内调用 settingsProvider()，
+ *   块内读快照 State 会注册绘制失效，设置一变立即重绘图层，
+ *   彻底避免旧版 lambda 捕获普通对象导致的陈旧值问题。
  */
 @Composable
 fun Lyrics3DPage(
@@ -88,7 +96,8 @@ fun Lyrics3DPage(
     lyric: LyricsDoc?,
     lyricLoading: Boolean,
     playMode: Int,
-    settings: MusicSettings = MusicSettings(),
+    /** v2.19：设置提供者，每次调用返回最新 MusicSettings（快照读，即时生效） */
+    settingsProvider: () -> MusicSettings,
     onSeek: (Long) -> Unit,
     onToggle: () -> Unit,
     onNext: () -> Unit,
@@ -98,6 +107,9 @@ fun Lyrics3DPage(
     onClose: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    // 组合期读取：背景模式等参与重组的设置（v2.19：所在作用域直读快照 State）
+    val settings = settingsProvider()
+
     Box(modifier.fillMaxSize().background(Mc.lyricBg)) {
         // ===== 背景（v2.18 可自定义）：封面模糊 / 纯色 / 渐变 / 自定义图片 =====
         when (settings.lyricBgMode) {
@@ -229,7 +241,7 @@ fun Lyrics3DPage(
                         LyricsWall(
                             doc = lyric,
                             positionMs = positionMs,
-                            settings = settings,
+                            settingsProvider = settingsProvider,
                             onSeek = onSeek,
                             modifier = Modifier.fillMaxSize()
                         )
@@ -364,7 +376,7 @@ private fun DiscCanvas(angle: Float, modifier: Modifier = Modifier) {
 // ==================== 3D 歌词墙 ====================
 
 /**
- * 3D 透视歌词墙（v2.18 参数可调）：
+ * 3D 透视歌词墙（v2.18 参数可调；v2.19 绘制期直读快照状态，设置即时生效）：
  * - 整面墙 rotateY 视角可调（默认 -14°，对应图1 歌词平面）
  * - 每行按与当前行的距离做 rotationX 圆弧倾斜 + 缩放 + 渐隐，强度/上限可调
  * - 行切换通过 animateFloatAsState 平滑过渡（可关闭）
@@ -373,7 +385,7 @@ private fun DiscCanvas(angle: Float, modifier: Modifier = Modifier) {
 private fun LyricsWall(
     doc: LyricsDoc,
     positionMs: Long,
-    settings: MusicSettings,
+    settingsProvider: () -> MusicSettings,
     onSeek: (Long) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -397,7 +409,8 @@ private fun LyricsWall(
                 .fillMaxSize()
                 .graphicsLayer {
                     // 歌词墙整体绕 Y 轴倾斜，营造图1 的侧视角（角度可调）
-                    rotationY = settings.wallRotateY
+                    // v2.19：绘制期读快照 State，视角滑条一变立即重绘
+                    rotationY = settingsProvider().wallRotateY
                     cameraDistance = 1000f * density
                 }
         ) {
@@ -405,7 +418,7 @@ private fun LyricsWall(
                 LyricLineItem(
                     line = line,
                     distance = i - idx,
-                    settings = settings,
+                    settingsProvider = settingsProvider,
                     onClick = { onSeek(line.timeMs) }
                 )
             }
@@ -417,9 +430,11 @@ private fun LyricsWall(
 private fun LyricLineItem(
     line: LyricLine,
     distance: Int,
-    settings: MusicSettings,
+    settingsProvider: () -> MusicSettings,
     onClick: () -> Unit
 ) {
+    // 组合期读取（v2.19）：字号/发光/翻译/动画开关 —— 所在作用域直读快照 State
+    val settings = settingsProvider()
     // 距离做动画：切换当前行时整面墙平滑流动（可在设置中关闭）
     val animDist by animateFloatAsState(
         targetValue = distance.toFloat(),
@@ -439,8 +454,10 @@ private fun LyricLineItem(
             .clickable(onClick = onClick)
             .padding(horizontal = 18.dp, vertical = 9.dp)
             .graphicsLayer {
-                // v2.18：倾斜强度 / 最大倾角可调
-                rotationX = (-animDist * settings.tilt3d).coerceIn(-settings.tilt3dMax, settings.tilt3dMax)
+                // v2.19：绘制期实时读取最新设置 —— 倾斜强度/最大倾角滑条一变，
+                // 快照读触发图层失效重绘，立即生效（不再依赖重组传播）
+                val s = settingsProvider()
+                rotationX = (-animDist * s.tilt3d).coerceIn(-s.tilt3dMax, s.tilt3dMax)
                 cameraDistance = 1000f * density
                 scaleX = scale
                 scaleY = scale
