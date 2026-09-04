@@ -3,6 +3,7 @@ package com.anwind.apps.music
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -66,6 +67,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.anwind.apps.music.MusicStore as Store
+import kotlin.math.roundToInt
 
 /**
  * 3D 歌词秀（v2.17，对应需求图1）：
@@ -86,6 +88,7 @@ fun Lyrics3DPage(
     lyric: LyricsDoc?,
     lyricLoading: Boolean,
     playMode: Int,
+    settings: MusicSettings = MusicSettings(),
     onSeek: (Long) -> Unit,
     onToggle: () -> Unit,
     onNext: () -> Unit,
@@ -96,24 +99,46 @@ fun Lyrics3DPage(
     modifier: Modifier = Modifier
 ) {
     Box(modifier.fillMaxSize().background(Mc.lyricBg)) {
-        // ===== 背景：封面模糊铺底 + 深色渐变 =====
-        AsyncCover(
-            url = song?.picUrl,
-            modifier = Modifier
-                .matchParentSize()
-                .blur(46.dp)
-                .background(Mc.lyricBg)
-        )
+        // ===== 背景（v2.18 可自定义）：封面模糊 / 纯色 / 渐变 / 自定义图片 =====
+        when (settings.lyricBgMode) {
+            MusicSettings.BG_SOLID -> {
+                Box(Modifier.matchParentSize().background(Color(settings.lyricBgColor)))
+            }
+            MusicSettings.BG_GRADIENT -> {
+                val pair = LyricBgGradients.getOrElse(settings.lyricBgGradient) { LyricBgGradients[0] }
+                Box(
+                    Modifier
+                        .matchParentSize()
+                        .background(Brush.verticalGradient(pair))
+                )
+            }
+            MusicSettings.BG_IMAGE -> {
+                BgImage(settings.lyricBgImage, Modifier.matchParentSize())
+            }
+            else -> {
+                // 封面模糊铺底（默认，对应图1）
+                AsyncCover(
+                    url = song?.picUrl,
+                    modifier = Modifier
+                        .matchParentSize()
+                        .blur(46.dp)
+                        .background(Mc.lyricBg)
+                )
+            }
+        }
+        // 深色渐变压暗（图片/封面模式下加重，纯色/渐变模式轻微提 readability）
         Box(
             Modifier
                 .matchParentSize()
                 .background(
                     Brush.verticalGradient(
-                        listOf(
-                            Color(0xB3000000),
-                            Color(0xD9000000),
-                            Color(0xF3000000)
-                        )
+                        if (settings.lyricBgMode == MusicSettings.BG_SOLID ||
+                            settings.lyricBgMode == MusicSettings.BG_GRADIENT
+                        ) {
+                            listOf(Color(0x33000000), Color(0x55000000), Color(0x77000000))
+                        } else {
+                            listOf(Color(0xB3000000), Color(0xD9000000), Color(0xF3000000))
+                        }
                     )
                 )
         )
@@ -158,6 +183,8 @@ fun Lyrics3DPage(
                         text = when (lyric.source) {
                             "netease" -> "词源 网易云"
                             "kuwo" -> "词源 酷我"
+                            "qq" -> "词源 QQ音乐"
+                            "lrclib" -> "词源 LRCLIB"
                             else -> "已缓存"
                         },
                         color = Color.White.copy(alpha = 0.35f),
@@ -202,6 +229,7 @@ fun Lyrics3DPage(
                         LyricsWall(
                             doc = lyric,
                             positionMs = positionMs,
+                            settings = settings,
                             onSeek = onSeek,
                             modifier = Modifier.fillMaxSize()
                         )
@@ -336,15 +364,16 @@ private fun DiscCanvas(angle: Float, modifier: Modifier = Modifier) {
 // ==================== 3D 歌词墙 ====================
 
 /**
- * 3D 透视歌词墙：
- * - 整面墙 rotateY(-14°) 倾斜入屏（对应图1 歌词平面）
- * - 每行按与当前行的距离做 rotationX 圆弧倾斜 + 缩放 + 渐隐
- * - 行切换通过 animateFloatAsState 平滑过渡
+ * 3D 透视歌词墙（v2.18 参数可调）：
+ * - 整面墙 rotateY 视角可调（默认 -14°，对应图1 歌词平面）
+ * - 每行按与当前行的距离做 rotationX 圆弧倾斜 + 缩放 + 渐隐，强度/上限可调
+ * - 行切换通过 animateFloatAsState 平滑过渡（可关闭）
  */
 @Composable
 private fun LyricsWall(
     doc: LyricsDoc,
     positionMs: Long,
+    settings: MusicSettings,
     onSeek: (Long) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -367,8 +396,8 @@ private fun LyricsWall(
             modifier = Modifier
                 .fillMaxSize()
                 .graphicsLayer {
-                    // 歌词墙整体绕 Y 轴倾斜，营造图1 的侧视角
-                    rotationY = -14f
+                    // 歌词墙整体绕 Y 轴倾斜，营造图1 的侧视角（角度可调）
+                    rotationY = settings.wallRotateY
                     cameraDistance = 1000f * density
                 }
         ) {
@@ -376,6 +405,7 @@ private fun LyricsWall(
                 LyricLineItem(
                     line = line,
                     distance = i - idx,
+                    settings = settings,
                     onClick = { onSeek(line.timeMs) }
                 )
             }
@@ -387,12 +417,13 @@ private fun LyricsWall(
 private fun LyricLineItem(
     line: LyricLine,
     distance: Int,
+    settings: MusicSettings,
     onClick: () -> Unit
 ) {
-    // 距离做动画：切换当前行时整面墙平滑流动
+    // 距离做动画：切换当前行时整面墙平滑流动（可在设置中关闭）
     val animDist by animateFloatAsState(
         targetValue = distance.toFloat(),
-        animationSpec = tween(280),
+        animationSpec = if (settings.lyricDynamic) tween(280) else snap(),
         label = "lyrDist"
     )
     val absDist = kotlin.math.abs(animDist)
@@ -408,7 +439,8 @@ private fun LyricLineItem(
             .clickable(onClick = onClick)
             .padding(horizontal = 18.dp, vertical = 9.dp)
             .graphicsLayer {
-                rotationX = (-animDist * 9f).coerceIn(-44f, 44f)
+                // v2.18：倾斜强度 / 最大倾角可调
+                rotationX = (-animDist * settings.tilt3d).coerceIn(-settings.tilt3dMax, settings.tilt3dMax)
                 cameraDistance = 1000f * density
                 scaleX = scale
                 scaleY = scale
@@ -417,10 +449,11 @@ private fun LyricLineItem(
     ) {
         Text(
             text = line.text.ifBlank { "···" },
-            fontSize = if (active) 22.sp else 17.sp,
+            fontSize = if (active) settings.lyricFontSize.sp
+            else (settings.lyricFontSize * 0.77f).roundToInt().sp,
             fontWeight = if (active) FontWeight.Bold else FontWeight.Normal,
             color = if (active) Color.White else Color(0xFFD5D5DE),
-            style = if (active) {
+            style = if (active && settings.lyricGlow) {
                 TextStyle(
                     shadow = Shadow(
                         color = Color.White.copy(alpha = 0.75f),
@@ -433,7 +466,7 @@ private fun LyricLineItem(
             maxLines = 2,
             overflow = TextOverflow.Ellipsis
         )
-        if (!line.translation.isNullOrBlank()) {
+        if (settings.showTranslation && !line.translation.isNullOrBlank()) {
             Text(
                 text = line.translation,
                 fontSize = if (active) 13.sp else 11.sp,

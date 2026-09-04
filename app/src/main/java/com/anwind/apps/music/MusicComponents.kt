@@ -347,3 +347,96 @@ fun MarqueeText(text: String, fontSize: Int, color: Color, modifier: Modifier = 
         modifier = modifier.fillMaxWidth().basicMarquee()
     )
 }
+
+// ==================== 背景自定义（v2.18 设置中心） ====================
+
+/**
+ * 歌词秀背景渐变预设（深色系，叠加在歌词页底层）。
+ * 每项为自上而下的颜色对，用于 Brush.verticalGradient。
+ */
+val LyricBgGradients: List<List<Color>> = listOf(
+    listOf(Color(0xFF1B1B2F), Color(0xFF0B0B10)),   // 深夜蓝紫
+    listOf(Color(0xFF2D1B2E), Color(0xFF0B0B10)),   // 暗夜玫瑰
+    listOf(Color(0xFF12302B), Color(0xFF0B0B10)),   // 墨绿
+    listOf(Color(0xFF33261A), Color(0xFF0B0B10)),   // 咖啡
+    listOf(Color(0xFF101C33), Color(0xFF0B0B10)),   // 深海
+    listOf(Color(0xFF1F1F1F), Color(0xFF000000))    // 石墨
+)
+
+/** 主页背景渐变预设（浅色系，替代默认白底） */
+val HomeBgGradients: List<List<Color>> = listOf(
+    listOf(Color(0xFFFFF5F5), Color(0xFFFDE8E8)),   // 淡樱红
+    listOf(Color(0xFFF3F6FF), Color(0xFFE4EBFF)),   // 雾蓝
+    listOf(Color(0xFFF2FBF4), Color(0xFFDFF2E6)),   // 薄荷绿
+    listOf(Color(0xFFFFF8EC), Color(0xFFFFEDD3)),   // 奶油橙
+    listOf(Color(0xFFF7F3FF), Color(0xFFE8DEFF)),   // 淡紫
+    listOf(Color(0xFFF5F6F8), Color(0xFFE6E8EE))    // 岩灰
+)
+
+/** 主页背景纯色预设（浅色系） */
+val HomeBgColors: List<Color> = listOf(
+    Color(0xFFFCFCFD),
+    Color(0xFFFFF1F1),
+    Color(0xFFF0F5FF),
+    Color(0xFFEFFAF2),
+    Color(0xFFFFF7EA),
+    Color(0xFFF4F2FF),
+    Color(0xFF26262E)   // 深色模式感
+)
+
+/** 歌词秀背景纯色预设（深色系） */
+val LyricBgColors: List<Color> = listOf(
+    Color(0xFF0B0B10),
+    Color(0xFF191922),
+    Color(0xFF1B1B2F),
+    Color(0xFF12251F),
+    Color(0xFF2B1D1D),
+    Color(0xFF000000)
+)
+
+/** 读取用户选择的背景位图（content:// URI 或绝对路径），超限降采样，IO 线程 */
+suspend fun loadBackgroundBitmap(context: android.content.Context, src: String, maxPx: Int = 1280): Bitmap? =
+    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+        runCatching {
+            val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            val input = if (src.startsWith("content:")) {
+                context.contentResolver.openInputStream(android.net.Uri.parse(src))
+            } else {
+                java.io.FileInputStream(src)
+            }
+            input?.use { BitmapFactory.decodeStream(it, null, opts) }
+            var sample = 1
+            val longest = maxOf(opts.outWidth, opts.outHeight)
+            while (longest / sample > maxPx * 2) sample *= 2
+            val opts2 = BitmapFactory.Options().apply { inSampleSize = sample }
+            val input2 = if (src.startsWith("content:")) {
+                context.contentResolver.openInputStream(android.net.Uri.parse(src))
+            } else {
+                java.io.FileInputStream(src)
+            }
+            input2?.use { BitmapFactory.decodeStream(it, null, opts2) }
+        }.getOrNull()
+    }
+
+/**
+ * 自定义背景图组件（v2.18）：根据 content:// URI 或文件路径异步加载并铺满显示。
+ * 加载中 / 失败时透明（由调用方叠加兜底底色）。
+ */
+@Composable
+fun BgImage(src: String?, modifier: Modifier = Modifier) {
+    if (src.isNullOrEmpty()) return
+    val context = androidx.compose.ui.platform.LocalContext.current
+    var bmp by remember(src) { mutableStateOf<Bitmap?>(null) }
+    LaunchedEffect(src) {
+        bmp = loadBackgroundBitmap(context, src)
+    }
+    val current = bmp
+    if (current != null) {
+        Image(
+            bitmap = current.asImageBitmap(),
+            contentDescription = null,
+            contentScale = ContentScale.Crop,
+            modifier = modifier
+        )
+    }
+}

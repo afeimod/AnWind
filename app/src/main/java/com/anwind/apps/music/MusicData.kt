@@ -8,12 +8,13 @@ import java.io.File
 import java.util.regex.Pattern
 
 /**
- * 云音乐数据层（v2.17）：
+ * 云音乐数据层（v2.18）：
  * - [SongInfo] 统一歌曲模型（在线 / 本地）
  * - [LrcParser] LRC 歌词解析（移植自 linboxyy.py LrcParser，支持一行多时间标签）
  * - [LyricsDoc] 歌词文档（原文 + 按时间合并的翻译行）
- * - [MusicStore] 收藏 / 最近播放 / 播放模式持久化（JSON 文件，filesDir 内）
- * - 歌词缓存（cacheDir/music_lyrics）与歌词获取编排 [fetchLyrics]
+ * - [MusicStore] 收藏 / 最近播放 / 播放模式 / 播放器设置持久化（JSON 文件，filesDir 内）
+ * - [MusicSettings] 播放器设置模型（v2.18：歌词秀背景 / 3D 倾斜 / 主页背景 / 扫描目录 / 词源引擎）
+ * - 歌词缓存（cacheDir/music_lyrics）与四级词源回退获取 [fetchLyrics]
  */
 
 // ==================== 歌曲模型 ====================
@@ -174,6 +175,84 @@ object LrcParser {
     }
 }
 
+// ==================== 播放器设置 ====================
+
+/**
+ * 播放器设置（v2.18 新增，设置中心持久化）：
+ * - 歌词秀：背景（封面模糊/纯色/渐变/自定义图片）、3D 倾斜强度与上限、歌词墙视角、
+ *   当前行字号、行切换动画、高亮发光、翻译显示
+ * - 主页：背景（默认/纯色/渐变/自定义图片）与图片压暗
+ * - 本地扫描：全库扫描 / 仅扫描指定目录（目录为绝对路径，依赖“所有文件访问”权限）
+ * - 词源引擎：智能回退 / 指定优先词源（酷我、网易云、QQ 音乐、LRCLIB）
+ */
+data class MusicSettings(
+    // ---- 歌词秀背景 ----
+    val lyricBgMode: Int = BG_COVER,
+    val lyricBgColor: Int = 0xFF191922.toInt(),
+    val lyricBgGradient: Int = 0,
+    val lyricBgImage: String? = null,
+    // ---- 3D 歌词 ----
+    /** 每行倾斜系数（度/行距），0 为平面 */
+    val tilt3d: Float = 9f,
+    /** 单行最大倾斜角（度） */
+    val tilt3dMax: Float = 44f,
+    /** 整面歌词墙绕 Y 轴视角（度），0 为正对 */
+    val wallRotateY: Float = -14f,
+    /** 当前行字号（sp），非当前行按比例缩小 */
+    val lyricFontSize: Int = 22,
+    /** 行切换平滑动画 */
+    val lyricDynamic: Boolean = true,
+    /** 当前行高亮发光 */
+    val lyricGlow: Boolean = true,
+    /** 显示翻译行 */
+    val showTranslation: Boolean = true,
+    /** 词源引擎：auto / kuwo / netease / qq / lrclib */
+    val lyricEngine: String = ENGINE_AUTO,
+    // ---- 主页背景 ----
+    val homeBgMode: Int = HOME_BG_DEFAULT,
+    val homeBgColor: Int = 0xFFFCFCFD.toInt(),
+    val homeBgGradient: Int = 0,
+    val homeBgImage: String? = null,
+    /** 自定义图片时的压暗系数 0..0.8 */
+    val homeImageDim: Float = 0.25f,
+    // ---- 本地扫描 ----
+    val scanMode: Int = SCAN_ALL,
+    /** 指定目录扫描的绝对路径列表 */
+    val scanDirs: List<String> = emptyList()
+) {
+    @Suppress("unused")
+    companion object {
+        // 歌词秀背景模式
+        const val BG_COVER = 0      // 封面模糊铺底（默认）
+        const val BG_SOLID = 1      // 纯色
+        const val BG_GRADIENT = 2   // 渐变预设
+        const val BG_IMAGE = 3      // 自定义图片
+
+        // 主页背景模式
+        const val HOME_BG_DEFAULT = 0
+
+        // 本地扫描模式
+        const val SCAN_ALL = 0      // 全库（MediaStore）
+        const val SCAN_DIRS = 1     // 仅指定目录
+
+        // 词源引擎
+        const val ENGINE_AUTO = "auto"
+        const val ENGINE_KUWO = "kuwo"
+        const val ENGINE_NETEASE = "netease"
+        const val ENGINE_QQ = "qq"
+        const val ENGINE_LRCLIB = "lrclib"
+
+        /** 词源显示名（设置页 / 词源标记共用） */
+        val ENGINE_LABELS = linkedMapOf(
+            ENGINE_AUTO to "智能回退（推荐）",
+            ENGINE_KUWO to "酷我音乐",
+            ENGINE_NETEASE to "网易云",
+            ENGINE_QQ to "QQ 音乐",
+            ENGINE_LRCLIB to "LRCLIB"
+        )
+    }
+}
+
 // ==================== 本地持久化 ====================
 
 /**
@@ -225,17 +304,84 @@ class MusicStore(private val context: Context) {
         }
     }
 
-    // ---------- 设置（播放模式等） ----------
+    // ---------- 设置（播放模式 + 播放器设置中心） ----------
 
-    fun loadPlayMode(): Int {
-        return runCatching {
-            JSONObject(settingsFile.readText()).optInt("playMode", MODE_ORDER)
-        }.getOrDefault(MODE_ORDER)
+    private fun readSettingsJson(): JSONObject =
+        runCatching { JSONObject(settingsFile.readText()) }.getOrDefault(JSONObject())
+
+    private fun writeSettingsJson(o: JSONObject) {
+        runCatching { settingsFile.writeText(o.toString()) }
     }
 
+    fun loadPlayMode(): Int = readSettingsJson().optInt("playMode", MODE_ORDER)
+
     fun savePlayMode(mode: Int) {
+        writeSettingsJson(readSettingsJson().put("playMode", mode))
+    }
+
+    /** 读取播放器设置中心（缺失字段全部回退默认值） */
+    fun loadMusicSettings(): MusicSettings {
+        val o = readSettingsJson()
+        val dirs = mutableListOf<String>()
         runCatching {
-            settingsFile.writeText(JSONObject().put("playMode", mode).toString())
+            val arr = o.optJSONArray("scanDirs")
+            if (arr != null) {
+                for (i in 0 until arr.length()) {
+                    val s = arr.optString(i, "")
+                    if (s.isNotEmpty()) dirs.add(s)
+                }
+            }
+        }
+        return MusicSettings(
+            lyricBgMode = o.optInt("lyricBgMode", MusicSettings.BG_COVER),
+            lyricBgColor = o.optInt("lyricBgColor", 0xFF191922.toInt()),
+            lyricBgGradient = o.optInt("lyricBgGradient", 0),
+            lyricBgImage = o.optString("lyricBgImage", "").takeIf { it.isNotEmpty() },
+            tilt3d = o.optDouble("tilt3d", 9.0).toFloat().coerceIn(0f, 20f),
+            tilt3dMax = o.optDouble("tilt3dMax", 44.0).toFloat().coerceIn(0f, 90f),
+            wallRotateY = o.optDouble("wallRotateY", -14.0).toFloat().coerceIn(-40f, 0f),
+            lyricFontSize = o.optInt("lyricFontSize", 22).coerceIn(14, 40),
+            lyricDynamic = o.optBoolean("lyricDynamic", true),
+            lyricGlow = o.optBoolean("lyricGlow", true),
+            showTranslation = o.optBoolean("showTranslation", true),
+            lyricEngine = o.optString("lyricEngine", MusicSettings.ENGINE_AUTO),
+            homeBgMode = o.optInt("homeBgMode", MusicSettings.HOME_BG_DEFAULT),
+            homeBgColor = o.optInt("homeBgColor", 0xFFFCFCFD.toInt()),
+            homeBgGradient = o.optInt("homeBgGradient", 0),
+            homeBgImage = o.optString("homeBgImage", "").takeIf { it.isNotEmpty() },
+            homeImageDim = o.optDouble("homeImageDim", 0.25).toFloat().coerceIn(0f, 0.8f),
+            scanMode = o.optInt("scanMode", MusicSettings.SCAN_ALL),
+            scanDirs = dirs
+        )
+    }
+
+    /** 保存播放器设置中心（保留 playMode） */
+    fun saveMusicSettings(s: MusicSettings) {
+        runCatching {
+            val dirs = JSONArray()
+            for (d in s.scanDirs) dirs.put(d)
+            writeSettingsJson(
+                readSettingsJson()
+                    .put("lyricBgMode", s.lyricBgMode)
+                    .put("lyricBgColor", s.lyricBgColor)
+                    .put("lyricBgGradient", s.lyricBgGradient)
+                    .put("lyricBgImage", s.lyricBgImage ?: "")
+                    .put("tilt3d", s.tilt3d.toDouble())
+                    .put("tilt3dMax", s.tilt3dMax.toDouble())
+                    .put("wallRotateY", s.wallRotateY.toDouble())
+                    .put("lyricFontSize", s.lyricFontSize)
+                    .put("lyricDynamic", s.lyricDynamic)
+                    .put("lyricGlow", s.lyricGlow)
+                    .put("showTranslation", s.showTranslation)
+                    .put("lyricEngine", s.lyricEngine)
+                    .put("homeBgMode", s.homeBgMode)
+                    .put("homeBgColor", s.homeBgColor)
+                    .put("homeBgGradient", s.homeBgGradient)
+                    .put("homeBgImage", s.homeBgImage ?: "")
+                    .put("homeImageDim", s.homeImageDim.toDouble())
+                    .put("scanMode", s.scanMode)
+                    .put("scanDirs", dirs)
+            )
         }
     }
 
@@ -322,54 +468,83 @@ class MusicStore(private val context: Context) {
 // ==================== 歌词获取编排 ====================
 
 /**
- * 获取当前歌曲歌词（带磁盘缓存）：
- * 1. 酷我歌词接口（在线歌首选）
- * 2. 网易云搜索兜底（linboxyy.py LyricDownloader 逻辑，本地歌 / 酷我无词时）
+ * 获取当前歌曲歌词（带磁盘缓存，v2.18 升级为四级词源回退链）：
+ * 1. 酷我逐行歌词（在线歌首选，按 musicId 直查）
+ * 2. 网易云搜索兜底（linboxyy.py LyricDownloader 逻辑，含翻译）
+ * 3. QQ 音乐（v2.18 新增，华语曲库覆盖广，含翻译）
+ * 4. LRCLIB（v2.18 新增，开源歌词库，外文/冷门歌覆盖好）
  *
  * @param force 跳过缓存强制刷新
+ * @param engine 词源偏好：auto 按默认顺序；指定词源时该源优先，其余按默认顺序兜底
  */
-suspend fun fetchLyrics(store: MusicStore, song: SongInfo, force: Boolean = false): LyricsDoc? {
+suspend fun fetchLyrics(
+    store: MusicStore,
+    song: SongInfo,
+    force: Boolean = false,
+    engine: String = MusicSettings.ENGINE_AUTO
+): LyricsDoc? {
     if (!force) {
         store.cachedLyrics(song)?.let { return it }
     }
-    // 1) 酷我逐行歌词
-    if (!song.isLocal) {
-        val r = KuwoMusicApi.getKuwoLyric(song.id)
-        if (r.isSuccess) {
-            val lines = r.getOrThrow()
-            if (lines.isNotEmpty()) {
-                val text = buildString {
-                    for ((t, txt) in lines) {
-                        val m = t / 60000
-                        val s = (t % 60000) / 1000
-                        val ms = t % 1000
-                        append("[%02d:%02d.%03d]%s\n".format(m, s, ms, txt))
-                    }
-                }
-                val doc = LrcParser.merge(text, null, "kuwo")
-                store.cacheLyrics(song, text, null)
-                return doc
+
+    // 关键词构造：在线歌用"名 歌手"；本地歌用文件名清理（去扩展名/括号注释）
+    val cleanName = cleanLocalName(song.name)
+    val keyword = if (song.isLocal) cleanName else "${song.name} ${song.artist}".trim()
+    val artist = song.artist.takeIf { it.isNotBlank() && it != "未知歌手" } ?: ""
+
+    for (eng in engineOrder(engine)) {
+        val pair: Pair<String, String?>? = runCatching {
+            when (eng) {
+                "kuwo" -> fetchKuwo(song)
+                "netease" -> KuwoMusicApi.getNeteaseLyric(keyword).getOrNull()
+                "qq" -> LyricEngines.getQqLyric(keyword).getOrNull()
+                "lrclib" -> LyricEngines.getLrclibLyric(cleanName, artist)
+                    .getOrNull()?.let { it to null }
+                else -> null
             }
+        }.getOrNull()
+
+        if (pair != null && pair.first.isNotBlank()) {
+            val (main, trans) = pair
+            val doc = LrcParser.merge(main, trans, eng)
+            store.cacheLyrics(song, main, trans)
+            return doc
         }
-    }
-    // 2) 网易云兜底（在线歌用"名 歌手"，本地歌用文件名清理后的关键词）
-    val keyword = if (song.isLocal) {
-        song.name
-            .replace(Regex("\\.(mp3|flac|wav|m4a|ogg|aac|opus)$", RegexOption.IGNORE_CASE), "")
-            .replace(Regex("[(\\[][^)\\]]*[)\\]]"), " ")
-            .trim()
-    } else {
-        "${song.name} ${song.artist}".trim()
-    }
-    val netease = KuwoMusicApi.getNeteaseLyric(keyword)
-    if (netease.isSuccess) {
-        val (main, trans) = netease.getOrThrow()
-        val doc = LrcParser.merge(main, trans, "netease")
-        store.cacheLyrics(song, main, trans)
-        return doc
     }
     return null
 }
+
+/** 词源尝试顺序：指定词源优先，其余按默认顺序（酷我→网易→QQ→LRCLIB）兜底 */
+private fun engineOrder(engine: String): List<String> {
+    val default = listOf("kuwo", "netease", "qq", "lrclib")
+    if (engine in default) {
+        return listOf(engine) + default.filter { it != engine }
+    }
+    return default
+}
+
+/** 酷我逐行歌词（仅在线歌；返回 LRC 文本） */
+private suspend fun fetchKuwo(song: SongInfo): Pair<String, String?>? {
+    if (song.isLocal) return null
+    val lines = KuwoMusicApi.getKuwoLyric(song.id).getOrNull() ?: return null
+    if (lines.isEmpty()) return null
+    val text = buildString {
+        for ((t, txt) in lines) {
+            val m = t / 60000
+            val s = (t % 60000) / 1000
+            val ms = t % 1000
+            append("[%02d:%02d.%03d]%s\n".format(m, s, ms, txt))
+        }
+    }
+    return text to null
+}
+
+/** 清理本地文件名为可搜索歌名（去扩展名 / 括号注释） */
+fun cleanLocalName(name: String): String =
+    name
+        .replace(Regex("\\.(mp3|flac|wav|m4a|ogg|aac|opus|wma|ape)$", RegexOption.IGNORE_CASE), "")
+        .replace(Regex("[(\\[][^)\\]]*[)\\]]"), " ")
+        .trim()
 
 // ==================== 下载目录 ====================
 

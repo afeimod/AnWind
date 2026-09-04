@@ -1,6 +1,10 @@
 package com.anwind.apps.music
 
+import android.content.Intent
+import android.net.Uri
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -32,6 +36,7 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Repeat
 import androidx.compose.material.icons.filled.RepeatOne
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
@@ -53,6 +58,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -86,7 +92,7 @@ val MusicPlayerApp = AppDef(
 }
 
 /** 页面枚举 */
-private enum class Page { SEARCH, FAVORITES, RECENT, LOCAL, DOWNLOADS }
+private enum class Page { SEARCH, FAVORITES, RECENT, LOCAL, DOWNLOADS, SETTINGS }
 
 /** 下载任务（字段为 Compose State，进度条自动刷新） */
 class DownloadItem(val song: SongInfo) {
@@ -130,15 +136,59 @@ private fun MusicContent(scope: WindowContentScope) {
         recent = engine.store.loadRecent()
     }
 
+    // ===== 播放器设置中心（v2.18） =====
+    var musicSettings by remember { mutableStateOf(engine.store.loadMusicSettings()) }
+    fun updateSettings(s: MusicSettings) {
+        musicSettings = s
+        engine.store.saveMusicSettings(s)
+    }
+
     // ===== 本地音乐 =====
     var localSongs by remember { mutableStateOf<List<SongInfo>>(emptyList()) }
     var scanning by remember { mutableStateOf(false) }
     fun scanLocal() {
         scanning = true
         uiScope.launch(kotlinx.coroutines.Dispatchers.IO) {
-            val found = queryLocalSongs(context)
+            val found = queryLocalSongs(context, musicSettings.scanMode, musicSettings.scanDirs)
             localSongs = found
             scanning = false
+        }
+    }
+
+    // 设置变更后自动重扫本地曲库（仅指定目录模式）
+    LaunchedEffect(musicSettings.scanMode, musicSettings.scanDirs.size) {
+        if (musicSettings.scanMode == MusicSettings.SCAN_DIRS) scanLocal()
+    }
+
+    // 背景图 / 扫描目录选择器
+    fun persistUri(uri: Uri) {
+        runCatching {
+            context.contentResolver.takePersistableUriPermission(
+                uri, Intent.FLAG_GRANT_READ_URI_PERMISSION
+            )
+        }
+    }
+    val lyricImagePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        uri?.let {
+            persistUri(it)
+            updateSettings(musicSettings.copy(lyricBgImage = it.toString(), lyricBgMode = MusicSettings.BG_IMAGE))
+        }
+    }
+    val homeImagePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        uri?.let {
+            persistUri(it)
+            updateSettings(musicSettings.copy(homeBgImage = it.toString(), homeBgMode = MusicSettings.BG_IMAGE))
+        }
+    }
+    val folderPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+        uri?.let { u ->
+            persistUri(u)
+            val path = treeUriToDirPath(u)
+            if (path == null) {
+                toast("无法解析该目录路径，请改用手动输入路径添加")
+            } else if (!musicSettings.scanDirs.contains(path)) {
+                updateSettings(musicSettings.copy(scanDirs = musicSettings.scanDirs + path))
+            }
         }
     }
 
@@ -182,7 +232,7 @@ private fun MusicContent(scope: WindowContentScope) {
             item.progress = 1f
             item.file = file
             // 3) 同步下载歌词到同目录
-            val lyric = fetchLyrics(engine.store, song)
+            val lyric = fetchLyrics(engine.store, song, engine = musicSettings.lyricEngine)
             if (lyric != null) {
                 runCatching {
                     File(dir, file.nameWithoutExtension + ".lrc").writeText(LrcParser.toLrcText(lyric))
@@ -199,7 +249,7 @@ private fun MusicContent(scope: WindowContentScope) {
             return
         }
         uiScope.launch {
-            val lyric = fetchLyrics(engine.store, song, force = true)
+            val lyric = fetchLyrics(engine.store, song, force = true, engine = musicSettings.lyricEngine)
             if (lyric == null) {
                 toast("未找到该歌曲的歌词")
                 return@launch
@@ -214,12 +264,12 @@ private fun MusicContent(scope: WindowContentScope) {
     // ===== 歌词获取（当前歌曲变化时自动拉取） =====
     var lyricDoc by remember { mutableStateOf<LyricsDoc?>(null) }
     var lyricLoading by remember { mutableStateOf(false) }
-    LaunchedEffect(engine.currentSong?.key) {
+    LaunchedEffect(engine.currentSong?.key, musicSettings.lyricEngine) {
         val song = engine.currentSong
         lyricDoc = null
         if (song != null) {
             lyricLoading = true
-            lyricDoc = fetchLyrics(engine.store, song)
+            lyricDoc = fetchLyrics(engine.store, song, engine = musicSettings.lyricEngine)
             lyricLoading = false
         }
     }
@@ -241,12 +291,31 @@ private fun MusicContent(scope: WindowContentScope) {
     // 返回键：歌词页优先退出
     BackHandler(enabled = showLyrics) { showLyrics = false }
 
-    // ===== 布局：[侧栏 | 主区(歌词页覆盖)] + 底栏 =====
-    Column(
-        Modifier
-            .fillMaxSize()
-            .background(Mc.bg)
-    ) {
+    // ===== 布局：[侧栏 | 主区(歌词页覆盖)] + 底栏（v2.18 背景可自定义） =====
+    val homeBgModifier = when (musicSettings.homeBgMode) {
+        MusicSettings.BG_SOLID -> Modifier.background(Color(musicSettings.homeBgColor))
+        MusicSettings.BG_GRADIENT -> {
+            val pair = HomeBgGradients.getOrElse(musicSettings.homeBgGradient) { HomeBgGradients[0] }
+            Modifier.background(Brush.verticalGradient(pair))
+        }
+        MusicSettings.BG_IMAGE -> Modifier.background(Color.Transparent)
+        else -> Modifier.background(Mc.bg)
+    }
+    Box(Modifier.fillMaxSize()) {
+        // 自定义图片背景 + 压暗层（仅图片模式）
+        if (musicSettings.homeBgMode == MusicSettings.BG_IMAGE) {
+            BgImage(musicSettings.homeBgImage, Modifier.matchParentSize())
+            Box(
+                Modifier
+                    .matchParentSize()
+                    .background(Color.Black.copy(alpha = musicSettings.homeImageDim))
+            )
+        }
+        Column(
+            Modifier
+                .fillMaxSize()
+                .then(homeBgModifier)
+        ) {
         Box(Modifier.weight(1f)) {
             Row(Modifier.fillMaxSize()) {
                 Sidebar(page = page, onPageChange = { page = it })
@@ -349,6 +418,14 @@ private fun MusicContent(scope: WindowContentScope) {
                             saveDir = musicDownloadDir(context).absolutePath,
                             onRetry = { item -> startDownload(item.song) }
                         )
+                        Page.SETTINGS -> SettingsPage(
+                            settings = musicSettings,
+                            onChange = { updateSettings(it) },
+                            onPickLyricImage = { lyricImagePicker.launch(arrayOf("image/*")) },
+                            onPickHomeImage = { homeImagePicker.launch(arrayOf("image/*")) },
+                            onPickFolder = { folderPicker.launch(null) },
+                            onRescan = { scanLocal() }
+                        )
                     }
                 }
             }
@@ -373,6 +450,7 @@ private fun MusicContent(scope: WindowContentScope) {
                         lyric = lyricDoc,
                         lyricLoading = lyricLoading,
                         playMode = engine.playMode,
+                        settings = musicSettings,
                         onSeek = { engine.seekTo(it) },
                         onToggle = { engine.toggle() },
                         onNext = { engine.next() },
@@ -399,6 +477,7 @@ private fun MusicContent(scope: WindowContentScope) {
             onToggleLyrics = { showLyrics = !showLyrics }
         )
     }
+    } // 关闭自定义背景布局 Box
 }
 
 /** mutableIntStateOf 兼容助手已移除：统一使用 mutableStateOf */
@@ -452,8 +531,11 @@ private fun Sidebar(page: Page, onPageChange: (Page) -> Unit) {
         NavItem("下载管理", Icons.Filled.Download, page == Page.DOWNLOADS) { onPageChange(Page.DOWNLOADS) }
 
         Spacer(Modifier.weight(1f))
+        NavItem("设置", Icons.Filled.Settings, page == Page.SETTINGS) { onPageChange(Page.SETTINGS) }
+
+        Spacer(Modifier.height(10.dp))
         Text(
-            text = "音源：酷我 / 网易云\nAnWind v2.17",
+            text = "音源：酷我 / 网易云 / QQ / LRCLIB\nAnWind v2.18",
             fontSize = 10.sp,
             lineHeight = 15.sp,
             color = Mc.textTertiary
@@ -715,4 +797,25 @@ private fun PlayerBar(
             )
         }
     }
+}
+
+// ==================== SAF 目录 URI 解析（v2.18 本地扫描指定目录） ====================
+
+/**
+ * 将 OpenDocumentTree 返回的 tree URI 解析为真实目录绝对路径。
+ * 仅支持主存储（primary）的 externalstorage provider：
+ * content://com.android.externalstorage.documents/tree/primary%3AMusic → /storage/emulated/0/Music
+ * 其他 provider（如 Downloads、第三方文档应用）无法映射为路径，返回 null（提示用户手动输入）。
+ */
+private fun treeUriToDirPath(uri: Uri): String? {
+    return runCatching {
+        val tree = uri.path?.substringAfter("tree/", "") ?: return null
+        val decoded = Uri.decode(tree)               // "primary:Music/我的音乐"
+        val root = decoded.substringBefore(":", "").lowercase()
+        val rest = decoded.substringAfter(":", "")
+        when (root) {
+            "primary" -> "/storage/emulated/0" + (if (rest.isNotEmpty()) "/$rest" else "")
+            else -> null
+        }
+    }.getOrNull()
 }

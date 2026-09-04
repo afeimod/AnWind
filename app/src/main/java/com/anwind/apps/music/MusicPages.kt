@@ -2,7 +2,9 @@ package com.anwind.apps.music
 
 import android.content.ContentUris
 import android.content.Context
+import android.net.Uri
 import android.provider.MediaStore
+import java.io.File
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -542,10 +544,30 @@ private fun SongRow(
     }
 }
 
-// ==================== 本地音乐扫描（MediaStore） ====================
+// ==================== 本地音乐扫描（v2.18：全库 / 指定目录） ====================
 
-/** 扫描本机音频（MediaStore，is_music != 0），在 IO 线程调用 */
-fun queryLocalSongs(context: Context): List<SongInfo> {
+private val AUDIO_EXTENSIONS = setOf("mp3", "flac", "wav", "m4a", "ogg", "aac", "opus", "wma", "ape")
+
+/**
+ * 扫描本机音频（IO 线程调用）：
+ * - [MusicSettings.SCAN_ALL]：MediaStore 全库扫描（is_music != 0，时长 > 30s）
+ * - [MusicSettings.SCAN_DIRS]：仅遍历用户指定的目录（File 递归，
+ *   依赖“所有文件访问”权限，避免把铃声/语音等无关音频扫进曲库）
+ */
+fun queryLocalSongs(
+    context: Context,
+    scanMode: Int = MusicSettings.SCAN_ALL,
+    scanDirs: List<String> = emptyList()
+): List<SongInfo> {
+    return if (scanMode == MusicSettings.SCAN_DIRS && scanDirs.isNotEmpty()) {
+        scanSpecifiedDirs(scanDirs)
+    } else {
+        scanMediaStore(context)
+    }
+}
+
+/** MediaStore 全库扫描 */
+private fun scanMediaStore(context: Context): List<SongInfo> {
     val list = mutableListOf<SongInfo>()
     val projection = arrayOf(
         MediaStore.Audio.Media._ID,
@@ -586,4 +608,49 @@ fun queryLocalSongs(context: Context): List<SongInfo> {
         }
     }
     return list
+}
+
+/** 指定目录扫描：递归遍历目录下的音频文件，按文件名推断歌手/标题 */
+private fun scanSpecifiedDirs(dirs: List<String>): List<SongInfo> {
+    val seen = HashSet<String>()
+    val out = mutableListOf<SongInfo>()
+    for (dirPath in dirs) {
+        val dir = File(dirPath)
+        if (!dir.isDirectory) continue
+        runCatching {
+            dir.walkTopDown()
+                .filter { it.isFile && it.extension.lowercase() in AUDIO_EXTENSIONS }
+                .forEach { f ->
+                    val path = f.absolutePath
+                    if (seen.add(path)) {
+                        val (title, artist) = parseNamesFromFileName(f.nameWithoutExtension)
+                        out.add(
+                            SongInfo(
+                                id = "file_$path",
+                                name = title,
+                                artist = artist,
+                                album = dir.name,
+                                durationMs = 0L,
+                                picUrl = "",
+                                source = SongInfo.SOURCE_LOCAL,
+                                localUri = Uri.fromFile(f).toString()
+                            )
+                        )
+                    }
+                }
+        }
+    }
+    return out
+}
+
+/** 从文件名推断 歌手/标题：“歌手 - 标题.mp3” 优先拆分，否则标题=文件名 */
+private fun parseNamesFromFileName(base: String): Pair<String, String> {
+    val dash = base.indexOf(" - ")
+    return if (dash > 0) {
+        val artist = base.substring(0, dash).trim().ifBlank { "未知歌手" }
+        val title = base.substring(dash + 3).trim().ifBlank { base }
+        title to artist
+    } else {
+        base to "未知歌手"
+    }
 }

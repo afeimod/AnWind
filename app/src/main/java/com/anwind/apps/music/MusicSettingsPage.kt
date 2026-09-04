@@ -1,0 +1,623 @@
+package com.anwind.apps.music
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.Image
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextField
+import androidx.compose.material3.TextFieldDefaults
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+
+/**
+ * 播放器设置中心（v2.18 新增）：
+ * - 外观：主页背景（默认/纯色/渐变/自定义图片 + 压暗）
+ * - 歌词秀：背景自定义、3D 倾斜度（每行折角/最大倾角/歌词墙视角）、字号、
+ *   行切换动画、高亮发光、翻译显示
+ * - 词源：智能回退 / 酷我 / 网易云 / QQ 音乐 / LRCLIB 优先级
+ * - 本地扫描：全库 / 仅指定目录（目录列表 + 文件夹选择 + 手动输入）
+ * 所有修改即时持久化（onChange → saveMusicSettings）。
+ */
+@Composable
+fun SettingsPage(
+    settings: MusicSettings,
+    onChange: (MusicSettings) -> Unit,
+    onPickLyricImage: () -> Unit,
+    onPickHomeImage: () -> Unit,
+    onPickFolder: () -> Unit,
+    onRescan: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 16.dp, vertical = 12.dp)
+    ) {
+        SettingsSection("主页背景") {
+            ModeChipsRow(
+                options = listOf(
+                    MusicSettings.HOME_BG_DEFAULT to "默认",
+                    MusicSettings.BG_SOLID to "纯色",
+                    MusicSettings.BG_GRADIENT to "渐变",
+                    MusicSettings.BG_IMAGE to "图片"
+                ),
+                selected = settings.homeBgMode,
+                onSelect = { onChange(settings.copy(homeBgMode = it)) }
+            )
+            when (settings.homeBgMode) {
+                MusicSettings.BG_SOLID -> ColorSwatchRow(
+                    colors = HomeBgColors,
+                    selected = settings.homeBgColor,
+                    onSelect = { onChange(settings.copy(homeBgColor = it)) }
+                )
+                MusicSettings.BG_GRADIENT -> GradientSwatchRow(
+                    gradients = HomeBgGradients,
+                    selected = settings.homeBgGradient,
+                    onSelect = { onChange(settings.copy(homeBgGradient = it)) }
+                )
+                MusicSettings.BG_IMAGE -> {
+                    ImagePickRow(
+                        picked = settings.homeBgImage != null,
+                        onPick = onPickHomeImage,
+                        onClear = { onChange(settings.copy(homeBgImage = null)) }
+                    )
+                    SettingSlider(
+                        title = "图片压暗",
+                        display = "${(settings.homeImageDim * 100).toInt()}%",
+                        value = settings.homeImageDim,
+                        range = 0f..0.8f,
+                        steps = 15,
+                        onChange = { onChange(settings.copy(homeImageDim = it)) }
+                    )
+                }
+            }
+            Caption("浅色预设适配白底界面；选深色时文字仍为深色，建议搭配浅色图片或低压暗")
+        }
+
+        SettingsSection("歌词秀背景") {
+            ModeChipsRow(
+                options = listOf(
+                    MusicSettings.BG_COVER to "封面模糊",
+                    MusicSettings.BG_SOLID to "纯色",
+                    MusicSettings.BG_GRADIENT to "渐变",
+                    MusicSettings.BG_IMAGE to "图片"
+                ),
+                selected = settings.lyricBgMode,
+                onSelect = { onChange(settings.copy(lyricBgMode = it)) }
+            )
+            when (settings.lyricBgMode) {
+                MusicSettings.BG_SOLID -> ColorSwatchRow(
+                    colors = LyricBgColors,
+                    selected = settings.lyricBgColor,
+                    onSelect = { onChange(settings.copy(lyricBgColor = it)) }
+                )
+                MusicSettings.BG_GRADIENT -> GradientSwatchRow(
+                    gradients = LyricBgGradients,
+                    selected = settings.lyricBgGradient,
+                    onSelect = { onChange(settings.copy(lyricBgGradient = it)) }
+                )
+                MusicSettings.BG_IMAGE -> ImagePickRow(
+                    picked = settings.lyricBgImage != null,
+                    onPick = onPickLyricImage,
+                    onClear = { onChange(settings.copy(lyricBgImage = null)) }
+                )
+            }
+            Caption("封面模糊为默认效果；其余模式仍会叠加轻微暗层保证歌词可读性")
+        }
+
+        SettingsSection("3D 歌词") {
+            SettingSlider(
+                title = "每行倾斜强度",
+                display = "${"%.1f".format(settings.tilt3d)}°/行",
+                value = settings.tilt3d,
+                range = 0f..20f,
+                steps = 39,
+                onChange = { onChange(settings.copy(tilt3d = it)) }
+            )
+            SettingSlider(
+                title = "最大倾斜角",
+                display = "${settings.tilt3dMax.toInt()}°",
+                value = settings.tilt3dMax,
+                range = 10f..80f,
+                steps = 69,
+                onChange = { onChange(settings.copy(tilt3dMax = it)) }
+            )
+            SettingSlider(
+                title = "歌词墙视角（绕 Y 轴）",
+                display = "${settings.wallRotateY.toInt()}°",
+                value = settings.wallRotateY,
+                range = -30f..0f,
+                steps = 29,
+                onChange = { onChange(settings.copy(wallRotateY = it)) }
+            )
+            SettingSlider(
+                title = "当前行字号",
+                display = "${settings.lyricFontSize}sp",
+                value = settings.lyricFontSize.toFloat(),
+                range = 14f..36f,
+                steps = 21,
+                onChange = { onChange(settings.copy(lyricFontSize = it.toInt())) }
+            )
+            SettingSwitch(
+                title = "行切换动画",
+                desc = "关闭后歌词行瞬时切换（低性能设备建议关闭）",
+                checked = settings.lyricDynamic,
+                onChange = { onChange(settings.copy(lyricDynamic = it)) }
+            )
+            SettingSwitch(
+                title = "当前行高亮发光",
+                desc = "当前歌词行白色辉光效果",
+                checked = settings.lyricGlow,
+                onChange = { onChange(settings.copy(lyricGlow = it)) }
+            )
+            SettingSwitch(
+                title = "显示翻译",
+                desc = "在歌词行下方显示翻译行（词源提供时）",
+                checked = settings.showTranslation,
+                onChange = { onChange(settings.copy(showTranslation = it)) }
+            )
+            Caption("倾斜 0° + 视角 0° 即为平面滚动歌词；数值越大 3D 立体感越强")
+        }
+
+        SettingsSection("歌词词源") {
+            for ((id, label) in MusicSettings.ENGINE_LABELS) {
+                EngineRadioRow(
+                    label = label,
+                    selected = settings.lyricEngine == id,
+                    onClick = { onChange(settings.copy(lyricEngine = id)) }
+                )
+            }
+            Caption(
+                "智能回退顺序：酷我 → 网易云 → QQ 音乐 → LRCLIB；" +
+                    "指定词源时该源优先尝试，其余自动兜底，大幅提高冷门歌/外文歌命中率"
+            )
+        }
+
+        SettingsSection("本地扫描") {
+            ModeChipsRow(
+                options = listOf(
+                    MusicSettings.SCAN_ALL to "扫描全库",
+                    MusicSettings.SCAN_DIRS to "仅指定目录"
+                ),
+                selected = settings.scanMode,
+                onSelect = { onChange(settings.copy(scanMode = it)) }
+            )
+            if (settings.scanMode == MusicSettings.SCAN_DIRS) {
+                Spacer(Modifier.height(8.dp))
+                if (settings.scanDirs.isEmpty()) {
+                    Caption("尚未添加目录：点击下方按钮选择，或直接输入路径（如 /storage/emulated/0/Music）")
+                }
+                for (dir in settings.scanDirs) {
+                    DirRow(dir) {
+                        onChange(settings.copy(scanDirs = settings.scanDirs - dir))
+                        onRescan()
+                    }
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        Icons.Filled.Folder,
+                        contentDescription = null,
+                        tint = Mc.red,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        text = "选择文件夹",
+                        fontSize = 13.sp,
+                        color = Mc.red,
+                        fontWeight = FontWeight.Medium,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(6.dp))
+                            .clickable(onClick = onPickFolder)
+                            .padding(horizontal = 6.dp, vertical = 6.dp)
+                    )
+                }
+                ManualDirInput(
+                    onAdd = { path ->
+                        val p = path.trim().trimEnd('/')
+                        if (p.isNotEmpty() && !settings.scanDirs.contains(p)) {
+                            onChange(settings.copy(scanDirs = settings.scanDirs + p))
+                            onRescan()
+                        }
+                    }
+                )
+            }
+            Spacer(Modifier.height(8.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = "重新扫描本地音乐",
+                    fontSize = 13.sp,
+                    color = Mc.red,
+                    fontWeight = FontWeight.Medium,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(6.dp))
+                        .clickable(onClick = onRescan)
+                        .padding(horizontal = 6.dp, vertical = 6.dp)
+                )
+            }
+            Caption(
+                "指定目录模式只扫描你选择的文件夹，避免把铃声/语音等无关音频扫进曲库；" +
+                    "需要授予“所有文件访问”权限（本应用已声明）"
+            )
+        }
+
+        SettingsSection("关于") {
+            Caption("音源：酷我（搜索 / 播放 / 下载） · 词源：酷我 / 网易云 / QQ 音乐 / LRCLIB")
+            Caption("AnWind 云音乐 v2.18 · 界面对照网易云音乐 PC 版 · 3D 歌词秀")
+        }
+        Spacer(Modifier.height(20.dp))
+    }
+}
+
+// ==================== 区块与通用控件 ====================
+
+/** 设置区块：标题 + 内容卡片 */
+@Composable
+private fun SettingsSection(title: String, content: @Composable ColumnScope.() -> Unit) {
+    Spacer(Modifier.height(10.dp))
+    Text(
+        text = title,
+        fontSize = 13.sp,
+        fontWeight = FontWeight.Bold,
+        color = Mc.textPrimary,
+        modifier = Modifier.padding(start = 4.dp, bottom = 4.dp)
+    )
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .background(Color.White)
+            .padding(horizontal = 12.dp, vertical = 6.dp)
+    ) {
+        content()
+    }
+}
+
+/** 说明性小字 */
+@Composable
+private fun Caption(text: String) {
+    Text(
+        text = text,
+        fontSize = 10.sp,
+        lineHeight = 15.sp,
+        color = Mc.textTertiary,
+        modifier = Modifier.padding(top = 8.dp, start = 4.dp)
+    )
+}
+
+/** 模式选择 chips（横排，红底选中） */
+@Composable
+private fun ModeChipsRow(
+    options: List<Pair<Int, String>>,
+    selected: Int,
+    onSelect: (Int) -> Unit
+) {
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        for ((value, label) in options) {
+            val isSel = value == selected
+            Text(
+                text = label,
+                fontSize = 12.sp,
+                color = if (isSel) Color.White else Mc.textSecondary,
+                fontWeight = if (isSel) FontWeight.Bold else FontWeight.Normal,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(if (isSel) Mc.red else Mc.searchFieldBg)
+                    .clickable { onSelect(value) }
+                    .padding(horizontal = 14.dp, vertical = 6.dp)
+            )
+        }
+    }
+}
+
+/** 纯色色板（圆形色块，选中描边） */
+@Composable
+private fun ColorSwatchRow(colors: List<Color>, selected: Int, onSelect: (Int) -> Unit) {
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        modifier = Modifier.padding(top = 10.dp)
+    ) {
+        for (c in colors) {
+            val isSel = c.toArgb() == selected
+            Box(
+                Modifier
+                    .size(26.dp)
+                    .clip(CircleShape)
+                    .background(c)
+                    .border(
+                        width = if (isSel) 2.dp else 1.dp,
+                        color = if (isSel) Mc.red else Mc.divider,
+                        shape = CircleShape
+                    )
+                    .clickable { onSelect(c.toArgb()) }
+            )
+        }
+    }
+}
+
+/** 渐变预设色板（胶囊色块，选中描边） */
+@Composable
+private fun GradientSwatchRow(
+    gradients: List<List<Color>>,
+    selected: Int,
+    onSelect: (Int) -> Unit
+) {
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        modifier = Modifier.padding(top = 10.dp)
+    ) {
+        gradients.forEachIndexed { i, pair ->
+            val isSel = i == selected
+            Box(
+                Modifier
+                    .size(width = 38.dp, height = 26.dp)
+                    .clip(RoundedCornerShape(13.dp))
+                    .background(Brush.verticalGradient(pair))
+                    .border(
+                        width = if (isSel) 2.dp else 1.dp,
+                        color = if (isSel) Mc.red else Mc.divider,
+                        shape = RoundedCornerShape(13.dp)
+                    )
+                    .clickable { onSelect(i) }
+            )
+        }
+    }
+}
+
+/** 图片选择行（选择/清除 + 状态说明） */
+@Composable
+private fun ImagePickRow(picked: Boolean, onPick: () -> Unit, onClear: () -> Unit) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier.padding(top = 10.dp)
+    ) {
+        Icon(
+            Icons.Filled.Image,
+            contentDescription = null,
+            tint = Mc.red,
+            modifier = Modifier.size(18.dp)
+        )
+        Spacer(Modifier.width(8.dp))
+        Text(
+            text = if (picked) "已选择图片（点击可更换）" else "从相册/文件选择图片",
+            fontSize = 13.sp,
+            color = Mc.textPrimary,
+            modifier = Modifier
+                .weight(1f)
+                .clip(RoundedCornerShape(6.dp))
+                .clickable(onClick = onPick)
+                .padding(vertical = 6.dp),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+        if (picked) {
+            IconButton(onClick = onClear, modifier = Modifier.size(24.dp)) {
+                Icon(
+                    Icons.Filled.Close,
+                    contentDescription = "清除",
+                    tint = Mc.textTertiary,
+                    modifier = Modifier.size(14.dp)
+                )
+            }
+        }
+    }
+}
+
+/** 滑条设置行（拖动实时预览，松手才写入持久化） */
+@Composable
+private fun SettingSlider(
+    title: String,
+    display: String,
+    value: Float,
+    range: ClosedFloatingPointRange<Float>,
+    steps: Int,
+    onChange: (Float) -> Unit
+) {
+    var dragging by remember(value) { mutableStateOf(false) }
+    var dragValue by remember { mutableStateOf(value) }
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Text(
+            text = title,
+            fontSize = 13.sp,
+            color = Mc.textPrimary,
+            modifier = Modifier.width(150.dp)
+        )
+        Slider(
+            value = if (dragging) dragValue else value.coerceIn(range.start, range.endInclusive),
+            valueRange = range,
+            steps = steps,
+            onValueChange = {
+                dragging = true
+                dragValue = it
+            },
+            onValueChangeFinished = {
+                dragging = false
+                onChange(dragValue)
+            },
+            colors = SliderDefaults.colors(
+                thumbColor = Mc.red,
+                activeTrackColor = Mc.red,
+                inactiveTrackColor = Color(0xFFE5E5E8)
+            ),
+            modifier = Modifier
+                .weight(1f)
+                .height(26.dp)
+        )
+        Text(
+            text = display,
+            fontSize = 11.sp,
+            color = Mc.textSecondary,
+            modifier = Modifier.width(58.dp),
+            textAlign = androidx.compose.ui.text.style.TextAlign.Right
+        )
+    }
+}
+
+/** 开关设置行 */
+@Composable
+private fun SettingSwitch(
+    title: String,
+    desc: String,
+    checked: Boolean,
+    onChange: (Boolean) -> Unit
+) {
+    Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(text = title, fontSize = 13.sp, color = Mc.textPrimary, modifier = Modifier.weight(1f))
+            Switch(
+                checked = checked,
+                onCheckedChange = onChange,
+                colors = SwitchDefaults.colors(
+                    checkedThumbColor = Color.White,
+                    checkedTrackColor = Mc.red,
+                    uncheckedThumbColor = Color.White,
+                    uncheckedTrackColor = Color(0xFFC9C9CF)
+                ),
+                modifier = Modifier.height(24.dp)
+            )
+        }
+        Text(text = desc, fontSize = 10.sp, color = Mc.textTertiary)
+    }
+}
+
+/** 词源单选行 */
+@Composable
+private fun EngineRadioRow(label: String, selected: Boolean, onClick: () -> Unit) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(vertical = 7.dp)
+    ) {
+        Box(
+            Modifier
+                .size(16.dp)
+                .clip(CircleShape)
+                .border(2.dp, if (selected) Mc.red else Mc.divider, CircleShape),
+            contentAlignment = Alignment.Center
+        ) {
+            if (selected) {
+                Box(Modifier.size(8.dp).clip(CircleShape).background(Mc.red))
+            }
+        }
+        Spacer(Modifier.width(10.dp))
+        Text(text = label, fontSize = 13.sp, color = if (selected) Mc.red else Mc.textPrimary)
+    }
+}
+
+/** 已添加目录行 */
+@Composable
+private fun DirRow(path: String, onRemove: () -> Unit) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 3.dp)
+    ) {
+        Icon(
+            Icons.Filled.Folder,
+            contentDescription = null,
+            tint = Mc.textSecondary,
+            modifier = Modifier.size(14.dp)
+        )
+        Spacer(Modifier.width(8.dp))
+        Text(
+            text = path,
+            fontSize = 11.sp,
+            color = Mc.textSecondary,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f)
+        )
+        Icon(
+            Icons.Filled.Close,
+            contentDescription = "移除目录",
+            tint = Mc.textTertiary,
+            modifier = Modifier
+                .size(14.dp)
+                .clickable(onClick = onRemove)
+        )
+    }
+}
+
+/** 手动输入目录路径 */
+@Composable
+private fun ManualDirInput(onAdd: (String) -> Unit) {
+    var text by remember { mutableStateOf("") }
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        TextField(
+            value = text,
+            onValueChange = { text = it },
+            placeholder = {
+                Text("/storage/emulated/0/Music", fontSize = 11.sp, color = Mc.textTertiary)
+            },
+            singleLine = true,
+            textStyle = androidx.compose.ui.text.TextStyle(
+                fontSize = 12.sp,
+                color = Mc.textPrimary
+            ),
+            colors = TextFieldDefaults.colors(
+                focusedContainerColor = Mc.searchFieldBg,
+                unfocusedContainerColor = Mc.searchFieldBg,
+                focusedIndicatorColor = Color.Transparent,
+                unfocusedIndicatorColor = Color.Transparent
+            ),
+            modifier = Modifier
+                .weight(1f)
+                .height(46.dp)
+        )
+        IconButton(onClick = {
+            if (text.isNotBlank()) {
+                onAdd(text)
+                text = ""
+            }
+        }) {
+            Icon(Icons.Filled.Add, contentDescription = "添加目录", tint = Mc.red)
+        }
+    }
+}

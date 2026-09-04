@@ -38,9 +38,9 @@ object KuwoMusicApi {
         "https://musicapi.haitangw.net/music/kw.php?id=%s&level=standard&type=json"
     )
 
-    private val UA_PC = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+    internal val UA_PC = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
         "(KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36"
-    private val UA_PHONE = "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X)"
+    internal val UA_PHONE = "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X)"
 
     // ==================== 数据模型 ====================
 
@@ -329,7 +329,7 @@ object KuwoMusicApi {
      * HttpURLConnection 默认不跟随跨协议（http→https）重定向，部分解析 API 会
      * 返回 30x，因此手动跟随（最多 5 跳）。
      */
-    private fun openFollowing(
+    internal fun openFollowing(
         urlStr: String,
         headers: Map<String, String>,
         connectTimeoutMs: Int = 12_000,
@@ -361,7 +361,7 @@ object KuwoMusicApi {
     }
 
     /** 读取响应体文本（2xx 否则抛错），统一 UTF-8 */
-    private fun readText(conn: HttpURLConnection): String {
+    internal fun readText(conn: HttpURLConnection): String {
         val code = conn.responseCode
         val stream = if (code in 200..299) conn.inputStream else conn.errorStream
         val text = stream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() } ?: ""
@@ -373,10 +373,12 @@ object KuwoMusicApi {
     private fun enc(s: String): String = URLEncoder.encode(s, "UTF-8")
         .replace("+", "%20")
 
+    internal fun encodeQuery(s: String): String = enc(s)
+
     // ==================== JSON 扩展 ====================
 
     /** 读取字符串字段，缺失或 null 返回 null（区别于 optString 的 ""） */
-    private fun JSONObject.strOr(key: String): String? {
+    internal fun JSONObject.strOr(key: String): String? {
         if (!has(key) || isNull(key)) return null
         val v = optString(key, "")
         return if (v.isEmpty()) null else v
