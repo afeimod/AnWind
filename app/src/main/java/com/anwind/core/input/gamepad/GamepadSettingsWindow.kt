@@ -31,6 +31,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.anwind.AnWindApp
 import com.anwind.core.input.TrackpadRouter
+import com.anwind.core.input.boundsInWindowCompat
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
@@ -140,7 +141,7 @@ fun GamepadSettingsWindow(modifier: Modifier = Modifier) {
                 .heightIn(max = maxHeight - 24.dp)
                 // v2.20：登记为触控板直通区
                 .onGloballyPositioned {
-                    TrackpadRouter.registerPassthrough("gpSettings", it.boundsInWindow())
+                    TrackpadRouter.registerPassthrough("gpSettings", it.boundsInWindowCompat())
                 }
                 .shadow(14.dp, RoundedCornerShape(16.dp))
                 .clip(RoundedCornerShape(16.dp))

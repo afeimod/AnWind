@@ -39,6 +39,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.anwind.AnWindApp
 import com.anwind.core.input.TrackpadRouter
+import com.anwind.core.input.boundsInWindowCompat
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlin.math.cos
@@ -156,7 +157,7 @@ fun GamepadOverlay() {
                 .padding(top = 12.dp, end = 12.dp)
                 // v2.20：工具条登记为触控板直通区（真实手指可直接点 ⚙ ✎ ✕）
                 .onGloballyPositioned {
-                    TrackpadRouter.registerPassthrough("gpToolbar", it.boundsInWindow())
+                    TrackpadRouter.registerPassthrough("gpToolbar", it.boundsInWindowCompat())
                 }
         )
     }

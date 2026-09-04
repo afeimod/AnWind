@@ -50,6 +50,7 @@ import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupProperties
 import com.anwind.AnWindApp
 import com.anwind.core.input.MouseController
+import com.anwind.core.input.boundsInWindowCompat
 import com.anwind.core.input.keyboardAware
 import com.anwind.core.theme.LocalWinTheme
 import com.anwind.core.theme.Themes
@@ -175,7 +176,7 @@ fun DesktopContextMenu(
                         .width(112.dp)
                         .background(theme.windowBackgroundColor, RoundedCornerShape(4.dp))
                         .padding(3.dp)
-                        .onGloballyPositioned { panelBounds = it.boundsInWindow() }
+                        .onGloballyPositioned { panelBounds = it.boundsInWindowCompat() }
                 ) {
             if (data.iconItem != null) {
                 // ==================== 图标右键菜单 ====================
@@ -481,7 +482,7 @@ private fun ContextMenuEntry(
             .height(17.dp)
             .clip(RoundedCornerShape(3.dp))
             .background(if (hovered || pressed) theme.accentColor.copy(alpha = 0.14f) else Color.Transparent)
-            .onGloballyPositioned { itemRects[id] = it.boundsInWindow() }
+            .onGloballyPositioned { itemRects[id] = it.boundsInWindowCompat() }
             .clickable(
                 interactionSource = interaction,
                 indication = null,
@@ -535,7 +536,7 @@ private fun SubmenuEntry(
                         else -> Color.Transparent
                     }
                 )
-                .onGloballyPositioned { itemRects[id] = it.boundsInWindow() }
+                .onGloballyPositioned { itemRects[id] = it.boundsInWindowCompat() }
                 .clickable(
                     interactionSource = interaction,
                     indication = null,
@@ -604,7 +605,7 @@ private fun RadioOption(
                     else -> Color.Transparent
                 }
             )
-            .onGloballyPositioned { itemRects[id] = it.boundsInWindow() }
+            .onGloballyPositioned { itemRects[id] = it.boundsInWindowCompat() }
             .clickable(
                 interactionSource = interaction,
                 indication = null,

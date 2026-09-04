@@ -54,6 +54,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.anwind.AnWindApp
 import com.anwind.core.input.TrackpadRouter
+import com.anwind.core.input.boundsInWindowCompat
 import kotlinx.coroutines.launch
 import kotlin.math.abs
 import kotlin.math.roundToInt
@@ -209,7 +210,7 @@ fun VirtualKeyboardOverlay() {
                 .onGloballyPositioned { kbSize = it.size }
                 .onGloballyPositioned {
                     // v2.20：面板窗口坐标登记到触控板路由器（直通区）
-                    TrackpadRouter.registerPassthrough("vkPanel", it.boundsInWindow())
+                    TrackpadRouter.registerPassthrough("vkPanel", it.boundsInWindowCompat())
                 }
                 // 双指捏合缩放（v2.13.2）：放在键体修饰符之前 —— 单指事件仍由子级键优先消费
                 .pointerInput(Unit) {

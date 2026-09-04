@@ -1,0 +1,271 @@
+1<?xml version="1.0" encoding="utf-8"?>
+2<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+3    package="com.anwind"
+4    android:versionCode="27"
+5    android:versionName="2.16.5" >
+6
+7    <uses-sdk
+8        android:minSdkVersion="24"
+9        android:targetSdkVersion="34" />
+10
+11    <uses-permission android:name="android.permission.INTERNET" />
+11-->/data/data/com.termux/files/home/anwind/app/src/main/AndroidManifest.xml:5:5-67
+11-->/data/data/com.termux/files/home/anwind/app/src/main/AndroidManifest.xml:5:22-64
+12    <uses-permission
+12-->/data/data/com.termux/files/home/anwind/app/src/main/AndroidManifest.xml:6:5-7:38
+13        android:name="android.permission.READ_EXTERNAL_STORAGE"
+13-->/data/data/com.termux/files/home/anwind/app/src/main/AndroidManifest.xml:6:22-77
+14        android:maxSdkVersion="32" />
+14-->/data/data/com.termux/files/home/anwind/app/src/main/AndroidManifest.xml:7:9-35
+15    <uses-permission
+15-->/data/data/com.termux/files/home/anwind/app/src/main/AndroidManifest.xml:8:5-9:38
+16        android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+16-->/data/data/com.termux/files/home/anwind/app/src/main/AndroidManifest.xml:8:22-78
+17        android:maxSdkVersion="29" />
+17-->/data/data/com.termux/files/home/anwind/app/src/main/AndroidManifest.xml:9:9-35
+18    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+18-->/data/data/com.termux/files/home/anwind/app/src/main/AndroidManifest.xml:10:5-76
+18-->/data/data/com.termux/files/home/anwind/app/src/main/AndroidManifest.xml:10:22-73
+19    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
+19-->/data/data/com.termux/files/home/anwind/app/src/main/AndroidManifest.xml:11:5-75
+19-->/data/data/com.termux/files/home/anwind/app/src/main/AndroidManifest.xml:11:22-72
+20    <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
+20-->/data/data/com.termux/files/home/anwind/app/src/main/AndroidManifest.xml:12:5-75
+20-->/data/data/com.termux/files/home/anwind/app/src/main/AndroidManifest.xml:12:22-72
+21    <uses-permission android:name="android.permission.VIBRATE" />
+21-->/data/data/com.termux/files/home/anwind/app/src/main/AndroidManifest.xml:13:5-66
+21-->/data/data/com.termux/files/home/anwind/app/src/main/AndroidManifest.xml:13:22-63
+22    <uses-permission android:name="android.permission.SET_WALLPAPER" />
+22-->/data/data/com.termux/files/home/anwind/app/src/main/AndroidManifest.xml:14:5-72
+22-->/data/data/com.termux/files/home/anwind/app/src/main/AndroidManifest.xml:14:22-69
+23    <!-- 用于直接访问 /storage/emulated/0 真实文件系统（文件资源管理器） -->
+24    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
+24-->/data/data/com.termux/files/home/anwind/app/src/main/AndroidManifest.xml:16:5-17:40
+24-->/data/data/com.termux/files/home/anwind/app/src/main/AndroidManifest.xml:16:22-79
+25    <!-- 蓝牙开关（v2.10 快速设置面板）：旧版本静态权限 + Android 12+ 运行时权限 -->
+26    <uses-permission
+26-->/data/data/com.termux/files/home/anwind/app/src/main/AndroidManifest.xml:19:5-20:38
+27        android:name="android.permission.BLUETOOTH"
+27-->/data/data/com.termux/files/home/anwind/app/src/main/AndroidManifest.xml:19:22-65
+28        android:maxSdkVersion="30" />
+28-->/data/data/com.termux/files/home/anwind/app/src/main/AndroidManifest.xml:20:9-35
+29    <uses-permission
+29-->/data/data/com.termux/files/home/anwind/app/src/main/AndroidManifest.xml:21:5-22:38
+30        android:name="android.permission.BLUETOOTH_ADMIN"
+30-->/data/data/com.termux/files/home/anwind/app/src/main/AndroidManifest.xml:21:22-71
+31        android:maxSdkVersion="30" />
+31-->/data/data/com.termux/files/home/anwind/app/src/main/AndroidManifest.xml:22:9-35
+32    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+32-->/data/data/com.termux/files/home/anwind/app/src/main/AndroidManifest.xml:23:5-76
+32-->/data/data/com.termux/files/home/anwind/app/src/main/AndroidManifest.xml:23:22-73
+33    <!-- v2.12 设置中心真实化：蓝牙扫描发现设备（Android 12+） -->
+34    <uses-permission
+34-->/data/data/com.termux/files/home/anwind/app/src/main/AndroidManifest.xml:25:5-27:31
+35        android:name="android.permission.BLUETOOTH_SCAN"
+35-->/data/data/com.termux/files/home/anwind/app/src/main/AndroidManifest.xml:25:22-70
+36        android:usesPermissionFlags="neverForLocation" />
+36-->/data/data/com.termux/files/home/anwind/app/src/main/AndroidManifest.xml:26:9-55
+37    <!-- v2.12：网络状态/ Wi-Fi 扫描与开关 -->
+38    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+38-->/data/data/com.termux/files/home/anwind/app/src/main/AndroidManifest.xml:29:5-79
+38-->/data/data/com.termux/files/home/anwind/app/src/main/AndroidManifest.xml:29:22-76
+39    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+39-->/data/data/com.termux/files/home/anwind/app/src/main/AndroidManifest.xml:30:5-76
+39-->/data/data/com.termux/files/home/anwind/app/src/main/AndroidManifest.xml:30:22-73
+40    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+40-->/data/data/com.termux/files/home/anwind/app/src/main/AndroidManifest.xml:31:5-76
+40-->/data/data/com.termux/files/home/anwind/app/src/main/AndroidManifest.xml:31:22-73
+41    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+41-->/data/data/com.termux/files/home/anwind/app/src/main/AndroidManifest.xml:32:5-79
+41-->/data/data/com.termux/files/home/anwind/app/src/main/AndroidManifest.xml:32:22-76
+42    <!-- v2.12：写系统亮度（需用户在“修改系统设置”页授权） -->
+43    <uses-permission android:name="android.permission.WRITE_SETTINGS" />
+43-->/data/data/com.termux/files/home/anwind/app/src/main/AndroidManifest.xml:34:5-35:47
+43-->/data/data/com.termux/files/home/anwind/app/src/main/AndroidManifest.xml:34:22-70
+44
+45    <!--
+46         v2.17 开始菜单读取手机应用：声明查询带启动入口的应用（Android 11+ 包可见性）。
+47         作为 Launcher 使用 MAIN/LAUNCHER intent-filter 查询，无需 QUERY_ALL_PACKAGES 宽限权限
+48    -->
+49    <queries>
+49-->/data/data/com.termux/files/home/anwind/app/src/main/AndroidManifest.xml:39:5-44:15
+50        <intent>
+50-->/data/data/com.termux/files/home/anwind/app/src/main/AndroidManifest.xml:40:9-43:18
+51            <action android:name="android.intent.action.MAIN" />
+51-->/data/data/com.termux/files/home/anwind/app/src/main/AndroidManifest.xml:41:13-65
+51-->/data/data/com.termux/files/home/anwind/app/src/main/AndroidManifest.xml:41:21-62
+52
+53            <category android:name="android.intent.category.LAUNCHER" />
+53-->/data/data/com.termux/files/home/anwind/app/src/main/AndroidManifest.xml:42:13-73
+53-->/data/data/com.termux/files/home/anwind/app/src/main/AndroidManifest.xml:42:23-70
+54        </intent>
+55    </queries>
+56
+57    <permission
+57-->[androidx.core:core:1.13.1] /data/data/com.termux/files/home/.gradle/caches/transforms-4/e91d43edd169d12026c8450ba62b92db/transformed/core-1.13.1/AndroidManifest.xml:22:5-24:47
+58        android:name="com.anwind.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION"
+58-->[androidx.core:core:1.13.1] /data/data/com.termux/files/home/.gradle/caches/transforms-4/e91d43edd169d12026c8450ba62b92db/transformed/core-1.13.1/AndroidManifest.xml:23:9-81
+59        android:protectionLevel="signature" />
+59-->[androidx.core:core:1.13.1] /data/data/com.termux/files/home/.gradle/caches/transforms-4/e91d43edd169d12026c8450ba62b92db/transformed/core-1.13.1/AndroidManifest.xml:24:9-44
+60
+61    <uses-permission android:name="com.anwind.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION" />
+61-->[androidx.core:core:1.13.1] /data/data/com.termux/files/home/.gradle/caches/transforms-4/e91d43edd169d12026c8450ba62b92db/transformed/core-1.13.1/AndroidManifest.xml:26:5-97
+61-->[androidx.core:core:1.13.1] /data/data/com.termux/files/home/.gradle/caches/transforms-4/e91d43edd169d12026c8450ba62b92db/transformed/core-1.13.1/AndroidManifest.xml:26:22-94
+62
+63    <application
+63-->/data/data/com.termux/files/home/anwind/app/src/main/AndroidManifest.xml:46:5-87:19
+64        android:name="com.anwind.AnWindApp"
+64-->/data/data/com.termux/files/home/anwind/app/src/main/AndroidManifest.xml:47:9-34
+65        android:allowBackup="true"
+65-->/data/data/com.termux/files/home/anwind/app/src/main/AndroidManifest.xml:48:9-35
+66        android:appComponentFactory="androidx.core.app.CoreComponentFactory"
+66-->[androidx.core:core:1.13.1] /data/data/com.termux/files/home/.gradle/caches/transforms-4/e91d43edd169d12026c8450ba62b92db/transformed/core-1.13.1/AndroidManifest.xml:28:18-86
+67        android:dataExtractionRules="@xml/data_extraction_rules"
+67-->/data/data/com.termux/files/home/anwind/app/src/main/AndroidManifest.xml:49:9-65
+68        android:extractNativeLibs="false"
+69        android:fullBackupContent="@xml/backup_rules"
+69-->/data/data/com.termux/files/home/anwind/app/src/main/AndroidManifest.xml:50:9-54
+70        android:hardwareAccelerated="true"
+70-->/data/data/com.termux/files/home/anwind/app/src/main/AndroidManifest.xml:54:9-43
+71        android:icon="@mipmap/ic_launcher"
+71-->/data/data/com.termux/files/home/anwind/app/src/main/AndroidManifest.xml:51:9-43
+72        android:label="@string/app_name"
+72-->/data/data/com.termux/files/home/anwind/app/src/main/AndroidManifest.xml:52:9-41
+73        android:largeHeap="true"
+73-->/data/data/com.termux/files/home/anwind/app/src/main/AndroidManifest.xml:55:9-33
+74        android:networkSecurityConfig="@xml/network_security_config"
+74-->/data/data/com.termux/files/home/anwind/app/src/main/AndroidManifest.xml:58:9-69
+75        android:requestLegacyExternalStorage="true"
+75-->/data/data/com.termux/files/home/anwind/app/src/main/AndroidManifest.xml:56:9-52
+76        android:supportsRtl="true"
+76-->/data/data/com.termux/files/home/anwind/app/src/main/AndroidManifest.xml:53:9-35
+77        android:theme="@style/Theme.AnWind"
+77-->/data/data/com.termux/files/home/anwind/app/src/main/AndroidManifest.xml:59:9-44
+78        android:usesCleartextTraffic="true" >
+78-->/data/data/com.termux/files/home/anwind/app/src/main/AndroidManifest.xml:57:9-44
+79        <activity
+79-->/data/data/com.termux/files/home/anwind/app/src/main/AndroidManifest.xml:62:9-75:20
+80            android:name="com.anwind.MainActivity"
+80-->/data/data/com.termux/files/home/anwind/app/src/main/AndroidManifest.xml:63:13-41
+81            android:configChanges="orientation|screenSize|keyboardHidden|smallestScreenSize|screenLayout|uiMode"
+81-->/data/data/com.termux/files/home/anwind/app/src/main/AndroidManifest.xml:65:13-113
+82            android:exported="true"
+82-->/data/data/com.termux/files/home/anwind/app/src/main/AndroidManifest.xml:64:13-36
+83            android:launchMode="singleTask"
+83-->/data/data/com.termux/files/home/anwind/app/src/main/AndroidManifest.xml:66:13-44
+84            android:theme="@style/Theme.AnWind"
+84-->/data/data/com.termux/files/home/anwind/app/src/main/AndroidManifest.xml:68:13-48
+85            android:windowSoftInputMode="adjustResize" >
+85-->/data/data/com.termux/files/home/anwind/app/src/main/AndroidManifest.xml:67:13-55
+86            <intent-filter>
+86-->/data/data/com.termux/files/home/anwind/app/src/main/AndroidManifest.xml:69:13-74:29
+87                <action android:name="android.intent.action.MAIN" />
+87-->/data/data/com.termux/files/home/anwind/app/src/main/AndroidManifest.xml:41:13-65
+87-->/data/data/com.termux/files/home/anwind/app/src/main/AndroidManifest.xml:41:21-62
+88
+89                <category android:name="android.intent.category.LAUNCHER" />
+89-->/data/data/com.termux/files/home/anwind/app/src/main/AndroidManifest.xml:42:13-73
+89-->/data/data/com.termux/files/home/anwind/app/src/main/AndroidManifest.xml:42:23-70
+90                <category android:name="android.intent.category.HOME" />
+90-->/data/data/com.termux/files/home/anwind/app/src/main/AndroidManifest.xml:72:17-73
+90-->/data/data/com.termux/files/home/anwind/app/src/main/AndroidManifest.xml:72:27-70
+91                <category android:name="android.intent.category.DEFAULT" />
+91-->/data/data/com.termux/files/home/anwind/app/src/main/AndroidManifest.xml:73:17-76
+91-->/data/data/com.termux/files/home/anwind/app/src/main/AndroidManifest.xml:73:27-73
+92            </intent-filter>
+93        </activity>
+94
+95        <!-- FileProvider：用于安全地共享真实文件（图片、APK、视频等）给系统 Intent -->
+96        <provider
+97            android:name="androidx.core.content.FileProvider"
+97-->/data/data/com.termux/files/home/anwind/app/src/main/AndroidManifest.xml:79:13-62
+98            android:authorities="com.anwind.fileprovider"
+98-->/data/data/com.termux/files/home/anwind/app/src/main/AndroidManifest.xml:80:13-64
+99            android:exported="false"
+99-->/data/data/com.termux/files/home/anwind/app/src/main/AndroidManifest.xml:81:13-37
+100            android:grantUriPermissions="true" >
+100-->/data/data/com.termux/files/home/anwind/app/src/main/AndroidManifest.xml:82:13-47
+101            <meta-data
+101-->/data/data/com.termux/files/home/anwind/app/src/main/AndroidManifest.xml:83:13-85:54
+102                android:name="android.support.FILE_PROVIDER_PATHS"
+102-->/data/data/com.termux/files/home/anwind/app/src/main/AndroidManifest.xml:84:17-67
+103                android:resource="@xml/file_paths" />
+103-->/data/data/com.termux/files/home/anwind/app/src/main/AndroidManifest.xml:85:17-51
+104        </provider>
+105        <provider
+105-->[androidx.emoji2:emoji2:1.3.0] /data/data/com.termux/files/home/.gradle/caches/transforms-4/8d265db809aefe6ba535572b60a1cbcb/transformed/emoji2-1.3.0/AndroidManifest.xml:24:9-32:20
+106            android:name="androidx.startup.InitializationProvider"
+106-->[androidx.emoji2:emoji2:1.3.0] /data/data/com.termux/files/home/.gradle/caches/transforms-4/8d265db809aefe6ba535572b60a1cbcb/transformed/emoji2-1.3.0/AndroidManifest.xml:25:13-67
+107            android:authorities="com.anwind.androidx-startup"
+107-->[androidx.emoji2:emoji2:1.3.0] /data/data/com.termux/files/home/.gradle/caches/transforms-4/8d265db809aefe6ba535572b60a1cbcb/transformed/emoji2-1.3.0/AndroidManifest.xml:26:13-68
+108            android:exported="false" >
+108-->[androidx.emoji2:emoji2:1.3.0] /data/data/com.termux/files/home/.gradle/caches/transforms-4/8d265db809aefe6ba535572b60a1cbcb/transformed/emoji2-1.3.0/AndroidManifest.xml:27:13-37
+109            <meta-data
+109-->[androidx.emoji2:emoji2:1.3.0] /data/data/com.termux/files/home/.gradle/caches/transforms-4/8d265db809aefe6ba535572b60a1cbcb/transformed/emoji2-1.3.0/AndroidManifest.xml:29:13-31:52
+110                android:name="androidx.emoji2.text.EmojiCompatInitializer"
+110-->[androidx.emoji2:emoji2:1.3.0] /data/data/com.termux/files/home/.gradle/caches/transforms-4/8d265db809aefe6ba535572b60a1cbcb/transformed/emoji2-1.3.0/AndroidManifest.xml:30:17-75
+111                android:value="androidx.startup" />
+111-->[androidx.emoji2:emoji2:1.3.0] /data/data/com.termux/files/home/.gradle/caches/transforms-4/8d265db809aefe6ba535572b60a1cbcb/transformed/emoji2-1.3.0/AndroidManifest.xml:31:17-49
+112            <meta-data
+112-->[androidx.lifecycle:lifecycle-process:2.8.2] /data/data/com.termux/files/home/.gradle/caches/transforms-4/394012d86a712eeb776fd32a4339d902/transformed/lifecycle-process-2.8.2/AndroidManifest.xml:29:13-31:52
+113                android:name="androidx.lifecycle.ProcessLifecycleInitializer"
+113-->[androidx.lifecycle:lifecycle-process:2.8.2] /data/data/com.termux/files/home/.gradle/caches/transforms-4/394012d86a712eeb776fd32a4339d902/transformed/lifecycle-process-2.8.2/AndroidManifest.xml:30:17-78
+114                android:value="androidx.startup" />
+114-->[androidx.lifecycle:lifecycle-process:2.8.2] /data/data/com.termux/files/home/.gradle/caches/transforms-4/394012d86a712eeb776fd32a4339d902/transformed/lifecycle-process-2.8.2/AndroidManifest.xml:31:17-49
+115            <meta-data
+115-->[androidx.profileinstaller:profileinstaller:1.3.1] /data/data/com.termux/files/home/.gradle/caches/transforms-4/16e301cf918698b0162b7c845acd09ac/transformed/profileinstaller-1.3.1/AndroidManifest.xml:29:13-31:52
+116                android:name="androidx.profileinstaller.ProfileInstallerInitializer"
+116-->[androidx.profileinstaller:profileinstaller:1.3.1] /data/data/com.termux/files/home/.gradle/caches/transforms-4/16e301cf918698b0162b7c845acd09ac/transformed/profileinstaller-1.3.1/AndroidManifest.xml:30:17-85
+117                android:value="androidx.startup" />
+117-->[androidx.profileinstaller:profileinstaller:1.3.1] /data/data/com.termux/files/home/.gradle/caches/transforms-4/16e301cf918698b0162b7c845acd09ac/transformed/profileinstaller-1.3.1/AndroidManifest.xml:31:17-49
+118        </provider>
+119
+120        <service
+120-->[androidx.room:room-runtime:2.6.1] /data/data/com.termux/files/home/.gradle/caches/transforms-4/3491be084682f777f2359a2bc8e00d91/transformed/room-runtime-2.6.1/AndroidManifest.xml:24:9-28:63
+121            android:name="androidx.room.MultiInstanceInvalidationService"
+121-->[androidx.room:room-runtime:2.6.1] /data/data/com.termux/files/home/.gradle/caches/transforms-4/3491be084682f777f2359a2bc8e00d91/transformed/room-runtime-2.6.1/AndroidManifest.xml:25:13-74
+122            android:directBootAware="true"
+122-->[androidx.room:room-runtime:2.6.1] /data/data/com.termux/files/home/.gradle/caches/transforms-4/3491be084682f777f2359a2bc8e00d91/transformed/room-runtime-2.6.1/AndroidManifest.xml:26:13-43
+123            android:exported="false" />
+123-->[androidx.room:room-runtime:2.6.1] /data/data/com.termux/files/home/.gradle/caches/transforms-4/3491be084682f777f2359a2bc8e00d91/transformed/room-runtime-2.6.1/AndroidManifest.xml:27:13-37
+124
+125        <receiver
+125-->[androidx.profileinstaller:profileinstaller:1.3.1] /data/data/com.termux/files/home/.gradle/caches/transforms-4/16e301cf918698b0162b7c845acd09ac/transformed/profileinstaller-1.3.1/AndroidManifest.xml:34:9-52:20
+126            android:name="androidx.profileinstaller.ProfileInstallReceiver"
+126-->[androidx.profileinstaller:profileinstaller:1.3.1] /data/data/com.termux/files/home/.gradle/caches/transforms-4/16e301cf918698b0162b7c845acd09ac/transformed/profileinstaller-1.3.1/AndroidManifest.xml:35:13-76
+127            android:directBootAware="false"
+127-->[androidx.profileinstaller:profileinstaller:1.3.1] /data/data/com.termux/files/home/.gradle/caches/transforms-4/16e301cf918698b0162b7c845acd09ac/transformed/profileinstaller-1.3.1/AndroidManifest.xml:36:13-44
+128            android:enabled="true"
+128-->[androidx.profileinstaller:profileinstaller:1.3.1] /data/data/com.termux/files/home/.gradle/caches/transforms-4/16e301cf918698b0162b7c845acd09ac/transformed/profileinstaller-1.3.1/AndroidManifest.xml:37:13-35
+129            android:exported="true"
+129-->[androidx.profileinstaller:profileinstaller:1.3.1] /data/data/com.termux/files/home/.gradle/caches/transforms-4/16e301cf918698b0162b7c845acd09ac/transformed/profileinstaller-1.3.1/AndroidManifest.xml:38:13-36
+130            android:permission="android.permission.DUMP" >
+130-->[androidx.profileinstaller:profileinstaller:1.3.1] /data/data/com.termux/files/home/.gradle/caches/transforms-4/16e301cf918698b0162b7c845acd09ac/transformed/profileinstaller-1.3.1/AndroidManifest.xml:39:13-57
+131            <intent-filter>
+131-->[androidx.profileinstaller:profileinstaller:1.3.1] /data/data/com.termux/files/home/.gradle/caches/transforms-4/16e301cf918698b0162b7c845acd09ac/transformed/profileinstaller-1.3.1/AndroidManifest.xml:40:13-42:29
+132                <action android:name="androidx.profileinstaller.action.INSTALL_PROFILE" />
+132-->[androidx.profileinstaller:profileinstaller:1.3.1] /data/data/com.termux/files/home/.gradle/caches/transforms-4/16e301cf918698b0162b7c845acd09ac/transformed/profileinstaller-1.3.1/AndroidManifest.xml:41:17-91
+132-->[androidx.profileinstaller:profileinstaller:1.3.1] /data/data/com.termux/files/home/.gradle/caches/transforms-4/16e301cf918698b0162b7c845acd09ac/transformed/profileinstaller-1.3.1/AndroidManifest.xml:41:25-88
+133            </intent-filter>
+134            <intent-filter>
+134-->[androidx.profileinstaller:profileinstaller:1.3.1] /data/data/com.termux/files/home/.gradle/caches/transforms-4/16e301cf918698b0162b7c845acd09ac/transformed/profileinstaller-1.3.1/AndroidManifest.xml:43:13-45:29
+135                <action android:name="androidx.profileinstaller.action.SKIP_FILE" />
+135-->[androidx.profileinstaller:profileinstaller:1.3.1] /data/data/com.termux/files/home/.gradle/caches/transforms-4/16e301cf918698b0162b7c845acd09ac/transformed/profileinstaller-1.3.1/AndroidManifest.xml:44:17-85
+135-->[androidx.profileinstaller:profileinstaller:1.3.1] /data/data/com.termux/files/home/.gradle/caches/transforms-4/16e301cf918698b0162b7c845acd09ac/transformed/profileinstaller-1.3.1/AndroidManifest.xml:44:25-82
+136            </intent-filter>
+137            <intent-filter>
+137-->[androidx.profileinstaller:profileinstaller:1.3.1] /data/data/com.termux/files/home/.gradle/caches/transforms-4/16e301cf918698b0162b7c845acd09ac/transformed/profileinstaller-1.3.1/AndroidManifest.xml:46:13-48:29
+138                <action android:name="androidx.profileinstaller.action.SAVE_PROFILE" />
+138-->[androidx.profileinstaller:profileinstaller:1.3.1] /data/data/com.termux/files/home/.gradle/caches/transforms-4/16e301cf918698b0162b7c845acd09ac/transformed/profileinstaller-1.3.1/AndroidManifest.xml:47:17-88
+138-->[androidx.profileinstaller:profileinstaller:1.3.1] /data/data/com.termux/files/home/.gradle/caches/transforms-4/16e301cf918698b0162b7c845acd09ac/transformed/profileinstaller-1.3.1/AndroidManifest.xml:47:25-85
+139            </intent-filter>
+140            <intent-filter>
+140-->[androidx.profileinstaller:profileinstaller:1.3.1] /data/data/com.termux/files/home/.gradle/caches/transforms-4/16e301cf918698b0162b7c845acd09ac/transformed/profileinstaller-1.3.1/AndroidManifest.xml:49:13-51:29
+141                <action android:name="androidx.profileinstaller.action.BENCHMARK_OPERATION" />
+141-->[androidx.profileinstaller:profileinstaller:1.3.1] /data/data/com.termux/files/home/.gradle/caches/transforms-4/16e301cf918698b0162b7c845acd09ac/transformed/profileinstaller-1.3.1/AndroidManifest.xml:50:17-95
+141-->[androidx.profileinstaller:profileinstaller:1.3.1] /data/data/com.termux/files/home/.gradle/caches/transforms-4/16e301cf918698b0162b7c845acd09ac/transformed/profileinstaller-1.3.1/AndroidManifest.xml:50:25-92
+142            </intent-filter>
+143        </receiver>
+144    </application>
+145
+146</manifest>

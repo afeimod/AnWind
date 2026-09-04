@@ -7,6 +7,17 @@ import android.view.MotionEvent
 import android.view.View
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.layout.LayoutCoordinates
+
+/**
+ * Compose 1.6.x 移除了 [LayoutCoordinates.boundsInWindow]，
+ * 此扩展用 positionInWindow + size 手动构造等效 Rect。
+ */
+internal fun LayoutCoordinates.boundsInWindowCompat(): Rect {
+    val pos = positionInWindow()
+    val s = size
+    return Rect(pos.x, pos.y, pos.x + s.width, pos.y + s.height)
+}
 
 /**
  * 触控板路由器（v2.20）—— 手势仲裁自 Compose 门禁层【上移到 View 层】。
