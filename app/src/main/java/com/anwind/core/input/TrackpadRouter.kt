@@ -10,11 +10,13 @@ import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.layout.LayoutCoordinates
 
 /**
- * Compose 1.6.x 移除了 [LayoutCoordinates.boundsInWindow]，
- * 此扩展用 positionInWindow + size 手动构造等效 Rect。
+ * Compose 1.6.x 移除了 [LayoutCoordinates.boundsInWindow]（positionInWindow 等
+ * 也降级为 androidx.compose.ui.layout 包下的顶层扩展函数，在 LayoutCoordinates
+ * 扩展体内不能再靠隐式 this 命中）。此扩展用 localToWindow(Offset.Zero) +
+ * size 手动构造等效 Rect。
  */
 internal fun LayoutCoordinates.boundsInWindowCompat(): Rect {
-    val pos = positionInWindow()
+    val pos = localToWindow(Offset.Zero)
     val s = size
     return Rect(pos.x, pos.y, pos.x + s.width, pos.y + s.height)
 }

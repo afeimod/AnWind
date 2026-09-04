@@ -366,6 +366,7 @@ fun DesktopContextMenu(
                 }
             }
             }
+            }
             val menuPlaceable = measurables.first().measure(
                 Constraints(maxWidth = constraints.maxWidth, maxHeight = constraints.maxHeight)
             )
@@ -380,7 +381,6 @@ fun DesktopContextMenu(
             layout(constraints.maxWidth, constraints.maxHeight) {
                 menuPlaceable.place(mx, my)
             }
-        }
         }
     }
 
