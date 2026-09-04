@@ -38,6 +38,7 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.anwind.AnWindApp
+import com.anwind.core.input.TrackpadRouter
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlin.math.cos
@@ -69,10 +70,12 @@ fun GamepadOverlay() {
 
     // v2.15.3：手柄隐藏/离开组合时释放全部按下的键（防联键：不留任何"按着"的键）
     // v2.16.4：同时清空元素命中矩形（防陈旧矩形令浏览器侧误剥离正常触摸）
+    // v2.20：同时注销工具条直通区
     DisposableEffect(gamepadEnabled) {
         onDispose {
             GamepadController.releaseAllKeys()
             GamepadController.clearElementHits()
+            TrackpadRouter.registerPassthrough("gpToolbar", null)
         }
     }
 
@@ -151,6 +154,10 @@ fun GamepadOverlay() {
             modifier = Modifier
                 .align(Alignment.TopEnd)
                 .padding(top = 12.dp, end = 12.dp)
+                // v2.20：工具条登记为触控板直通区（真实手指可直接点 ⚙ ✎ ✕）
+                .onGloballyPositioned {
+                    TrackpadRouter.registerPassthrough("gpToolbar", it.boundsInWindow())
+                }
         )
     }
 }

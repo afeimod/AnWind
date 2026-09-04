@@ -4,7 +4,9 @@ import android.content.pm.ActivityInfo
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import android.view.MotionEvent
 import android.view.WindowManager
+import com.anwind.core.input.TrackpadRouter
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -210,6 +212,24 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    /**
+     * v2.20 触控板模式事件仲裁入口。
+     *
+     * trackpad 模式下真实手指事件先经 [TrackpadRouter] 处理：命中则直接
+     * 返回 true（事件不再进入 View/Compose 管线，手势机输出指针移动与
+     * 合成点击/拖拽/滚轮注入）；注入流（id ≥ 99）与虚拟键盘/手柄等
+     * 直通区事件返回 false，照常走 super 分发。
+     *
+     * 这是“触控板用一段时间后随机失灵、恢复普通触摸、鼠标冻结”的根修：
+     * 真实手指（TOOL_TYPE_FINGER）与注入流（TOOL_TYPE_MOUSE）从此不再
+     * 交织进同一个 AndroidComposeView 管线，Compose 的设备切换取消
+     * （processCancel）与指针 id 重映射风暴不再发生。
+     */
+    override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+        if (TrackpadRouter.onMotionEvent(this, ev)) return true
+        return super.dispatchTouchEvent(ev)
     }
 
     /**

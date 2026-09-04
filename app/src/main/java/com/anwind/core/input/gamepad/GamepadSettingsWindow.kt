@@ -22,6 +22,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -29,6 +30,7 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.anwind.AnWindApp
+import com.anwind.core.input.TrackpadRouter
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
@@ -45,6 +47,12 @@ import kotlin.math.roundToInt
 @Composable
 fun GamepadSettingsWindow(modifier: Modifier = Modifier) {
     if (!GamepadController.settingsOpen) return
+
+    // v2.20：设置面板登记为触控板直通区（真实手指可直接调节滑杆）；
+    // 关闭/离开组合时注销
+    DisposableEffect(Unit) {
+        onDispose { TrackpadRouter.registerPassthrough("gpSettings", null) }
+    }
 
     val app = AnWindApp.get()
     val scope = rememberCoroutineScope()
@@ -130,6 +138,10 @@ fun GamepadSettingsWindow(modifier: Modifier = Modifier) {
                 .offset { IntOffset(winOffset.x.roundToInt(), winOffset.y.roundToInt()) }
                 .widthIn(min = 320.dp, max = 360.dp)
                 .heightIn(max = maxHeight - 24.dp)
+                // v2.20：登记为触控板直通区
+                .onGloballyPositioned {
+                    TrackpadRouter.registerPassthrough("gpSettings", it.boundsInWindow())
+                }
                 .shadow(14.dp, RoundedCornerShape(16.dp))
                 .clip(RoundedCornerShape(16.dp))
                 .background(Color(0xF0162030))

@@ -2,6 +2,8 @@ package com.anwind.core.desktop
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.*
@@ -28,23 +30,26 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.*
+import androidx.compose.runtime.snapshots.SnapshotStateMap
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.PointerInputChange
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.SubcomposeLayout
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.unit.IntOffset
-import androidx.compose.ui.unit.IntRect
-import androidx.compose.ui.unit.IntSize
-import androidx.compose.ui.unit.LayoutDirection
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Popup
-import androidx.compose.ui.window.PopupPositionProvider
 import androidx.compose.ui.window.PopupProperties
 import com.anwind.AnWindApp
+import com.anwind.core.input.MouseController
 import com.anwind.core.input.keyboardAware
 import com.anwind.core.theme.LocalWinTheme
 import com.anwind.core.theme.Themes
@@ -94,7 +99,8 @@ data class DesktopContextMenuData(
  * 桌面图标上（双指轻点命中图标）：
  * - 打开 / 重命名（快捷方式）/ 删除（快捷方式）/ 属性
  *
- * 菜单通过 PopupPositionProvider 自动钳制在屏幕内，边缘呼出不会溢出。
+ * 菜单（v2.20 起主窗口内渲染）通过 SubcomposeLayout 先量后摆、自动钳制在
+ * 屏幕内，边缘呼出不会溢出；点在菜单外关闭、菜单项随虚拟指针悬停高亮。
  */
 @Composable
 fun DesktopContextMenu(
@@ -111,35 +117,90 @@ fun DesktopContextMenu(
     var showRenameDialog by remember { mutableStateOf<DesktopItem?>(null) }
     var showPropsDialog by remember { mutableStateOf<DesktopItem?>(null) }
 
-    val positionProvider = remember(data.x, data.y) { ClampedMenuPositionProvider(data.x, data.y) }
+    // ===== v2.20：主窗口内渲染（不再用 focusable Popup）=====
+    // focusable Popup 在真实手指落点处于菜单内容之外时收到 ACTION_OUTSIDE
+    // 立即 dismiss —— 触控板模式"双指右键出菜单，一滑动菜单就消失"的根因。
+    // 改为全屏遮罩 + 菜单面板（SubcomposeLayout 先量后摆、钳制屏内）：
+    // - 点在菜单外（注入单击或 touch 模式直触）才关闭；滑动移动虚拟指针
+    //   不产生任何 dismiss —— 菜单保持打开，可慢慢滑到目标项上；
+    // - 菜单项随虚拟指针悬停高亮（hoveredId），轻点即选择 —— Windows
+    //   右键菜单的指针交互语义；
+    // - 遮罩消费落点事件，菜单打开期间点不透到桌面图标/窗口。
+    var panelBounds by remember { mutableStateOf<Rect?>(null) }
+    val itemRects = remember { mutableStateMapOf<String, Rect>() }
+    val hoveredId by remember {
+        derivedStateOf {
+            val pos = MouseController.position
+            itemRects.entries.firstOrNull { it.value.contains(pos) }?.key
+        }
+    }
 
-    Popup(
-        popupPositionProvider = positionProvider,
-        onDismissRequest = onDismiss,
-        properties = PopupProperties(focusable = true)
+    Box(
+        modifier = modifier
+            .fillMaxSize()
+            .pointerInput(Unit) {
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    down.consume()
+                    var up: PointerInputChange? = null
+                    var dragged = false
+                    while (up == null) {
+                        val ev = awaitPointerEvent()
+                        val c = ev.changes.firstOrNull { it.id == down.id } ?: continue
+                        if (!c.pressed) {
+                            up = c
+                        } else if ((c.position - down.position).getDistance() >
+                            viewConfiguration.touchSlop
+                        ) {
+                            dragged = true
+                        }
+                    }
+                    val upChange = up ?: return@awaitEachGesture
+                    // 点在面板内（含起/落任一点在内）不算"菜单外"，交给菜单项处理
+                    val outside = panelBounds?.let { r ->
+                        !r.contains(down.position) && !r.contains(upChange.position)
+                    } ?: true
+                    if (outside && !dragged) {
+                        upChange.consume()
+                        onDismiss()
+                    }
+                }
+            }
     ) {
-        Column(
-            modifier = modifier
-                // v2.16：216→112dp（约一半宽），内边距/圆角同步缩小
-                .width(112.dp)
-                .background(theme.windowBackgroundColor, RoundedCornerShape(4.dp))
-                .padding(3.dp)
-        ) {
+        SubcomposeLayout(modifier = Modifier.fillMaxSize()) { constraints ->
+            val measurables = subcompose("menu") {
+                Column(
+                    modifier = Modifier
+                        // v2.16：216→112dp（约一半宽），内边距/圆角同步缩小
+                        .width(112.dp)
+                        .background(theme.windowBackgroundColor, RoundedCornerShape(4.dp))
+                        .padding(3.dp)
+                        .onGloballyPositioned { panelBounds = it.boundsInWindow() }
+                ) {
             if (data.iconItem != null) {
                 // ==================== 图标右键菜单 ====================
                 val item = data.iconItem
                 val isShortcut = item.type != DesktopItemType.BUILTIN_APP
-                ContextMenuEntry(icon = Icons.Default.Launch, label = L("打开")) {
+                ContextMenuEntry(
+                    id = "open", icon = Icons.Default.Launch, label = L("打开"),
+                    hoveredId = hoveredId, itemRects = itemRects
+                ) {
                     launchDesktopItem(item, wm)
                     onDismiss()
                 }
                 if (isShortcut) {
                     ContextMenuDivider()
-                    ContextMenuEntry(icon = Icons.Default.DriveFileRenameOutline, label = L("重命名")) {
+                    ContextMenuEntry(
+                        id = "rename", icon = Icons.Default.DriveFileRenameOutline, label = L("重命名"),
+                        hoveredId = hoveredId, itemRects = itemRects
+                    ) {
                         showRenameDialog = item
                         onDismiss()
                     }
-                    ContextMenuEntry(icon = Icons.Default.Delete, label = L("删除")) {
+                    ContextMenuEntry(
+                        id = "delete", icon = Icons.Default.Delete, label = L("删除"),
+                        hoveredId = hoveredId, itemRects = itemRects
+                    ) {
                         val shortcutId = item.id.removePrefix("shortcut_").toLongOrNull()
                         if (shortcutId != null) {
                             scope0.launch {
@@ -152,7 +213,10 @@ fun DesktopContextMenu(
                     }
                 }
                 ContextMenuDivider()
-                ContextMenuEntry(icon = Icons.Default.Info, label = L("属性")) {
+                ContextMenuEntry(
+                    id = "props", icon = Icons.Default.Info, label = L("属性"),
+                    hoveredId = hoveredId, itemRects = itemRects
+                ) {
                     showPropsDialog = item
                     onDismiss()
                 }
@@ -168,42 +232,51 @@ fun DesktopContextMenu(
 
                 // ===== 查看（图标大小） =====
                 SubmenuEntry(
+                    id = "view",
                     icon = Icons.Default.GridView,
                     label = L("查看"),
                     expanded = expandedSub == "view",
+                    hoveredId = hoveredId,
+                    itemRects = itemRects,
                     onToggle = { expandedSub = if (expandedSub == "view") null else "view" }
                 ) {
-                    RadioOption(L("大图标"), iconSize >= 60f) {
+                    RadioOption("viewLarge", L("大图标"), iconSize >= 60f, hoveredId, itemRects) {
                         scope0.launch { app.settingsStore.setIconSize(64f) }
                     }
-                    RadioOption(L("中等图标"), iconSize in 40f..59f) {
+                    RadioOption("viewMedium", L("中等图标"), iconSize in 40f..59f, hoveredId, itemRects) {
                         scope0.launch { app.settingsStore.setIconSize(48f) }
                     }
-                    RadioOption(L("小图标"), iconSize < 40f) {
+                    RadioOption("viewSmall", L("小图标"), iconSize < 40f, hoveredId, itemRects) {
                         scope0.launch { app.settingsStore.setIconSize(36f) }
                     }
                 }
 
                 // ===== 排序方式 =====
                 SubmenuEntry(
+                    id = "sort",
                     icon = Icons.Default.SortByAlpha,
                     label = L("排序方式"),
                     expanded = expandedSub == "sort",
+                    hoveredId = hoveredId,
+                    itemRects = itemRects,
                     onToggle = { expandedSub = if (expandedSub == "sort") null else "sort" }
                 ) {
-                    RadioOption(L("默认"), sortMode == "default") {
+                    RadioOption("sortDefault", L("默认"), sortMode == "default", hoveredId, itemRects) {
                         scope0.launch { app.settingsStore.setDesktopSort("default") }
                     }
-                    RadioOption(L("名称"), sortMode == "name") {
+                    RadioOption("sortName", L("名称"), sortMode == "name", hoveredId, itemRects) {
                         scope0.launch { app.settingsStore.setDesktopSort("name") }
                     }
-                    RadioOption(L("类型"), sortMode == "type") {
+                    RadioOption("sortType", L("类型"), sortMode == "type", hoveredId, itemRects) {
                         scope0.launch { app.settingsStore.setDesktopSort("type") }
                     }
                 }
 
                 // ===== 刷新（真正重建桌面网格，重载图标位图） =====
-                ContextMenuEntry(icon = Icons.Default.Refresh, label = L("刷新")) {
+                ContextMenuEntry(
+                    id = "refresh", icon = Icons.Default.Refresh, label = L("刷新"),
+                    hoveredId = hoveredId, itemRects = itemRects
+                ) {
                     onRefresh()
                     onDismiss()
                 }
@@ -211,7 +284,10 @@ fun DesktopContextMenu(
                 ContextMenuDivider()
 
                 // ===== 新建快捷方式 =====
-                ContextMenuEntry(icon = Icons.Default.Link, label = L("新建快捷方式")) {
+                ContextMenuEntry(
+                    id = "newShortcut", icon = Icons.Default.Link, label = L("新建快捷方式"),
+                    hoveredId = hoveredId, itemRects = itemRects
+                ) {
                     showShortcutDialog = true
                     onDismiss()
                 }
@@ -220,20 +296,26 @@ fun DesktopContextMenu(
 
                 // ===== 切换主题（直接切换，与设置-个性化同一入口） =====
                 SubmenuEntry(
+                    id = "theme",
                     icon = Icons.Default.FormatPaint,
                     label = L("切换主题"),
                     expanded = expandedSub == "theme",
+                    hoveredId = hoveredId,
+                    itemRects = itemRects,
                     onToggle = { expandedSub = if (expandedSub == "theme") null else "theme" }
                 ) {
                     WindowsVariant.values().forEach { variant ->
-                        RadioOption(variant.displayName, activeTheme.variant == variant) {
+                        RadioOption("theme:${variant.name}", variant.displayName, activeTheme.variant == variant, hoveredId, itemRects) {
                             scope0.launch { app.themeManager.setTheme(variant) }
                         }
                     }
                 }
 
                 // ===== 显示设置 / 个性化（跳到设置中心对应分区） =====
-                ContextMenuEntry(icon = Icons.Default.Monitor, label = L("显示设置")) {
+                ContextMenuEntry(
+                    id = "display", icon = Icons.Default.Monitor, label = L("显示设置"),
+                    hoveredId = hoveredId, itemRects = itemRects
+                ) {
                     wm.open(
                         appId = "settings",
                         title = "设置",
@@ -242,7 +324,10 @@ fun DesktopContextMenu(
                     )
                     onDismiss()
                 }
-                ContextMenuEntry(icon = Icons.Default.Palette, label = L("个性化设置")) {
+                ContextMenuEntry(
+                    id = "personalize", icon = Icons.Default.Palette, label = L("个性化设置"),
+                    hoveredId = hoveredId, itemRects = itemRects
+                ) {
                     wm.open(
                         appId = "settings",
                         title = "设置",
@@ -255,21 +340,46 @@ fun DesktopContextMenu(
                 ContextMenuDivider()
 
                 // ===== 打开终端 / 任务管理器 / 关闭所有窗口 =====
-                ContextMenuEntry(icon = Icons.Default.Terminal, label = L("打开终端")) {
+                ContextMenuEntry(
+                    id = "terminal", icon = Icons.Default.Terminal, label = L("打开终端"),
+                    hoveredId = hoveredId, itemRects = itemRects
+                ) {
                     openApp("terminal", wm)
                     onDismiss()
                 }
-                ContextMenuEntry(icon = Icons.Default.Analytics, label = L("任务管理器")) {
+                ContextMenuEntry(
+                    id = "sysinfo", icon = Icons.Default.Analytics, label = L("任务管理器"),
+                    hoveredId = hoveredId, itemRects = itemRects
+                ) {
                     openApp("sysinfo", wm)
                     onDismiss()
                 }
                 if (wm.windows.isNotEmpty()) {
-                    ContextMenuEntry(icon = Icons.Default.CancelPresentation, label = L("关闭所有窗口")) {
+                    ContextMenuEntry(
+                        id = "closeAll", icon = Icons.Default.CancelPresentation, label = L("关闭所有窗口"),
+                        hoveredId = hoveredId, itemRects = itemRects
+                    ) {
                         wm.closeAll()
                         onDismiss()
                     }
                 }
             }
+            }
+            val menuPlaceable = measurables.first().measure(
+                Constraints(maxWidth = constraints.maxWidth, maxHeight = constraints.maxHeight)
+            )
+            // 菜单定位：以指针位置为锚点，自动钳制在屏幕内（原 ClampedMenuPositionProvider
+            // 语义：边缘呼出不溢出屏幕）
+            var mx = data.x.roundToInt()
+            var my = data.y.roundToInt()
+            if (mx + menuPlaceable.width > constraints.maxWidth) mx = constraints.maxWidth - menuPlaceable.width
+            if (my + menuPlaceable.height > constraints.maxHeight) my = constraints.maxHeight - menuPlaceable.height
+            if (mx < 0) mx = 0
+            if (my < 0) my = 0
+            layout(constraints.maxWidth, constraints.maxHeight) {
+                menuPlaceable.place(mx, my)
+            }
+        }
         }
     }
 
@@ -345,59 +455,33 @@ private fun openApp(appId: String, wm: WindowManager) {
     )
 }
 
-/**
- * 菜单定位器：以双指中点为锚点，自动钳制在屏幕内。
- * 旧版用固定 offset，靠近屏幕右/下缘呼出时菜单会溢出屏幕。
- */
-private class ClampedMenuPositionProvider(
-    private val anchorX: Float,
-    private val anchorY: Float
-) : PopupPositionProvider {
-    /**
-     * Compose UI 1.6（BOM 2024.06.00）的接口签名：
-     * (anchorBounds, windowSize, layoutDirection, popupContentSize) -> IntOffset
-     */
-    override fun calculatePosition(
-        anchorBounds: IntRect,
-        windowSize: IntSize,
-        layoutDirection: LayoutDirection,
-        popupContentSize: IntSize
-    ): IntOffset {
-        var x = anchorX.roundToInt()
-        var y = anchorY.roundToInt()
-        if (x + popupContentSize.width > windowSize.width) {
-            x = windowSize.width - popupContentSize.width
-        }
-        if (y + popupContentSize.height > windowSize.height) {
-            y = windowSize.height - popupContentSize.height
-        }
-        if (x < 0) x = 0
-        if (y < 0) y = 0
-        return IntOffset(x, y)
-    }
-}
-
 // ============================================================
-// 菜单项组件
+// 菜单项组件（v2.20：新增虚拟指针悬停高亮 —— hoveredId 命中即高亮，
+// 触控板滑动选择菜单的视觉反馈；bounds 上报至 itemRects 供命中计算）
 // ============================================================
 
-/** 普通菜单项：图标 + 文字，按压时高亮，点击执行动作（v2.16 紧凑尺寸：行高 30→17dp、字 12→9.5sp、图标 14→10dp） */
+/** 普通菜单项：图标 + 文字，指针悬停/按压时高亮，点击执行动作（v2.16 紧凑尺寸：行高 30→17dp、字 12→9.5sp、图标 14→10dp） */
 @Composable
 private fun ContextMenuEntry(
+    id: String,
     icon: ImageVector,
     label: String,
+    hoveredId: String?,
+    itemRects: SnapshotStateMap<String, Rect>,
     onClick: () -> Unit
 ) {
     val theme = LocalWinTheme.current
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()
     val fg = if (theme.isDark) Color.White else Color.Black
+    val hovered = hoveredId == id
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .height(17.dp)
             .clip(RoundedCornerShape(3.dp))
-            .background(if (pressed) theme.accentColor.copy(alpha = 0.14f) else Color.Transparent)
+            .background(if (hovered || pressed) theme.accentColor.copy(alpha = 0.14f) else Color.Transparent)
+            .onGloballyPositioned { itemRects[id] = it.boundsInWindow() }
             .clickable(
                 interactionSource = interaction,
                 indication = null,
@@ -421,12 +505,15 @@ private fun ContextMenuEntry(
     }
 }
 
-/** 可展开子菜单项：图标 + 文字 + 旋转箭头，点击原地展开选项列表 */
+/** 可展开子菜单项：图标 + 文字 + 旋转箭头，指针悬停/按压高亮，点击原地展开选项列表 */
 @Composable
 private fun SubmenuEntry(
+    id: String,
     icon: ImageVector,
     label: String,
     expanded: Boolean,
+    hoveredId: String?,
+    itemRects: SnapshotStateMap<String, Rect>,
     onToggle: () -> Unit,
     content: @Composable ColumnScope.() -> Unit
 ) {
@@ -434,6 +521,7 @@ private fun SubmenuEntry(
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()
     val fg = if (theme.isDark) Color.White else Color.Black
+    val hovered = hoveredId == id
     Column(modifier = Modifier.fillMaxWidth()) {
         Row(
             modifier = Modifier
@@ -443,10 +531,11 @@ private fun SubmenuEntry(
                 .background(
                     when {
                         expanded -> theme.accentColor.copy(alpha = 0.10f)
-                        pressed -> theme.accentColor.copy(alpha = 0.14f)
+                        hovered || pressed -> theme.accentColor.copy(alpha = 0.14f)
                         else -> Color.Transparent
                     }
                 )
+                .onGloballyPositioned { itemRects[id] = it.boundsInWindow() }
                 .clickable(
                     interactionSource = interaction,
                     indication = null,
@@ -488,13 +577,21 @@ private fun SubmenuEntry(
     }
 }
 
-/** 子菜单单选项：勾选标记 + 文字 */
+/** 子菜单单选项：勾选标记 + 文字，指针悬停/按压高亮 */
 @Composable
-private fun RadioOption(label: String, selected: Boolean, onClick: () -> Unit) {
+private fun RadioOption(
+    id: String,
+    label: String,
+    selected: Boolean,
+    hoveredId: String?,
+    itemRects: SnapshotStateMap<String, Rect>,
+    onClick: () -> Unit
+) {
     val theme = LocalWinTheme.current
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()
     val fg = if (theme.isDark) Color.White else Color.Black
+    val hovered = hoveredId == id
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -503,10 +600,11 @@ private fun RadioOption(label: String, selected: Boolean, onClick: () -> Unit) {
             .background(
                 when {
                     selected -> theme.accentColor.copy(alpha = 0.12f)
-                    pressed -> theme.accentColor.copy(alpha = 0.14f)
+                    hovered || pressed -> theme.accentColor.copy(alpha = 0.14f)
                     else -> Color.Transparent
                 }
             )
+            .onGloballyPositioned { itemRects[id] = it.boundsInWindow() }
             .clickable(
                 interactionSource = interaction,
                 indication = null,

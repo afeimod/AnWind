@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -52,6 +53,7 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.anwind.AnWindApp
+import com.anwind.core.input.TrackpadRouter
 import kotlinx.coroutines.launch
 import kotlin.math.abs
 import kotlin.math.roundToInt
@@ -83,6 +85,12 @@ fun VirtualKeyboardOverlay() {
     val dragEnabled by app.settingsStore.keyboardDragEnabled.collectAsState(initial = true)
     val vibrate by app.settingsStore.keyboardVibration.collectAsState(initial = true)
     val touchFeedback by app.settingsStore.touchFeedback.collectAsState(initial = false)
+
+    // v2.20：键盘面板登记为触控板直通区（真实手指直接按键可用）；
+    // 覆盖层隐藏/离开组合时注销，防陈旧矩形误吞桌面触摸
+    DisposableEffect(Unit) {
+        onDispose { TrackpadRouter.registerPassthrough("vkPanel", null) }
+    }
 
     if (!master) return
     if (!VirtualKeyboardController.visible) return
@@ -199,6 +207,10 @@ fun VirtualKeyboardOverlay() {
             modifier = Modifier
                 .offset { IntOffset(x.roundToInt(), y.roundToInt()) }
                 .onGloballyPositioned { kbSize = it.size }
+                .onGloballyPositioned {
+                    // v2.20：面板窗口坐标登记到触控板路由器（直通区）
+                    TrackpadRouter.registerPassthrough("vkPanel", it.boundsInWindow())
+                }
                 // 双指捏合缩放（v2.13.2）：放在键体修饰符之前 —— 单指事件仍由子级键优先消费
                 .pointerInput(Unit) {
                     detectTransformGestures { _, _, zoom, _ ->

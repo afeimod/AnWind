@@ -23,6 +23,7 @@ import com.anwind.AnWindApp
 import com.anwind.core.input.MouseController
 import com.anwind.core.input.MouseCursorOverlay
 import com.anwind.core.input.TrackpadGate
+import com.anwind.core.input.TrackpadRouter
 import com.anwind.core.input.VirtualKeyboardController
 import com.anwind.core.input.VirtualKeyboardOverlay
 import com.anwind.core.input.gamepad.GamepadOverlay
@@ -157,17 +158,21 @@ fun DesktopEnvironment(
             .fillMaxSize()
             .background(Color.Black)
             // 仅在开启自动隐藏时监听指针位置（不消费事件），用于底部边缘呼出任务栏
-            // v2.19：触控板模式下跟随“指针”而非手指（手指只是驱动指针的触控板）
+            // v2.20：trackpad 模式下真实手指事件被 View 层路由器拦截（不再进入
+            // Compose 管线），事件泵会永远挂起 —— 改为直接订阅指针位置流；
+            // touch 模式保持原有事件泵（跟随手指位置）
             .pointerInput(taskbarAutohide, mouseControlMode) {
-                if (taskbarAutohide) {
+                if (!taskbarAutohide) return@pointerInput
+                if (mouseControlMode == "trackpad") {
+                    snapshotFlow { MouseController.position.y }.collect { y ->
+                        val visible = y >= bottomThresholdPx
+                        if (visible != taskbarShown) taskbarShown = visible
+                    }
+                } else {
                     awaitPointerEventScope {
                         while (true) {
                             val event = awaitPointerEvent()
-                            val y = if (mouseControlMode == "trackpad") {
-                                MouseController.position.y
-                            } else {
-                                event.changes.firstOrNull()?.position?.y ?: continue
-                            }
+                            val y = event.changes.firstOrNull()?.position?.y ?: continue
                             val visible = y >= bottomThresholdPx
                             if (visible != taskbarShown) taskbarShown = visible
                         }
@@ -176,8 +181,9 @@ fun DesktopEnvironment(
             }
             // v2.13 虚拟鼠标指针跟踪（touch 模式）：纯观察者（从不消费事件），
             // 指针贴手指移动，快速轻点时触发点击涟漪。
-            // v2.18/2.19：trackpad 模式下本观察者不工作 —— 指针由 TrackpadGate
-            // 门禁以相对增量驱动，手指不再直接点按 UI。
+            // v2.20：trackpad 模式下真实手指被 View 层 TrackpadRouter 拦截
+            // （不再进入 Compose 管线），本观察者收不到事件；指针由路由器
+            // 以相对增量驱动。
             .pointerInput(mouseCursorEnabled, mouseControlMode) {
                 if (mouseCursorEnabled && mouseControlMode != "trackpad") {
                     awaitPointerEventScope {
@@ -233,10 +239,10 @@ fun DesktopEnvironment(
         val taskbarVisible = !anyTrueFullscreen && (!taskbarAutohide || taskbarShown || startMenuOpen)
         val taskbarOffsetY = if (taskbarVisible) 0 else with(density) { taskbarHeight.toPx() }.toInt()
 
-        // v2.19.4：桌面右键菜单回调（双指轻点命中）。
+        // v2.19.4/v2.20：桌面右键菜单回调（双指轻点 / 长按右键命中）。
         // 本层位于根 (0,0)，局部坐标与图标上报的 boundsInRoot 根坐标一致，
-        // 可直接命中检测。触控板模式下由 TrackpadGate 双指轻点直接回调
-        // （不再注入合成双指流）；touch 模式下仍由 desktopGestures 触发。
+        // 可直接命中检测。触控板模式下由 View 层 TrackpadRouter 回调
+        // （onContextMenu）；touch 模式下仍由 desktopGestures 触发。
         // v2.19.5：remember 化 —— 捕获的 startMenuOpen/contextMenu/iconBounds
         // 均为 remember 的 State 对象，写入路径稳定；lambda 实例不再随重组
         // 变化（旧版每次重组产生新实例，作为 pointerInput key 曾导致触控板
@@ -253,10 +259,33 @@ fun DesktopEnvironment(
             }
         }
 
-        // ===== v2.19 触控板门禁（祖先层）：包裹壁纸～右键菜单 —— trackpad 模式下
-        // 在 Initial pass 消费真实触摸（下层收不到），注入的合成事件则放行直达
-        // 窗口；touch 模式为纯容器零开销。（内容缩进保持原样，仅加包裹层）
-        // v2.19.4：onTwoFingerTap 直连双指轻点右键菜单（零注入、零耦合）
+        // v2.20：View 层触控板路由器接线（原 Compose 门禁职责上移）。
+        // - onContextMenu：双指轻点 / 长按右键 → openContextMenu（触控板模式）
+        // - onUserInteraction：被拦截的真实手指事件也要刷新自动锁屏空闲计时
+        //   （原 AutoLock 观察者在 trackpad 模式下收不到真实事件）
+        // - enabled / longPressRightClick / density：随设置同步
+        DisposableEffect(openContextMenu) {
+            TrackpadRouter.onContextMenu = openContextMenu
+            TrackpadRouter.onUserInteraction = { AutoLockController.onInteraction() }
+            onDispose {
+                TrackpadRouter.onContextMenu = null
+                TrackpadRouter.onUserInteraction = null
+            }
+        }
+        SideEffect {
+            val newEnabled = mouseControlMode == "trackpad"
+            // 退出触控板模式时撤销进行中的手势（释放未完成的注入拖拽流）
+            if (TrackpadRouter.enabled && !newEnabled) TrackpadRouter.onDisabled()
+            TrackpadRouter.enabled = newEnabled
+            TrackpadRouter.longPressRightClick = mouseRightClick == "longpress"
+            TrackpadRouter.density = density.density
+        }
+
+        // ===== 触控板容器（祖先层）：包裹壁纸～右键菜单 =====
+        // v2.20：手势仲裁已上移到 View 层 TrackpadRouter（MainActivity.
+        // dispatchTouchEvent 入口）——真实手指不再进入 Compose 管线，本层
+        // 退化为纯容器，仅保留既有包裹结构与签名。onTwoFingerTap 参数为
+        // 签名兼容保留（回调已直连 TrackpadRouter.onContextMenu）。
         TrackpadGate(
             modifier = Modifier.fillMaxSize(),
             onTwoFingerTap = openContextMenu
