@@ -645,12 +645,28 @@ private fun scanSpecifiedDirs(dirs: List<String>): List<SongInfo> {
 
 /** 从文件名推断 歌手/标题：“歌手 - 标题.mp3” 优先拆分，否则标题=文件名 */
 private fun parseNamesFromFileName(base: String): Pair<String, String> {
-    val dash = base.indexOf(" - ")
-    return if (dash > 0) {
-        val artist = base.substring(0, dash).trim().ifBlank { "未知歌手" }
-        val title = base.substring(dash + 3).trim().ifBlank { base }
-        title to artist
-    } else {
-        base to "未知歌手"
+    // v2.20：先去掉开头的曲目序号（"01." / "01_" / "01 - "），避免序号被误认为歌手
+    val cleaned = base
+        .replace(Regex("^\\d{1,4}\\s*[._]\\s*"), "")
+        .replace(Regex("^\\d{1,4}\\s+-\\s+"), "")
+        .trim()
+    // 优先标准分隔："歌手 - 歌名"（含全角/长划变体）
+    for (sep in listOf(" - ", " – ", " — ")) {
+        val dash = cleaned.indexOf(sep)
+        if (dash > 0) {
+            val artist = cleaned.substring(0, dash).trim().ifBlank { "未知歌手" }
+            val title = cleaned.substring(dash + sep.length).trim().ifBlank { cleaned }
+            return title to artist
+        }
     }
+    // v2.20：兼容无空格连字符 "歌手-歌名"（中文文件名常见）
+    val hyphen = cleaned.indexOf('-')
+    if (hyphen > 0) {
+        val artist = cleaned.substring(0, hyphen).trim()
+        val title = cleaned.substring(hyphen + 1).trim()
+        if (artist.isNotEmpty() && title.isNotEmpty() && artist.length <= 30) {
+            return title to artist
+        }
+    }
+    return cleaned to "未知歌手"
 }

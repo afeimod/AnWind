@@ -50,11 +50,11 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
 /**
- * 播放器设置中心（v2.18 新增，v2.19 更新）：
- * - 外观：主页背景（默认/纯色/渐变/自定义图片 + 压暗）—— v2.19 起全局生效
+ * 播放器设置中心（v2.18 新增，v2.20 更新）：
+ * - 外观：主页背景（默认/纯色/渐变/自定义图片 + 压暗）—— 全局生效
  *   （侧栏/底栏半透明融合），图片/文件夹选择均拉起 AnWind 桌面文件资源管理器
- * - 歌词秀：背景自定义、3D 倾斜度（每行折角/最大倾角/歌词墙视角）、字号、
- *   行切换动画、高亮发光、翻译显示
+ * - 歌词秀：背景自定义、封面模糊度与压暗可调、3D 倾斜参数（大范围）、
+ *   字号（12-60sp）、行切换动画、高亮发光、翻译显示
  * - 词源：智能回退 / 酷我 / 网易云 / QQ 音乐 / LRCLIB 优先级
  * - 本地扫描：全库 / 仅指定目录（目录列表 + 文件夹选择 + 手动输入）
  * 所有修改即时持久化（onChange → saveMusicSettings），滑条拖动过程中实时生效。
@@ -107,8 +107,8 @@ fun SettingsPage(
                         title = "图片压暗",
                         display = "${(settings.homeImageDim * 100).toInt()}%",
                         value = settings.homeImageDim,
-                        range = 0f..0.8f,
-                        steps = 15,
+                        range = 0f..0.95f,
+                        steps = 18,
                         onChange = { onChange(settings.copy(homeImageDim = it)) }
                     )
                 }
@@ -128,6 +128,25 @@ fun SettingsPage(
                 onSelect = { onChange(settings.copy(lyricBgMode = it)) }
             )
             when (settings.lyricBgMode) {
+                MusicSettings.BG_COVER -> {
+                    // v2.20：封面模糊度与背景压暗强度均可调
+                    SettingSlider(
+                        title = "封面模糊度",
+                        display = "${settings.coverBlur.toInt()}dp",
+                        value = settings.coverBlur,
+                        range = 0f..60f,
+                        steps = 59,
+                        onChange = { onChange(settings.copy(coverBlur = it)) }
+                    )
+                    SettingSlider(
+                        title = "背景压暗",
+                        display = "${(settings.lyricBgDim * 100).toInt()}%",
+                        value = settings.lyricBgDim,
+                        range = 0f..0.95f,
+                        steps = 18,
+                        onChange = { onChange(settings.copy(lyricBgDim = it)) }
+                    )
+                }
                 MusicSettings.BG_SOLID -> ColorSwatchRow(
                     colors = LyricBgColors,
                     selected = settings.lyricBgColor,
@@ -138,13 +157,23 @@ fun SettingsPage(
                     selected = settings.lyricBgGradient,
                     onSelect = { onChange(settings.copy(lyricBgGradient = it)) }
                 )
-                MusicSettings.BG_IMAGE -> ImagePickRow(
-                    picked = settings.lyricBgImage != null,
-                    onPick = onPickLyricImage,
-                    onClear = { onChange(settings.copy(lyricBgImage = null)) }
-                )
+                MusicSettings.BG_IMAGE -> {
+                    ImagePickRow(
+                        picked = settings.lyricBgImage != null,
+                        onPick = onPickLyricImage,
+                        onClear = { onChange(settings.copy(lyricBgImage = null)) }
+                    )
+                    SettingSlider(
+                        title = "背景压暗",
+                        display = "${(settings.lyricBgDim * 100).toInt()}%",
+                        value = settings.lyricBgDim,
+                        range = 0f..0.95f,
+                        steps = 18,
+                        onChange = { onChange(settings.copy(lyricBgDim = it)) }
+                    )
+                }
             }
-            Caption("封面模糊为默认效果；其余模式仍会叠加轻微暗层保证歌词可读性；点击选择拉起桌面文件资源管理器")
+            Caption("封面模糊度与背景压暗均可调（模糊 0dp 为完全清晰）；其余模式仍叠加轻微暗层保证歌词可读性；点击选择拉起桌面文件资源管理器")
         }
 
         SettingsSection("3D 歌词") {
@@ -152,32 +181,32 @@ fun SettingsPage(
                 title = "每行倾斜强度",
                 display = "${"%.1f".format(settings.tilt3d)}°/行",
                 value = settings.tilt3d,
-                range = 0f..20f,
-                steps = 39,
+                range = 0f..45f,
+                steps = 89,
                 onChange = { onChange(settings.copy(tilt3d = it)) }
             )
             SettingSlider(
                 title = "最大倾斜角",
                 display = "${settings.tilt3dMax.toInt()}°",
                 value = settings.tilt3dMax,
-                range = 10f..80f,
-                steps = 69,
+                range = 0f..90f,
+                steps = 89,
                 onChange = { onChange(settings.copy(tilt3dMax = it)) }
             )
             SettingSlider(
                 title = "歌词墙视角（绕 Y 轴）",
                 display = "${settings.wallRotateY.toInt()}°",
                 value = settings.wallRotateY,
-                range = -30f..0f,
-                steps = 29,
+                range = -60f..60f,
+                steps = 119,
                 onChange = { onChange(settings.copy(wallRotateY = it)) }
             )
             SettingSlider(
                 title = "当前行字号",
                 display = "${settings.lyricFontSize}sp",
                 value = settings.lyricFontSize.toFloat(),
-                range = 14f..36f,
-                steps = 21,
+                range = 12f..60f,
+                steps = 47,
                 onChange = { onChange(settings.copy(lyricFontSize = it.toInt())) }
             )
             SettingSwitch(
@@ -198,7 +227,7 @@ fun SettingsPage(
                 checked = settings.showTranslation,
                 onChange = { onChange(settings.copy(showTranslation = it)) }
             )
-            Caption("倾斜 0° + 视角 0° 即为平面滚动歌词；数值越大 3D 立体感越强")
+            Caption("v2.20 全面扩大可调范围：倾斜 0-45°/行、最大倾角 0-90°、视角 ±60°、字号 12-60sp；0°/行 + 视角 0° 即为平面滚动歌词")
         }
 
         SettingsSection("歌词词源") {
@@ -285,7 +314,7 @@ fun SettingsPage(
 
         SettingsSection("关于") {
             Caption("音源：酷我（搜索 / 播放 / 下载） · 词源：酷我 / 网易云 / QQ 音乐 / LRCLIB")
-            Caption("AnWind 云音乐 v2.19 · 界面对照网易云音乐 PC 版 · 3D 歌词秀")
+            Caption("AnWind 云音乐 v2.20 · 界面对照网易云音乐 PC 版 · 3D 歌词秀")
         }
         Spacer(Modifier.height(20.dp))
     }

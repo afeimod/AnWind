@@ -242,24 +242,32 @@ object KuwoMusicApi {
 
     /**
      * 网易云歌词兜底：按关键词搜索歌曲 → 取歌词（原文 + 翻译）。
+     * v2.20：搜索扩到 8 条候选，优先取歌名与 [titleHint] 吻合的结果，
+     * 避免旧版盲取第一条时命中同名的翻唱/伴奏/纯音乐。
      * @return Pair(原文LRC文本, 翻译LRC文本可空)，或失败
      */
-    suspend fun getNeteaseLyric(keyword: String): Result<Pair<String, String?>> =
+    suspend fun getNeteaseLyric(
+        keyword: String,
+        titleHint: String? = null
+    ): Result<Pair<String, String?>> =
         withContext(Dispatchers.IO) {
             try {
                 val headers = mapOf(
                     "User-Agent" to UA_PC,
                     "Referer" to "https://music.163.com/"
                 )
-                // 1) 搜索歌曲拿 ID
-                val searchUrl = "https://music.163.com/api/search/get/?s=${enc(keyword)}&type=1&limit=1"
+                // 1) 搜索歌曲拿 ID（limit=8，多候选择优）
+                val searchUrl = "https://music.163.com/api/search/get/?s=${enc(keyword)}&type=1&limit=8"
                 val searchConn = openFollowing(searchUrl, headers, readTimeoutMs = 10_000)
                 val searchRoot = JSONObject(readText(searchConn))
                 if (searchRoot.optInt("code", 0) != 200) {
                     return@withContext Result.failure(IOException("网易云搜索失败"))
                 }
                 val songs = searchRoot.optJSONObject("result")?.optJSONArray("songs")
-                val songId = songs?.optJSONObject(0)?.optLong("id", -1L) ?: -1L
+                val songId = if (songs != null && songs.length() > 0) {
+                    val best = bestMatchIndex(songs, titleHint, listOf("name"))
+                    songs.optJSONObject(best)?.optLong("id", -1L) ?: -1L
+                } else -1L
                 if (songId <= 0) return@withContext Result.failure(IOException("未找到匹配歌曲"))
 
                 // 2) 拉取歌词（原文 lv + 逐字 kv + 翻译 tv）

@@ -128,17 +128,20 @@ fun Lyrics3DPage(
                 BgImage(settings.lyricBgImage, Modifier.matchParentSize())
             }
             else -> {
-                // 封面模糊铺底（默认，对应图1）
+                // 封面模糊铺底（默认，对应图1）—— v2.20 模糊半径可调（0 = 清晰不模糊）
                 AsyncCover(
                     url = song?.picUrl,
                     modifier = Modifier
                         .matchParentSize()
-                        .blur(46.dp)
+                        .then(
+                            if (settings.coverBlur > 0.5f) Modifier.blur(settings.coverBlur.dp)
+                            else Modifier
+                        )
                         .background(Mc.lyricBg)
                 )
             }
         }
-        // 深色渐变压暗（图片/封面模式下加重，纯色/渐变模式轻微提 readability）
+        // 深色渐变压暗（图片/封面模式下加重且 v2.20 强度可调，纯色/渐变模式轻微提 readability）
         Box(
             Modifier
                 .matchParentSize()
@@ -149,7 +152,13 @@ fun Lyrics3DPage(
                         ) {
                             listOf(Color(0x33000000), Color(0x55000000), Color(0x77000000))
                         } else {
-                            listOf(Color(0xB3000000), Color(0xD9000000), Color(0xF3000000))
+                            // v2.20：压暗强度可调（默认 0.85 与旧版视觉一致）
+                            val d = settings.lyricBgDim
+                            listOf(
+                                Color.Black.copy(alpha = (d - 0.15f).coerceAtLeast(0f)),
+                                Color.Black.copy(alpha = d),
+                                Color.Black.copy(alpha = (d + 0.13f).coerceAtMost(0.96f))
+                            )
                         }
                     )
                 )
@@ -445,7 +454,8 @@ private fun LyricLineItem(
     val active = distance == 0
 
     val scale = if (active) 1.18f else (1f - (absDist * 0.05f)).coerceIn(0.78f, 1f)
-    val lineAlpha = if (active) 1f else (1f - absDist * 0.17f).coerceIn(0.12f, 1f)
+    // v2.20：渐隐放缓（0.17→0.15/行，下限提高到 0.14），远处倾斜行更可见，立体感更明显
+    val lineAlpha = if (active) 1f else (1f - absDist * 0.15f).coerceIn(0.14f, 1f)
 
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -454,14 +464,17 @@ private fun LyricLineItem(
             .clickable(onClick = onClick)
             .padding(horizontal = 18.dp, vertical = 9.dp)
             .graphicsLayer {
-                // v2.19：绘制期实时读取最新设置 —— 倾斜强度/最大倾角滑条一变，
-                // 快照读触发图层失效重绘，立即生效（不再依赖重组传播）
+                // v2.19/v2.20：绘制期实时读取最新设置 —— 倾斜强度/最大倾角滑条一变，
+                // 快照读触发图层失效重绘，立即生效（不再依赖重组传播）。
+                // v2.20 立体感增强：① 透视相机 1000→700（同样角度纵深翻倍）；
+                // ② 远行沿 Z 轴后退（与每行倾斜强度联动），形成纵深隧道感
                 val s = settingsProvider()
                 rotationX = (-animDist * s.tilt3d).coerceIn(-s.tilt3dMax, s.tilt3dMax)
-                cameraDistance = 1000f * density
+                cameraDistance = 700f * density
                 scaleX = scale
                 scaleY = scale
                 alpha = lineAlpha
+                translationZ = -absDist * s.tilt3d * 1.1f * density
             }
     ) {
         Text(

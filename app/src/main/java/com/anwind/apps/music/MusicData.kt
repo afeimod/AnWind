@@ -95,6 +95,9 @@ object LrcParser {
     private val TIME_TAG = Pattern.compile("\\[(\\d+):(\\d+)(?:[.:](\\d+))?]")
     private val ALL_TAGS = Pattern.compile("\\[\\d+:\\d+(?:[.:]\\d+)?]")
 
+    /** 逐字时间标签（增强格式 LRC 常见：<00:12.34>字） */
+    private val WORD_TAGS = Pattern.compile("<\\d{1,3}:\\d{1,2}(?:[.:]\\d{1,3})?>")
+
     /** 解析 LRC 文本为 (时间ms, 文本) 列表 */
     fun parse(content: String): List<Pair<Long, String>> {
         val timestamps = mutableListOf<Long>()
@@ -120,8 +123,8 @@ object LrcParser {
             }
             if (tags.isEmpty()) continue
 
-            // 移除所有时间标签得到纯文本
-            val text = ALL_TAGS.matcher(line).replaceAll("").trim()
+            // 移除所有时间标签与逐字标签得到纯文本
+            val text = WORD_TAGS.matcher(ALL_TAGS.matcher(line).replaceAll("")).replaceAll("").trim()
             for (t in tags) {
                 timestamps.add(t)
                 lyrics.add(text)
@@ -191,9 +194,13 @@ data class MusicSettings(
     val lyricBgColor: Int = 0xFF191922.toInt(),
     val lyricBgGradient: Int = 0,
     val lyricBgImage: String? = null,
+    /** 封面模糊模式的模糊半径（dp），0 为不模糊（v2.20 可调） */
+    val coverBlur: Float = 32f,
+    /** 封面模糊/自定义图片模式的背景压暗强度 0..0.95（v2.20 可调） */
+    val lyricBgDim: Float = 0.85f,
     // ---- 3D 歌词 ----
     /** 每行倾斜系数（度/行距），0 为平面 */
-    val tilt3d: Float = 9f,
+    val tilt3d: Float = 14f,
     /** 单行最大倾斜角（度） */
     val tilt3dMax: Float = 44f,
     /** 整面歌词墙绕 Y 轴视角（度），0 为正对 */
@@ -337,10 +344,12 @@ class MusicStore(private val context: Context) {
             lyricBgColor = o.optInt("lyricBgColor", 0xFF191922.toInt()),
             lyricBgGradient = o.optInt("lyricBgGradient", 0),
             lyricBgImage = o.optString("lyricBgImage", "").takeIf { it.isNotEmpty() },
-            tilt3d = o.optDouble("tilt3d", 9.0).toFloat().coerceIn(0f, 20f),
+            coverBlur = o.optDouble("coverBlur", 32.0).toFloat().coerceIn(0f, 60f),
+            lyricBgDim = o.optDouble("lyricBgDim", 0.85).toFloat().coerceIn(0f, 0.95f),
+            tilt3d = o.optDouble("tilt3d", 14.0).toFloat().coerceIn(0f, 45f),
             tilt3dMax = o.optDouble("tilt3dMax", 44.0).toFloat().coerceIn(0f, 90f),
-            wallRotateY = o.optDouble("wallRotateY", -14.0).toFloat().coerceIn(-40f, 0f),
-            lyricFontSize = o.optInt("lyricFontSize", 22).coerceIn(14, 40),
+            wallRotateY = o.optDouble("wallRotateY", -14.0).toFloat().coerceIn(-60f, 60f),
+            lyricFontSize = o.optInt("lyricFontSize", 22).coerceIn(12, 60),
             lyricDynamic = o.optBoolean("lyricDynamic", true),
             lyricGlow = o.optBoolean("lyricGlow", true),
             showTranslation = o.optBoolean("showTranslation", true),
@@ -349,7 +358,7 @@ class MusicStore(private val context: Context) {
             homeBgColor = o.optInt("homeBgColor", 0xFFFCFCFD.toInt()),
             homeBgGradient = o.optInt("homeBgGradient", 0),
             homeBgImage = o.optString("homeBgImage", "").takeIf { it.isNotEmpty() },
-            homeImageDim = o.optDouble("homeImageDim", 0.25).toFloat().coerceIn(0f, 0.8f),
+            homeImageDim = o.optDouble("homeImageDim", 0.25).toFloat().coerceIn(0f, 0.95f),
             scanMode = o.optInt("scanMode", MusicSettings.SCAN_ALL),
             scanDirs = dirs
         )
@@ -366,6 +375,8 @@ class MusicStore(private val context: Context) {
                     .put("lyricBgColor", s.lyricBgColor)
                     .put("lyricBgGradient", s.lyricBgGradient)
                     .put("lyricBgImage", s.lyricBgImage ?: "")
+                    .put("coverBlur", s.coverBlur.toDouble())
+                    .put("lyricBgDim", s.lyricBgDim.toDouble())
                     .put("tilt3d", s.tilt3d.toDouble())
                     .put("tilt3dMax", s.tilt3dMax.toDouble())
                     .put("wallRotateY", s.wallRotateY.toDouble())
@@ -467,12 +478,58 @@ class MusicStore(private val context: Context) {
 
 // ==================== 歌词获取编排 ====================
 
+/** 歌词搜索查询候选：title 必有，artist 可空；keyword 为拼接搜索词 */
+data class LyricQuery(val title: String, val artist: String = "") {
+    val keyword: String get() = "$title $artist".trim()
+}
+
 /**
- * 获取当前歌曲歌词（带磁盘缓存，v2.18 升级为四级词源回退链）：
- * 1. 酷我逐行歌词（在线歌首选，按 musicId 直查）
- * 2. 网易云搜索兜底（linboxyy.py LyricDownloader 逻辑，含翻译）
- * 3. QQ 音乐（v2.18 新增，华语曲库覆盖广，含翻译）
- * 4. LRCLIB（v2.18 新增，开源歌词库，外文/冷门歌覆盖好）
+ * 构造歌词搜索候选列表（v2.20 核心增强，任一词源按序尝试直到命中）：
+ * - 在线歌：[歌名+歌手, 歌名, 清理后歌名+歌手, 清理后歌名] —— 括号注释
+ *   （Live/翻自/Remix 等）干扰搜索时自动回退纯歌名
+ * - 本地歌：先按"歌手 - 歌名"约定拆分文件名，候选含
+ *   [歌名+歌手, 歌名, 拆分变体两种角色顺序, 原始文件名]，
+ *   兼容 "周杰伦-晴天"（无空格）、"01.晴天"（序号前缀）等常见命名
+ */
+fun buildLyricQueries(song: SongInfo): List<LyricQuery> {
+    val artistHint = song.artist.takeIf { it.isNotBlank() && it != "未知歌手" } ?: ""
+    val clean = cleanLocalName(song.name)
+    val queries = mutableListOf<LyricQuery>()
+
+    if (!song.isLocal) {
+        val name = song.name.trim()
+        if (artistHint.isNotEmpty()) queries.add(LyricQuery(name, artistHint))
+        queries.add(LyricQuery(name))
+        if (clean.isNotBlank() && clean != name) {
+            if (artistHint.isNotEmpty()) queries.add(LyricQuery(clean, artistHint))
+            queries.add(LyricQuery(clean))
+        }
+    } else {
+        if (artistHint.isNotEmpty()) queries.add(LyricQuery(clean, artistHint))
+        queries.add(LyricQuery(clean))
+        if (artistHint.isEmpty()) {
+            // 扫描时未能拆出歌手：尝试直接从清理后的歌名中拆 "歌手 - 歌名"
+            val m = Regex("^(.{1,40}?)\\s*[-\u2013\u2014]\\s*(.+)$").find(clean)
+            if (m != null) {
+                val a = m.groupValues[1].trim()
+                val t = m.groupValues[2].trim()
+                if (a.isNotEmpty() && t.isNotEmpty()) {
+                    queries.add(LyricQuery(t, a))  // 常规：歌手 - 歌名
+                    queries.add(LyricQuery(a, t))  // 反向：歌名 - 歌手
+                }
+            }
+        }
+        queries.add(LyricQuery(song.name.trim()))
+    }
+    return queries.filter { it.title.isNotBlank() }.distinctBy { it.keyword }
+}
+
+/**
+ * 获取当前歌曲歌词（带磁盘缓存；v2.20 大幅提高命中率）：
+ * - 四级词源回退链：酷我 → 网易云 → QQ 音乐 → LRCLIB（指定词源则优先）
+ * - 每个词源依次尝试 [buildLyricQueries] 的多组关键词候选，任一命中即止
+ * - 酷我：在线歌按 musicId 直查 + 关键词搜索曲库兜底（本地歌也能命中）
+ * - 网易云 / QQ / LRCLIB：多候选结果按歌名吻合度择优，避免搜到翻唱/伴奏
  *
  * @param force 跳过缓存强制刷新
  * @param engine 词源偏好：auto 按默认顺序；指定词源时该源优先，其余按默认顺序兜底
@@ -487,22 +544,24 @@ suspend fun fetchLyrics(
         store.cachedLyrics(song)?.let { return it }
     }
 
-    // 关键词构造：在线歌用"名 歌手"；本地歌用文件名清理（去扩展名/括号注释）
-    val cleanName = cleanLocalName(song.name)
-    val keyword = if (song.isLocal) cleanName else "${song.name} ${song.artist}".trim()
-    val artist = song.artist.takeIf { it.isNotBlank() && it != "未知歌手" } ?: ""
+    val queries = buildLyricQueries(song)
+    if (queries.isEmpty()) return null
 
     for (eng in engineOrder(engine)) {
-        val pair: Pair<String, String?>? = runCatching {
-            when (eng) {
-                "kuwo" -> fetchKuwo(song)
-                "netease" -> KuwoMusicApi.getNeteaseLyric(keyword).getOrNull()
-                "qq" -> LyricEngines.getQqLyric(keyword).getOrNull()
-                "lrclib" -> LyricEngines.getLrclibLyric(cleanName, artist)
-                    .getOrNull()?.let { it to null }
-                else -> null
-            }
-        }.getOrNull()
+        var pair: Pair<String, String?>? = null
+        for ((qi, q) in queries.withIndex()) {
+            pair = runCatching {
+                when (eng) {
+                    "kuwo" -> fetchKuwoSmart(song, q, tryById = qi == 0)
+                    "netease" -> KuwoMusicApi.getNeteaseLyric(q.keyword, q.title).getOrNull()
+                    "qq" -> LyricEngines.getQqLyric(q.keyword, q.title).getOrNull()
+                    "lrclib" -> LyricEngines.getLrclibLyric(q.title, q.artist)
+                        .getOrNull()?.let { it to null }
+                    else -> null
+                }
+            }.getOrNull()
+            if (pair != null && pair.first.isNotBlank()) break
+        }
 
         if (pair != null && pair.first.isNotBlank()) {
             val (main, trans) = pair
@@ -523,11 +582,27 @@ private fun engineOrder(engine: String): List<String> {
     return default
 }
 
-/** 酷我逐行歌词（仅在线歌；返回 LRC 文本） */
-private suspend fun fetchKuwo(song: SongInfo): Pair<String, String?>? {
-    if (song.isLocal) return null
-    val lines = KuwoMusicApi.getKuwoLyric(song.id).getOrNull() ?: return null
-    if (lines.isEmpty()) return null
+/**
+ * 酷我歌词（v2.20 升级，本地歌也能命中酷我曲库）：
+ * - [tryById] 且为在线歌：按 musicId 直接取逐行歌词（最精准）
+ * - 否则按关键词搜索酷我曲库（歌名模糊择优）→ 取首条匹配的歌词
+ */
+private suspend fun fetchKuwoSmart(song: SongInfo, q: LyricQuery, tryById: Boolean): Pair<String, String?>? {
+    if (tryById && !song.isLocal) {
+        kuwoLyricFromId(song.id)?.let { return it }
+    }
+    val kw = q.keyword
+    if (kw.isBlank()) return null
+    val list = KuwoMusicApi.search(kw, count = 8).getOrNull().orEmpty()
+    val hit = list.firstOrNull { looseNameMatch(it.name, q.title) } ?: list.firstOrNull()
+        ?: return null
+    return kuwoLyricFromId(hit.id)
+}
+
+/** 酷我逐行歌词 → LRC 文本（失败返回 null） */
+private suspend fun kuwoLyricFromId(musicId: String): Pair<String, String?>? {
+    val lines = KuwoMusicApi.getKuwoLyric(musicId).getOrNull().takeUnless { it.isNullOrEmpty() }
+        ?: return null
     val text = buildString {
         for ((t, txt) in lines) {
             val m = t / 60000
@@ -539,12 +614,55 @@ private suspend fun fetchKuwo(song: SongInfo): Pair<String, String?>? {
     return text to null
 }
 
-/** 清理本地文件名为可搜索歌名（去扩展名 / 括号注释） */
+// ==================== 歌名模糊匹配（v2.20，供各词源择优） ====================
+
+/** 归一化：保留字母与数字（含 CJK），忽略空格/标点/全半角差异与大小写 */
+internal fun normalizeMatchText(s: String): String = buildString {
+    for (ch in s.lowercase()) if (ch.isLetterOrDigit()) append(ch)
+}
+
+/** 歌名模糊吻合：归一化后的双向包含关系（"晴天" 吻合 "晴天 (Live)"） */
+internal fun looseNameMatch(candidate: String, target: String): Boolean {
+    val c = normalizeMatchText(candidate)
+    val t = normalizeMatchText(target)
+    if (c.isEmpty() || t.isEmpty()) return false
+    return c.contains(t) || t.contains(c)
+}
+
+/**
+ * 在搜索结果数组中选出歌名与 [titleHint] 最吻合的下标（v2.20）。
+ * 无提示/无吻合时回退 0（保持旧版行为）；数组为空返回 -1。
+ * @param nameKeys 结果项里可能的歌名字段名（网易云 name / QQ songname 等）
+ */
+internal fun bestMatchIndex(arr: JSONArray, titleHint: String?, nameKeys: List<String>): Int {
+    if (arr.length() == 0) return -1
+    if (titleHint.isNullOrBlank()) return 0
+    val target = normalizeMatchText(titleHint)
+    if (target.isEmpty()) return 0
+    for (i in 0 until arr.length()) {
+        val o = arr.optJSONObject(i) ?: continue
+        for (k in nameKeys) {
+            val name = normalizeMatchText(o.optString(k, ""))
+            if (name.isNotEmpty() && (name.contains(target) || target.contains(name))) return i
+        }
+    }
+    return 0
+}
+
+/**
+ * 清理文件名/歌名为可搜索歌名（v2.20 增强）：
+ * 去扩展名、去括号注释（Live/翻自/Explicit 等）、去开头曲目序号（"01." / "01_" / "01 - "）、
+ * 收敛多余空白并去掉首尾残留分隔符
+ */
 fun cleanLocalName(name: String): String =
     name
         .replace(Regex("\\.(mp3|flac|wav|m4a|ogg|aac|opus|wma|ape)$", RegexOption.IGNORE_CASE), "")
         .replace(Regex("[(\\[][^)\\]]*[)\\]]"), " ")
+        .replace(Regex("^\\d{1,4}\\s*[._]\\s*"), " ")
+        .replace(Regex("^\\d{1,4}\\s+-\\s+"), " ")
+        .replace(Regex("\\s{2,}"), " ")
         .trim()
+        .trim('-', '_', '\u2013', '\u2014', '\u00b7', '~', ' ')
 
 // ==================== 下载目录 ====================
 

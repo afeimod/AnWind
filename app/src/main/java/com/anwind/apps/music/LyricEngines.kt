@@ -37,10 +37,15 @@ object LyricEngines {
     // ==================== QQ 音乐歌词 ====================
 
     /**
-     * QQ 音乐歌词：关键词搜索歌曲 → 取第一条的 songmid → 拉取 LRC（原文 + 翻译）。
+     * QQ 音乐歌词：关键词搜索歌曲 → 取 songmid → 拉取 LRC（原文 + 翻译）。
+     * v2.20：候选中优先取歌名与 [titleHint] 吻合的结果，避免命中翻唱/伴奏；
+     * 最优项无 songmid 时向后回退到第一个有的。
      * @return Pair(原文LRC文本, 翻译LRC文本可空)，或失败
      */
-    suspend fun getQqLyric(keyword: String): Result<Pair<String, String?>> =
+    suspend fun getQqLyric(
+        keyword: String,
+        titleHint: String? = null
+    ): Result<Pair<String, String?>> =
         withContext(Dispatchers.IO) {
             try {
                 val kw = keyword.trim()
@@ -64,9 +69,11 @@ object LyricEngines {
                 val songs = searchRoot.optJSONObject("data")
                     ?.optJSONObject("song")?.optJSONArray("list")
                 var songMid: String? = null
-                if (songs != null) {
-                    for (i in 0 until songs.length()) {
-                        val item = songs.optJSONObject(i) ?: continue
+                if (songs != null && songs.length() > 0) {
+                    // v2.20：歌名吻合度择优（无提示回退 0），从最优项向后找第一个 songmid
+                    val best = bestMatchIndex(songs, titleHint, listOf("songname", "songorig", "title"))
+                    for (off in 0 until songs.length()) {
+                        val item = songs.optJSONObject((best + off) % songs.length()) ?: continue
                         val mid = item.optString("songmid", "")
                         if (mid.isNotEmpty()) { songMid = mid; break }
                     }
@@ -121,18 +128,18 @@ object LyricEngines {
                 if (t.isEmpty()) return@withContext Result.failure(IOException("关键词为空"))
                 val a = artist.trim()
                 val headers = mapOf(
-                    "User-Agent" to "AnWind/2.18 (music player)",
+                    "User-Agent" to "AnWind/2.20 (music player)",
                     "Accept" to "application/json"
                 )
 
                 // 1) track_name + artist_name 精确搜索
                 val firstUrl = "$LRCLIB_SEARCH_URL?track_name=${enc(t)}" +
                     if (a.isNotEmpty()) "&artist_name=${enc(a)}" else ""
-                var synced = searchLrclib(firstUrl, headers)
+                var synced = searchLrclib(firstUrl, headers, t, a)
                 // 2) q 全文搜索兜底
                 if (synced == null) {
                     val q = if (a.isNotEmpty()) "$a $t" else t
-                    synced = searchLrclib("$LRCLIB_SEARCH_URL?q=${enc(q)}", headers)
+                    synced = searchLrclib("$LRCLIB_SEARCH_URL?q=${enc(q)}", headers, t, a)
                 }
                 if (synced == null) {
                     return@withContext Result.failure(IOException("LRCLIB 未收录该歌曲"))
@@ -143,21 +150,45 @@ object LyricEngines {
             }
         }
 
-    /** 请求 LRCLIB 搜索接口，返回第一个可用歌词（优先 syncedLyrics，其次 plainLyrics） */
-    private fun searchLrclib(url: String, headers: Map<String, String>): String? {
+    /**
+     * 请求 LRCLIB 搜索接口（v2.20 升级）：在所有带同步歌词的结果中按
+     * trackName / artistName 吻合度评分择优；无吻合时退回第一条同步歌词，
+     * 最后退回 plainLyrics（无时间戳纯文本）。
+     */
+    private fun searchLrclib(
+        url: String,
+        headers: Map<String, String>,
+        titleHint: String?,
+        artistHint: String?
+    ): String? {
         return try {
             val conn = openFollowing(url, headers, readTimeoutMs = 10_000)
             val root = JSONArray(KuwoMusicApi.readText(conn))
-            var plain: String? = null
+            val target = normalizeMatchText(titleHint ?: "")
+            val artist = normalizeMatchText(artistHint ?: "")
+            var bestSynced: String? = null
+            var bestScore = 0
+            var firstSynced: String? = null
+            var firstPlain: String? = null
             for (i in 0 until root.length()) {
                 val item = root.optJSONObject(i) ?: continue
-                val synced = item.strOr("syncedLyrics")
-                if (!synced.isNullOrBlank()) return synced
-                if (plain == null) {
-                    plain = item.strOr("plainLyrics")?.takeIf { it.isNotBlank() }
+                val synced = item.strOr("syncedLyrics")?.takeIf { it.isNotBlank() }
+                val plain = item.strOr("plainLyrics")?.takeIf { it.isNotBlank() }
+                if (firstSynced == null && synced != null) firstSynced = synced
+                if (firstPlain == null && plain != null) firstPlain = plain
+                if (synced != null) {
+                    var score = 1
+                    val tn = normalizeMatchText(item.strOr("trackName") ?: "")
+                    val an = normalizeMatchText(item.strOr("artistName") ?: "")
+                    if (target.isNotEmpty() && (tn.contains(target) || target.contains(tn))) score += 2
+                    if (artist.isNotEmpty() && (an.contains(artist) || artist.contains(an))) score += 1
+                    if (score > bestScore) {
+                        bestScore = score
+                        bestSynced = synced
+                    }
                 }
             }
-            plain
+            bestSynced ?: firstSynced ?: firstPlain
         } catch (_: Exception) {
             null
         }
