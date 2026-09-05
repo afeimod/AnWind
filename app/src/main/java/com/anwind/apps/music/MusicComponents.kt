@@ -35,6 +35,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -86,6 +87,22 @@ object Mc {
     val lyricBg = Color(0xFF0B0B10)
     val lyricDim = Color(0xFFC9C9D2)
 }
+
+// ==================== 自定义背景半透明表面（v2.21.5） ====================
+
+/**
+ * v2.21.5：主页自定义背景（纯色/渐变/图片）激活标记，由 App 根部 CompositionLocalProvider 提供。
+ * 内容区表面（设置卡片/模式芯片/搜索框/热门词芯片等）据此自动半透明融入背景，
+ * 与侧栏（白 72%）/底栏（白 80%）同一视觉语言。
+ */
+val LocalHomeCustomBg = compositionLocalOf { false }
+
+/**
+ * v2.21.5：表面配色 —— 自定义背景激活时给白色/浅灰表面加透明度使其融入背景：
+ * 大卡片面板用 0.72（同侧栏），小芯片/输入框用 0.60；未开启自定义背景时返回原色。
+ */
+fun surfaceColor(base: Color, customBg: Boolean, alpha: Float): Color =
+    if (customBg) base.copy(alpha = alpha) else base
 
 // ==================== 时间格式化 ====================
 
@@ -245,11 +262,13 @@ fun McSearchField(
     modifier: Modifier = Modifier,
     hint: String = "搜索歌曲、歌手、专辑"
 ) {
+    // v2.21.5：自定义主页背景激活时搜索框半透明融入（浅灰玻璃，深色文字仍可读）
+    val fieldBg = surfaceColor(Mc.searchFieldBg, LocalHomeCustomBg.current, 0.60f)
     Row(
         modifier = modifier
             .height(34.dp)
             .clip(RoundedCornerShape(8.dp))
-            .background(Mc.searchFieldBg)
+            .background(fieldBg)
             .padding(horizontal = 10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {

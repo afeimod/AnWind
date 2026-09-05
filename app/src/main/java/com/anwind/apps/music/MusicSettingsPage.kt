@@ -144,7 +144,7 @@ fun SettingsPage(
                     )
                 }
             }
-            Caption("背景全局生效：侧栏与底栏自动变半透明融入；选深色时文字仍为深色，建议搭配浅色图片或低压暗")
+            Caption("背景全局生效：侧栏、底栏与设置卡片/选项/搜索框自动半透明融入；选深色时文字仍为深色，建议搭配浅色图片或低压暗")
         }
 
         SettingsSection("歌词秀背景") {
@@ -473,7 +473,7 @@ fun SettingsPage(
 
         SettingsSection("关于") {
             Caption("音源：酷我（搜索 / 播放 / 下载） · 词源：酷我 / 网易云 / QQ 音乐 / LRCLIB")
-            Caption("AnWind 云音乐 v2.21.4 · 界面对照网易云音乐 PC 版 · 3D 歌词秀 · 桌面歌词")
+            Caption("AnWind 云音乐 v2.21.5 · 界面对照网易云音乐 PC 版 · 3D 歌词秀 · 桌面歌词")
         }
         Spacer(Modifier.height(20.dp))
     }
@@ -492,11 +492,13 @@ private fun SettingsSection(title: String, content: @Composable ColumnScope.() -
         color = Mc.textPrimary,
         modifier = Modifier.padding(start = 4.dp, bottom = 4.dp)
     )
+    // v2.21.5：自定义主页背景激活时区块卡片半透明融入（白 72%，同侧栏）
+    val cardBg = surfaceColor(Color.White, LocalHomeCustomBg.current, 0.72f)
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(10.dp))
-            .background(Color.White)
+            .background(cardBg)
             .padding(horizontal = 12.dp, vertical = 6.dp)
     ) {
         content()
@@ -523,6 +525,8 @@ private fun ModeChipsRow(
     onSelect: (Int) -> Unit
 ) {
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        // v2.21.5：自定义主页背景激活时未选中芯片半透明融入（选中态保持实心红保证对比）
+        val chipBg = surfaceColor(Mc.searchFieldBg, LocalHomeCustomBg.current, 0.60f)
         for ((value, label) in options) {
             val isSel = value == selected
             Text(
@@ -532,7 +536,7 @@ private fun ModeChipsRow(
                 fontWeight = if (isSel) FontWeight.Bold else FontWeight.Normal,
                 modifier = Modifier
                     .clip(RoundedCornerShape(14.dp))
-                    .background(if (isSel) Mc.red else Mc.searchFieldBg)
+                    .background(if (isSel) Mc.red else chipBg)
                     .clickable { onSelect(value) }
                     .padding(horizontal = 14.dp, vertical = 6.dp)
             )
@@ -678,7 +682,8 @@ private fun SettingSlider(
             colors = SliderDefaults.colors(
                 thumbColor = Mc.red,
                 activeTrackColor = Mc.red,
-                inactiveTrackColor = Color(0xFFE5E5E8)
+                // v2.21.5：未激活轨道随背景半透明（激活轨道保持实心红）
+                inactiveTrackColor = surfaceColor(Color(0xFFE5E5E8), LocalHomeCustomBg.current, 0.70f)
             ),
             modifier = Modifier
                 .weight(1f)
@@ -786,6 +791,8 @@ private fun DirRow(path: String, onRemove: () -> Unit) {
 @Composable
 private fun ManualDirInput(onAdd: (String) -> Unit) {
     var text by remember { mutableStateOf("") }
+    // v2.21.5：自定义主页背景激活时输入框容器半透明融入
+    val fieldBg = surfaceColor(Mc.searchFieldBg, LocalHomeCustomBg.current, 0.60f)
     Row(verticalAlignment = Alignment.CenterVertically) {
         TextField(
             value = text,
@@ -799,8 +806,8 @@ private fun ManualDirInput(onAdd: (String) -> Unit) {
                 color = Mc.textPrimary
             ),
             colors = TextFieldDefaults.colors(
-                focusedContainerColor = Mc.searchFieldBg,
-                unfocusedContainerColor = Mc.searchFieldBg,
+                focusedContainerColor = fieldBg,
+                unfocusedContainerColor = fieldBg,
                 focusedIndicatorColor = Color.Transparent,
                 unfocusedIndicatorColor = Color.Transparent
             ),

@@ -45,6 +45,7 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -82,7 +83,7 @@ import kotlinx.coroutines.launch
  * v2.19 变更：
  * - 背景图片/扫描目录选择改由桌面【文件资源管理器】窗口完成（FilePickBus 回传），
  *   不再拉起手机自带的 SAF 文件选择器
- * - 主页自定义背景全局生效：侧栏/底栏半透明融入（不再只显示在内容区）
+ * - 主页自定义背景全局生效：侧栏/底栏/内容区表面（设置卡片、芯片、搜索框等）半透明融入（不再只显示在内容区）
  * - 3D 歌词设置（倾斜/视角/发光等）改为快照状态直读，改动立即生效
  */
 val MusicPlayerApp = AppDef(
@@ -410,6 +411,8 @@ private fun MusicContent(scope: WindowContentScope) {
         MusicSettings.BG_IMAGE -> Modifier.background(Color.Transparent)
         else -> Modifier.background(Mc.bg)
     }
+    // v2.21.5：向全内容区提供自定义背景激活标记 —— 设置卡片/选项芯片/输入框/搜索框等自动半透明融入
+    CompositionLocalProvider(LocalHomeCustomBg provides homeCustomBg) {
     Box(Modifier.fillMaxSize()) {
         // 自定义图片背景 + 压暗层（仅图片模式）
         if (musicSettings.homeBgMode == MusicSettings.BG_IMAGE) {
@@ -609,6 +612,7 @@ private fun MusicContent(scope: WindowContentScope) {
         }
     }
     } // 关闭自定义背景布局 Box
+    } // v2.21.5：CompositionLocalProvider(LocalHomeCustomBg)
 }
 
 /** mutableIntStateOf 兼容助手已移除：统一使用 mutableStateOf */

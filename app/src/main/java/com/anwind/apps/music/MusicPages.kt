@@ -74,6 +74,8 @@ fun SearchPage(
     onDownloadLyric: (SongInfo) -> Unit,
     downloadOf: (String) -> DownloadItem?
 ) {
+    // v2.21.5：自定义主页背景激活时热门词芯片半透明融入
+    val customBg = LocalHomeCustomBg.current
     Column(Modifier.fillMaxSize()) {
         // 顶部搜索框
         McSearchField(
@@ -106,7 +108,7 @@ fun SearchPage(
                                 Box(
                                     Modifier
                                         .clip(RoundedCornerShape(14.dp))
-                                        .background(Mc.hover)
+                                        .background(surfaceColor(Mc.hover, customBg, 0.60f))
                                         .clickable {
                                             onQueryChange(kw)
                                             onSearch(kw)
@@ -288,6 +290,8 @@ fun LocalPage(
 
 @Composable
 fun DownloadsPage(items: List<DownloadItem>, saveDir: String, onRetry: (DownloadItem) -> Unit) {
+    // v2.21.5：自定义主页背景激活时进度轨道半透明融入
+    val progressTrack = surfaceColor(Color(0xFFF0F0F2), LocalHomeCustomBg.current, 0.70f)
     Column(Modifier.fillMaxSize()) {
         Column(Modifier.padding(horizontal = 16.dp, vertical = 14.dp)) {
             Text(text = "下载管理", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = Mc.textPrimary)
@@ -366,7 +370,7 @@ fun DownloadsPage(items: List<DownloadItem>, saveDir: String, onRetry: (Download
                             LinearProgressIndicator(
                                 progress = { item.progress },
                                 color = Mc.red,
-                                trackColor = Color(0xFFF0F0F2),
+                                trackColor = progressTrack,
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .padding(top = 6.dp)
@@ -407,7 +411,8 @@ private fun PageHeader(
             Row(
                 Modifier
                     .clip(RoundedCornerShape(18.dp))
-                    .background(Mc.hover)
+                    // v2.21.5：自定义主页背景激活时辅助按钮芯片半透明融入
+                    .background(surfaceColor(Mc.hover, LocalHomeCustomBg.current, 0.60f))
                     .clickable(onClick = onSecondary)
                     .padding(horizontal = 14.dp, vertical = 7.dp),
                 verticalAlignment = Alignment.CenterVertically
@@ -523,7 +528,8 @@ private fun SongRow(
             Box(
                 Modifier
                     .clip(RoundedCornerShape(6.dp))
-                    .background(Mc.hover)
+                    // v2.21.5：自定义主页背景激活时芯片半透明融入
+                    .background(surfaceColor(Mc.hover, LocalHomeCustomBg.current, 0.60f))
                     .clickable(onClick = onDownloadLyric)
                     .padding(horizontal = 7.dp, vertical = 3.dp)
             ) {
