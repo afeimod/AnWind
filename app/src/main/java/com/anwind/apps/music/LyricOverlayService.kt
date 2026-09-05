@@ -99,7 +99,7 @@ private class OutlineTextView(context: Context) : TextView(context) {
             canvas.drawText(
                 text.toString(),
                 layout.getLineLeft(i),
-                layout.getLineBaseline(i),
+                layout.getLineBaseline(i).toFloat(),
                 strokePaint
             )
         }
@@ -133,8 +133,8 @@ class LyricOverlayService : Service() {
     /** 当前窗口布局所用模式（false 两行 / true 全屏），与总线不一致时重建 */
     private var builtFullscreen: Boolean = false
 
-    private val params1 = WindowManager.LayoutParams()
-    private val params2 = WindowManager.LayoutParams()
+    private var params1 = WindowManager.LayoutParams()
+    private var params2 = WindowManager.LayoutParams()
 
     private val tick = object : Runnable {
         override fun run() {
@@ -206,7 +206,7 @@ class LyricOverlayService : Service() {
 
     private fun bgOf(view: View, alpha: Float) {
         val d = GradientDrawable().apply {
-            cornerRadius = dp(14f)
+            cornerRadius = dp(14f).toFloat()
             setColor(AwtColor.argb((alpha.coerceIn(0f, 1f) * 255f).toInt(), 8, 8, 12))
         }
         view.background = d
@@ -222,7 +222,7 @@ class LyricOverlayService : Service() {
         if (!fs) {
             // ---- 两行模式（参考图4）：当前行左上浮条 + 下一行右侧居中浮条 ----
             val (root1, t1) = buildLineWindow()
-            params1.set(baseParams())
+            params1 = baseParams()
             params1.gravity = Gravity.TOP or Gravity.START
             params1.x = dp(42f)
             params1.y = dp(120f)
@@ -232,7 +232,7 @@ class LyricOverlayService : Service() {
             roots.add(root1)
 
             val (root2, t2) = buildLineWindow()
-            params2.set(baseParams())
+            params2 = baseParams()
             params2.gravity = Gravity.END or Gravity.CENTER_VERTICAL
             params2.x = dp(48f)
             params2.y = dp(150f)
