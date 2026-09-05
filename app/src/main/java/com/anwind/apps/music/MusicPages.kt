@@ -70,6 +70,8 @@ fun SearchPage(
     onPlay: (SongInfo) -> Unit,
     onToggleFav: (SongInfo) -> Unit,
     onDownload: (SongInfo) -> Unit,
+    // v2.21.4：直接下载该曲歌词（.lrc 存下载目录，无需播放）
+    onDownloadLyric: (SongInfo) -> Unit,
     downloadOf: (String) -> DownloadItem?
 ) {
     Column(Modifier.fillMaxSize()) {
@@ -146,7 +148,7 @@ fun SearchPage(
                 Text("标题", fontSize = 11.sp, color = Mc.textTertiary, modifier = Modifier.weight(1f))
                 Box(Modifier.weight(0.32f))
                 Text("时长", fontSize = 11.sp, color = Mc.textTertiary, modifier = Modifier.width(46.dp))
-                Spacer(Modifier.width(76.dp)) // 收藏+下载按钮空间
+                Spacer(Modifier.width(112.dp)) // 收藏+词+下载按钮空间（v2.21.4 加词芯片）
             }
             LazyColumn(Modifier.fillMaxSize()) {
                 itemsIndexed(results, key = { i, s -> "${s.key}_$i" }) { index, song ->
@@ -159,7 +161,8 @@ fun SearchPage(
                         download = downloadOf(song.key),
                         onPlay = { onPlay(song) },
                         onToggleFav = { onToggleFav(song) },
-                        onDownload = { onDownload(song) }
+                        onDownload = { onDownload(song) },
+                        onDownloadLyric = { onDownloadLyric(song) }
                     )
                 }
                 // 加载更多
@@ -453,7 +456,9 @@ private fun SongRow(
     download: DownloadItem?,
     onPlay: () -> Unit,
     onToggleFav: () -> Unit,
-    onDownload: (() -> Unit)?
+    onDownload: (() -> Unit)?,
+    // v2.21.4：歌词下载动作（词芯片，仅搜索页传入；null = 不显示）
+    onDownloadLyric: (() -> Unit)? = null
 ) {
     Row(
         Modifier
@@ -513,6 +518,24 @@ private fun SongRow(
                 .clickable(onClick = onToggleFav)
         )
         Spacer(Modifier.width(12.dp))
+        // v2.21.4：歌词下载（词芯片，仅搜索页显示；文字芯片避免新增图标依赖）
+        if (onDownloadLyric != null) {
+            Box(
+                Modifier
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(Mc.hover)
+                    .clickable(onClick = onDownloadLyric)
+                    .padding(horizontal = 7.dp, vertical = 3.dp)
+            ) {
+                Text(
+                    text = "词",
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = Mc.textSecondary
+                )
+            }
+            Spacer(Modifier.width(10.dp))
+        }
         // 下载（仅在线歌曲）
         Box(Modifier.size(16.dp)) {
             when {

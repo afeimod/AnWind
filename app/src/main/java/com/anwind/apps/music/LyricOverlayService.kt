@@ -22,7 +22,6 @@ import android.os.SystemClock
 import android.provider.Settings
 import android.text.SpannableString
 import android.text.Spanned
-import android.text.TextUtils
 import android.text.style.ForegroundColorSpan
 import android.view.Gravity
 import android.view.MotionEvent
@@ -138,13 +137,15 @@ private class OutlineTextView(context: Context) : TextView(context) {
 }
 
 /**
- * 桌面歌词悬浮窗服务（v2.21.3）：
+ * 桌面歌词悬浮窗服务（v2.21.4）：
  * - 前台服务（specialUse）+ TYPE_APPLICATION_OVERLAY 悬浮窗，需「显示在应用上层」权限
  * - 两行模式：一个可拖动通栏窗口（宽度 = 全屏，左右留边距）——
- *   当前行贴屏幕左缘、下一行贴屏幕右缘，两行字号相同，行索引推进时两行同时轮换；
- *   背景贴字自适应宽度（不固定宽）
- * - 桌面全屏歌词：行数可设（1-15 行，默认 4 行，围绕当前行取词），横幅宽度随歌词自适应，
+ *   v2.21.4 改为两行成对轮换：按当前行号取一对 (2k, 2k+1)，唱这一对期间画面不动
+ *   （高亮/KTV 扫色跟随对内当前行），唱完整对直接翻到下一对 —— 不再逐行上调；
+ *   当前行贴屏幕左缘、下一行贴屏幕右缘，两行字号相同，背景贴字自适应宽度
+ * - 桌面全屏歌词：行数可设（1-15 行，默认 4 行，围绕当前行取词），
  *   当前行大字 + KTV 扫色，其余行 0.7 倍
+ * - v2.21.4 取消文本限宽截断：两种模式均不再按屏宽 88% 截断省略，长句完整展示
  * - 两种模式均可 KTV 逐字变色（进度由播放器写入总线，服务侧墙钟外插平滑）
  * - 锁定/解锁（v2.21.3）：悬浮窗上的锁定按钮 + 通知栏「锁定/解锁」动作 + 设置页开关；
  *   锁定后 FLAG_NOT_TOUCHABLE 触摸穿透（不挡其他应用、只作桌面展示），位置记忆到 desklyric.json
@@ -262,17 +263,14 @@ class LyricOverlayService : Service() {
         )
     }
 
-    /** 构建一行浮条：圆角半透明背景 + 描边文字（超宽行按屏宽 88% 截断省略） */
+    /** 构建一行浮条：圆角半透明背景 + 描边文字（v2.21.4 取消限宽，长句完整展示不省略） */
     private fun buildLineWindow(): Pair<FrameLayout, OutlineTextView> {
         val root = FrameLayout(this)
         root.setPadding(dp(10f), dp(6f), dp(10f), dp(7f))
         val text = OutlineTextView(this)
         text.maxLines = 1
-        text.ellipsize = TextUtils.TruncateAt.END
         text.typeface = Typeface.DEFAULT_BOLD
         text.includeFontPadding = false
-        // v2.21.2：两行模式同样限宽 —— 背景/文字随歌词自适应但永不顶出屏幕
-        text.maxWidth = (resources.displayMetrics.widthPixels * 0.88f).toInt() - dp(20f)
         root.addView(text)
         return root to text
     }
@@ -353,20 +351,17 @@ class LyricOverlayService : Service() {
             roots.add(root)
         } else {
             // ---- 桌面全屏歌词（行数 1-15，默认 4，围绕当前行取词），
-            // 横幅宽度随歌词自适应（超宽行按屏宽 88% 截断省略），屏幕居中，整幅可拖动
+            // 横幅宽度随歌词自适应（v2.21.4 取消限宽截断），屏幕居中，整幅可拖动
             val n = DesktopLyricBus.linesCount.coerceIn(1, 15)
             val container = LinearLayout(this)
             container.orientation = LinearLayout.VERTICAL
             container.setPadding(dp(14f), dp(8f), dp(14f), dp(10f))
-            val maxTextPx = (resources.displayMetrics.widthPixels * 0.88f).toInt() - dp(28f)
             for (j in 0 until n) {
                 val t = OutlineTextView(this)
                 t.maxLines = 1
-                t.ellipsize = TextUtils.TruncateAt.END
                 t.typeface = Typeface.DEFAULT_BOLD
                 t.gravity = Gravity.CENTER_HORIZONTAL
                 t.includeFontPadding = false
-                t.maxWidth = maxTextPx
                 container.addView(
                     t,
                     LinearLayout.LayoutParams(
@@ -463,17 +458,29 @@ class LyricOverlayService : Service() {
         val color = DesktopLyricBus.textColor
         val size = DesktopLyricBus.sizeSp
         if (!builtFullscreen) {
-            // ---- 两行模式：两行同字号同窗口，当前行 KTV 扫色，行推进时两行同时轮换 ----
+            // ---- 两行模式（v2.21.4 两行成对轮换）：按当前行号取一对 (2k, 2k+1)，
+            // 唱这一对期间画面不动（高亮/KTV 扫色跟随对内当前行），
+            // 唱完整对直接翻到下一对 —— 不再逐行上调；无歌词时仍显示待机文案
             val t1 = line1 ?: return
-            val cur = DesktopLyricBus.currentText()
-            val nxt = DesktopLyricBus.nextText()
-            setLine(t1, cur.ifBlank { standbyText() }, size, color, isCurrent = true)
-            line2?.let {
-                setLine(
-                    it,
-                    nxt.ifBlank { if (cur.isBlank()) "开启播放后显示歌词" else "···" },
-                    size, color, isCurrent = false
-                )
+            val idx = DesktopLyricBus.index
+            if (DesktopLyricBus.lines.isEmpty()) {
+                setLine(t1, standbyText(), size, color, isCurrent = true)
+                line2?.let {
+                    setLine(
+                        it,
+                        if (DesktopLyricBus.songName.isBlank()) "开启播放后显示歌词" else "···",
+                        size, color, isCurrent = false
+                    )
+                }
+            } else {
+                // Kotlin 整除向零取整：idx=-1（前奏）与 0/1 → 对首 0；2/3 → 2；依此类推
+                val start = (idx / 2) * 2
+                val l1 = DesktopLyricBus.lineTextAt(start)
+                val l2 = DesktopLyricBus.lineTextAt(start + 1)
+                setLine(t1, l1.ifBlank { "···" }, size, color, isCurrent = idx == start)
+                line2?.let {
+                    setLine(it, l2.ifBlank { "···" }, size, color, isCurrent = idx == start + 1)
+                }
             }
             for (p in pills) bgOf(p, DesktopLyricBus.bgAlpha)
         } else {

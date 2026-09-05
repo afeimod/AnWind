@@ -276,6 +276,9 @@ private fun MusicContent(scope: WindowContentScope) {
         }
     }
 
+    // v2.21.4：歌词手动下载/自动下载后刷新当前曲歌词显示（tick 作为 LaunchedEffect key）
+    var lyricRefreshTick by remember { mutableStateOf(0) }
+
     fun downloadLyricFile(song: SongInfo?) {
         if (song == null) {
             toast("当前没有播放中的歌曲")
@@ -290,19 +293,28 @@ private fun MusicContent(scope: WindowContentScope) {
             val dir = musicDownloadDir(context)
             val file = File(dir, sanitizeFileName("${song.artist} - ${song.name}") + ".lrc")
             runCatching { file.writeText(LrcParser.toLrcText(lyric)) }
+            // v2.21.4：若下载的是正在播放的歌曲，刷新其歌词显示
+            if (song.key == engine.currentSong?.key) lyricRefreshTick++
             toast("歌词已保存：${file.absolutePath}")
         }
     }
 
     // ===== 歌词获取（当前歌曲变化时自动拉取） =====
+    // v2.21.4：首发未命中 → 自动深度下载兑底（扩展关键词 + 全词源宽松匹配），
+    // 命中即写缓存并提示「已自动下载歌词」；lyricRefreshTick 变化时强制重取（手动/搜索页下载歌词后）
     var lyricDoc by remember { mutableStateOf<LyricsDoc?>(null) }
     var lyricLoading by remember { mutableStateOf(false) }
-    LaunchedEffect(engine.currentSong?.key, musicSettings.lyricEngine) {
+    LaunchedEffect(engine.currentSong?.key, musicSettings.lyricEngine, lyricRefreshTick) {
         val song = engine.currentSong
         lyricDoc = null
         if (song != null) {
             lyricLoading = true
-            lyricDoc = fetchLyrics(engine.store, song, engine = musicSettings.lyricEngine)
+            var doc = fetchLyrics(engine.store, song, engine = musicSettings.lyricEngine)
+            if (doc == null) {
+                doc = fetchLyricsDeep(engine.store, song, engine = musicSettings.lyricEngine)
+                if (doc != null) toast("已自动下载歌词：${song.name}")
+            }
+            lyricDoc = doc
             lyricLoading = false
         }
     }
@@ -464,6 +476,8 @@ private fun MusicContent(scope: WindowContentScope) {
                                 toast(if (added) "已加入我喜欢" else "已取消喜欢")
                             },
                             onDownload = { song -> startDownload(song) },
+                            // v2.21.4：搜索结果直接下载该曲歌词（.lrc 存下载目录，无需播放）
+                            onDownloadLyric = { song -> downloadLyricFile(song) },
                             downloadOf = { key -> downloads.firstOrNull { it.song.key == key } }
                         )
                         Page.FAVORITES -> LibraryPage(
@@ -576,19 +590,23 @@ private fun MusicContent(scope: WindowContentScope) {
         }
 
         // ===== 底部播放条 =====
-        PlayerBar(
-            engine = engine,
-            isFav = engine.currentSong?.let { favKeys.contains(it.key) } ?: false,
-            customBg = homeCustomBg,
-            onToggleFav = {
-                engine.currentSong?.let { song ->
-                    engine.store.toggleFavorite(song)
-                    refreshLibrary()
-                }
-            },
-            lyricsOpen = showLyrics,
-            onToggleLyrics = { showLyrics = !showLyrics }
-        )
+        // v2.21.4：3D 歌词页打开时隐藏底栏 —— 歌词页自带完整控制区（进度/播放/切歌），
+        // 底栏叠在其上属于遮挡 bug（全屏下方不应出现任何内容）
+        if (!showLyrics) {
+            PlayerBar(
+                engine = engine,
+                isFav = engine.currentSong?.let { favKeys.contains(it.key) } ?: false,
+                customBg = homeCustomBg,
+                onToggleFav = {
+                    engine.currentSong?.let { song ->
+                        engine.store.toggleFavorite(song)
+                        refreshLibrary()
+                    }
+                },
+                lyricsOpen = showLyrics,
+                onToggleLyrics = { showLyrics = !showLyrics }
+            )
+        }
     }
     } // 关闭自定义背景布局 Box
 }

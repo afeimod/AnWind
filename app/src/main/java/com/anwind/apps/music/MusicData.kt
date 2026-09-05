@@ -728,6 +728,87 @@ private fun engineOrder(engine: String): List<String> {
 }
 
 /**
+ * 深度歌词下载（v2.21.4）：搜索/在线歌曲在 [fetchLyrics] 未命中时的自动兜底。
+ * 在常规候选之上追加扩展关键词（拆括号副题/Live 标注、拆 feat 合唱、拆连字符副题），
+ * 全词源按 [engineOrder] 再跑一遍（酷我跳过 byId 直查避免重复；各词源无吻合时自动取首条），
+ * 任一命中即写缓存并返回 —— 「播放无歌词歌曲时自动下载对应歌词」的落地实现。
+ */
+suspend fun fetchLyricsDeep(
+    store: MusicStore,
+    song: SongInfo,
+    force: Boolean = true,
+    engine: String = MusicSettings.ENGINE_AUTO
+): LyricsDoc? {
+    if (!force) {
+        store.cachedLyrics(song)?.let { return it }
+    }
+    val queries = buildLyricQueries(song).toMutableList()
+    val artistHint = song.artist.takeIf { it.isNotBlank() && it != "未知歌手" } ?: ""
+    for (variant in deepTitleVariants(song.name)) {
+        if (artistHint.isNotEmpty()) queries.add(LyricQuery(variant, artistHint))
+        queries.add(LyricQuery(variant))
+    }
+    val candidates = queries.filter { it.title.isNotBlank() }.distinctBy { it.keyword }
+    if (candidates.isEmpty()) return null
+
+    for (eng in engineOrder(engine)) {
+        var pair: Pair<String, String?>? = null
+        for (q in candidates) {
+            pair = runCatching {
+                when (eng) {
+                    "kuwo" -> fetchKuwoSmart(song, q, tryById = false)
+                    "netease" -> KuwoMusicApi.getNeteaseLyric(q.keyword, q.title).getOrNull()
+                    "qq" -> LyricEngines.getQqLyric(q.keyword, q.title).getOrNull()
+                    "lrclib" -> LyricEngines.getLrclibLyric(q.title, q.artist)
+                        .getOrNull()?.let { it to null }
+                    else -> null
+                }
+            }.getOrNull()
+            if (pair != null && pair.first.isNotBlank()) break
+        }
+        if (pair != null && pair.first.isNotBlank()) {
+            val (main, trans) = pair
+            val doc = LrcParser.merge(main, trans, eng)
+            store.cacheLyrics(song, main, trans)
+            return doc
+        }
+    }
+    return null
+}
+
+/**
+ * 深度候选歌名变体（v2.21.4）：
+ * 1) 拆括号注释："歌名 (Live)" → "歌名"（括号内容 ≥2 字时也单列候选）
+ * 2) 拆 feat/with 合唱："歌名 feat. XXX" → "歌名"
+ * 3) 拆连字符副题："歌名 - 副题" → 两段分别作为候选
+ * 返回去重后的变体列表（不含原歌名，每项长度 ≥ 2）
+ */
+private fun deepTitleVariants(title: String): List<String> {
+    val out = LinkedHashSet<String>()
+    val t = title.trim()
+    if (t.length < 3) return out.toList()
+    Regex("[(\\[]([^)\\]]*)[)\\]]").findAll(t).forEach { m ->
+        val inner = m.groupValues[1].trim()
+        val outer = t.replace(m.value, " ").replace(Regex("\\s{2,}"), " ").trim()
+        if (outer.isNotEmpty() && outer != t) out.add(outer)
+        if (inner.length >= 2 && inner.length < t.length) out.add(inner)
+    }
+    Regex("(?i)\\s+(feat\\.|ft\\.|feat|with)\\s+.*$").find(t)?.let { m ->
+        val outer = t.substring(0, m.range.first).trim()
+        if (outer.length >= 2) out.add(outer)
+    }
+    val hyphen = t.split(Regex("\\s+[-\u2013\u2014]\\s+"), limit = 2)
+    if (hyphen.size == 2) {
+        hyphen.forEach { seg ->
+            val s = seg.trim()
+            if (s.length >= 2) out.add(s)
+        }
+    }
+    out.remove(t)
+    return out.filter { it.length >= 2 }
+}
+
+/**
  * 酷我歌词（v2.20 升级，本地歌也能命中酷我曲库）：
  * - [tryById] 且为在线歌：按 musicId 直接取逐行歌词（最精准）
  * - 否则按关键词搜索酷我曲库（歌名模糊择优）→ 取首条匹配的歌词
