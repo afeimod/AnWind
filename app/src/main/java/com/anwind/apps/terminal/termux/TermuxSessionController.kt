@@ -299,16 +299,35 @@ class TermuxSessionController(
     // 日志桥
     // ------------------------------------------------------------------
 
-    override fun logError(tag: String, message: String) = Log.e(tag, message)
-    override fun logWarn(tag: String, message: String) = Log.w(tag, message)
-    override fun logInfo(tag: String, message: String) = Log.i(tag, message)
-    override fun logDebug(tag: String, message: String) = Log.d(tag, message)
-    override fun logVerbose(tag: String, message: String) = Log.v(tag, message)
-    override fun logStackTraceWithMessage(tag: String, message: String, e: Exception?) =
-        Log.e(tag, message, e)
+    // 注意：Java 接口要求返回 void/Unit，而 Log.x 返回 Int，
+    // 表达式体会把返回类型推断成 Int 导致 override 不匹配，必须用块体。
+    override fun logError(tag: String, message: String) {
+        Log.e(tag, message)
+    }
 
-    override fun logStackTrace(tag: String, e: Exception?) =
+    override fun logWarn(tag: String, message: String) {
+        Log.w(tag, message)
+    }
+
+    override fun logInfo(tag: String, message: String) {
+        Log.i(tag, message)
+    }
+
+    override fun logDebug(tag: String, message: String) {
+        Log.d(tag, message)
+    }
+
+    override fun logVerbose(tag: String, message: String) {
+        Log.v(tag, message)
+    }
+
+    override fun logStackTraceWithMessage(tag: String, message: String, e: Exception?) {
+        Log.e(tag, message, e)
+    }
+
+    override fun logStackTrace(tag: String, e: Exception?) {
         Log.e(tag, "", e)
+    }
 }
 
 /** 移植层使用的默认常量。 */

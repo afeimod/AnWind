@@ -543,9 +543,11 @@ private fun TermuxExtraKeysBar(
     }
 }
 
+/** 注意：weight 修饰符仅存在于 Row/Column 作用域，因此本组件声明为 RowScope 扩展，
+ *  与官方 Compose 库对 Row 子项的做法一致。 */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun ExtraKey(
+private fun RowScope.ExtraKey(
     label: String,
     modifierLabel: Boolean = false,
     fixedWidth: Boolean = false,
@@ -577,10 +579,10 @@ private fun ExtraKey(
     }
 }
 
-/** 修饰键按钮：点击 = 单次激活；长按 = 锁定。 */
+/** 修饰键按钮：点击 = 单次激活；长按 = 锁定。（RowScope 扩展，见 ExtraKey 注释） */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun ModifierKey(label: String, modifier: com.anwind.apps.terminal.termux.StickyModifier) {
+private fun RowScope.ModifierKey(label: String, modifier: com.anwind.apps.terminal.termux.StickyModifier) {
     val haptic = androidx.compose.ui.platform.LocalHapticFeedback.current
     val bg = when {
         modifier.locked -> Color(0xFF00600F)
