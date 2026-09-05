@@ -467,14 +467,17 @@ private fun LyricLineItem(
                 // v2.19/v2.20：绘制期实时读取最新设置 —— 倾斜强度/最大倾角滑条一变，
                 // 快照读触发图层失效重绘，立即生效（不再依赖重组传播）。
                 // v2.20 立体感增强：① 透视相机 1000→700（同样角度纵深翻倍）；
-                // ② 远行沿 Z 轴后退（与每行倾斜强度联动），形成纵深隧道感
+                // ② 远行随倾斜强度额外缩小（景深线索，形成纵深隧道感）
                 val s = settingsProvider()
                 rotationX = (-animDist * s.tilt3d).coerceIn(-s.tilt3dMax, s.tilt3dMax)
                 cameraDistance = 700f * density
-                scaleX = scale
-                scaleY = scale
+                // v2.20.2 修复：GraphicsLayerScope（Compose UI 1.6.x）没有 translationZ 属性，
+                // 纵深改用等价景深线索——远行随倾斜强度额外缩小（隧道感保留）；
+                // 图层块内读倾斜快照，滑条一变立即生效（与 v2.19 机制一致）
+                val depthScale = 1f - (absDist * s.tilt3d * 0.006f).coerceIn(0f, 0.22f)
+                scaleX = scale * depthScale
+                scaleY = scale * depthScale
                 alpha = lineAlpha
-                translationZ = -absDist * s.tilt3d * 1.1f * density
             }
     ) {
         Text(
