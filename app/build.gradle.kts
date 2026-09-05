@@ -110,7 +110,10 @@ afterEvaluate {
                 reprefixSource.absolutePath
             )
         }
-        reprefixAll.dependsOn(abiTask)
+        // TaskProvider 本身无 dependsOn 方法（上一轮 CI 编译错误根因），
+        // 必须经 configure{} 在其 Task 对象上声明依赖；abiTask 以
+        // TaskProvider 传入即可（Task.dependsOn 会自动解包）
+        reprefixAll.configure { dependsOn(abiTask) }
     }
 
     // jniLibs 纳入 build/reprefix（其下 <abi>/libanwind_reprefix.so 布局
