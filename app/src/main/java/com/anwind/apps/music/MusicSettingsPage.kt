@@ -178,20 +178,12 @@ fun SettingsPage(
 
         SettingsSection("3D 歌词") {
             SettingSlider(
-                title = "每行倾斜强度",
-                display = "${"%.1f".format(settings.tilt3d)}°/行",
-                value = settings.tilt3d,
-                range = 0f..45f,
+                title = "墙面俯仰（绕 X 轴）",
+                display = "${settings.wallTiltX.toInt()}°",
+                value = settings.wallTiltX,
+                range = -45f..45f,
                 steps = 89,
-                onChange = { onChange(settings.copy(tilt3d = it)) }
-            )
-            SettingSlider(
-                title = "最大倾斜角",
-                display = "${settings.tilt3dMax.toInt()}°",
-                value = settings.tilt3dMax,
-                range = 0f..90f,
-                steps = 89,
-                onChange = { onChange(settings.copy(tilt3dMax = it)) }
+                onChange = { onChange(settings.copy(wallTiltX = it)) }
             )
             SettingSlider(
                 title = "歌词墙视角（绕 Y 轴）",
@@ -200,6 +192,14 @@ fun SettingsPage(
                 range = -60f..60f,
                 steps = 119,
                 onChange = { onChange(settings.copy(wallRotateY = it)) }
+            )
+            SettingSlider(
+                title = "立体纵深强度",
+                display = "${settings.tilt3d.toInt()}",
+                value = settings.tilt3d,
+                range = 0f..45f,
+                steps = 44,
+                onChange = { onChange(settings.copy(tilt3d = it)) }
             )
             SettingSlider(
                 title = "当前行字号",
@@ -227,7 +227,7 @@ fun SettingsPage(
                 checked = settings.showTranslation,
                 onChange = { onChange(settings.copy(showTranslation = it)) }
             )
-            Caption("v2.20 全面扩大可调范围：倾斜 0-45°/行、最大倾角 0-90°、视角 ±60°、字号 12-60sp；0°/行 + 视角 0° 即为平面滚动歌词")
+            Caption("v2.20.3 真透视歌词墙：整面墙俯仰/偏航 + 纵深收敛（远行变小收拢、朝消失点漂移）；俯仰 0° + 视角 0° + 纵深 0 即为平面滚动歌词")
         }
 
         SettingsSection("歌词词源") {
@@ -314,7 +314,7 @@ fun SettingsPage(
 
         SettingsSection("关于") {
             Caption("音源：酷我（搜索 / 播放 / 下载） · 词源：酷我 / 网易云 / QQ 音乐 / LRCLIB")
-            Caption("AnWind 云音乐 v2.20.2 · 界面对照网易云音乐 PC 版 · 3D 歌词秀")
+            Caption("AnWind 云音乐 v2.20.3 · 界面对照网易云音乐 PC 版 · 3D 歌词秀")
         }
         Spacer(Modifier.height(20.dp))
     }

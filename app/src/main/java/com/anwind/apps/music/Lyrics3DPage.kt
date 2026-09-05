@@ -1,5 +1,6 @@
 package com.anwind.apps.music
 
+import android.graphics.Bitmap
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.animateFloatAsState
@@ -56,35 +57,37 @@ import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.Shadow
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.anwind.apps.music.MusicStore as Store
 import kotlin.math.roundToInt
 
 /**
- * 3D 歌词秀（v2.17，对应需求图1；v2.19 设置即时生效重构）：
+ * 3D 歌词秀（v2.17 图1；v2.20.3 对照参考图3 重构为真透视歌词墙）
  * - 深色沉浸背景：封面大图模糊铺底 + 黑色渐变压暗
- * - 左侧：圆角封面卡片 + 右后方旋转 CD 光盘（播放时旋转，暂停即停）
- * - 右侧：3D 透视歌词墙 —— 当前行放大高亮发光，其余行按距离做
- *   rotationX 倾斜 + 缩放 + 渐隐，整面墙带 rotateY 视角；
- *   行切换时用 animateFloatAsState 平滑过渡，点击任意行跳转播放
+ * - 左侧：圆角封面卡片 + 右后方探出的旋转 CD（盘面印封面 + 唱片纹理，播放时旋转）
+ * - 右侧：真 3D 透视歌词墙 —— 整面墙绕 X 轴俯仰 + 绕 Y 轴偏航（透视相机拉近到
+ *   500*density，远行自然变小/收拢，对照参考图3 的右上角消失点）；每行不再自转
+ *   （旧版每行 rotationX 是“挤压感”元凶），只做纵深缩小/变暗/朝消失点漂移；
+ *   行切换时 animateFloatAsState 平滑过渡，点击任意行跳转播放
  * - 左上角《歌名》— 歌手标题，右下角模式/上一首/播放/下一首/歌词下载控制
  *
- * v2.19 修复“倾斜/视角等设置改动不立即生效”：settings 改为 () -> MusicSettings
- * 提供者 lambda。关键点：
- * - 组合期读取（背景模式/字号/发光/翻译）：在自身重组作用域内调用 settingsProvider()，
- *   读的是快照 State，变更直接失效所在作用域，不再依赖整条参数传递链的重组；
- * - 绘制期读取（倾斜/视角）：在 graphicsLayer 块内调用 settingsProvider()，
- *   块内读快照 State 会注册绘制失效，设置一变立即重绘图层，
- *   彻底避免旧版 lambda 捕获普通对象导致的陈旧值问题。
+ * v2.19 设置即时生效机制保留：组合期在自身作用域直读快照 State（settingsProvider()），
+ * 滑条一变直接失效重组/重绘，不依赖参数链传递。
  */
 @Composable
 fun Lyrics3DPage(
@@ -313,68 +316,131 @@ private fun CoverWithDisc(coverUrl: String?, isPlaying: Boolean) {
         }
     }
 
+    // v2.20.3：CD 盘面印上封面 —— 与 AsyncCover 共用 CoverCache（同 URL 只下载一次），
+    // 本地加载成功后两处同时显示（对照参考图3：盘面即封面图案 + 唱片纹理）
+    var discBmp by remember(coverUrl) { mutableStateOf(CoverCache.get(coverUrl ?: "")) }
+    LaunchedEffect(coverUrl) {
+        if (coverUrl.isNullOrEmpty()) {
+            discBmp = null
+        } else if (!CoverCache.isResolved(coverUrl)) {
+            val loaded = loadBitmap(coverUrl)
+            CoverCache.put(coverUrl, loaded)
+            discBmp = loaded
+        } else {
+            discBmp = CoverCache.get(coverUrl)
+        }
+    }
+
     Box(contentAlignment = Alignment.Center) {
-        // CD 光盘：在封面右后方
+        // CD 光盘：在封面右后方，盘面探出约 2/3 半径（对照参考图3）
         DiscCanvas(
             angle = cdAngle.value,
+            cover = discBmp,
             modifier = Modifier
-                .size(168.dp)
-                .offset(x = 52.dp)
+                .size(178.dp)
+                .offset(x = 66.dp)
         )
         // 封面卡片（CD 左侧，压在光盘上）
         AsyncCover(
             url = coverUrl,
             modifier = Modifier
                 .size(190.dp)
-                .shadow(18.dp, RoundedCornerShape(10.dp))
-                .clip(RoundedCornerShape(10.dp))
+                .shadow(18.dp, RoundedCornerShape(12.dp))
+                .clip(RoundedCornerShape(12.dp))
         )
     }
 }
 
-/** CD 光盘绘制：银色扫掠渐变盘面 + 同心纹理 + 中心标贴与孔 */
+/**
+ * CD 光盘绘制（v2.20.3）：有封面时盘面铺封面图（圆形裁剪）+ 同心唱片暗纹 +
+ * 扫掠高光 + 半透明中心标贴与中孔；无封面（未加载/无图）回退银色反光盘面。
+ */
 @Composable
-private fun DiscCanvas(angle: Float, modifier: Modifier = Modifier) {
+private fun DiscCanvas(angle: Float, cover: Bitmap?, modifier: Modifier = Modifier) {
     Canvas(modifier.graphicsLayer { rotationZ = angle }) {
         val r = size.minDimension / 2f
         val center = Offset(size.width / 2f, size.height / 2f)
 
-        // 盘面：多段扫掠渐变模拟 CD 反光
-        drawCircle(
-            brush = Brush.sweepGradient(
-                listOf(
-                    Color(0xFFE9E9EF), Color(0xFF9C9CAC), Color(0xFFEDEDF3),
-                    Color(0xFF80808F), Color(0xFFE2E2EA), Color(0xFF9A9AAA),
-                    Color(0xFFE9E9EF)
-                ),
-                center
-            ),
-            radius = r,
-            center = center
-        )
-
-        // 同心纹理圈
-        for (i in 1..4) {
+        if (cover != null) {
+            // 封面居中裁剪铺满盘面（参考图3：盘面即封面图案，随 CD 一起旋转）
+            val srcMin = minOf(cover.width, cover.height)
+            val srcOff = IntOffset((cover.width - srcMin) / 2, (cover.height - srcMin) / 2)
+            val dstR = (2 * r).roundToInt().coerceAtLeast(1)
+            val discRect = Rect(center.x - r, center.y - r, center.x + r, center.y + r)
+            clipPath(Path().apply { addOval(discRect) }) {
+                drawImage(
+                    image = cover.asImageBitmap(),
+                    srcOffset = srcOff,
+                    srcSize = IntSize(srcMin, srcMin),
+                    dstOffset = IntOffset((center.x - r).roundToInt(), (center.y - r).roundToInt()),
+                    dstSize = IntSize(dstR, dstR)
+                )
+                // 唱片纹理：同心暗纹（半透明，不遮封面主色）
+                for (i in 1..6) {
+                    drawCircle(
+                        color = Color.Black.copy(alpha = 0.10f),
+                        radius = r * (0.94f - i * 0.10f),
+                        center = center,
+                        style = Stroke(width = 1.2.dp.toPx())
+                    )
+                }
+                // 扫掠高光模拟盘面反光
+                drawCircle(
+                    brush = Brush.sweepGradient(
+                        listOf(
+                            Color.White.copy(alpha = 0.26f), Color.Transparent,
+                            Color.White.copy(alpha = 0.14f), Color.Transparent,
+                            Color.Transparent, Color.White.copy(alpha = 0.26f)
+                        ),
+                        center
+                    ),
+                    radius = r,
+                    center = center
+                )
+                // 中心标贴：半透明深色（封面隐约可见）+ 细环 + 中孔
+                drawCircle(color = Color.Black.copy(alpha = 0.38f), radius = r * 0.30f, center = center)
+                drawCircle(
+                    color = Color.White.copy(alpha = 0.35f),
+                    radius = r * 0.30f,
+                    center = center,
+                    style = Stroke(width = 1.dp.toPx())
+                )
+                drawCircle(color = Color(0xFF0B0B10), radius = r * 0.055f, center = center)
+            }
+        } else {
+            // 无封面回退：银色扫掠渐变盘面
             drawCircle(
-                color = Color.White.copy(alpha = 0.06f),
-                radius = r * (0.92f - i * 0.13f),
-                center = center,
-                style = Stroke(width = 1.dp.toPx())
+                brush = Brush.sweepGradient(
+                    listOf(
+                        Color(0xFFE9E9EF), Color(0xFF9C9CAC), Color(0xFFEDEDF3),
+                        Color(0xFF80808F), Color(0xFFE2E2EA), Color(0xFF9A9AAA),
+                        Color(0xFFE9E9EF)
+                    ),
+                    center
+                ),
+                radius = r,
+                center = center
             )
+            for (i in 1..4) {
+                drawCircle(
+                    color = Color.White.copy(alpha = 0.06f),
+                    radius = r * (0.92f - i * 0.13f),
+                    center = center,
+                    style = Stroke(width = 1.dp.toPx())
+                )
+            }
+            drawCircle(color = Color(0xFF23232B), radius = r * 0.30f, center = center)
+            drawCircle(
+                color = Color(0xFFEC4141).copy(alpha = 0.9f),
+                radius = r * 0.20f,
+                center = center,
+                style = Stroke(width = 2.dp.toPx())
+            )
+            drawCircle(color = Color(0xFF0B0B10), radius = r * 0.055f, center = center)
         }
-
-        // 中心标贴（深色）+ 红色环 + 中孔
-        drawCircle(color = Color(0xFF23232B), radius = r * 0.30f, center = center)
+        // 外缘描边（两种分支共用）
         drawCircle(
-            color = Color(0xFFEC4141).copy(alpha = 0.9f),
-            radius = r * 0.20f,
-            center = center,
-            style = Stroke(width = 2.dp.toPx())
-        )
-        drawCircle(color = Color(0xFF0B0B10), radius = r * 0.055f, center = center)
-        // 外缘描边
-        drawCircle(
-            color = Color.White.copy(alpha = 0.25f),
+            color = Color.White.copy(alpha = 0.28f),
             radius = r,
             center = center,
             style = Stroke(width = 1.dp.toPx())
@@ -385,10 +451,14 @@ private fun DiscCanvas(angle: Float, modifier: Modifier = Modifier) {
 // ==================== 3D 歌词墙 ====================
 
 /**
- * 3D 透视歌词墙（v2.18 参数可调；v2.19 绘制期直读快照状态，设置即时生效）：
- * - 整面墙 rotateY 视角可调（默认 -14°，对应图1 歌词平面）
- * - 每行按与当前行的距离做 rotationX 圆弧倾斜 + 缩放 + 渐隐，强度/上限可调
- * - 行切换通过 animateFloatAsState 平滑过渡（可关闭）
+ * 3D 透视歌词墙（v2.20.3 重构，对照参考图3）：
+ * - 整面墙真透视：绕 X 轴俯仰（wallTiltX，默认 16° 顶部向后倒）+ 绕 Y 轴偏航
+ *   （wallRotateY，默认 -14°）+ 透视相机拉近到 500*density —— 远行自然变小、
+ *   行距自然收拢，朝右上角消失点汇聚，倾斜/视角滑条一动就有明显视觉反馈
+ * - 每行不再自转（旧版每行 rotationX 只会把矮行压扁 = “挤压感”元凶），
+ *   仅按纵深强度做轻微额外缩小/变暗 + 朝消失点方向的横向漂移
+ * - 行切换通过 animateFloatAsState 平滑过渡（可关闭）；
+ *   设置在组合期直读快照 State，滑条一变直接重组生效（v2.19 机制）
  */
 @Composable
 private fun LyricsWall(
@@ -408,6 +478,9 @@ private fun LyricsWall(
         }
     }
 
+    // 组合期直读：俯仰/偏航/纵深任一滑条变化 → 本作用域重组 → 图层参数更新
+    val wallSettings = settingsProvider()
+
     BoxWithConstraints(modifier) {
         val padV = maxHeight * 0.34f
         LazyColumn(
@@ -417,10 +490,12 @@ private fun LyricsWall(
             modifier = Modifier
                 .fillMaxSize()
                 .graphicsLayer {
-                    // 歌词墙整体绕 Y 轴倾斜，营造图1 的侧视角（角度可调）
-                    // v2.19：绘制期读快照 State，视角滑条一变立即重绘
-                    rotationY = settingsProvider().wallRotateY
-                    cameraDistance = 1000f * density
+                    // 真透视：俯仰 + 偏航 + 拉近的相机（500*density，旧值 1000 透视过弱
+                    // 是“视角没变化”的主因）；裁剪发生在图层内容内部，旋转后超出
+                    // 原边界的部分不会被 LazyColumn 裁掉，梯形透视完整可见
+                    rotationX = wallSettings.wallTiltX
+                    rotationY = wallSettings.wallRotateY
+                    cameraDistance = 500f * density
                 }
         ) {
             itemsIndexed(doc.lines, key = { i, _ -> i }) { i, line ->
@@ -453,9 +528,10 @@ private fun LyricLineItem(
     val absDist = kotlin.math.abs(animDist)
     val active = distance == 0
 
-    val scale = if (active) 1.18f else (1f - (absDist * 0.05f)).coerceIn(0.78f, 1f)
-    // v2.20：渐隐放缓（0.17→0.15/行，下限提高到 0.14），远处倾斜行更可见，立体感更明显
-    val lineAlpha = if (active) 1f else (1f - absDist * 0.15f).coerceIn(0.14f, 1f)
+    // v2.20.3：整墙透视已负责“远小近大”的主体效果，每行只做轻量额外收敛，
+    // 彻底去掉每行 rotationX（旧版把矮行自转 = 行被压扁的“挤压感”元凶）
+    val scale = if (active) 1.12f else (1f - (absDist * 0.045f)).coerceIn(0.62f, 1f)
+    val lineAlpha = if (active) 1f else (1f - absDist * 0.13f).coerceIn(0.12f, 1f)
 
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -464,20 +540,18 @@ private fun LyricLineItem(
             .clickable(onClick = onClick)
             .padding(horizontal = 18.dp, vertical = 9.dp)
             .graphicsLayer {
-                // v2.19/v2.20：绘制期实时读取最新设置 —— 倾斜强度/最大倾角滑条一变，
-                // 快照读触发图层失效重绘，立即生效（不再依赖重组传播）。
-                // v2.20 立体感增强：① 透视相机 1000→700（同样角度纵深翻倍）；
-                // ② 远行随倾斜强度额外缩小（景深线索，形成纵深隧道感）
+                // 纵深强度 tilt3d（0-45）：控制远行额外缩小/变暗与消失点漂移幅度，
+                // 图层块内直读快照 State，滑条一变立即重绘（v2.19 机制）
                 val s = settingsProvider()
-                rotationX = (-animDist * s.tilt3d).coerceIn(-s.tilt3dMax, s.tilt3dMax)
-                cameraDistance = 700f * density
-                // v2.20.2 修复：GraphicsLayerScope（Compose UI 1.6.x）没有 translationZ 属性，
-                // 纵深改用等价景深线索——远行随倾斜强度额外缩小（隧道感保留）；
-                // 图层块内读倾斜快照，滑条一变立即生效（与 v2.19 机制一致）
-                val depthScale = 1f - (absDist * s.tilt3d * 0.006f).coerceIn(0f, 0.22f)
-                scaleX = scale * depthScale
-                scaleY = scale * depthScale
-                alpha = lineAlpha
+                val k = (absDist * s.tilt3d / 120f).coerceIn(0f, 1f)
+                val sc = scale * (1f - 0.30f * k)
+                scaleX = sc
+                scaleY = sc
+                alpha = lineAlpha * (1f - 0.25f * k)
+                // 朝消失点漂移（对照参考图3）：上方行向右上、下方行向左下
+                //（漂移量与纵深强度联动；0°/纵深 0 时完全复原平面模式）
+                translationX = (-animDist * s.tilt3d * 0.6f * density)
+                    .coerceIn(-140f * density, 140f * density)
             }
     ) {
         Text(

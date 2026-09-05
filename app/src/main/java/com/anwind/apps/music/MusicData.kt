@@ -199,12 +199,14 @@ data class MusicSettings(
     /** 封面模糊/自定义图片模式的背景压暗强度 0..0.95（v2.20 可调） */
     val lyricBgDim: Float = 0.85f,
     // ---- 3D 歌词 ----
-    /** 每行倾斜系数（度/行距），0 为平面 */
+    /** 立体纵深强度：远行缩小/变暗/朝消失点漂移的幅度（v2.20.3 语义，0 为平面） */
     val tilt3d: Float = 14f,
-    /** 单行最大倾斜角（度） */
+    /** [已弃用 v2.20.3] 旧版每行最大倾角，仅保留兼容旧 settings.json，不再有 UI */
     val tilt3dMax: Float = 44f,
     /** 整面歌词墙绕 Y 轴视角（度），0 为正对 */
     val wallRotateY: Float = -14f,
+    /** 整面歌词墙绕 X 轴俯仰角（度，正 = 顶部向后倒），v2.20.3 新增 */
+    val wallTiltX: Float = 16f,
     /** 当前行字号（sp），非当前行按比例缩小 */
     val lyricFontSize: Int = 22,
     /** 行切换平滑动画 */
@@ -349,6 +351,7 @@ class MusicStore(private val context: Context) {
             tilt3d = o.optDouble("tilt3d", 14.0).toFloat().coerceIn(0f, 45f),
             tilt3dMax = o.optDouble("tilt3dMax", 44.0).toFloat().coerceIn(0f, 90f),
             wallRotateY = o.optDouble("wallRotateY", -14.0).toFloat().coerceIn(-60f, 60f),
+            wallTiltX = o.optDouble("wallTiltX", 16.0).toFloat().coerceIn(-45f, 45f),
             lyricFontSize = o.optInt("lyricFontSize", 22).coerceIn(12, 60),
             lyricDynamic = o.optBoolean("lyricDynamic", true),
             lyricGlow = o.optBoolean("lyricGlow", true),
@@ -380,6 +383,7 @@ class MusicStore(private val context: Context) {
                     .put("tilt3d", s.tilt3d.toDouble())
                     .put("tilt3dMax", s.tilt3dMax.toDouble())
                     .put("wallRotateY", s.wallRotateY.toDouble())
+                    .put("wallTiltX", s.wallTiltX.toDouble())
                     .put("lyricFontSize", s.lyricFontSize)
                     .put("lyricDynamic", s.lyricDynamic)
                     .put("lyricGlow", s.lyricGlow)
