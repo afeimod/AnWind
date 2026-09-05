@@ -1,0 +1,34 @@
+#!/data/data/com.anwind/files/usr/bin/sh
+# ============================================================
+# AnWind dpkg 包装器
+# ============================================================
+# 官方仓库的 deb 全部按 /data/data/com.termux 前缀构建（tar 成员
+# 路径即绝对路径 data/data/com.termux/...），dpkg 以 instdir=/
+# 按成员路径落盘——不重写就会写进别的应用的数据目录。
+#
+# 本包装器：
+#   1) 参数中的 *.deb 先经 anwind-debfix 重打包为 com.anwind 前缀；
+#   2) 真正的 dpkg（dpkg.real）执行；
+#   3) 返回后运行 anwind-reprefix 增量重写（安全网：修补任何
+#      未覆盖到的已安装文件内容）。
+# 覆盖范围：apt / pkg / 直接 dpkg -i / grun-install 等全部路径。
+# ============================================================
+
+REAL="/data/data/com.anwind/files/usr/libexec/anwind/dpkg.real"
+FIX="/data/data/com.anwind/files/usr/bin/anwind-debfix"
+REPREFIX="/data/data/com.anwind/files/usr/bin/anwind-reprefix"
+
+for a in "$@"; do
+    case "$a" in
+        *.deb) [ -f "$a" ] && [ -x "$FIX" ] && "$FIX" "$a" ;;
+    esac
+done
+
+"$REAL" "$@"
+rc=$?
+
+if [ -x "$REPREFIX" ]; then
+    "$REPREFIX" --quiet
+fi
+
+exit $rc

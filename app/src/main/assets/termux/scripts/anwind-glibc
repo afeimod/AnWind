@@ -1,0 +1,21 @@
+#!/data/data/com.anwind/files/usr/bin/sh
+# ============================================================
+# anwind-glibc — 一键安装 glibc 运行环境（官方 gpkg 流程）
+# ============================================================
+# glibc-repo 在 termux 主仓库（添加 gpkg 软件源并携带官方签名 key），
+# glibc-runner 来自 gpkg 源，提供 glibc 运行时与 grun 包装器。
+# 安装过程经 dpkg 包装器自动重写前缀，grun 在 AnWind 下开箱即用。
+# ============================================================
+set -e
+
+echo "[anwind-glibc] 1/2 安装 glibc-repo（termux 主仓库，添加 gpkg 源）..."
+pkg install -y glibc-repo
+
+echo "[anwind-glibc] 2/2 安装 glibc-runner（glibc 运行时 + grun）..."
+pkg install -y glibc-runner
+
+echo
+echo "[anwind-glibc] 完成。常用命令："
+echo "  grun <命令>          以 glibc 环境运行指定命令，如 grun ./a.out"
+echo "  grun-install <deb>   安装 glibc 版 .deb 软件包"
+echo "  更多用法见 github.com/termux/glibc-packages"

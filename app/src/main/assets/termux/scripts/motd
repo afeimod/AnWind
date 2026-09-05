@@ -1,0 +1,15 @@
+┌────────────────────────────────────────────┐
+│  AnWind Terminal · 真实 Termux 环境        │
+└────────────────────────────────────────────┘
+  pkg install <包名>   安装软件包（官方 apt 源）
+  pkg search <关键字>  搜索软件包
+  pkg update           更新软件源
+  anwind-glibc         一键安装 glibc 运行环境
+  theme win11          切换 AnWind 桌面主题
+  apps / start 浏览器  联动 AnWind 应用
+  help                 查看更多
+
+欢迎使用由 AnWind 移植的 Termux 环境。
+本环境基于 termux-packages 官方 bootstrap，
+已重写为 AnWind 的包名与路径前缀；
+官方源安装的软件包亦会自动完成前缀重写。

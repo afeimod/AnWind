@@ -18,18 +18,26 @@ import java.util.zip.ZipFile
  * 1. 从 APK assets 读取官方 bootstrap（termux-packages 官方构建产物，
  *    SHA-256 校验）；
  * 2. 解压到 `$filesDir/usr-staging`；
- * 3. **同长度路径重写**：把 bootstrap 中所有硬编码的
- *    `/data/data/com.termux/` 前缀改写为 `/data/data/com.anwind/`——
- *    包括 227 个 ELF 二进制内部（.rodata/.dynstr 的编译期路径）、
- *    501 个文本文件（shebang / apt 配置 / dpkg 数据库）以及
- *    SYMLINKS.txt 中的绝对路径符号链接。由于 `com.anwind` 与
- *    `com.termux` 逐字节等长，替换不改变任何文件长度与 ELF 结构，
- *    等效于"以 AnWind 的包名与路径重新编译"了整个根文件系统；
+ * 3. **同长度路径重写**：把 bootstrap 中所有硬编码的 `com.termux`
+ *    字节串改写为 `com.anwind`（裸包名模式，覆盖任意出现位置：
+ *    `/data/data/com.termux/...` 路径、`com.termux/cache` 缓存路径、
+ *    intent 组件名等）——包括 227 个 ELF 二进制内部（.rodata/.dynstr
+ *    的编译期路径）、572 个文本文件（shebang / apt 配置 / dpkg 数据库）
+ *    以及 SYMLINKS.txt。由于 `com.anwind` 与 `com.termux` 逐字节等长，
+ *    替换不改变任何文件长度与 ELF 结构，等效于"以 AnWind 的包名与
+ *    路径重新编译"了整个根文件系统；
  * 4. 按 Termux 官方规则设置可执行权限（bin/、libexec/、apt 辅助程序）；
  * 5. 创建官方 SYMLINKS.txt 中声明的符号链接；
  * 6. 原子重命名 staging → `$filesDir/usr`；
- * 7. 安装 AnWind 专属增强：profile.d/anwind.sh（theme/start 等桌面命令
- *    注入真实 bash）、命令 FIFO、AnWind 版 motd。
+ * 7. 安装 AnWind 专属增强（installAnWindExtras）：profile.d/anwind.sh
+ *    （theme/start 等桌面命令注入真实 bash）、命令 FIFO、motd；
+ * 8. 安装包工具链（installPackageToolchain）：原生 anwind-reprefix
+ *    重写工具 + dpkg 包装器 + anwind-debfix 重打包器——官方源的 deb
+ *    按 com.termux 前缀构建（tar 成员路径即绝对路径），安装前自动
+ *    重打包、装完再增量重写，保证 pkg/apt 装的软件开箱即用；
+ * 9. 存量安装增量迁移（migrateIfNeeded）：按修订号检测旧版本安装，
+ *    免清数据升级增强组件并全量重写既有文件。
+ */
  */
 object TermuxBootstrapInstaller {
 
@@ -38,6 +46,12 @@ object TermuxBootstrapInstaller {
      * 目录/可执行文件的属主读写执行权限，对齐官方 TermuxInstaller。
      */
     private const val PERMISSION_0700 = 448
+
+    /**
+     * 增强组件修订号：anwind.sh / 工具链 / motd 内容变更时 +1。
+     * 已安装的 bootstrap 检测到修订号落后时会自动增量迁移（免清数据）。
+     */
+    private const val EXTRAS_REVISION = 2
 
     /** 安装状态（Compose 界面订阅渲染）。 */
     sealed class InstallState {
@@ -49,6 +63,14 @@ object TermuxBootstrapInstaller {
 
     private val _state = MutableStateFlow<InstallState>(InstallState.NotInstalled)
     val state: StateFlow<InstallState> = _state
+
+    /**
+     * 增强组件（anwind.sh / dpkg 包装器 / 重写工具）是否就绪。
+     * 存量迁移在后台进行，完成前终端区域显示准备界面，避免首帧
+     * 会话读到尚未重写的旧配置。
+     */
+    private val _extrasReady = MutableStateFlow(false)
+    val extrasReady: StateFlow<Boolean> = _extrasReady
 
     private val installLock = Any()
 
@@ -147,24 +169,15 @@ object TermuxBootstrapInstaller {
                 processed++
                 val name = entry.name
                 if (name == "SYMLINKS.txt") {
-                    // 符号链接表：重写其中的绝对路径 target
-                    val text = zip.getInputStream(entry).readBytes().decodeToString()
+                    // 符号链接表：整表走包名等长重写（覆盖 target 中任意旧包名出现）
+                    val (rewritten, _) = rewriteLegacyPaths(zip.getInputStream(entry).readBytes())
+                    val text = rewritten.decodeToString()
                     for (rawLine in text.lineSequence()) {
                         val line = rawLine.trim()
                         if (line.isEmpty()) continue
                         val parts = line.split("←")
                         if (parts.size != 2) continue
-                        var target = parts[0]
-                        // 绝对路径符号链接的 target 指向旧前缀 → 重写到 AnWind
-                        if (target.startsWith(TermuxEnvironment.LEGACY_TERMUX_FILES_PREFIX) &&
-                            TermuxEnvironment.LEGACY_TERMUX_FILES_PREFIX !=
-                            TermuxEnvironment.ANWIND_FILES_PREFIX
-                        ) {
-                            target = target.replace(
-                                TermuxEnvironment.LEGACY_TERMUX_FILES_PREFIX,
-                                TermuxEnvironment.ANWIND_FILES_PREFIX
-                            )
-                        }
+                        val target = parts[0]
                         val linkPath = File(staging, parts[1]).absolutePath
                         File(linkPath).parentFile?.mkdirs()
                         symlinks.add(target to linkPath)
@@ -232,9 +245,18 @@ object TermuxBootstrapInstaller {
         val tmp = TermuxEnvironment.tmpDir(context)
         tmp.mkdirs()
 
-        // 7. AnWind 专属增强
+        // 6.5 apt/dpkg 运行期目录（libapt-pkg 编译的缓存路径在 App cache 下）
+        File(context.cacheDir, "apt/archives/partial").mkdirs()
+        File(prefix, "var/lib/apt/lists/partial").mkdirs()
+        File(prefix, "var/cache/apt/archives/partial").mkdirs()
+        File(prefix, "var/lib/anwind/debfix").mkdirs()
+
+        // 7. AnWind 专属增强 + 包工具链
         _state.value = InstallState.Installing(0.98f, "配置 AnWind 集成…")
         installAnWindExtras(context)
+        installPackageToolchain(context)
+        revisionFile(context).writeText("$EXTRAS_REVISION\n")
+        _extrasReady.value = true
 
         // 8. 清理缓存归档
         bootstrapFile.delete()
@@ -244,11 +266,17 @@ object TermuxBootstrapInstaller {
     // 路径重写引擎
     // ------------------------------------------------------------------
 
-    /** 旧前缀（含尾部斜杠）与旧包名，作为字节模式。 */
+    /**
+     * 旧/新包名，作为字节模式（等长）。裸包名匹配可覆盖任意出现位置：
+     * /data/data/com.termux/... 路径、/data/data/com.termux/cache 缓存
+     * 路径（files/ 之外，旧版仅重写 files/ 前缀时被遗漏——正是
+     * "E: Archives directory ... Permission denied" 的根因）、
+     * am/intent 组件名 com.termux/... 等。
+     */
     private val legacyPathBytes =
-        (TermuxEnvironment.LEGACY_TERMUX_FILES_PREFIX + "/").toByteArray(Charsets.UTF_8)
+        TermuxEnvironment.LEGACY_TERMUX_APP_PACKAGE.toByteArray(Charsets.UTF_8)
     private val anwindPathBytes =
-        (TermuxEnvironment.ANWIND_FILES_PREFIX + "/").toByteArray(Charsets.UTF_8)
+        TermuxEnvironment.ANWIND_APP_PACKAGE.toByteArray(Charsets.UTF_8)
 
     /**
      * 同长度字节重写：把 [legacyPathBytes] 的所有出现替换为
@@ -285,8 +313,8 @@ object TermuxBootstrapInstaller {
         }
         val text = raw.toString(Charsets.UTF_8)
         val replaced = text.replace(
-            TermuxEnvironment.LEGACY_TERMUX_FILES_PREFIX,
-            TermuxEnvironment.ANWIND_FILES_PREFIX
+            TermuxEnvironment.LEGACY_TERMUX_APP_PACKAGE,
+            TermuxEnvironment.ANWIND_APP_PACKAGE
         )
         return replaced.toByteArray(Charsets.UTF_8) to
                 (text.length - replaced.length).coerceAtLeast(0)
@@ -313,92 +341,162 @@ object TermuxBootstrapInstaller {
     private fun installAnWindExtras(context: Context) {
         val profileDir = File(TermuxEnvironment.etcDir(context), "profile.d")
         profileDir.mkdirs()
-        val fifoPath = TermuxEnvironment.commandFifoPath(context)
 
-        File(profileDir, "anwind.sh").writeText(
-            """
-            # ============================================================
-            # AnWind desktop integration (auto-generated by AnWind installer)
-            # 在真实 Termux shell 中提供 AnWind 桌面命令：
-            #   theme win95|xp|win7|win10|win11   切换桌面主题
-            #   start <app>                      打开 AnWind 应用
-            #   apps                             列出可打开的应用
-            #   open <url>                       用 AnWind 浏览器打开网址
-            #   winver                           显示 AnWind 版本信息
-            # 原理：命令写入 FIFO，由 App 主进程读取并执行。
-            # ============================================================
-
-            ANWIND_CMD_FIFO="${'$'}PREFIX/var/anwind.cmd"
-
-            _anwind_send() {
-                if [ -p "${'$'}ANWIND_CMD_FIFO" ]; then
-                    ( printf '%s\n' "${'$'}*" > "${'$'}ANWIND_CMD_FIFO" & ) 2>/dev/null
-                else
-                    echo "anwind: 命令桥不可用（App 未运行或 FIFO 缺失）" >&2
-                    return 1
-                fi
-            }
-
-            theme() {
-                if [ ${'#'} -eq 0 ]; then
-                    echo "用法: theme win95|xp|win7|win10|win11"
-                    return 1
-                fi
-                _anwind_send "theme ${'$'}*"
-            }
-
-            start() {
-                if [ ${'#'} -eq 0 ]; then
-                    echo "用法: start <应用名>，运行 apps 查看列表"
-                    return 1
-                fi
-                _anwind_send "start ${'$'}*"
-            }
-
-            apps() {
-                _anwind_send "apps"
-            }
-
-            open() {
-                if [ ${'#'} -eq 0 ]; then
-                    echo "用法: open <url>"
-                    return 1
-                fi
-                _anwind_send "open ${'$'}*"
-            }
-
-            winver() {
-                _anwind_send "winver"
-                echo "AnWind ${'$'}{ANWIND_VERSION:-2.21.5} (Termux ${'$'}{TERMUX_VERSION:-0.118.0} 移植)"
-            }
-            """.trimIndent()
+        // 桌面命令集成：anwind.sh（assets 定稿文件，$# 参数检查已验证）
+        copyAssetScript(
+            context, "termux/scripts/anwind.sh",
+            File(profileDir, "anwind.sh"), executable = false
+        )
+        // AnWind 版 motd（含 pkg / anwind-glibc 用速）
+        copyAssetScript(
+            context, "termux/scripts/motd",
+            File(TermuxEnvironment.etcDir(context), "motd"), executable = false
         )
 
         // 命令 FIFO
+        val fifoPath = TermuxEnvironment.commandFifoPath(context)
         try {
             com.anwind.termux.terminal.TermuxBridge.createFifo(fifoPath)
         } catch (e: Exception) {
             android.util.Log.w(TAG, "FIFO 创建失败（桌面命令桥不可用）: ${e.message}")
         }
+    }
 
-        // AnWind 版 motd
-        File(TermuxEnvironment.etcDir(context), "motd").writeText(
-            """
-            ┌────────────────────────────────────────────┐
-            │  AnWind Terminal · 真实 Termux 环境        │
-            └────────────────────────────────────────────┘
-              pkg install <包名>   安装软件包（官方 apt 源）
-              pkg search <关键字>  搜索软件包
-              pkg update           更新软件源
-              theme win11          切换 AnWind 桌面主题
-              apps / start 浏览器  联动 AnWind 应用
-              help                 查看更多
+    // ------------------------------------------------------------------
+    // 包工具链：官方 deb 的前缀重打包 + 安装后增量重写
+    // ------------------------------------------------------------------
 
-            欢迎使用由 AnWind 移植的 Termux 环境。
-            本环境基于 termux-packages 官方 bootstrap，
-            已重写为 AnWind 的包名与路径前缀。
-            """.trimIndent() + "\n"
+    /**
+     * 安装包工具链（全新安装与存量迁移共用）。
+     *
+     * 背景：官方仓库的 deb 按 /data/data/com.termux 前缀构建，tar 成员
+     * 路径本身就是绝对路径 data/data/com.termux/...，而 dpkg 以
+     * instdir=/ 按成员路径落盘——不重写就会写进别的应用的数据目录。
+     * 所以：
+     * - 原生 anwind-reprefix（libanwind_reprefix.so，等长重写引擎）；
+     * - dpkg 包装器：参数中的 *.deb 先经 anwind-debfix 重打包为
+     *   com.anwind 前缀，dpkg.real 执行后再做增量重写（安全网）；
+     * - anwind-glibc：官方 gpkg 流程（glibc-repo + glibc-runner）。
+     */
+    private fun installPackageToolchain(context: Context) {
+        val prefix = TermuxEnvironment.prefixDir(context)
+
+        // (1) 原生重写工具（以 lib*.so 命名才会被 AGP 打包进 APK）
+        val nativeDir = context.applicationInfo.nativeLibraryDir
+        val src = File(nativeDir, "libanwind_reprefix.so")
+        if (src.isFile) {
+            val dst = File(prefix, "bin/anwind-reprefix")
+            src.copyTo(dst, overwrite = true)
+            Os.chmod(dst.absolutePath, PERMISSION_0700)
+        } else {
+            android.util.Log.w(TAG, "libanwind_reprefix.so 缺失，安装后自动重写不可用")
+        }
+
+        // (2) bin/dpkg → libexec/anwind/dpkg.real + 包装器
+        val realDpkg = File(prefix, "libexec/anwind/dpkg.real")
+        realDpkg.parentFile?.mkdirs()
+        val dpkg = File(prefix, "bin/dpkg")
+        if (dpkg.isFile && !isOurWrapper(dpkg)) {
+            if (!dpkg.renameTo(realDpkg)) {
+                throw IllegalStateException("移动 dpkg 到 libexec/anwind/dpkg.real 失败")
+            }
+            // dpkg.real 不在任何 .list 清单里，显式补丁一次（存量迁移场景）
+            runReprefix(context, listOf("--file", realDpkg.absolutePath, "--quiet"))
+        }
+        copyAssetScript(
+            context, "termux/scripts/anwind-dpkg",
+            File(prefix, "bin/dpkg"), executable = true
         )
+
+        // (3) deb 重打包器 + glibc 一键脚本
+        copyAssetScript(
+            context, "termux/scripts/anwind-debfix",
+            File(prefix, "bin/anwind-debfix"), executable = true
+        )
+        copyAssetScript(
+            context, "termux/scripts/anwind-glibc",
+            File(prefix, "bin/anwind-glibc"), executable = true
+        )
+    }
+
+    /** bin/dpkg 是否已是本安装器写入的包装器（防重复移动真身）。 */
+    private fun isOurWrapper(f: File): Boolean {
+        val head = f.inputStream().use { input ->
+            val buf = ByteArray(128)
+            val n = input.read(buf)
+            if (n > 0) String(buf, 0, n, Charsets.UTF_8) else ""
+        }
+        return head.contains("anwind-dpkg") || head.contains("dpkg.real")
+    }
+
+    /**
+     * 存量安装的增量迁移（免清数据）：bootstrap 已装但增强组件修订号
+     * 落后时，重写 anwind.sh / motd（修复旧版本生成文件的语法问题）、
+     * 部署 dpkg 包装器与重写工具，并对既有前缀做一次全量重写——清理
+     * libapt-pkg.so 里 /data/data/com.termux/cache 等旧版仅重写 files/
+     * 前缀时遗漏的路径（正是 "E: Archives directory ... Permission
+     * denied" 报错的根因）。幂等：完成后写入修订号。
+     */
+    fun migrateIfNeeded(context: Context) {
+        if (!isInstalled(context)) return
+        if (isRevisionCurrent(context)) {
+            _extrasReady.value = true
+            return
+        }
+        synchronized(installLock) {
+            if (isRevisionCurrent(context)) {
+                _extrasReady.value = true
+                return
+            }
+            try {
+                installPackageToolchain(context)
+                runReprefix(context, listOf("--full"))
+                installAnWindExtras(context)
+                revisionFile(context).writeText("$EXTRAS_REVISION\n")
+                android.util.Log.i(TAG, "Termux extras migrated to revision $EXTRAS_REVISION")
+            } catch (e: Exception) {
+                // 迁移失败不永久阻塞终端（降级为旧行为，bootstrap 本体完好）
+                android.util.Log.e(TAG, "extras migration failed", e)
+            } finally {
+                _extrasReady.value = true
+            }
+        }
+    }
+
+    private fun isRevisionCurrent(context: Context): Boolean {
+        val rev = revisionFile(context)
+        return rev.isFile && rev.readText().trim() == EXTRAS_REVISION.toString()
+    }
+
+    private fun revisionFile(context: Context): File =
+        File(TermuxEnvironment.prefixDir(context), "var/lib/anwind/install-revision")
+
+    /** 执行原生重写工具（失败不抛出——重写是尽力而为的安全网）。 */
+    private fun runReprefix(context: Context, args: List<String>) {
+        try {
+            val bin = File(TermuxEnvironment.binDir(context), "anwind-reprefix")
+            if (!bin.isFile || !bin.canExecute()) return
+            val process = ProcessBuilder(listOf(bin.absolutePath) + args).start()
+            process.inputStream.use { it.readBytes() }
+            process.errorStream.use { it.readBytes() }
+            process.waitFor()
+        } catch (e: Exception) {
+            android.util.Log.w(TAG, "anwind-reprefix 执行失败: ${e.message}")
+        }
+    }
+
+    /** 从 assets 拷贝脚本并按需赋予执行权限（内容为发布时审定的定稿）。 */
+    private fun copyAssetScript(
+        context: Context,
+        assetName: String,
+        dest: File,
+        executable: Boolean
+    ) {
+        dest.parentFile?.mkdirs()
+        context.assets.open(assetName).use { input ->
+            dest.outputStream().use { output -> input.copyTo(output, 64 * 1024) }
+        }
+        if (executable) Os.chmod(dest.absolutePath, PERMISSION_0700)
     }
 
     // ------------------------------------------------------------------

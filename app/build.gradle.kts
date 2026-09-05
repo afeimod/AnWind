@@ -80,8 +80,8 @@ android {
         // 唯一代价：Android 10+ 安装时提示“此应用为旧版 Android 打造”。
         // ============================================================
         targetSdk = 28
-        versionCode = 41
-        versionName = "2.22.0"
+        versionCode = 42
+        versionName = "2.22.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -174,6 +174,12 @@ android {
         kotlinCompilerExtensionVersion = "1.5.15"
     }
     packaging {
+        // native 库解压到 nativeLibraryDir（AGP 8 默认 extractNativeLibs=false
+        // 时库只留在 APK 内）：anwind-reprefix 可执行需要由安装器从
+        // nativeLibraryDir 拷贝进 $PREFIX/bin 才能被 shell 调用
+        jniLibs {
+            useLegacyPackaging = true
+        }
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }

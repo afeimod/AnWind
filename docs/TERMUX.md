@@ -1,6 +1,6 @@
 # AnWind Termux 移植技术文档
 
-> 版本：v2.22.0 · 基于 termux-app v0.118.0 + termux-packages bootstrap 2022.01.07-r1
+> 版本：v2.22.1 · 基于 termux-app v0.118.0 + termux-packages bootstrap 2022.01.07-r1
 >
 > 本文档说明 AnWind 终端的真实 Termux 移植架构，重点回答两个问题：
 > **官方 Termux 的路径和包名是锁死的，如何完整迁移到 AnWind 的包名与路径？**
@@ -117,6 +117,46 @@ JNI 函数名与 Kotlin 声明严格对应（`TermuxBridge` 检查点）：
 `anwind_bridge.c`（AnWind 专有 FIFO 桥，非上游代码）。
 
 ---
+### 2.4 官方源软件包的前缀重打包（v2.22.1 包工具链）
+
+bootstrap 重写只覆盖随 APK 内置的根文件系统；`pkg install` 从官方源下载的
+deb 是**按 `com.termux` 前缀构建**的——tar 成员路径本身就是绝对路径
+`./data/data/com.termux/files/usr/...`，而 dpkg 以 `instdir=/` 按成员路径
+落盘，不处理就会把文件写进别的应用的数据目录（直接安装失败）。为此
+v2.22.1 引入三层机制：
+
+```
+pkg install X
+  └─ apt 下载 deb（官方源，校验签名/哈希）
+       └─ dpkg 包装器（$PREFIX/bin/dpkg，真身在 libexec/anwind/dpkg.real）
+            ├─ anwind-debfix <deb>          ① 安装前：重打包
+            │    dpkg-deb -R 解包
+            │    anwind-reprefix --tree     等长改写目录名/文件内容/链接目标
+            │    dpkg-deb -b 原子回写       （成员路径变为 com.anwind）
+            ├─ dpkg.real --unpack …         ② 解包到 /data/data/com.anwind/...
+            └─ anwind-reprefix --quiet      ③ 装完后：按 dpkg info/*.list
+                                               增量重写（安全网，幂等）
+```
+
+- **anwind-reprefix**（`cpp/termux/anwind_reprefix.c`，可执行）：等长字节
+  替换引擎，`--file`（单文件）/ `--tree`（目录树）/ 清单增量（stamp 记账）
+  三种模式；只对含 `com.termux` 的文件做 mmap 原地写，其余零改动。
+- **等长改名**：deb 解包后 `data/data/com.termux/` 目录直接
+  `rename()` 为 `com.anwind/`（同名等长，内容不改）；
+- **维护者脚本权限归一**：`dpkg-deb -b` 要求 preinst/postinst/prerm/postrm
+  权限在 0555–0775，社区 deb 常有 644 脚本，debfix 重建前统一 chmod；
+- **幂等记账**：debfix 按 `文件名+大小+mtime` 记账（`var/lib/anwind/debfix/`），
+  重复安装不重复重打包；md5sums 中记录的哈希与改前内容一致（等长替换），
+  仅路径文本归一；
+- **覆盖面**：apt / pkg / 直接 `dpkg -i` / `grun-install` 全部走包装器；
+  apt 的 `DPkg::Post-Invoke` 未使用（termux apt 的钩子 shell 路径不保证），
+  机制不依赖任何 apt 钩子协议。
+- **已知取舍**：① 重建后的 deb 与索引哈希不一致，apt 在后续安装时会对该
+  缓存重新下载（正常现象，每次安装仅一轮）；② `dpkg --verify` 会因内容
+  等长改写报 md5 差异（不影响安装与运行）。
+
+
+---
 
 ## 3. 为什么 targetSdk 必须降到 28
 
@@ -209,10 +249,16 @@ pkg install python nodejs git vim nano openssh ffmpeg …
 pkg search <关键字>
 apt list --installed
 
+# glibc 运行环境（官方 gpkg 流程，v2.22.1 起开箱可用）
+anwind-glibc               # 一键：pkg install glibc-repo && glibc-runner
+grun ./a.out               # 以 glibc 环境运行（glibc-runner 提供）
+grun-install <deb>         # 安装 glibc 版 .deb
+
 # 与官方 Termux 的差异
 # - 服务器端（termux-api 等 companion app）功能不可用（未安装对应 App）
 # - termux-setup-storage 需手动执行且受限（AnWind 已有文件管理器，建议用 SAF）
 # - bootstrap 为 2022.01.07-r1 官方版；pkg update 后即与最新源同步
+# - 官方源 deb 由 dpkg 包装器自动重打包为 com.anwind 前缀（见 §2.4）
 
 # AnWind 桌面联动
 theme win11
@@ -239,7 +285,9 @@ open https://github.com
   `app/build.gradle.kts` 锁定，SDK Manager 直接安装同名版本）
 - `targetSdk 28` 是**功能性约束**，不要"顺手升级"（见 §3）
 - GitHub Actions 工作流已增加 NDK 安装步骤（`.github/workflows/build.yml`）
-- 原生库 `libtermux.so` 经 ndkBuild 构建（`app/src/main/cpp/termux/Android.mk`）
+- 原生库 `libtermux.so` 与可执行 `libanwind_reprefix.so` 经 ndkBuild 构建
+  （`app/src/main/cpp/termux/Android.mk`；可执行以 lib*.so 命名才会被 AGP
+  打包进 APK，安装期拷贝为 `$PREFIX/bin/anwind-reprefix`）
 
 ---
 
@@ -263,6 +311,7 @@ app/src/main/
 ├── cpp/termux/                    # 原生源码（NDK ndkBuild）
 │   ├── termux.c                   # 上游 PTY/JNI（符号改名）
 │   ├── anwind_bridge.c            # AnWind FIFO 桥
+│   ├── anwind_reprefix.c          # 包前缀等长重写引擎（可执行）
 │   └── Android.mk
 ├── java/com/anwind/termux/        # 上游 Java（包名改名，Apache-2.0）
 │   ├── terminal/                  # 13 个类
@@ -277,7 +326,9 @@ app/src/main/
 │       ├── AnWindShellBridge.kt           # shell→桌面命令桥
 │       └── (TermuxBridge.kt 位于 termux/terminal/)
 ├── assets/termux/
-│   └── bootstrap-aarch64.zip      # 官方 bootstrap（SHA-256 校验）
+│   ├── bootstrap-aarch64.zip      # 官方 bootstrap（SHA-256 校验）
+│   └── scripts/                   # anwind.sh / motd / anwind-dpkg /
+│                                  # anwind-debfix / anwind-glibc 定稿
 └── res/
     ├── drawable/text_select_handle_*.xml  # 文本选择手柄（上游）
     └── values/strings.xml         # +3 条终端字符串

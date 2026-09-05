@@ -34,6 +34,8 @@ import com.anwind.termux.view.TerminalView
 import com.anwind.core.window.AppDef
 import com.anwind.core.window.LaunchMode
 import com.anwind.core.window.WindowContentScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /**
  * 终端（真实 Termux 移植版）：
@@ -64,6 +66,12 @@ private fun TerminalContent(scope: WindowContentScope) {
 
     // 打开终端即触发按需安装（已安装则秒过），成功后启动桌面命令桥
     LaunchedEffect(Unit) {
+        // 存量安装增量迁移：修订号落后时自动升级增强组件（免清数据）——
+        // 重写 anwind.sh（修复旧版语法错误）、部署 dpkg 包装器与
+        // anwind-reprefix，并全量清理 libapt-pkg 等二进制里的 com.termux 残留
+        withContext(Dispatchers.IO) {
+            TermuxBootstrapInstaller.migrateIfNeeded(context)
+        }
         TermuxBootstrapInstaller.installIfNeeded(
             context,
             onDone = { AnWindShellBridge.start(context) },
@@ -84,8 +92,9 @@ private fun TerminalContent(scope: WindowContentScope) {
                 BootstrapFailedUI(st)
             }
             else -> {
-                if (TermuxBootstrapInstaller.isInstalled(context) ||
-                    installState is TermuxBootstrapInstaller.InstallState.Installed
+                val extrasReady by TermuxBootstrapInstaller.extrasReady.collectAsState()
+                if ((TermuxBootstrapInstaller.isInstalled(context) ||
+                    installState is TermuxBootstrapInstaller.InstallState.Installed) && extrasReady
                 ) {
                     RealTerminalArea(scope)
                 } else {

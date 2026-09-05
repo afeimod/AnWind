@@ -1,0 +1,73 @@
+#!/data/data/com.anwind/files/usr/bin/sh
+# ============================================================
+# anwind-debfix — 把官方仓库 deb 重打包为 AnWind 前缀
+# ============================================================
+# 官方 deb 按 /data/data/com.termux 前缀构建（tar 成员路径即绝对
+# 路径），不重写 dpkg 会把文件解到别的应用的数据目录。
+#
+# 原理: dpkg-deb -R 解包 → anwind-reprefix --tree 等长改写
+#       （目录名/文件内容/链接目标，com.termux→com.anwind 同为
+#       10 字节）→ dpkg-deb -b 原子回写。等长替换不改变任何文件
+#       大小，md5sums 中的哈希仍与改前内容一致。
+#
+# 用法:
+#   anwind-debfix <deb...>   手工转换（dpkg -i 前手动调用）
+#   (无参数)                 从 stdin 读 deb 路径（供钩子使用）
+# 幂等：按 文件名+大小+mtime 记账，重复调用直接跳过。
+# ============================================================
+set -u
+
+PREFIX=/data/data/com.anwind/files/usr
+REPREFIX=$PREFIX/bin/anwind-reprefix
+STAMP_DIR=$PREFIX/var/lib/anwind/debfix
+mkdir -p "$STAMP_DIR" 2>/dev/null
+
+process_one() {
+    deb="$1"
+    [ -f "$deb" ] || return 0
+    case "$deb" in
+        *.deb) ;;
+        *) return 0 ;;
+    esac
+    base=$(basename "$deb")
+    size=$(stat -c %s "$deb" 2>/dev/null || echo 0)
+    mtime=$(stat -c %Y "$deb" 2>/dev/null || echo 0)
+    stamp="$STAMP_DIR/$base.$size.$mtime"
+    [ -f "$stamp" ] && return 0
+    rm -f "$STAMP_DIR/$base."* 2>/dev/null
+
+    work=$(mktemp -d "$STAMP_DIR/work.XXXXXX") || return 1
+    if ! dpkg-deb -R "$deb" "$work/root" 2>/dev/null; then
+        rm -rf "$work"
+        return 1
+    fi
+    count=$("$REPREFIX" --tree "$work/root" 2>/dev/null || echo 0)
+    # 维护者脚本权限归一（dpkg-deb -b 要求 preinst/postinst/prerm/postrm
+    # 权限在 0555-0775 之间；社区 deb 常有 644 的脚本会直接被打包拒绝）
+    if [ -d "$work/root/DEBIAN" ]; then
+        for s in "$work/root/DEBIAN"/*; do
+            [ -f "$s" ] || continue
+            case "$(basename "$s")" in
+                preinst|postinst|prerm|postrm) chmod 0755 "$s" 2>/dev/null ;;
+                *)                             chmod 0644 "$s" 2>/dev/null ;;
+            esac
+        done
+    fi
+    if [ "$count" -gt 0 ]; then
+        if dpkg-deb -b "$work/root" "$work/out.deb" >/dev/null 2>&1; then
+            mv -f "$work/out.deb" "$deb"
+        fi
+    fi
+    : > "$stamp"
+    rm -rf "$work"
+    return 0
+}
+
+if [ $# -gt 0 ]; then
+    for d in "$@"; do process_one "$d"; done
+else
+    while IFS= read -r d; do
+        [ -n "$d" ] && process_one "$d"
+    done
+fi
+exit 0

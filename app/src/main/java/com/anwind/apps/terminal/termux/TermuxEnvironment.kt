@@ -107,6 +107,7 @@ object TermuxEnvironment {
 
         val env = mutableListOf<String>()
         env.add("TERMUX_VERSION=$TERMUX_APP_VERSION")
+        env.add("ANWIND_VERSION=${versionName(context)}")
         env.add("TERM=xterm-256color")
         env.add("COLORTERM=truecolor")
         env.add("HOME=${homePath(context)}")
@@ -137,6 +138,13 @@ object TermuxEnvironment {
 
     private fun addIfPresent(env: MutableList<String>, name: String) {
         System.getenv(name)?.let { env.add("$name=$it") }
+    }
+
+    /** 本应用版本名（运行期从 PackageManager 读取，供 winver 等展示）。 */
+    fun versionName(context: Context): String = try {
+        context.packageManager.getPackageInfo(context.packageName, 0).versionName
+    } catch (_: Exception) {
+        "unknown"
     }
 
     /**
