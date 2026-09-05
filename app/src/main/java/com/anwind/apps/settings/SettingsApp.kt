@@ -10,6 +10,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.*
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
@@ -454,7 +455,7 @@ private fun SystemSection() {
             Text("媒体音量（直接控制系统音量）", color = theme.secondaryTextColor, fontSize = 11.sp)
             Spacer(Modifier.height(8.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Default.VolumeUp, null, tint = theme.secondaryTextColor, modifier = Modifier.size(16.dp))
+                Icon(Icons.AutoMirrored.Filled.VolumeUp, null, tint = theme.secondaryTextColor, modifier = Modifier.size(16.dp))
                 Spacer(Modifier.width(12.dp))
                 Slider(
                     value = currentVolume.toFloat(),
@@ -626,7 +627,7 @@ private fun DisplaySettingsPage(onBack: () -> Unit) {
     Row(verticalAlignment = Alignment.CenterVertically) {
         IconButton(onClick = onBack) {
             Icon(
-                Icons.Default.ArrowBack, "返回",
+                Icons.AutoMirrored.Filled.ArrowBack, "返回",
                 tint = if (theme.isDark) Color.White else Color.Black
             )
         }
@@ -1785,7 +1786,7 @@ private fun PrivacySection() {
     Spacer(Modifier.height(8.dp))
 
     SettingsCard(
-        icon = Icons.Default.ForwardToInbox,
+        icon = Icons.AutoMirrored.Filled.ForwardToInbox,
         iconBackgroundColor = Color(0xFF6B69D6),
         title = "反馈中心",
         subtitle = "提交反馈、报告问题"

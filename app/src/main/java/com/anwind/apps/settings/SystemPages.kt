@@ -268,7 +268,7 @@ private fun printTestPage(context: Context) {
                         doc.close()
                         callback.onWriteFinished(arrayOf(android.print.PageRange.ALL_PAGES))
                     }.onFailure {
-                        callback.onWriteFailed(it?.message)
+                        callback.onWriteFailed(it.message)
                     }
                 }
             },

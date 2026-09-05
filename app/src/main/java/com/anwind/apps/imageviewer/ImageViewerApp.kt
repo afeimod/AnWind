@@ -20,7 +20,6 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.anwind.core.theme.LocalWinTheme
 import com.anwind.core.window.AppDef
 import com.anwind.core.window.LaunchMode
 import com.anwind.core.window.WindowContentScope
@@ -39,7 +38,6 @@ val ImageViewerApp = AppDef(
 
 @Composable
 private fun ImageViewerContent(scope: WindowContentScope) {
-    val theme = LocalWinTheme.current
     val context = LocalContext.current
 
     // 默认尝试加载主题壁纸

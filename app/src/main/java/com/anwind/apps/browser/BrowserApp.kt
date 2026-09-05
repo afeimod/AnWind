@@ -15,6 +15,7 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.*
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -364,7 +365,7 @@ private fun WebViewContainer(
     onRetry: () -> Unit = {}
 ) {
     val theme = LocalWinTheme.current
-    var progress by remember { mutableStateOf(if (tab.webView == null) 0 else 100) }
+    var loadProgress by remember { mutableStateOf(if (tab.webView == null) 0 else 100) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
 
     // 注册 UI 回调（带属主令牌：切换标签时只有仍持有路由的一方才清理，
@@ -384,8 +385,8 @@ private fun WebViewContainer(
                 // 标题经 tab.title 反映到标签栏
             }
 
-            override fun onProgressChanged(p: Int) {
-                progress = p
+            override fun onProgressChanged(progress: Int) {
+                loadProgress = progress
             }
 
             override fun onError(message: String?) {
@@ -511,9 +512,9 @@ private fun WebViewContainer(
         BrowserScrollbarOverlay(tab = tab)
 
         // 加载进度条
-        if (progress in 1 until 100) {
+        if (loadProgress in 1 until 100) {
             LinearProgressIndicator(
-                progress = { progress / 100f },
+                progress = { loadProgress / 100f },
                 modifier = Modifier
                     .fillMaxWidth()
                     .align(Alignment.TopCenter)
@@ -780,11 +781,11 @@ private fun Toolbar(
         verticalAlignment = Alignment.CenterVertically
     ) {
         IconButton(onClick = onBack, modifier = Modifier.size(36.dp)) {
-            Icon(Icons.Default.ArrowBack, contentDescription = "Back",
+            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back",
                 tint = if (theme.isDark) Color.White else Color.Black)
         }
         IconButton(onClick = onForward, modifier = Modifier.size(36.dp)) {
-            Icon(Icons.Default.ArrowForward, contentDescription = "Forward",
+            Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = "Forward",
                 tint = if (theme.isDark) Color.White else Color.Black)
         }
         IconButton(onClick = onRefresh, modifier = Modifier.size(36.dp)) {

@@ -38,7 +38,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.hapticfeedback.HapticFeedback
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -176,8 +175,6 @@ fun VirtualKeyboardOverlay() {
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
         val screenWpx = with(density) { maxWidth.toPx() }
         val screenHpx = with(density) { maxHeight.toPx() }
-        val kbWidth: Dp = if (maxWidth - 12.dp < (760 * scale).dp) maxWidth - 12.dp
-        else (760 * scale).dp
         val keyH = (42 * scale).dp
         val funcH = (32 * scale).dp
         val gap = (3 * scale).dp
@@ -238,7 +235,6 @@ fun VirtualKeyboardOverlay() {
                 ) {
                     ToolbarChip(
                         "☰", theme, scale,
-                        dragEnabled = dragEnabled,
                         onTap = { /* 提示：按住拖动 */ },
                         onDrag = { change, amount ->
                             if (dragEnabled) {
@@ -288,7 +284,6 @@ fun VirtualKeyboardOverlay() {
                         KeyButton(
                             "Esc", 1f, theme, keyH = funcH, scale = scale,
                             special = true, touchFeedback = touchFeedback,
-                            haptic = haptic, vibrate = vibrate,
                             onTapKey = { tapFeedback() },
                             onClick = { onKey(SPECIAL_KEYS.first { it.label == "Esc" }) },
                             modifier = Modifier.weight(1.1f)
@@ -297,7 +292,6 @@ fun VirtualKeyboardOverlay() {
                             KeyButton(
                                 "F$i", 1f, theme, keyH = funcH, scale = scale,
                                 special = true, touchFeedback = touchFeedback,
-                                haptic = haptic, vibrate = vibrate,
                                 onTapKey = { tapFeedback() },
                                 onClick = { onKey(FN_KEY) },
                                 modifier = Modifier.weight(1f)
@@ -339,7 +333,6 @@ fun VirtualKeyboardOverlay() {
                                         showShifted = k.action == KbAction.Char && shiftState > 0,
                                         shiftedLabel = k.shifted,
                                         touchFeedback = touchFeedback,
-                                        haptic = haptic, vibrate = vibrate,
                                         onTapKey = { tapFeedback() },
                                         onClick = { onKey(k) },
                                         modifier = Modifier.weight(k.weight)
@@ -364,7 +357,6 @@ fun VirtualKeyboardOverlay() {
                                         KeyButton(
                                             k.label, k.weight, theme, keyH = keyH, scale = scale,
                                             special = k.special, touchFeedback = touchFeedback,
-                                            haptic = haptic, vibrate = vibrate,
                                             onTapKey = { tapFeedback() },
                                             onClick = { onKey(k) },
                                             modifier = Modifier.weight(k.weight)
@@ -394,7 +386,6 @@ fun VirtualKeyboardOverlay() {
                                 KeyButton(
                                     label, 1f, theme, keyH = keyH, scale = scale,
                                     special = true, touchFeedback = touchFeedback,
-                                    haptic = haptic, vibrate = vibrate,
                                     onTapKey = { tapFeedback() },
                                     onClick = { onKey(KbKey(label, null, 1f, true, action)) },
                                     modifier = Modifier.fillMaxWidth()
@@ -415,7 +406,6 @@ fun VirtualKeyboardOverlay() {
                                 KeyButton(
                                     "↑", 1f, theme, keyH = keyH, scale = scale,
                                     special = true, touchFeedback = touchFeedback,
-                                    haptic = haptic, vibrate = vibrate,
                                     onTapKey = { tapFeedback() },
                                     onClick = { onKey(KbKey("↑", null, 1f, true, KbAction.Up)) },
                                     modifier = Modifier.weight(1f)
@@ -429,7 +419,6 @@ fun VirtualKeyboardOverlay() {
                                 KeyButton(
                                     "←", 1f, theme, keyH = keyH, scale = scale,
                                     special = true, touchFeedback = touchFeedback,
-                                    haptic = haptic, vibrate = vibrate,
                                     onTapKey = { tapFeedback() },
                                     onClick = { onKey(KbKey("←", null, 1f, true, KbAction.Left)) },
                                     modifier = Modifier.weight(1f)
@@ -437,7 +426,6 @@ fun VirtualKeyboardOverlay() {
                                 KeyButton(
                                     "↓", 1f, theme, keyH = keyH, scale = scale,
                                     special = true, touchFeedback = touchFeedback,
-                                    haptic = haptic, vibrate = vibrate,
                                     onTapKey = { tapFeedback() },
                                     onClick = { onKey(KbKey("↓", null, 1f, true, KbAction.Down)) },
                                     modifier = Modifier.weight(1f)
@@ -445,7 +433,6 @@ fun VirtualKeyboardOverlay() {
                                 KeyButton(
                                     "→", 1f, theme, keyH = keyH, scale = scale,
                                     special = true, touchFeedback = touchFeedback,
-                                    haptic = haptic, vibrate = vibrate,
                                     onTapKey = { tapFeedback() },
                                     onClick = { onKey(KbKey("→", null, 1f, true, KbAction.Right)) },
                                     modifier = Modifier.weight(1f)
@@ -602,8 +589,6 @@ private fun KeyButton(
     showShifted: Boolean = false,
     shiftedLabel: String? = null,
     touchFeedback: Boolean,
-    haptic: HapticFeedback,
-    vibrate: Boolean,
     onTapKey: () -> Unit,
     onClick: () -> Unit,
     modifier: Modifier = Modifier
@@ -666,7 +651,6 @@ private fun ToolbarChip(
     theme: KbTheme,
     scale: Float,
     on: Boolean = false,
-    dragEnabled: Boolean = true,
     onTap: () -> Unit = {},
     onDragStart: () -> Unit = {},
     onDrag: (androidx.compose.ui.input.pointer.PointerInputChange, Offset) -> Unit = { _, _ -> },

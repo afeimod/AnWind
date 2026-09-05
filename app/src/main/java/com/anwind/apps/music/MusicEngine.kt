@@ -1,7 +1,7 @@
 package com.anwind.apps.music
 
 import android.content.Context
-import android.media.AudioManager
+import android.media.AudioAttributes
 import android.media.MediaPlayer
 import android.net.Uri
 import androidx.compose.runtime.getValue
@@ -265,8 +265,14 @@ class MusicEngine(context: Context) {
             }
             try {
                 player.reset()
-                // 音频流类型需在 idle 态设置（reset 之后、setDataSource 之前）
-                player.setAudioStreamType(AudioManager.STREAM_MUSIC)
+                // 音频属性需在 idle 态设置（reset 之后、setDataSource 之前）；
+                // setAudioStreamType 已弃用，改用等价 AudioAttributes（USAGE_MEDIA）
+                player.setAudioAttributes(
+                    AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_MEDIA)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                        .build()
+                )
                 player.setDataSource(appContext, Uri.parse(source))
                 pendingGen = myGen
                 player.prepareAsync()

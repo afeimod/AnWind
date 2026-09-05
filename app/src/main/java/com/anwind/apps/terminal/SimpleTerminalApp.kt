@@ -13,13 +13,11 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.anwind.core.input.keyboardAware
-import com.anwind.core.theme.LocalWinTheme
 import com.anwind.core.window.AppDef
 import com.anwind.core.window.LaunchMode
 import com.anwind.core.window.WindowContentScope
@@ -41,8 +39,6 @@ val SimpleTerminalApp = AppDef(
 
 @Composable
 private fun SimpleTerminalContent(scope: WindowContentScope) {
-    val theme = LocalWinTheme.current
-    val context = LocalContext.current
     val app = AnWindApp.get()
 
     var currentPath by remember { mutableStateOf("C:\\Users\\User") }
@@ -179,7 +175,7 @@ private fun SimpleTerminalLineView(line: SimpleTerminalLine) {
     )
 }
 
-private fun SimpleExecuteCommand(cmd: String, currentPath: String, app: AnWindApp): List<String> {
+private fun SimpleExecuteCommand(cmd: String, _currentPath: String, app: AnWindApp): List<String> {
     val parts = cmd.split(" ", limit = 2)
     val command = parts[0].lowercase()
     val args = if (parts.size > 1) parts[1] else ""

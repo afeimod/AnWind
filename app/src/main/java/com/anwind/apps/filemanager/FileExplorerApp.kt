@@ -26,6 +26,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.*
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -334,16 +335,11 @@ private fun FileExplorerContent(scope: WindowContentScope) {
     fun goBack() {
         if (backStack.isEmpty()) return
         forwardStack = forwardStack + listOfNotNull(currentRealDir)
+        // 栈元素均为非空路径（入栈统一走 listOfNotNull），无需空分支
         val prev = backStack.last()
         backStack = backStack.dropLast(1)
-        if (prev == null) {
-            // 退到首页
-            isThisPcHome = true
-            currentRealDir = null
-        } else {
-            isThisPcHome = false
-            currentRealDir = prev
-        }
+        isThisPcHome = false
+        currentRealDir = prev
     }
 
     fun goForward() {
@@ -351,13 +347,8 @@ private fun FileExplorerContent(scope: WindowContentScope) {
         backStack = backStack + listOfNotNull(currentRealDir)
         val next = forwardStack.last()
         forwardStack = forwardStack.dropLast(1)
-        if (next == null) {
-            isThisPcHome = true
-            currentRealDir = null
-        } else {
-            isThisPcHome = false
-            currentRealDir = next
-        }
+        isThisPcHome = false
+        currentRealDir = next
     }
 
     fun goUp() {
@@ -400,11 +391,11 @@ private fun FileExplorerContent(scope: WindowContentScope) {
         ) {
             // 侧边栏开关（窄屏适配：竖屏时可收起侧栏，把空间让给文件区）
             ToolbarIconButton(
-                if (showSidebar) Icons.Default.Menu else Icons.Default.MenuOpen,
+                if (showSidebar) Icons.Default.Menu else Icons.AutoMirrored.Filled.MenuOpen,
                 "侧边栏", theme
             ) { sidebarOverride = !showSidebar }
-            ToolbarIconButton(Icons.Default.ArrowBack, "后退", theme, enabled = backStack.isNotEmpty()) { goBack() }
-            ToolbarIconButton(Icons.Default.ArrowForward, "前进", theme, enabled = forwardStack.isNotEmpty()) { goForward() }
+            ToolbarIconButton(Icons.AutoMirrored.Filled.ArrowBack, "后退", theme, enabled = backStack.isNotEmpty()) { goBack() }
+            ToolbarIconButton(Icons.AutoMirrored.Filled.ArrowForward, "前进", theme, enabled = forwardStack.isNotEmpty()) { goForward() }
             ToolbarIconButton(Icons.Default.KeyboardArrowUp, "向上", theme, enabled = !isThisPcHome) { goUp() }
             ToolbarIconButton(Icons.Default.Refresh, "刷新", theme) { refresh() }
 
@@ -465,7 +456,7 @@ private fun FileExplorerContent(scope: WindowContentScope) {
             }
 
             ToolbarIconButton(
-                if (isGridView) Icons.Default.ViewList else Icons.Default.GridView,
+                if (isGridView) Icons.AutoMirrored.Filled.ViewList else Icons.Default.GridView,
                 "切换视图", theme
             ) { isGridView = !isGridView }
             ToolbarIconButton(Icons.Default.Add, "安装 APK", theme) {
@@ -685,7 +676,6 @@ private fun ThisPcHomeView(
     theme: com.anwind.core.theme.WinTheme,
     onOpenFolder: (File) -> Unit
 ) {
-    val context = LocalContext.current
     val scrollState = rememberScrollState()
 
     Column(
@@ -796,7 +786,6 @@ private fun DriveCell(
     }
     val usedGB = totalGB - valAvailGB
     val usagePct = if (totalGB > 0) (usedGB.toFloat() / totalGB.toFloat()).coerceIn(0f, 1f) else 0f
-    val usagePctInt = (usagePct * 100).toInt()
 
     Row(
         modifier = Modifier
@@ -1141,7 +1130,6 @@ private fun isMediaExtension(ext: String): Boolean {
  * - PDF/其他 → 系统 ACTION_VIEW Intent（FileProvider）
  */
 private fun openRealFile(context: Context, file: File) {
-    val name = file.name.lowercase()
     val ext = file.extension.lowercase()
     try {
         when {

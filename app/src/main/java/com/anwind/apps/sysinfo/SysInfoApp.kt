@@ -33,7 +33,7 @@ val SysInfoApp = AppDef(
 }
 
 @Composable
-private fun SysInfoContent(scope: WindowContentScope) {
+private fun SysInfoContent(_scope: WindowContentScope) {
     val theme = LocalWinTheme.current
     val context = LocalContext.current
 

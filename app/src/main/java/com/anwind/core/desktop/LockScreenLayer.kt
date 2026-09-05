@@ -24,7 +24,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Backspace
+import androidx.compose.material.icons.automirrored.filled.Backspace
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material3.Icon
@@ -448,7 +448,7 @@ private fun PinUnlockPanel(
                         ) {
                             if (key == '⌫') {
                                 Icon(
-                                    Icons.Default.Backspace,
+                                    Icons.AutoMirrored.Filled.Backspace,
                                     contentDescription = "退格",
                                     tint = if (theme.isDark) Color.White else Color.Black,
                                     modifier = Modifier.size(18.dp)

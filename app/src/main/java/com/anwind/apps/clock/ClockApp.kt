@@ -33,7 +33,7 @@ val ClockApp = AppDef(
 }
 
 @Composable
-private fun ClockContent(scope: WindowContentScope) {
+private fun ClockContent(_scope: WindowContentScope) {
     val theme = LocalWinTheme.current
     var tick by remember { mutableStateOf(System.currentTimeMillis()) }
 

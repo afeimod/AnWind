@@ -17,7 +17,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.BatteryFull
 import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.VolumeUp
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -99,16 +99,16 @@ fun Taskbar(
 
     when (theme.taskbarStyle) {
         TaskbarStyle.CLASSIC_95 -> TaskbarWin95(
-            theme = theme, taskbarHeight = taskbarHeight, startMenuOpen = startMenuOpen,
+            taskbarHeight = taskbarHeight, startMenuOpen = startMenuOpen,
             onStartClick = onStartClick, onOpenCalendar = onOpenCalendar,
             onOpenQuickSettings = onOpenQuickSettings, onOpenClockStyle = onOpenClockStyle,
-            tick = tick, showSeconds = showSeconds, timeFormat24h = timeFormat24h, modifier = modifier
+            tick = tick, timeFormat24h = timeFormat24h, modifier = modifier
         )
         TaskbarStyle.LUNA_XP -> TaskbarWinXp(
-            theme = theme, taskbarHeight = taskbarHeight, startMenuOpen = startMenuOpen,
+            taskbarHeight = taskbarHeight, startMenuOpen = startMenuOpen,
             onStartClick = onStartClick, onOpenCalendar = onOpenCalendar,
             onOpenQuickSettings = onOpenQuickSettings, onOpenClockStyle = onOpenClockStyle,
-            tick = tick, showSeconds = showSeconds, timeFormat24h = timeFormat24h, modifier = modifier
+            tick = tick, timeFormat24h = timeFormat24h, modifier = modifier
         )
         TaskbarStyle.AERO_7 -> TaskbarAero7(
             theme = theme, taskbarHeight = taskbarHeight, startMenuOpen = startMenuOpen,
@@ -173,7 +173,6 @@ private fun onPinnedClick(app: com.anwind.core.window.AppDef, wm: WindowManager)
  */
 @Composable
 private fun TaskbarWin95(
-    theme: WinTheme,
     taskbarHeight: Dp,
     startMenuOpen: Boolean,
     onStartClick: () -> Unit,
@@ -181,7 +180,6 @@ private fun TaskbarWin95(
     onOpenQuickSettings: () -> Unit,
     onOpenClockStyle: () -> Unit,
     tick: Long,
-    showSeconds: Boolean,
     timeFormat24h: Boolean,
     modifier: Modifier = Modifier
 ) {
@@ -439,7 +437,7 @@ private fun Win95Tray(
             horizontalArrangement = Arrangement.spacedBy(5.dp)
         ) {
             Icon(Icons.Default.Wifi, null, tint = Color(0xFF404040), modifier = Modifier.size(13.dp))
-            Icon(Icons.Default.VolumeUp, null, tint = Color(0xFF404040), modifier = Modifier.size(13.dp))
+            Icon(Icons.AutoMirrored.Filled.VolumeUp, null, tint = Color(0xFF404040), modifier = Modifier.size(13.dp))
         }
         // 时钟 → 日历（长按样式）
         Text(
@@ -480,7 +478,6 @@ private val XP_START_GREEN = listOf(Color(0xFF5BCE54), Color(0xFF3C9A20), Color(
  */
 @Composable
 private fun TaskbarWinXp(
-    theme: WinTheme,
     taskbarHeight: Dp,
     startMenuOpen: Boolean,
     onStartClick: () -> Unit,
@@ -488,7 +485,6 @@ private fun TaskbarWinXp(
     onOpenQuickSettings: () -> Unit,
     onOpenClockStyle: () -> Unit,
     tick: Long,
-    showSeconds: Boolean,
     timeFormat24h: Boolean,
     modifier: Modifier = Modifier
 ) {
@@ -692,7 +688,7 @@ private fun XpTray(
             horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
             Icon(Icons.Default.Wifi, null, tint = Color.White, modifier = Modifier.size(14.dp))
-            Icon(Icons.Default.VolumeUp, null, tint = Color.White, modifier = Modifier.size(14.dp))
+            Icon(Icons.AutoMirrored.Filled.VolumeUp, null, tint = Color.White, modifier = Modifier.size(14.dp))
             Icon(Icons.Default.BatteryFull, null, tint = Color.White, modifier = Modifier.size(14.dp))
         }
         Text(
@@ -1357,10 +1353,10 @@ private fun CenteredTaskbar(
                     )
                     Spacer(Modifier.width(2.dp))
                     runningOnly.forEach { w ->
-                        val app = AppRegistry.get(w.appId)
-                        if (app != null) {
+                        val appDef = AppRegistry.get(w.appId)
+                        if (appDef != null) {
                             TaskbarAppIcon(
-                                iconAsset = app.iconAsset,
+                                iconAsset = appDef.iconAsset,
                                 theme = theme,
                                 height = taskbarHeight,
                                 isRunning = true,
@@ -1572,7 +1568,7 @@ private fun ModernEraTray(
             horizontalArrangement = Arrangement.spacedBy(7.dp)
         ) {
             Icon(Icons.Default.Wifi, contentDescription = "WiFi", tint = iconTint, modifier = Modifier.size((height.value * 0.33f).coerceIn(13f, 18f).dp))
-            Icon(Icons.Default.VolumeUp, contentDescription = "音量", tint = iconTint, modifier = Modifier.size((height.value * 0.33f).coerceIn(13f, 18f).dp))
+            Icon(Icons.AutoMirrored.Filled.VolumeUp, contentDescription = "音量", tint = iconTint, modifier = Modifier.size((height.value * 0.33f).coerceIn(13f, 18f).dp))
             Icon(Icons.Default.BatteryFull, contentDescription = "电池", tint = iconTint, modifier = Modifier.size((height.value * 0.33f).coerceIn(13f, 18f).dp))
         }
 
@@ -1632,7 +1628,7 @@ private fun SystemTray(
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Icon(Icons.Default.Wifi, contentDescription = "WiFi", tint = theme.taskbarClockColor, modifier = Modifier.size(trayIconSize))
-            Icon(Icons.Default.VolumeUp, contentDescription = "音量", tint = theme.taskbarClockColor, modifier = Modifier.size(trayIconSize))
+            Icon(Icons.AutoMirrored.Filled.VolumeUp, contentDescription = "音量", tint = theme.taskbarClockColor, modifier = Modifier.size(trayIconSize))
             Icon(Icons.Default.BatteryFull, contentDescription = "电池", tint = theme.taskbarClockColor, modifier = Modifier.size(trayIconSize))
         }
 

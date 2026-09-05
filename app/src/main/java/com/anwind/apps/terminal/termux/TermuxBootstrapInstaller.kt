@@ -128,14 +128,11 @@ object TermuxBootstrapInstaller {
         verifyChecksum(bootstrapFile, arch)
 
         // 3. 预扫描：总字节数（进度分母）
-        var entryList: List<ZipEntry> = emptyList()
-        var totalUncompressed = 0L
-        ZipFile(bootstrapFile).use { zip ->
+        val (entryList, totalUncompressed) = ZipFile(bootstrapFile).use { zip ->
             val collected = mutableListOf<ZipEntry>()
             val en = zip.entries()
             while (en.hasMoreElements()) collected.add(en.nextElement())
-            entryList = collected
-            totalUncompressed = collected.sumOf { it.size }
+            collected to collected.sumOf { it.size }
         }
 
         // 4. 解压 + 路径重写 + 权限

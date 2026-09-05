@@ -18,6 +18,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.util.TypedValue
 import android.os.SystemClock
 import android.provider.Settings
 import android.text.SpannableString
@@ -511,7 +512,8 @@ class LyricOverlayService : Service() {
 
     /** 刷新一行文字：字号/描边宽度跟随设置；KTV 开启时当前行按播放进度逐字扫色 */
     private fun setLine(tv: OutlineTextView, text: String, sizeSp: Float, color: Int, isCurrent: Boolean) {
-        val wantPx = sizeSp * resources.displayMetrics.scaledDensity
+        // scaledDensity 已弃用（API 34）：TypedValue.applyDimension 为官方替代
+        val wantPx = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, sizeSp, resources.displayMetrics)
         if (kotlin.math.abs(tv.textSize - wantPx) > 0.5f) {
             tv.textSize = sizeSp
             tv.outlinePx = (sizeSp / 6f) * resources.displayMetrics.density

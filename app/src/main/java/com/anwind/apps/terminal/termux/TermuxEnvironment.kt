@@ -163,7 +163,9 @@ object TermuxEnvironment {
                                 val builder = StringBuilder()
                                 var i = 2
                                 while (i < bytesRead) {
-                                    val c = buffer[i].toChar()
+                                    // Byte.toChar() 已弃用（符号扩展语义）；
+                                    // 显式走 toInt().toChar() 保持逐字节解析 shebang 的行为
+                                    val c = buffer[i].toInt().toChar()
                                     if (c == ' ' || c == '\n') {
                                         if (builder.isNotEmpty()) {
                                             val executable = builder.toString()

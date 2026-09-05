@@ -36,8 +36,8 @@ import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SportsEsports
-import androidx.compose.material.icons.filled.VolumeOff
-import androidx.compose.material.icons.filled.VolumeUp
+import androidx.compose.material.icons.automirrored.filled.VolumeOff
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
@@ -83,8 +83,7 @@ import kotlin.math.roundToInt
 @Composable
 fun CalendarFlyout(
     theme: WinTheme,
-    modifier: Modifier = Modifier,
-    onDismiss: () -> Unit
+    modifier: Modifier = Modifier
 ) {
     val now = remember { Calendar.getInstance() }
     var displayYear by remember { mutableStateOf(now.get(Calendar.YEAR)) }
@@ -262,8 +261,7 @@ fun CalendarFlyout(
 fun QuickSettingsPanel(
     theme: WinTheme,
     modifier: Modifier = Modifier,
-    onOpenSettings: () -> Unit,
-    onDismiss: () -> Unit
+    onOpenSettings: () -> Unit
 ) {
     val context = LocalContext.current
     val app = AnWindApp.get()
@@ -518,7 +516,7 @@ fun QuickSettingsPanel(
             ) {
                 // 静音/恢复
                 Icon(
-                    if (volume == 0) Icons.Default.VolumeOff else Icons.Default.VolumeUp,
+                    if (volume == 0) Icons.AutoMirrored.Filled.VolumeOff else Icons.AutoMirrored.Filled.VolumeUp,
                     "静音/恢复",
                     tint = fg,
                     modifier = Modifier

@@ -406,7 +406,6 @@ fun DesktopEnvironment(
             when (popup) {
                 TrayPopup.CALENDAR -> CalendarFlyout(
                     theme = theme,
-                    onDismiss = { trayPopup = null },
                     modifier = Modifier
                         .align(Alignment.BottomEnd)
                         .padding(end = 8.dp, bottom = taskbarHeight + 8.dp)
@@ -424,7 +423,6 @@ fun DesktopEnvironment(
                             initialHeight = 520
                         )
                     },
-                    onDismiss = { trayPopup = null },
                     modifier = Modifier
                         .align(Alignment.BottomEnd)
                         .padding(end = 8.dp, bottom = taskbarHeight + 8.dp)
@@ -499,7 +497,8 @@ private object AutoStartRunner {
 private fun playStartupSound(context: Context, assetPath: String) {
     try {
         val mp = MediaPlayer()
-        val afd = context.assets.openFd(assetPath) ?: return
+        // openFd 失败时抛异常（返回值非空），由下方 catch 统一处理
+        val afd = context.assets.openFd(assetPath)
         mp.setDataSource(afd.fileDescriptor, afd.startOffset, afd.length)
         mp.setOnPreparedListener { it.start() }
         mp.setOnCompletionListener { it.release() }
@@ -605,7 +604,7 @@ private fun Modifier.desktopGestures(
                     if (enableTwoFinger && maxPointers == 2 && twoFingerCentroid != null &&
                         duration < viewConfiguration.longPressTimeoutMillis * 2
                     ) {
-                        onTwoFingerTap(twoFingerCentroid!!)
+                        onTwoFingerTap(twoFingerCentroid)
                     } else if (maxPointers == 1 &&
                         duration < viewConfiguration.doubleTapTimeoutMillis
                     ) {

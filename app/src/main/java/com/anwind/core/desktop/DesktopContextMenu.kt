@@ -19,7 +19,7 @@ import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.FormatPaint
 import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.Info
-import androidx.compose.material.icons.filled.Launch
+import androidx.compose.material.icons.automirrored.filled.Launch
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.Monitor
 import androidx.compose.material.icons.filled.Palette
@@ -156,7 +156,8 @@ fun DesktopContextMenu(
                             dragged = true
                         }
                     }
-                    val upChange = up ?: return@awaitEachGesture
+                    // while 循环退出即保证 up 非空（智能转换），无需冗余判空
+                    val upChange = up
                     // 点在面板内（含起/落任一点在内）不算"菜单外"，交给菜单项处理
                     val outside = panelBounds?.let { r ->
                         !r.contains(down.position) && !r.contains(upChange.position)
@@ -183,7 +184,7 @@ fun DesktopContextMenu(
                 val item = data.iconItem
                 val isShortcut = item.type != DesktopItemType.BUILTIN_APP
                 ContextMenuEntry(
-                    id = "open", icon = Icons.Default.Launch, label = L("打开"),
+                    id = "open", icon = Icons.AutoMirrored.Filled.Launch, label = L("打开"),
                     hoveredId = hoveredId, itemRects = itemRects
                 ) {
                     launchDesktopItem(item, wm)

@@ -51,6 +51,7 @@ internal const val INJECTED_POINTER_ID = 99
  *   Popup 的 ACTION_OUTSIDE dismiss —— "双指右键出菜单无法滑动选择"
  *   修复点。
  */
+@Suppress("UNUSED_PARAMETER") // onTwoFingerTap 为签名兼容保留（见下方注释）
 @Composable
 fun TrackpadGate(
     modifier: Modifier = Modifier,

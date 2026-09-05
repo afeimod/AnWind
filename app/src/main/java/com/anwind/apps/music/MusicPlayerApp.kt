@@ -38,7 +38,7 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
-import androidx.compose.material.icons.filled.VolumeUp
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Slider
@@ -919,7 +919,7 @@ private fun PlayerBar(
 
             // 音量
             Icon(
-                Icons.Filled.VolumeUp,
+                Icons.AutoMirrored.Filled.VolumeUp,
                 contentDescription = "音量",
                 tint = Mc.textSecondary,
                 modifier = Modifier.size(16.dp)

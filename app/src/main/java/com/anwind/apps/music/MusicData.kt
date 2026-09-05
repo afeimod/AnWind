@@ -155,7 +155,7 @@ object LrcParser {
                     var best: Pair<Long, String>? = null
                     for ((tt, txt) in transMap) {
                         if (Math.abs(tt - t) <= 60) {
-                            if (best == null || Math.abs(tt - t) < Math.abs(best!!.first - t)) {
+                            if (best == null || Math.abs(tt - t) < Math.abs(best.first - t)) {
                                 best = tt to txt
                             }
                         }

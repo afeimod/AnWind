@@ -51,7 +51,7 @@ val CalculatorApp = AppDef(
  * - Error 态按数字/C 即恢复；⌫/CE/± 语义对齐 Windows 计算器。
  */
 @Composable
-private fun CalculatorContent(scope: WindowContentScope) {
+private fun CalculatorContent(_scope: WindowContentScope) {
     val theme = LocalWinTheme.current
     var display by remember { mutableStateOf("0") }
     var expression by remember { mutableStateOf("") }

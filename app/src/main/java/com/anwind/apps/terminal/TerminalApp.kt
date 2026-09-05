@@ -24,6 +24,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.foundation.layout.imePadding
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import com.anwind.apps.terminal.termux.AnWindShellBridge
 import com.anwind.apps.terminal.termux.ExtraKeysModifierState
 import com.anwind.apps.terminal.termux.TermuxBootstrapInstaller
@@ -653,7 +655,15 @@ private fun toggleSoftKeyboard(context: android.content.Context, view: TerminalV
     if (view == null) return
     val imm = context.getSystemService(android.content.Context.INPUT_METHOD_SERVICE)
             as android.view.inputmethod.InputMethodManager
-    imm.toggleSoftInput(android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT, 0)
+    // toggleSoftInput 已弃用（API 33）：改用 WindowInsetsCompat 判断 IME 可见性，
+    // 再显式收起/拉起 —— 行为与官方 Termux 的键盘切换一致。
+    val imeVisible = ViewCompat.getRootWindowInsets(view)
+        ?.isVisible(WindowInsetsCompat.Type.ime()) == true
+    if (imeVisible) {
+        imm.hideSoftInputFromWindow(view.windowToken, 0)
+    } else {
+        imm.showSoftInput(view, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT)
+    }
     view.requestFocus()
 }
 

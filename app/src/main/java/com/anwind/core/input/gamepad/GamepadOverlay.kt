@@ -89,7 +89,6 @@ fun GamepadOverlay() {
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
         val screenWpx = with(LocalDensity.current) { maxWidth.toPx() }
         val screenHpx = with(LocalDensity.current) { maxHeight.toPx() }
-        val editMode = GamepadController.editMode
 
         // ===== 手柄元素 =====
         GamepadController.elements.forEach { element ->
@@ -231,7 +230,9 @@ private fun GamepadElementHost(
                 } else Modifier
             )
     ) {
-        content(editBlocked = editMode)
+        // 注：composable 函数类型调用不支持具名参数（Kotlin 2.0 起报错），
+        // 这里的 editBlocked 必须按位置传递
+        content(editMode)
 
         // 编辑模式删除角标
         if (editMode) {
