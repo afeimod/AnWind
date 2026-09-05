@@ -38,7 +38,6 @@ import java.util.zip.ZipFile
  * 9. 存量安装增量迁移（migrateIfNeeded）：按修订号检测旧版本安装，
  *    免清数据升级增强组件并全量重写既有文件。
  */
- */
 object TermuxBootstrapInstaller {
 
     /**
