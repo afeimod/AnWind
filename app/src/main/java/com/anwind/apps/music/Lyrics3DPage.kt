@@ -55,6 +55,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
@@ -65,7 +66,9 @@ import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.clipPath
+import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -74,16 +77,16 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.anwind.apps.music.MusicStore as Store
+import kotlinx.coroutines.delay
 import kotlin.math.roundToInt
 
 /**
- * 3D 歌词秀（v2.17 图1；v2.20.3 对照参考图3 重构为真透视歌词墙）
- * - 深色沉浸背景：封面大图模糊铺底 + 黑色渐变压暗
- * - 左侧：圆角封面卡片 + 右后方探出的旋转 CD（盘面印封面 + 唱片纹理，播放时旋转）
- * - 右侧：真 3D 透视歌词墙 —— 整面墙绕 X 轴俯仰 + 绕 Y 轴偏航（透视相机拉近到
- *   500*density，远行自然变小/收拢，对照参考图3 的右上角消失点）；每行不再自转
- *   （旧版每行 rotationX 是“挤压感”元凶），只做纵深缩小/变暗/朝消失点漂移；
- *   行切换时 animateFloatAsState 平滑过渡，点击任意行跳转播放
+ * 3D 歌词秀（v2.17 图1；v2.20.3 真透视歌词墙；v2.21 行内左右字体差 + KTV 渐进 + 自定义封面/光盘）
+ * - 深色沉浸背景：封面大图模糊铺底 + 黑色渐变压暗（v2.21 默认接近清晰/最亮）
+ * - 左侧：圆角封面卡片 + 右后方探出的旋转 CD（v2.21 封面/光盘均可自定义图片）
+ * - 右侧：真 3D 透视歌词墙 —— 整面墙绕 X 轴俯仰 + 绕 Y 轴偏航；每行叠加
+ *   「左右字体差」行内透视（rotationY，左边缘远/小、右边缘近/大，v2.21 新增滑条）；
+ *   当前行支持高亮颜色与 KTV 渐进填色（按播放进度从左向右扫开）
  * - 左上角《歌名》— 歌手标题，右下角模式/上一首/播放/下一首/歌词下载控制
  *
  * v2.19 设置即时生效机制保留：组合期在自身作用域直读快照 State（settingsProvider()），
@@ -101,6 +104,8 @@ fun Lyrics3DPage(
     playMode: Int,
     /** v2.19：设置提供者，每次调用返回最新 MusicSettings（快照读，即时生效） */
     settingsProvider: () -> MusicSettings,
+    /** v2.21：实时进度提供者（直读 MediaPlayer，供 KTV 逐字填充平滑扫色） */
+    positionProvider: () -> Long,
     onSeek: (Long) -> Unit,
     onToggle: () -> Unit,
     onNext: () -> Unit,
@@ -243,6 +248,8 @@ fun Lyrics3DPage(
                 ) {
                     CoverWithDisc(
                         coverUrl = song?.picUrl,
+                        customCover = settings.coverImage,
+                        customDisc = settings.discImage,
                         isPlaying = isPlaying
                     )
                 }
@@ -254,6 +261,7 @@ fun Lyrics3DPage(
                             doc = lyric,
                             positionMs = positionMs,
                             settingsProvider = settingsProvider,
+                            positionProvider = positionProvider,
                             onSeek = onSeek,
                             modifier = Modifier.fillMaxSize()
                         )
@@ -301,11 +309,16 @@ fun Lyrics3DPage(
 // ==================== 封面 + 旋转 CD ====================
 
 @Composable
-private fun CoverWithDisc(coverUrl: String?, isPlaying: Boolean) {
+private fun CoverWithDisc(
+    coverUrl: String?,
+    customCover: String?,
+    customDisc: String?,
+    isPlaying: Boolean
+) {
     val cdAngle = remember { Animatable(0f) }
     LaunchedEffect(isPlaying) {
+        // 播放时持续旋转（8s/圈），暂停时停在当前角度
         if (isPlaying) {
-            // 播放时持续旋转（8s/圈），暂停时停在当前角度
             while (true) {
                 cdAngle.animateTo(
                     cdAngle.value + 360f,
@@ -316,11 +329,15 @@ private fun CoverWithDisc(coverUrl: String?, isPlaying: Boolean) {
         }
     }
 
-    // v2.20.3：CD 盘面印上封面 —— 与 AsyncCover 共用 CoverCache（同 URL 只下载一次），
-    // 本地加载成功后两处同时显示（对照参考图3：盘面即封面图案 + 唱片纹理）
-    var discBmp by remember(coverUrl) { mutableStateOf(CoverCache.get(coverUrl ?: "")) }
-    LaunchedEffect(coverUrl) {
-        if (coverUrl.isNullOrEmpty()) {
+    // v2.21：盘面图优先级 —— 自定义光盘图片 > 自定义封面图片 > 歌曲专辑封面 > 银色回退
+    // v2.20.3：与 AsyncCover 共用 CoverCache（同 URL 只下载一次）
+    val context = LocalContext.current
+    val discSrc = customDisc ?: customCover
+    var discBmp by remember(coverUrl, discSrc) { mutableStateOf<Bitmap?>(null) }
+    LaunchedEffect(coverUrl, discSrc) {
+        if (!discSrc.isNullOrEmpty()) {
+            discBmp = loadBackgroundBitmap(context, discSrc, 600)
+        } else if (coverUrl.isNullOrEmpty()) {
             discBmp = null
         } else if (!CoverCache.isResolved(coverUrl)) {
             val loaded = loadBitmap(coverUrl)
@@ -340,14 +357,24 @@ private fun CoverWithDisc(coverUrl: String?, isPlaying: Boolean) {
                 .size(178.dp)
                 .offset(x = 66.dp)
         )
-        // 封面卡片（CD 左侧，压在光盘上）
-        AsyncCover(
-            url = coverUrl,
-            modifier = Modifier
-                .size(190.dp)
-                .shadow(18.dp, RoundedCornerShape(12.dp))
-                .clip(RoundedCornerShape(12.dp))
-        )
+        // 封面卡片（CD 左侧，压在光盘上）：v2.21 自定义封面图片优先
+        if (!customCover.isNullOrEmpty()) {
+            BgImage(
+                customCover,
+                Modifier
+                    .size(190.dp)
+                    .shadow(18.dp, RoundedCornerShape(12.dp))
+                    .clip(RoundedCornerShape(12.dp))
+            )
+        } else {
+            AsyncCover(
+                url = coverUrl,
+                modifier = Modifier
+                    .size(190.dp)
+                    .shadow(18.dp, RoundedCornerShape(12.dp))
+                    .clip(RoundedCornerShape(12.dp))
+            )
+        }
     }
 }
 
@@ -451,20 +478,23 @@ private fun DiscCanvas(angle: Float, cover: Bitmap?, modifier: Modifier = Modifi
 // ==================== 3D 歌词墙 ====================
 
 /**
- * 3D 透视歌词墙（v2.20.3 重构，对照参考图3）：
+ * 3D 透视歌词墙（v2.20.3 重构；v2.21 行内左右字体差 + KTV 渐进）：
  * - 整面墙真透视：绕 X 轴俯仰（wallTiltX，默认 16° 顶部向后倒）+ 绕 Y 轴偏航
  *   （wallRotateY，默认 -14°）+ 透视相机拉近到 500*density —— 远行自然变小、
  *   行距自然收拢，朝右上角消失点汇聚，倾斜/视角滑条一动就有明显视觉反馈
- * - 每行不再自转（旧版每行 rotationX 只会把矮行压扁 = “挤压感”元凶），
- *   仅按纵深强度做轻微额外缩小/变暗 + 朝消失点方向的横向漂移
- * - 行切换通过 animateFloatAsState 平滑过渡（可关闭）；
- *   设置在组合期直读快照 State，滑条一变直接重组生效（v2.19 机制）
+ * - v2.21「左右字体差」：每行叠加行内绕 Y 轴透视（lineYaw3d，负向旋转 →
+ *   左边缘远/小、右边缘近/大），近距相机下形成明显梯形，即经典 3D 歌词观感
+ * - 每行仅按纵深强度做轻量额外缩小/变暗 + 朝消失点方向的横向漂移；
+ *   行切换通过 animateFloatAsState 平滑过渡（可关闭）
+ * - 当前行高亮颜色可调；开启 KTV 模式后按播放进度从左向右渐进出色（clipRect 扫掠）
+ * - 设置在组合期直读快照 State，滑条一变直接重组生效（v2.19 机制）
  */
 @Composable
 private fun LyricsWall(
     doc: LyricsDoc,
     positionMs: Long,
     settingsProvider: () -> MusicSettings,
+    positionProvider: () -> Long,
     onSeek: (Long) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -502,7 +532,9 @@ private fun LyricsWall(
                 LyricLineItem(
                     line = line,
                     distance = i - idx,
+                    lineEndMs = doc.lines.getOrNull(i + 1)?.timeMs ?: (line.timeMs + 6000L),
                     settingsProvider = settingsProvider,
+                    positionProvider = positionProvider,
                     onClick = { onSeek(line.timeMs) }
                 )
             }
@@ -514,7 +546,9 @@ private fun LyricsWall(
 private fun LyricLineItem(
     line: LyricLine,
     distance: Int,
+    lineEndMs: Long,
     settingsProvider: () -> MusicSettings,
+    positionProvider: () -> Long,
     onClick: () -> Unit
 ) {
     // 组合期读取（v2.19）：字号/发光/翻译/动画开关 —— 所在作用域直读快照 State
@@ -552,27 +586,46 @@ private fun LyricLineItem(
                 //（漂移量与纵深强度联动；0°/纵深 0 时完全复原平面模式）
                 translationX = (-animDist * s.tilt3d * 0.6f * density)
                     .coerceIn(-140f * density, 140f * density)
+                // v2.21 左右字体差：行内绕 Y 轴透视，负角度 = 左边缘远/小、右边缘近/大，
+                // 近距相机（420*density）下形成明显梯形 —— 经典 3D 歌词观感；
+                // 高度方向不压缩，不会产生旧版 rotationX 的“挤压感”
+                rotationY = -s.lineYaw3d
+                cameraDistance = 420f * density
             }
     ) {
-        Text(
-            text = line.text.ifBlank { "···" },
-            fontSize = if (active) settings.lyricFontSize.sp
-            else (settings.lyricFontSize * 0.77f).roundToInt().sp,
-            fontWeight = if (active) FontWeight.Bold else FontWeight.Normal,
-            color = if (active) Color.White else Color(0xFFD5D5DE),
-            style = if (active && settings.lyricGlow) {
-                TextStyle(
-                    shadow = Shadow(
-                        color = Color.White.copy(alpha = 0.75f),
-                        blurRadius = 22f
+        if (active && settings.ktvMode) {
+            // v2.21 KTV 渐进样式：未唱灰字打底，已唱高亮色按播放进度从左向右扫开
+            KtvSweepText(
+                text = line.text.ifBlank { "···" },
+                fontSizeSp = settings.lyricFontSize,
+                fillColor = Color(settings.highlightColor),
+                glow = settings.lyricGlow,
+                lineStartMs = line.timeMs,
+                lineEndMs = lineEndMs,
+                positionProvider = positionProvider
+            )
+        } else {
+            Text(
+                text = line.text.ifBlank { "···" },
+                fontSize = if (active) settings.lyricFontSize.sp
+                else (settings.lyricFontSize * 0.77f).roundToInt().sp,
+                fontWeight = if (active) FontWeight.Bold else FontWeight.Normal,
+                // v2.21：当前行颜色可自定义（默认白）
+                color = if (active) Color(settings.highlightColor) else Color(0xFFD5D5DE),
+                style = if (active && settings.lyricGlow) {
+                    TextStyle(
+                        shadow = Shadow(
+                            color = Color(settings.highlightColor).copy(alpha = 0.75f),
+                            blurRadius = 22f
+                        )
                     )
-                )
-            } else {
-                TextStyle.Default
-            },
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis
-        )
+                } else {
+                    TextStyle.Default
+                },
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
         if (settings.showTranslation && !line.translation.isNullOrBlank()) {
             Text(
                 text = line.translation,
@@ -582,6 +635,60 @@ private fun LyricLineItem(
                 overflow = TextOverflow.Ellipsis
             )
         }
+    }
+}
+
+/**
+ * KTV 渐进填充文本（v2.21）：底层未唱灰字 + 上层高亮色已唱文字，
+ * clipRect 按行内播放进度从左向右扫开。
+ * 50ms 节拍直读 positionProvider（MusicEngine.rawPositionMs()，MediaPlayer 原生位置，
+ * 非 300ms 状态 tick），扫色平滑；状态读发生在绘制阶段，不触发重组。
+ */
+@Composable
+private fun KtvSweepText(
+    text: String,
+    fontSizeSp: Int,
+    fillColor: Color,
+    glow: Boolean,
+    lineStartMs: Long,
+    lineEndMs: Long,
+    positionProvider: () -> Long
+) {
+    var frac by remember(lineStartMs, lineEndMs) { mutableStateOf(0f) }
+    LaunchedEffect(lineStartMs, lineEndMs) {
+        val span = (lineEndMs - lineStartMs).coerceAtLeast(1L)
+        while (true) {
+            frac = ((positionProvider() - lineStartMs).toFloat() / span).coerceIn(0f, 1f)
+            delay(50)
+        }
+    }
+    val glowStyle = if (glow) {
+        TextStyle(shadow = Shadow(color = fillColor.copy(alpha = 0.75f), blurRadius = 22f))
+    } else {
+        TextStyle.Default
+    }
+    Box {
+        Text(
+            text = text,
+            fontSize = fontSizeSp.sp,
+            fontWeight = FontWeight.Bold,
+            color = Color.White.copy(alpha = 0.34f),
+            style = glowStyle,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis
+        )
+        Text(
+            text = text,
+            fontSize = fontSizeSp.sp,
+            fontWeight = FontWeight.Bold,
+            color = fillColor,
+            style = glowStyle,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.drawWithContent {
+                clipRect(right = size.width * frac) { this@drawWithContent.drawContent() }
+            }
+        )
     }
 }
 

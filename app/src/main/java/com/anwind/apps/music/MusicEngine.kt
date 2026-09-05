@@ -67,6 +67,14 @@ class MusicEngine(context: Context) {
     var queueIndex by mutableStateOf(-1)
         private set
 
+    /**
+     * 实时进度（v2.21）：直读 MediaPlayer 原生位置，供 KTV 逐字填充等高频场景；
+     * 暂停/读取失败时回退到 500ms 步进的 positionMs 状态
+     */
+    fun rawPositionMs(): Long = runCatching {
+        if (isPlaying) player.currentPosition.toLong() else positionMs
+    }.getOrDefault(positionMs)
+
     // ==================== 内部 ====================
 
     private val player = MediaPlayer()

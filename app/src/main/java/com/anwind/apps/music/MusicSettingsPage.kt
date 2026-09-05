@@ -1,5 +1,9 @@
 package com.anwind.apps.music
 
+import android.content.Intent
+import android.net.Uri
+import android.provider.Settings
+import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -44,17 +48,34 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
 /**
- * 播放器设置中心（v2.18 新增，v2.20 更新）：
+ * v2.21 当前行高亮 / 桌面歌词字体颜色预设（白 + 网易云红 + 经典卡拉OK七色）
+ */
+val LyricAccentColors = listOf(
+    Color(0xFFFFFFFF),
+    Color(0xFFEC4141),
+    Color(0xFFFFC53D),
+    Color(0xFF4DD0E1),
+    Color(0xFF66BB6A),
+    Color(0xFFBA68C8),
+    Color(0xFFFF8A50),
+    Color(0xFFF06292)
+)
+
+/**
+ * 播放器设置中心（v2.18 新增，v2.21 扩充）：
  * - 外观：主页背景（默认/纯色/渐变/自定义图片 + 压暗）—— 全局生效
  *   （侧栏/底栏半透明融合），图片/文件夹选择均拉起 AnWind 桌面文件资源管理器
- * - 歌词秀：背景自定义、封面模糊度与压暗可调、3D 倾斜参数（大范围）、
- *   字号（12-60sp）、行切换动画、高亮发光、翻译显示
+ * - 歌词秀：背景自定义、封面/光盘/背景三类图片均可自定义、封面模糊度与压暗可调、
+ *   3D 倾斜参数（大范围）、左右字体差、当前行高亮颜色、KTV 渐进样式、字号、
+ *   行切换动画、高亮发光、翻译显示
+ * - 桌面歌词：开关（引导悬浮窗权限）、两行/全屏双模式、字体颜色、背景不透明度、字号
  * - 词源：智能回退 / 酷我 / 网易云 / QQ 音乐 / LRCLIB 优先级
  * - 本地扫描：全库 / 仅指定目录（目录列表 + 文件夹选择 + 手动输入）
  * 所有修改即时持久化（onChange → saveMusicSettings），滑条拖动过程中实时生效。
@@ -65,10 +86,13 @@ fun SettingsPage(
     onChange: (MusicSettings) -> Unit,
     onPickLyricImage: () -> Unit,
     onPickHomeImage: () -> Unit,
+    onPickCoverImage: () -> Unit,
+    onPickDiscImage: () -> Unit,
     onPickFolder: () -> Unit,
     onRescan: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val context = LocalContext.current
     Column(
         modifier = modifier
             .fillMaxSize()
@@ -99,6 +123,7 @@ fun SettingsPage(
                 )
                 MusicSettings.BG_IMAGE -> {
                     ImagePickRow(
+                        label = "主页背景图片",
                         picked = settings.homeBgImage != null,
                         onPick = onPickHomeImage,
                         onClear = { onChange(settings.copy(homeBgImage = null)) }
@@ -159,9 +184,22 @@ fun SettingsPage(
                 )
                 MusicSettings.BG_IMAGE -> {
                     ImagePickRow(
+                        label = "歌词秀背景图片",
                         picked = settings.lyricBgImage != null,
                         onPick = onPickLyricImage,
                         onClear = { onChange(settings.copy(lyricBgImage = null)) }
+                    )
+                    ImagePickRow(
+                        label = "封面图片",
+                        picked = settings.coverImage != null,
+                        onPick = onPickCoverImage,
+                        onClear = { onChange(settings.copy(coverImage = null)) }
+                    )
+                    ImagePickRow(
+                        label = "光盘图片",
+                        picked = settings.discImage != null,
+                        onPick = onPickDiscImage,
+                        onClear = { onChange(settings.copy(discImage = null)) }
                     )
                     SettingSlider(
                         title = "背景压暗",
@@ -173,7 +211,7 @@ fun SettingsPage(
                     )
                 }
             }
-            Caption("封面模糊度与背景压暗均可调（模糊 0dp 为完全清晰）；其余模式仍叠加轻微暗层保证歌词可读性；点击选择拉起桌面文件资源管理器")
+            Caption("三类图片均可独立自定义：背景铺满歌词页、封面替换左侧卡片、光盘替换旋转碟片盘面；光盘留空时与封面同图，都留空则用歌曲专辑图")
         }
 
         SettingsSection("3D 歌词") {
@@ -202,6 +240,31 @@ fun SettingsPage(
                 onChange = { onChange(settings.copy(tilt3d = it)) }
             )
             SettingSlider(
+                title = "左右字体差（行内透视）",
+                display = "${settings.lineYaw3d.toInt()}°",
+                value = settings.lineYaw3d,
+                range = 0f..45f,
+                steps = 44,
+                onChange = { onChange(settings.copy(lineYaw3d = it)) }
+            )
+            Text(
+                text = "当前行高亮颜色",
+                fontSize = 12.sp,
+                color = Mc.textSecondary,
+                modifier = Modifier.padding(top = 10.dp)
+            )
+            ColorSwatchRow(
+                colors = LyricAccentColors,
+                selected = settings.highlightColor,
+                onSelect = { onChange(settings.copy(highlightColor = it)) }
+            )
+            SettingSwitch(
+                title = "KTV 渐进显示",
+                desc = "当前行按播放进度从左向右逐字填色（卡拉OK样式，未唱部分半透明灰）",
+                checked = settings.ktvMode,
+                onChange = { onChange(settings.copy(ktvMode = it)) }
+            )
+            SettingSlider(
                 title = "当前行字号",
                 display = "${settings.lyricFontSize}sp",
                 value = settings.lyricFontSize.toFloat(),
@@ -227,7 +290,73 @@ fun SettingsPage(
                 checked = settings.showTranslation,
                 onChange = { onChange(settings.copy(showTranslation = it)) }
             )
-            Caption("v2.20.3 真透视歌词墙：整面墙俯仰/偏航 + 纵深收敛（远行变小收拢、朝消失点漂移）；俯仰 0° + 视角 0° + 纵深 0 即为平面滚动歌词")
+            Caption("真透视歌词墙：整面墙俯仰/偏航 + 纵深收敛 + 每行左右字体差（左小右大梯形透视）；俯仰 0° + 视角 0° + 纵深 0 + 字体差 0 即为平面滚动歌词")
+        }
+
+        SettingsSection("桌面歌词") {
+            SettingSwitch(
+                title = "开启桌面歌词",
+                desc = "手机桌面悬浮歌词（需授予「显示在应用上层」权限；颜色/透明度/字号拖动即时生效）",
+                checked = settings.desktopLyricOn,
+                onChange = { enabled ->
+                    if (enabled && !Settings.canDrawOverlays(context)) {
+                        Toast.makeText(
+                            context,
+                            "请先授予 AnWind「显示在应用上层」权限，返回后再打开此开关",
+                            Toast.LENGTH_LONG
+                        ).show()
+                        runCatching {
+                            context.startActivity(
+                                Intent(
+                                    Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                    Uri.parse("package:${context.packageName}"
+                                    )).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                            )
+                        }
+                    } else {
+                        onChange(settings.copy(desktopLyricOn = enabled))
+                    }
+                }
+            )
+            if (settings.desktopLyricOn) {
+                Spacer(Modifier.height(8.dp))
+                ModeChipsRow(
+                    options = listOf(0 to "两行模式（参考图）", 1 to "桌面全屏歌词"),
+                    selected = if (settings.desktopLyricFullscreen) 1 else 0,
+                    onSelect = { onChange(settings.copy(desktopLyricFullscreen = it == 1)) }
+                )
+                Text(
+                    text = "字体颜色",
+                    fontSize = 12.sp,
+                    color = Mc.textSecondary,
+                    modifier = Modifier.padding(top = 10.dp)
+                )
+                ColorSwatchRow(
+                    colors = LyricAccentColors,
+                    selected = settings.desktopLyricColor,
+                    onSelect = { onChange(settings.copy(desktopLyricColor = it)) }
+                )
+                SettingSlider(
+                    title = "背景不透明度",
+                    display = "${(settings.desktopLyricBgAlpha * 100).toInt()}%",
+                    value = settings.desktopLyricBgAlpha,
+                    range = 0f..1f,
+                    steps = 19,
+                    onChange = { onChange(settings.copy(desktopLyricBgAlpha = it)) }
+                )
+                SettingSlider(
+                    title = "字号",
+                    display = "${settings.desktopLyricSize.toInt()}sp",
+                    value = settings.desktopLyricSize,
+                    range = 14f..40f,
+                    steps = 25,
+                    onChange = { onChange(settings.copy(desktopLyricSize = it)) }
+                )
+            }
+            Caption(
+                "两行模式：当前行左上、下一行右侧两个悬浮条（按住可拖动到任意位置）；全屏模式：通屏宽歌词横幅居中。" +
+                    "黑描边字体保证任意壁纸上可读；切歌/播放进度自动更新，关闭开关立即消失"
+            )
         }
 
         SettingsSection("歌词词源") {
@@ -314,7 +443,7 @@ fun SettingsPage(
 
         SettingsSection("关于") {
             Caption("音源：酷我（搜索 / 播放 / 下载） · 词源：酷我 / 网易云 / QQ 音乐 / LRCLIB")
-            Caption("AnWind 云音乐 v2.20.3 · 界面对照网易云音乐 PC 版 · 3D 歌词秀")
+            Caption("AnWind 云音乐 v2.21.0 · 界面对照网易云音乐 PC 版 · 3D 歌词秀 · 桌面歌词")
         }
         Spacer(Modifier.height(20.dp))
     }
@@ -437,7 +566,12 @@ private fun GradientSwatchRow(
 
 /** 图片选择行（选择/清除 + 状态说明） */
 @Composable
-private fun ImagePickRow(picked: Boolean, onPick: () -> Unit, onClear: () -> Unit) {
+private fun ImagePickRow(
+    label: String,
+    picked: Boolean,
+    onPick: () -> Unit,
+    onClear: () -> Unit
+) {
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier.padding(top = 10.dp)
@@ -450,7 +584,7 @@ private fun ImagePickRow(picked: Boolean, onPick: () -> Unit, onClear: () -> Uni
         )
         Spacer(Modifier.width(8.dp))
         Text(
-            text = if (picked) "已选择图片（点击可更换）" else "点击打开文件资源管理器选择图片",
+            text = if (picked) "已选择$label（点击可更换）" else "点击打开文件资源管理器选择$label",
             fontSize = 13.sp,
             color = Mc.textPrimary,
             modifier = Modifier

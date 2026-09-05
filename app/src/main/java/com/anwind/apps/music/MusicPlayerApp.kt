@@ -198,6 +198,12 @@ private fun MusicContent(scope: WindowContentScope) {
                 "lyricImage" -> updateSettings(
                     musicSettings.copy(lyricBgImage = path, lyricBgMode = MusicSettings.BG_IMAGE)
                 )
+                "coverImage" -> updateSettings(
+                    musicSettings.copy(coverImage = path)
+                )
+                "discImage" -> updateSettings(
+                    musicSettings.copy(discImage = path)
+                )
                 "folder" -> {
                     if (!musicSettings.scanDirs.contains(path)) {
                         updateSettings(musicSettings.copy(scanDirs = musicSettings.scanDirs + path))
@@ -288,6 +294,49 @@ private fun MusicContent(scope: WindowContentScope) {
             lyricLoading = true
             lyricDoc = fetchLyrics(engine.store, song, engine = musicSettings.lyricEngine)
             lyricLoading = false
+        }
+    }
+
+    // ===== v2.21 桌面歌词：播放状态推送到悬浮窗总线 =====
+    // 每次进度 tick（500ms）重新计算当前行/下一行；悬浮窗服务自身 200ms 轮询本总线
+    LaunchedEffect(engine.positionMs, lyricDoc, engine.currentSong?.key) {
+        val doc = lyricDoc
+        val song = engine.currentSong
+        DesktopLyricBus.songName = song?.name.orEmpty()
+        DesktopLyricBus.playing = engine.isPlaying
+        if (doc == null || song == null) {
+            DesktopLyricBus.lines = emptyList()
+            DesktopLyricBus.index = -1
+        } else {
+            DesktopLyricBus.lines = doc.lines
+            DesktopLyricBus.index = doc.indexAt(engine.positionMs)
+        }
+    }
+
+    // v2.21：桌面歌词相关设置变化 —— 推送偏好镜像到总线，并唤醒服务：
+    // 开启时 start（服务已运行则触发 onStartCommand → 按需重建窗口，如模式切换），
+    // 关闭时 stop；颜色/透明度/字号由服务 200ms 轮询总线自动生效，无需重建
+    LaunchedEffect(
+        musicSettings.desktopLyricOn,
+        musicSettings.desktopLyricFullscreen,
+        musicSettings.desktopLyricColor,
+        musicSettings.desktopLyricBgAlpha,
+        musicSettings.desktopLyricSize
+    ) {
+        DesktopLyricBus.applySettings(musicSettings)
+        if (musicSettings.desktopLyricOn) {
+            startDesktopLyricService(context)
+        } else {
+            stopDesktopLyricService(context)
+        }
+    }
+
+    // v2.21：音乐窗口关闭时清空总线，悬浮窗转入待机态（显示歌名）
+    DisposableEffect(Unit) {
+        onDispose {
+            DesktopLyricBus.lines = emptyList()
+            DesktopLyricBus.index = -1
+            DesktopLyricBus.playing = false
         }
     }
 
@@ -442,6 +491,8 @@ private fun MusicContent(scope: WindowContentScope) {
                             onChange = { updateSettings(it) },
                             onPickLyricImage = { openDesktopPicker("lyricImage", "选择歌词秀背景图片", "image") },
                             onPickHomeImage = { openDesktopPicker("homeImage", "选择主页背景图片", "image") },
+                            onPickCoverImage = { openDesktopPicker("coverImage", "选择歌词秀封面图片", "image") },
+                            onPickDiscImage = { openDesktopPicker("discImage", "选择歌词秀光盘图片", "image") },
                             onPickFolder = { openDesktopPicker("folder", "选择要扫描的音乐文件夹", "dir") },
                             onRescan = { scanLocal() }
                         )
@@ -470,6 +521,7 @@ private fun MusicContent(scope: WindowContentScope) {
                         lyricLoading = lyricLoading,
                         playMode = engine.playMode,
                         settingsProvider = { musicSettings },
+                        positionProvider = { engine.rawPositionMs() },
                         onSeek = { engine.seekTo(it) },
                         onToggle = { engine.toggle() },
                         onNext = { engine.next() },
