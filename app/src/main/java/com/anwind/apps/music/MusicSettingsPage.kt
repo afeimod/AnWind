@@ -314,7 +314,7 @@ fun SettingsPage(
 
         SettingsSection("关于") {
             Caption("音源：酷我（搜索 / 播放 / 下载） · 词源：酷我 / 网易云 / QQ 音乐 / LRCLIB")
-            Caption("AnWind 云音乐 v2.20 · 界面对照网易云音乐 PC 版 · 3D 歌词秀")
+            Caption("AnWind 云音乐 v2.20.1 · 界面对照网易云音乐 PC 版 · 3D 歌词秀")
         }
         Spacer(Modifier.height(20.dp))
     }

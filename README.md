@@ -20,7 +20,7 @@ AnWind 是一个用 **Kotlin + Jetpack Compose** 编写的 Android 桌面启动�
 
 | 维度 | 选择 |
 |------|------|
-| 语言 | Kotlin 1.9.24 |
+| 语言 | Kotlin 1.9.25 |
 | UI 框架 | Jetpack Compose (BOM 2024.06) |
 | 架构 | 单 Activity + Compose + 全局 WindowManager 单例 |
 | 数据库 | Room 2.6.1 + KSP |

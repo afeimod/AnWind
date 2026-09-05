@@ -50,8 +50,8 @@ android {
         applicationId = "com.anwind"
         minSdk = 24
         targetSdk = 34
-        versionCode = 31
-        versionName = "2.20.0"
+        versionCode = 32
+        versionName = "2.20.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -128,7 +128,8 @@ android {
         buildConfig = true
     }
     composeOptions {
-        kotlinCompilerExtensionVersion = "1.5.14"
+        // 1.5.15 与 Kotlin 1.9.25 官方配对
+        kotlinCompilerExtensionVersion = "1.5.15"
     }
     packaging {
         resources {
