@@ -247,9 +247,10 @@ class LyricOverlayService : Service() {
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
         else
             @Suppress("DEPRECATION") WindowManager.LayoutParams.TYPE_PHONE
-        var flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-            or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
-            or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
+        // 注意：中缀 or 必须留在行尾（行首 or 续行在 Kotlin 1.9 解析器中报 expecting an element）
+        var flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+            WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+            WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
         // v2.21.3：锁定 = 整窗触摸穿透，不挡其他应用、只作桌面展示
         if (locked) flags = flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
         return WindowManager.LayoutParams(
