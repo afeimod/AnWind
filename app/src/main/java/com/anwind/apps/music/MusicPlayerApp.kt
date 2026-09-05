@@ -149,6 +149,15 @@ private fun MusicContent(scope: WindowContentScope) {
         engine.store.saveMusicSettings(s)
     }
 
+    // ===== v2.21.3 桌面歌词锁定开关（状态存 desklyric.json，与位置同文件） =====
+    var lyricOverlayState by remember { mutableStateOf(engine.store.loadLyricOverlayState()) }
+    fun updateLyricLock(locked: Boolean) {
+        lyricOverlayState = lyricOverlayState.copy(locked = locked)
+        engine.store.saveLyricOverlayState(lyricOverlayState)
+        // 服务已运行则经 onStartCommand 重读锁定状态并重建窗口；未运行则拉起
+        if (musicSettings.desktopLyricOn) startDesktopLyricService(context)
+    }
+
     // ===== 本地音乐 =====
     var localSongs by remember { mutableStateOf<List<SongInfo>>(emptyList()) }
     var scanning by remember { mutableStateOf(false) }
@@ -514,7 +523,9 @@ private fun MusicContent(scope: WindowContentScope) {
                             onPickCoverImage = { openDesktopPicker("coverImage", "选择歌词秀封面图片", "image") },
                             onPickDiscImage = { openDesktopPicker("discImage", "选择歌词秀光盘图片", "image") },
                             onPickFolder = { openDesktopPicker("folder", "选择要扫描的音乐文件夹", "dir") },
-                            onRescan = { scanLocal() }
+                            onRescan = { scanLocal() },
+                            lyricLocked = lyricOverlayState.locked,
+                            onLyricLockChange = { updateLyricLock(it) }
                         )
                     }
                 }
@@ -548,10 +559,20 @@ private fun MusicContent(scope: WindowContentScope) {
                         onPrev = { engine.prev() },
                         onCycleMode = { engine.cycleMode() },
                         onDownloadLyric = { downloadLyricFile(engine.currentSong) },
-                        onClose = { showLyrics = false }
+                        onClose = { showLyrics = false },
+                        // v2.21.3：真全屏（F11 风格，隐藏标题栏/任务栏占满整屏）；返回键退出
+                        isTrueFullscreen = scope.windowState.isTrueFullscreen,
+                        onToggleFullscreen = {
+                            WindowManager.get().toggleTrueFullscreen(scope.windowState.id)
+                        }
                     )
                 }
             }
+        }
+
+        // v2.21.3：歌词秀真全屏时系统返回键退出全屏（恢复原窗口）
+        BackHandler(enabled = showLyrics && scope.windowState.isTrueFullscreen) {
+            WindowManager.get().toggleTrueFullscreen(scope.windowState.id)
         }
 
         // ===== 底部播放条 =====

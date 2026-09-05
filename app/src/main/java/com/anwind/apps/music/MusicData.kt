@@ -292,6 +292,22 @@ data class MusicSettings(
 // ==================== 本地持久化 ====================
 
 /**
+ * 桌面歌词悬浮窗锁定状态与位置记忆（v2.21.3）。
+ * 独立于 [MusicSettings] 存储于 desklyric.json：位置由悬浮窗服务在拖动结束/锁定时写入，
+ * 设置页只写 locked 开关 —— 避免两处保存互相覆盖。
+ * 坐标为 px；-1 = 未记录（使用内建默认位置）。
+ */
+data class LyricOverlayState(
+    val locked: Boolean = false,
+    /** 两行模式窗口 y（窗口通栏全屏宽，仅垂直拖动） */
+    val pairY: Int = -1,
+    /** 全屏模式横幅 x 偏移（CENTER 重力下的拖动偏移） */
+    val fsX: Int = -1,
+    /** 全屏模式横幅 y 偏移 */
+    val fsY: Int = -1
+)
+
+/**
  * 收藏 / 最近播放 / 播放模式持久化。
  * 存储位置：context.filesDir/music/（应用私有，无需存储权限）。
  */
@@ -517,6 +533,36 @@ class MusicStore(private val context: Context) {
 
     fun clearLastSession() {
         runCatching { sessionFile.delete() }
+    }
+
+    // ---------- 桌面歌词锁定与位置（v2.21.3，独立文件避免与设置中心互相覆盖） ----------
+
+    private val overlayStateFile: File by lazy { File(dir, "desklyric.json") }
+
+    fun loadLyricOverlayState(): LyricOverlayState {
+        if (!overlayStateFile.isFile) return LyricOverlayState()
+        return runCatching {
+            val o = JSONObject(overlayStateFile.readText())
+            LyricOverlayState(
+                locked = o.optBoolean("locked", false),
+                pairY = o.optInt("pairY", -1),
+                fsX = o.optInt("fsX", -1),
+                fsY = o.optInt("fsY", -1)
+            )
+        }.getOrDefault(LyricOverlayState())
+    }
+
+    fun saveLyricOverlayState(s: LyricOverlayState) {
+        runCatching {
+            overlayStateFile.writeText(
+                JSONObject()
+                    .put("locked", s.locked)
+                    .put("pairY", s.pairY)
+                    .put("fsX", s.fsX)
+                    .put("fsY", s.fsY)
+                    .toString()
+            )
+        }
     }
 
     // ---------- 序列化 ----------

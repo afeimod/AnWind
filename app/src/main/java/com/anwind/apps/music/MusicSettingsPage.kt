@@ -92,6 +92,10 @@ fun SettingsPage(
     onPickDiscImage: () -> Unit,
     onPickFolder: () -> Unit,
     onRescan: () -> Unit,
+    /** v2.21.3：桌面歌词锁定状态（存 desklyric.json，与位置同文件） */
+    lyricLocked: Boolean = false,
+    /** v2.21.3：锁定开关回调 —— 写入后唤醒服务重建窗口 */
+    onLyricLockChange: (Boolean) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -360,6 +364,14 @@ fun SettingsPage(
                     checked = settings.desktopLyricKtv,
                     onChange = { onChange(settings.copy(desktopLyricKtv = it)) }
                 )
+                // v2.21.3：锁定/解锁 —— 锁定后触摸穿透不挡其他应用、记住位置
+                SettingSwitch(
+                    title = "锁定桌面歌词",
+                    desc = "锁定后悬浮窗不拦截触摸（不挡其他应用操作）、记住当前位置；" +
+                        "解锁可点通知栏「解锁桌面歌词」或本开关",
+                    checked = lyricLocked,
+                    onChange = { onLyricLockChange(it) }
+                )
                 SettingSlider(
                     title = "全屏歌词行数",
                     display = "${settings.desktopLyricLines} 行",
@@ -370,9 +382,10 @@ fun SettingsPage(
                 )
             }
             Caption(
-                "两行模式：一个悬浮窗 —— 当前行左上、下一行右下，字号相同，整窗按住拖动，当前行播完两行同时轮换；" +
-                    "全屏模式：行数可设的歌词横幅居中。两种模式背景均随歌词自适应宽度，不固定宽；" +
-                    "黑描边字体保证任意壁纸上可读；切歌/播放进度自动更新，关闭开关立即消失"
+                "两行模式：通栏悬浮窗 —— 当前行靠屏幕左缘、下一行靠屏幕右缘（留有边距），字号相同，" +
+                    "按住可上下拖动，当前行播完两行同时轮换；全屏模式：行数可设的歌词横幅居中。" +
+                    "两种模式背景均随歌词自适应宽度，不固定宽；未锁定时右下角有「锁定」按钮，" +
+                    "锁定后触摸穿透且记住位置；黑描边字体保证任意壁纸上可读；关闭开关立即消失"
             )
         }
 
@@ -460,7 +473,7 @@ fun SettingsPage(
 
         SettingsSection("关于") {
             Caption("音源：酷我（搜索 / 播放 / 下载） · 词源：酷我 / 网易云 / QQ 音乐 / LRCLIB")
-            Caption("AnWind 云音乐 v2.21.2 · 界面对照网易云音乐 PC 版 · 3D 歌词秀 · 桌面歌词")
+            Caption("AnWind 云音乐 v2.21.3 · 界面对照网易云音乐 PC 版 · 3D 歌词秀 · 桌面歌词")
         }
         Spacer(Modifier.height(20.dp))
     }

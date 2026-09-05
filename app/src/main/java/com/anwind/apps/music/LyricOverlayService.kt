@@ -57,6 +57,8 @@ object DesktopLyricBus {
     @Volatile var ktv: Boolean = true
     /** 全屏横幅显示行数（v2.21.1，围绕当前行取词） */
     @Volatile var linesCount: Int = 4
+    /** 锁定（v2.21.3）：锁定后触摸穿透不挡其他应用、记住位置；以 desklyric.json 为准 */
+    @Volatile var locked: Boolean = false
 
     // ---- KTV 进度源（v2.21.1）：播放器每次 tick 写入，服务侧按墙钟外插平滑 ----
     @Volatile var positionMs: Long = 0L
@@ -136,14 +138,17 @@ private class OutlineTextView(context: Context) : TextView(context) {
 }
 
 /**
- * 桌面歌词悬浮窗服务（v2.21.2）：
+ * 桌面歌词悬浮窗服务（v2.21.3）：
  * - 前台服务（specialUse）+ TYPE_APPLICATION_OVERLAY 悬浮窗，需「显示在应用上层」权限
- * - 两行模式：一个可拖动窗口 —— 垂直 LinearLayout 当前行顶左、下一行右下（错位不重叠），
- *   两行字号相同，行索引推进时两行同时轮换；背景贴字自适应宽度（不固定宽）
+ * - 两行模式：一个可拖动通栏窗口（宽度 = 全屏，左右留边距）——
+ *   当前行贴屏幕左缘、下一行贴屏幕右缘，两行字号相同，行索引推进时两行同时轮换；
+ *   背景贴字自适应宽度（不固定宽）
  * - 桌面全屏歌词：行数可设（1-15 行，默认 4 行，围绕当前行取词），横幅宽度随歌词自适应，
  *   当前行大字 + KTV 扫色，其余行 0.7 倍
  * - 两种模式均可 KTV 逐字变色（进度由播放器写入总线，服务侧墙钟外插平滑）
- * - 每 200ms 轮询 DesktopLyricBus 刷新文字/颜色/背景；模式/行数变化重建窗口
+ * - 锁定/解锁（v2.21.3）：悬浮窗上的锁定按钮 + 通知栏「锁定/解锁」动作 + 设置页开关；
+ *   锁定后 FLAG_NOT_TOUCHABLE 触摸穿透（不挡其他应用、只作桌面展示），位置记忆到 desklyric.json
+ * - 每 200ms 轮询 DesktopLyricBus 刷新文字/颜色/背景；模式/行数/锁定变化重建窗口
  * - 生命周期跟随播放器：播放器窗口关闭/应用退出即随之关闭（Manifest stopWithTask 双保险）
  */
 class LyricOverlayService : Service() {
@@ -154,6 +159,9 @@ class LyricOverlayService : Service() {
         private const val POLL_MS = 200L
         /** KTV 未唱部分颜色：60% 白（描边保证可读） */
         private val KTV_UNSONG_COLOR = 0x99FFFFFF.toInt()
+        /** 通知栏动作：锁定/解锁桌面歌词（v2.21.3） */
+        private const val ACTION_LOCK = "com.anwind.apps.music.action.LOCK_LYRIC"
+        private const val ACTION_UNLOCK = "com.anwind.apps.music.action.UNLOCK_LYRIC"
     }
 
     private lateinit var wm: WindowManager
@@ -171,11 +179,17 @@ class LyricOverlayService : Service() {
     /** 全屏模式的行槽（行数可设，围绕当前行滚动取词） */
     private val slots = ArrayList<OutlineTextView>()
 
-    /** 构建窗口时记录的偏好，与总线不一致时重建（模式/行数） */
+    /** 构建窗口时记录的偏好，与总线不一致时重建（模式/行数/锁定） */
     private var builtFullscreen: Boolean = false
     private var builtLines: Int = 0
+    private var builtLocked: Boolean = false
 
     private var pairParams = WindowManager.LayoutParams()
+
+    // ---- 位置记忆（v2.21.3，desklyric.json 持久化；-1 = 未记录用默认） ----
+    private var pairY = -1
+    private var fsX = -1
+    private var fsY = -1
 
     private val tick = object : Runnable {
         override fun run() {
@@ -196,6 +210,12 @@ class LyricOverlayService : Service() {
         wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
         startForegroundWithNotification()
         DesktopLyricBus.applySettings(MusicStore(this).loadMusicSettings())
+        // v2.21.3：装回锁定状态与上次位置记忆
+        val st = MusicStore(this).loadLyricOverlayState()
+        pairY = st.pairY
+        fsX = st.fsX
+        fsY = st.fsY
+        DesktopLyricBus.locked = st.locked
         rebuild()
         handler.post(tick)
     }
@@ -203,7 +223,13 @@ class LyricOverlayService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         // 设置变更后再次 start 时同步偏好并按需重建窗口
         DesktopLyricBus.applySettings(MusicStore(this).loadMusicSettings())
-        handler.post { rebuildIfNeeded() }
+        // v2.21.3：锁定状态以 desklyric.json 为准（设置页开关写入后经 start 唤醒生效）
+        DesktopLyricBus.locked = MusicStore(this).loadLyricOverlayState().locked
+        when (intent?.action) {
+            ACTION_LOCK -> lockNow()
+            ACTION_UNLOCK -> unlockNow()
+            else -> handler.post { rebuildIfNeeded() }
+        }
         return START_STICKY
     }
 
@@ -216,18 +242,21 @@ class LyricOverlayService : Service() {
 
     // ==================== 窗口构建 ====================
 
-    private fun baseParams(): WindowManager.LayoutParams {
+    private fun baseParams(locked: Boolean): WindowManager.LayoutParams {
         val type = if (Build.VERSION.SDK_INT >= 26)
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
         else
             @Suppress("DEPRECATION") WindowManager.LayoutParams.TYPE_PHONE
+        var flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+            or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
+            or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
+        // v2.21.3：锁定 = 整窗触摸穿透，不挡其他应用、只作桌面展示
+        if (locked) flags = flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
         return WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
             type,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-                or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
-                or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+            flags,
             PixelFormat.TRANSLUCENT
         )
     }
@@ -264,17 +293,19 @@ class LyricOverlayService : Service() {
         line2 = null
 
         val fs = DesktopLyricBus.fullscreen
+        val locked = DesktopLyricBus.locked
         builtFullscreen = fs
         builtLines = DesktopLyricBus.linesCount
+        builtLocked = locked
 
         if (!fs) {
-            // ---- 两行模式（v2.21.2 修重叠）：一个可拖动窗口，垂直 LinearLayout ——
-            // 当前行 pill 顶左（START 对齐）+ 下一行 pill 右下（END 对齐 + 6dp 上间距），
-            // 窗口高度 = 两行之和，彻底避免两行重叠；两行字号相同、整体拖动；
-            // 各自贴字药丸背景（宽度随歌词自适应），窗口本身全透明；
+            // ---- 两行模式（v2.21.3 通栏排布）：一个可拖动窗口，宽度 = 全屏，
+            // 内边距 16dp 不紧贴屏幕左右缘 —— 当前行 pill 贴左缘侧、下一行 pill 贴右缘侧，
+            // 两行字号相同；各自贴字药丸背景（宽度随歌词自适应），窗口本身全透明；
             // 行索引推进时两行同时轮换（line1←当前，line2←下一行）
             val root = LinearLayout(this)
             root.orientation = LinearLayout.VERTICAL
+            root.setPadding(dp(16f), dp(4f), dp(16f), dp(4f))
             val (pill1, t1) = buildLineWindow()
             root.addView(
                 pill1,
@@ -294,19 +325,33 @@ class LyricOverlayService : Service() {
                     topMargin = dp(6f)
                 }
             )
-            pairParams = baseParams()
+            // v2.21.3：锁定按钮（锁定后整窗触摸穿透，解锁走通知栏/设置页）
+            if (!locked) {
+                root.addView(
+                    buildLockChip(),
+                    LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.WRAP_CONTENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT
+                    ).apply {
+                        gravity = Gravity.END
+                        topMargin = dp(5f)
+                    }
+                )
+            }
+            pairParams = baseParams(locked)
+            pairParams.width = WindowManager.LayoutParams.MATCH_PARENT
             pairParams.gravity = Gravity.TOP or Gravity.START
-            pairParams.x = dp(42f)
-            pairParams.y = dp(120f)
+            pairParams.x = 0
+            pairParams.y = if (pairY >= 0) pairY else dp(120f)
             wm.addView(root, pairParams)
-            makeDraggable(root, pairParams)
+            makeDraggable(root, pairParams, fullscreen = false)
             line1 = t1
             line2 = t2
             pills.add(pill1)
             pills.add(pill2)
             roots.add(root)
         } else {
-            // ---- 桌面全屏歌词（v2.21.2 行数上限扩到 15）：行数可设（默认 4 行，围绕当前行取词），
+            // ---- 桌面全屏歌词（行数 1-15，默认 4，围绕当前行取词），
             // 横幅宽度随歌词自适应（超宽行按屏宽 88% 截断省略），屏幕居中，整幅可拖动
             val n = DesktopLyricBus.linesCount.coerceIn(1, 15)
             val container = LinearLayout(this)
@@ -332,23 +377,83 @@ class LyricOverlayService : Service() {
                     }
                 )
             }
-            val p = baseParams()
+            // v2.21.3：锁定按钮（锁定后整窗触摸穿透，解锁走通知栏/设置页）
+            if (!locked) {
+                container.addView(
+                    buildLockChip(),
+                    LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.WRAP_CONTENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT
+                    ).apply {
+                        gravity = Gravity.END
+                        topMargin = dp(6f)
+                    }
+                )
+            }
+            val p = baseParams(locked)
             p.gravity = Gravity.CENTER
-            p.x = 0
-            p.y = 0
+            p.x = if (fsX >= 0) fsX else 0
+            p.y = if (fsY >= 0) fsY else 0
             wm.addView(container, p)
-            makeDraggable(container, p)
+            makeDraggable(container, p, fullscreen = true)
             for (j in 0 until n) slots.add(container.getChildAt(j) as OutlineTextView)
             roots.add(container)
         }
         renderFrame()
+        // v2.21.3：通知动作随锁定状态刷新（锁定后显示「解锁」）
+        startForegroundWithNotification()
     }
 
     private fun rebuildIfNeeded() {
         if (roots.isEmpty() ||
             builtFullscreen != DesktopLyricBus.fullscreen ||
-            builtLines != DesktopLyricBus.linesCount
+            builtLines != DesktopLyricBus.linesCount ||
+            builtLocked != DesktopLyricBus.locked
         ) rebuild()
+    }
+
+    // ==================== 锁定/解锁与位置记忆（v2.21.3） ====================
+
+    /** 锁定按钮（悬浮窗内）：锁定后触摸穿透、记住位置；解锁走通知栏动作或设置页开关 */
+    private fun buildLockChip(): TextView {
+        val t = TextView(this)
+        t.text = "🔒 锁定"
+        t.textSize = 12f
+        t.typeface = Typeface.DEFAULT_BOLD
+        t.setTextColor(0xFFE8E8F0.toInt())
+        t.setPadding(dp(10f), dp(5f), dp(10f), dp(5f))
+        t.background = GradientDrawable().apply {
+            cornerRadius = dp(12f).toFloat()
+            setColor(AwtColor.argb(130, 8, 8, 12))
+        }
+        t.setOnClickListener { lockNow() }
+        return t
+    }
+
+    private fun lockNow() {
+        DesktopLyricBus.locked = true
+        persistOverlayState()
+        rebuild()
+    }
+
+    private fun unlockNow() {
+        DesktopLyricBus.locked = false
+        persistOverlayState()
+        rebuild()
+    }
+
+    /** 锁定状态 + 两种模式各自的位置写入 desklyric.json（锁定时即记住当前位置） */
+    private fun persistOverlayState() {
+        runCatching {
+            MusicStore(this).saveLyricOverlayState(
+                LyricOverlayState(
+                    locked = DesktopLyricBus.locked,
+                    pairY = pairY,
+                    fsX = fsX,
+                    fsY = fsY
+                )
+            )
+        }
     }
 
     // ==================== 刷新 ====================
@@ -447,7 +552,7 @@ class LyricOverlayService : Service() {
 
     // ==================== 拖动 ====================
 
-    private fun makeDraggable(view: View, params: WindowManager.LayoutParams) {
+    private fun makeDraggable(view: View, params: WindowManager.LayoutParams, fullscreen: Boolean) {
         var downX = 0f
         var downY = 0f
         var origX = 0
@@ -462,9 +567,21 @@ class LyricOverlayService : Service() {
                     true
                 }
                 MotionEvent.ACTION_MOVE -> {
-                    params.x = origX + (e.rawX - downX).toInt()
+                    // 两行通栏窗口宽度 = 全屏：水平位置固定（仅垂直拖动）
+                    params.x = if (fullscreen) origX + (e.rawX - downX).toInt() else 0
                     params.y = origY + (e.rawY - downY).toInt()
                     runCatching { wm.updateViewLayout(v, params) }
+                    true
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    // v2.21.3：拖动结束记住位置（desklyric.json，按模式分开存）
+                    if (fullscreen) {
+                        fsX = params.x
+                        fsY = params.y
+                    } else {
+                        pairY = params.y
+                    }
+                    persistOverlayState()
                     true
                 }
                 else -> false
@@ -491,21 +608,32 @@ class LyricOverlayService : Service() {
             if (Build.VERSION.SDK_INT >= 23) PendingIntent.FLAG_IMMUTABLE else 0
         )
         val iconId = applicationInfo.icon.takeIf { it != 0 } ?: android.R.drawable.ic_media_play
+        // v2.21.3：通知栏「锁定/解锁」动作（锁定后悬浮窗触摸穿透，通知栏是主要解锁入口）
+        val toggleIntent = Intent(this, LyricOverlayService::class.java).setAction(
+            if (DesktopLyricBus.locked) ACTION_UNLOCK else ACTION_LOCK
+        )
+        val togglePi = PendingIntent.getService(
+            this, 1, toggleIntent,
+            if (Build.VERSION.SDK_INT >= 23) PendingIntent.FLAG_IMMUTABLE else 0
+        )
+        val actionTitle = if (DesktopLyricBus.locked) "解锁桌面歌词" else "锁定桌面歌词"
         @Suppress("DEPRECATION")
         val notification: Notification = if (Build.VERSION.SDK_INT >= 26) {
             Notification.Builder(this, CHANNEL_ID)
                 .setSmallIcon(iconId)
                 .setContentTitle("AnWind 桌面歌词已开启")
-                .setContentText("正在桌面显示歌词 · 回到应用可关闭")
+                .setContentText(if (DesktopLyricBus.locked) "已锁定 · 触摸穿透不挡其他应用" else "正在桌面显示歌词 · 回到应用可关闭")
                 .setContentIntent(pi)
+                .addAction(0, actionTitle, togglePi)
                 .setOngoing(true)
                 .build()
         } else {
             Notification.Builder(this)
                 .setSmallIcon(iconId)
                 .setContentTitle("AnWind 桌面歌词已开启")
-                .setContentText("正在桌面显示歌词 · 回到应用可关闭")
+                .setContentText(if (DesktopLyricBus.locked) "已锁定 · 触摸穿透不挡其他应用" else "正在桌面显示歌词 · 回到应用可关闭")
                 .setContentIntent(pi)
+                .addAction(0, actionTitle, togglePi)
                 .setOngoing(true)
                 .build()
         }

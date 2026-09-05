@@ -32,6 +32,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Fullscreen
+import androidx.compose.material.icons.filled.FullscreenExit
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Repeat
@@ -116,6 +118,10 @@ fun Lyrics3DPage(
     onCycleMode: () -> Unit,
     onDownloadLyric: () -> Unit,
     onClose: () -> Unit,
+    /** v2.21.3：所在窗口是否处于真全屏（控制按钮图标切换） */
+    isTrueFullscreen: Boolean = false,
+    /** v2.21.3：全屏按钮回调 —— 切换窗口真全屏，返回键恢复 */
+    onToggleFullscreen: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     // 组合期读取：背景模式等参与重组的设置（v2.19：所在作用域直读快照 State）
@@ -228,6 +234,15 @@ fun Lyrics3DPage(
                     Icon(
                         Icons.Filled.Download,
                         contentDescription = "下载歌词",
+                        tint = Color.White.copy(alpha = 0.7f),
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+                // v2.21.3：全屏/退出全屏（真全屏隐藏标题栏与任务栏，返回键恢复）
+                IconButton(onClick = onToggleFullscreen) {
+                    Icon(
+                        if (isTrueFullscreen) Icons.Filled.FullscreenExit else Icons.Filled.Fullscreen,
+                        contentDescription = if (isTrueFullscreen) "退出全屏" else "全屏",
                         tint = Color.White.copy(alpha = 0.7f),
                         modifier = Modifier.size(18.dp)
                     )
