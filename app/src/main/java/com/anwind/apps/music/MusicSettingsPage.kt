@@ -73,9 +73,10 @@ val LyricAccentColors = listOf(
  * - 外观：主页背景（默认/纯色/渐变/自定义图片 + 压暗）—— 全局生效
  *   （侧栏/底栏半透明融合），图片/文件夹选择均拉起 AnWind 桌面文件资源管理器
  * - 歌词秀：背景自定义、封面/光盘/背景三类图片均可自定义、封面模糊度与压暗可调、
- *   3D 倾斜参数（大范围）、左右字体差、当前行高亮颜色、KTV 渐进样式、字号、
+ *   3D 倾斜参数（大范围）、逐字左右字体差、当前行高亮颜色、KTV 渐进样式、字号、
  *   行切换动画、高亮发光、翻译显示
- * - 桌面歌词：开关（引导悬浮窗权限）、两行/全屏双模式、字体颜色、背景不透明度、字号
+ * - 桌面歌词：开关（引导悬浮窗权限）、两行/全屏双模式、字体颜色、背景不透明度、
+ *   字号、KTV 逐字变色、全屏歌词行数（两种模式背景宽度均随歌词自适应）
  * - 词源：智能回退 / 酷我 / 网易云 / QQ 音乐 / LRCLIB 优先级
  * - 本地扫描：全库 / 仅指定目录（目录列表 + 文件夹选择 + 手动输入）
  * 所有修改即时持久化（onChange → saveMusicSettings），滑条拖动过程中实时生效。
@@ -240,8 +241,8 @@ fun SettingsPage(
                 onChange = { onChange(settings.copy(tilt3d = it)) }
             )
             SettingSlider(
-                title = "左右字体差（行内透视）",
-                display = "${settings.lineYaw3d.toInt()}°",
+                title = "左右字体差（左小右大）",
+                display = "${settings.lineYaw3d.toInt()}%",
                 value = settings.lineYaw3d,
                 range = 0f..45f,
                 steps = 44,
@@ -290,7 +291,7 @@ fun SettingsPage(
                 checked = settings.showTranslation,
                 onChange = { onChange(settings.copy(showTranslation = it)) }
             )
-            Caption("真透视歌词墙：整面墙俯仰/偏航 + 纵深收敛 + 每行左右字体差（左小右大梯形透视）；俯仰 0° + 视角 0° + 纵深 0 + 字体差 0 即为平面滚动歌词")
+            Caption("真透视歌词墙：整面墙俯仰/偏航 + 纵深收敛 + 行内逐字左右字体差（行首小行尾大）；俯仰 0° + 视角 0° + 纵深 0 + 字体差 0 即为平面滚动歌词")
         }
 
         SettingsSection("桌面歌词") {
@@ -352,9 +353,24 @@ fun SettingsPage(
                     steps = 25,
                     onChange = { onChange(settings.copy(desktopLyricSize = it)) }
                 )
+                SettingSwitch(
+                    title = "KTV 逐字变色",
+                    desc = "当前行按播放进度从左向右逐字扫色，未唱部分半透明白（两种模式均生效）",
+                    checked = settings.desktopLyricKtv,
+                    onChange = { onChange(settings.copy(desktopLyricKtv = it)) }
+                )
+                SettingSlider(
+                    title = "全屏歌词行数",
+                    display = "${settings.desktopLyricLines} 行",
+                    value = settings.desktopLyricLines.toFloat(),
+                    range = 1f..6f,
+                    steps = 4,
+                    onChange = { onChange(settings.copy(desktopLyricLines = it.toInt())) }
+                )
             }
             Caption(
-                "两行模式：当前行左上、下一行右侧两个悬浮条（按住可拖动到任意位置）；全屏模式：通屏宽歌词横幅居中。" +
+                "两行模式：一个悬浮窗 —— 当前行左上、下一行右下，字号相同，整窗按住拖动，当前行播完两行同时轮换；" +
+                    "全屏模式：行数可设的歌词横幅居中。两种模式背景均随歌词自适应宽度，不固定宽；" +
                     "黑描边字体保证任意壁纸上可读；切歌/播放进度自动更新，关闭开关立即消失"
             )
         }
@@ -443,7 +459,7 @@ fun SettingsPage(
 
         SettingsSection("关于") {
             Caption("音源：酷我（搜索 / 播放 / 下载） · 词源：酷我 / 网易云 / QQ 音乐 / LRCLIB")
-            Caption("AnWind 云音乐 v2.21.0 · 界面对照网易云音乐 PC 版 · 3D 歌词秀 · 桌面歌词")
+            Caption("AnWind 云音乐 v2.21.1 · 界面对照网易云音乐 PC 版 · 3D 歌词秀 · 桌面歌词")
         }
         Spacer(Modifier.height(20.dp))
     }

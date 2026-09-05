@@ -69,7 +69,10 @@ import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
@@ -85,7 +88,7 @@ import kotlin.math.roundToInt
  * - 深色沉浸背景：封面大图模糊铺底 + 黑色渐变压暗（v2.21 默认接近清晰/最亮）
  * - 左侧：圆角封面卡片 + 右后方探出的旋转 CD（v2.21 封面/光盘均可自定义图片）
  * - 右侧：真 3D 透视歌词墙 —— 整面墙绕 X 轴俯仰 + 绕 Y 轴偏航；每行叠加
- *   「左右字体差」行内透视（rotationY，左边缘远/小、右边缘近/大，v2.21 新增滑条）；
+ *   「左右字体差」行内逐字字号渐变（行首小行尾大，v2.21.1 重做，替换行级 rotationY）；
  *   当前行支持高亮颜色与 KTV 渐进填色（按播放进度从左向右扫开）
  * - 左上角《歌名》— 歌手标题，右下角模式/上一首/播放/下一首/歌词下载控制
  *
@@ -482,8 +485,9 @@ private fun DiscCanvas(angle: Float, cover: Bitmap?, modifier: Modifier = Modifi
  * - 整面墙真透视：绕 X 轴俯仰（wallTiltX，默认 16° 顶部向后倒）+ 绕 Y 轴偏航
  *   （wallRotateY，默认 -14°）+ 透视相机拉近到 500*density —— 远行自然变小、
  *   行距自然收拢，朝右上角消失点汇聚，倾斜/视角滑条一动就有明显视觉反馈
- * - v2.21「左右字体差」：每行叠加行内绕 Y 轴透视（lineYaw3d，负向旋转 →
- *   左边缘远/小、右边缘近/大），近距相机下形成明显梯形，即经典 3D 歌词观感
+ * - v2.21.1「左右字体差」：行内逐字字号渐变（lineYaw3d，%）—— 行首字符最小、
+ *   行尾字符最大线性插值，所见即所得的左小右大（v2.21 的行级 rotationY 透视
+ *   在窄行+远相机下肉眼不可见，已废弃）
  * - 每行仅按纵深强度做轻量额外缩小/变暗 + 朝消失点方向的横向漂移；
  *   行切换通过 animateFloatAsState 平滑过渡（可关闭）
  * - 当前行高亮颜色可调；开启 KTV 模式后按播放进度从左向右渐进出色（clipRect 扫掠）
@@ -542,6 +546,27 @@ private fun LyricsWall(
     }
 }
 
+/**
+ * v2.21.1 左右字体差：逐字字号渐变（替换 v2.21 行级 rotationY —— 窄行+远相机下不可见）。
+ * 行首字符最小、行尾字符最大线性插值；diff = 最大差比例（0..0.45，来自 lineYaw3d/100）。
+ * diff 为 0 或单字符时原样返回；代理对（emoji 等）合并为一个跨度避免拆散字形。
+ */
+private fun ltrSizedText(text: String, baseSp: Float, diff: Float): AnnotatedString {
+    if (diff <= 0.005f || text.length < 2) return AnnotatedString(text)
+    val n = text.length
+    return buildAnnotatedString {
+        append(text)
+        var i = 0
+        while (i < n) {
+            var j = i + 1
+            if (Character.isHighSurrogate(text[i]) && j < n && Character.isLowSurrogate(text[j])) j++
+            val t = (i + j - 1).toFloat() / (n - 1).coerceAtLeast(1)
+            addStyle(SpanStyle(fontSize = (baseSp * (1f + diff * (t - 0.5f) * 2f)).sp), i, j)
+            i = j
+        }
+    }
+}
+
 @Composable
 private fun LyricLineItem(
     line: LyricLine,
@@ -586,11 +611,8 @@ private fun LyricLineItem(
                 //（漂移量与纵深强度联动；0°/纵深 0 时完全复原平面模式）
                 translationX = (-animDist * s.tilt3d * 0.6f * density)
                     .coerceIn(-140f * density, 140f * density)
-                // v2.21 左右字体差：行内绕 Y 轴透视，负角度 = 左边缘远/小、右边缘近/大，
-                // 近距相机（420*density）下形成明显梯形 —— 经典 3D 歌词观感；
-                // 高度方向不压缩，不会产生旧版 rotationX 的“挤压感”
-                rotationY = -s.lineYaw3d
-                cameraDistance = 420f * density
+                // v2.21.1：行级 rotationY 透视已移除（窄行+远相机下肉眼不可见），
+                // 左右字体差改为逐字字号渐变，见 ltrSizedText()
             }
     ) {
         if (active && settings.ktvMode) {
@@ -598,6 +620,7 @@ private fun LyricLineItem(
             KtvSweepText(
                 text = line.text.ifBlank { "···" },
                 fontSizeSp = settings.lyricFontSize,
+                diff = settings.lineYaw3d / 100f,
                 fillColor = Color(settings.highlightColor),
                 glow = settings.lyricGlow,
                 lineStartMs = line.timeMs,
@@ -606,7 +629,11 @@ private fun LyricLineItem(
             )
         } else {
             Text(
-                text = line.text.ifBlank { "···" },
+                text = ltrSizedText(
+                    line.text.ifBlank { "···" },
+                    (if (active) settings.lyricFontSize else settings.lyricFontSize * 0.77f).toFloat(),
+                    settings.lineYaw3d / 100f
+                ),
                 fontSize = if (active) settings.lyricFontSize.sp
                 else (settings.lyricFontSize * 0.77f).roundToInt().sp,
                 fontWeight = if (active) FontWeight.Bold else FontWeight.Normal,
@@ -648,6 +675,7 @@ private fun LyricLineItem(
 private fun KtvSweepText(
     text: String,
     fontSizeSp: Int,
+    diff: Float,
     fillColor: Color,
     glow: Boolean,
     lineStartMs: Long,
@@ -667,9 +695,11 @@ private fun KtvSweepText(
     } else {
         TextStyle.Default
     }
+    // v2.21.1：逐字字号渐变（左右字体差），与扫色裁剪叠加；diff 变化时重建
+    val sized = remember(text, diff) { ltrSizedText(text, fontSizeSp.toFloat(), diff) }
     Box {
         Text(
-            text = text,
+            text = sized,
             fontSize = fontSizeSp.sp,
             fontWeight = FontWeight.Bold,
             color = Color.White.copy(alpha = 0.34f),
@@ -678,7 +708,7 @@ private fun KtvSweepText(
             overflow = TextOverflow.Ellipsis
         )
         Text(
-            text = text,
+            text = sized,
             fontSize = fontSizeSp.sp,
             fontWeight = FontWeight.Bold,
             color = fillColor,

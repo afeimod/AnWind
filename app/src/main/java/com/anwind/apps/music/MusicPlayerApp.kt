@@ -1,5 +1,6 @@
 package com.anwind.apps.music
 
+import android.os.SystemClock
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
@@ -298,7 +299,8 @@ private fun MusicContent(scope: WindowContentScope) {
     }
 
     // ===== v2.21 桌面歌词：播放状态推送到悬浮窗总线 =====
-    // 每次进度 tick（500ms）重新计算当前行/下一行；悬浮窗服务自身 200ms 轮询本总线
+    // 每次进度 tick（500ms）重新计算当前行/下一行；悬浮窗服务自身 200ms 轮询本总线；
+    // v2.21.1 同时写入 KTV 进度源（当前行起止时间 + 进度时间戳，服务侧墙钟外插平滑）
     LaunchedEffect(engine.positionMs, lyricDoc, engine.currentSong?.key) {
         val doc = lyricDoc
         val song = engine.currentSong
@@ -307,21 +309,36 @@ private fun MusicContent(scope: WindowContentScope) {
         if (doc == null || song == null) {
             DesktopLyricBus.lines = emptyList()
             DesktopLyricBus.index = -1
+            DesktopLyricBus.lineStartMs = 0L
+            DesktopLyricBus.lineEndMs = 0L
         } else {
             DesktopLyricBus.lines = doc.lines
-            DesktopLyricBus.index = doc.indexAt(engine.positionMs)
+            val idx = doc.indexAt(engine.positionMs)
+            DesktopLyricBus.index = idx
+            if (idx >= 0) {
+                DesktopLyricBus.lineStartMs = doc.lines.getOrNull(idx)?.timeMs ?: 0L
+                DesktopLyricBus.lineEndMs = doc.lines.getOrNull(idx + 1)?.timeMs
+                    ?: engine.durationMs
+            } else {
+                DesktopLyricBus.lineStartMs = 0L
+                DesktopLyricBus.lineEndMs = 0L
+            }
         }
+        DesktopLyricBus.positionMs = engine.positionMs
+        DesktopLyricBus.posUpdatedAt = SystemClock.uptimeMillis()
     }
 
     // v2.21：桌面歌词相关设置变化 —— 推送偏好镜像到总线，并唤醒服务：
-    // 开启时 start（服务已运行则触发 onStartCommand → 按需重建窗口，如模式切换），
-    // 关闭时 stop；颜色/透明度/字号由服务 200ms 轮询总线自动生效，无需重建
+    // 开启时 start（服务已运行则触发 onStartCommand → 按需重建窗口，如模式/行数切换），
+    // 关闭时 stop；颜色/透明度/字号/KTV 开关由服务 200ms 轮询总线自动生效，无需重建
     LaunchedEffect(
         musicSettings.desktopLyricOn,
         musicSettings.desktopLyricFullscreen,
         musicSettings.desktopLyricColor,
         musicSettings.desktopLyricBgAlpha,
-        musicSettings.desktopLyricSize
+        musicSettings.desktopLyricSize,
+        musicSettings.desktopLyricKtv,
+        musicSettings.desktopLyricLines
     ) {
         DesktopLyricBus.applySettings(musicSettings)
         if (musicSettings.desktopLyricOn) {

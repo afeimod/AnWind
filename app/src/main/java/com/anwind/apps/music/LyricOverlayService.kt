@@ -18,8 +18,12 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.SystemClock
 import android.provider.Settings
+import android.text.SpannableString
+import android.text.Spanned
 import android.text.TextUtils
+import android.text.style.ForegroundColorSpan
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
@@ -31,7 +35,7 @@ import android.widget.TextView
 /**
  * 桌面歌词跨组件总线（v2.21）：
  * - 应用内播放器（MusicContent）在每次播放进度 tick 时写入当前歌词行状态；
- * - 悬浮窗服务（LyricOverlayService）每 200ms 轮询读取并刷新两个 TextView；
+ * - 悬浮窗服务（LyricOverlayService）每 200ms 轮询读取并刷新文字/颜色/KTV 扫色；
  * - 设置页改动桌面歌词偏好后调用 applySettings 即时推送（同一进程内 volatile 可见）。
  */
 object DesktopLyricBus {
@@ -47,19 +51,43 @@ object DesktopLyricBus {
     // ---- 悬浮窗偏好镜像（由 MusicSettings 驱动） ----
     @Volatile var fullscreen: Boolean = false
     @Volatile var textColor: Int = 0xFFFFFFFF.toInt()
-    @Volatile var bgAlpha: Float = 0.35f
+    @Volatile var bgAlpha: Float = 0f
     @Volatile var sizeSp: Float = 22f
+    /** KTV 逐字变色（v2.21.1）：两种模式均生效 */
+    @Volatile var ktv: Boolean = true
+    /** 全屏横幅显示行数（v2.21.1，围绕当前行取词） */
+    @Volatile var linesCount: Int = 4
+
+    // ---- KTV 进度源（v2.21.1）：播放器每次 tick 写入，服务侧按墙钟外插平滑 ----
+    @Volatile var positionMs: Long = 0L
+    @Volatile var lineStartMs: Long = 0L
+    @Volatile var lineEndMs: Long = 0L
+    @Volatile var posUpdatedAt: Long = 0L
 
     fun applySettings(s: MusicSettings) {
         fullscreen = s.desktopLyricFullscreen
         textColor = s.desktopLyricColor
         bgAlpha = s.desktopLyricBgAlpha
         sizeSp = s.desktopLyricSize
+        ktv = s.desktopLyricKtv
+        linesCount = s.desktopLyricLines
     }
 
-    fun currentText(): String = lines.getOrNull(index)?.text.orEmpty()
+    fun lineTextAt(i: Int): String = lines.getOrNull(i)?.text.orEmpty()
 
-    fun nextText(): String = lines.getOrNull(index + 1)?.text.orEmpty()
+    fun currentText(): String = lineTextAt(index)
+
+    fun nextText(): String = lineTextAt(index + 1)
+
+    /** 当前行 KTV 扫色进度 0..1（暂停时冻结，播放中按墙钟外插平滑） */
+    fun ktvFraction(): Float {
+        val span = lineEndMs - lineStartMs
+        if (span <= 0L) return 0f
+        val pos = if (playing)
+            positionMs + (SystemClock.uptimeMillis() - posUpdatedAt).coerceAtLeast(0L)
+        else positionMs
+        return ((pos - lineStartMs).toFloat() / span).coerceIn(0f, 1f)
+    }
 }
 
 /** 启动桌面歌词悬浮窗（无悬浮窗权限时静默忽略；由设置页负责先引导授权） */
@@ -108,11 +136,14 @@ private class OutlineTextView(context: Context) : TextView(context) {
 }
 
 /**
- * 桌面歌词悬浮窗服务（v2.21）：
+ * 桌面歌词悬浮窗服务（v2.21.1）：
  * - 前台服务（specialUse）+ TYPE_APPLICATION_OVERLAY 悬浮窗，需「显示在应用上层」权限
- * - 两行模式（对照参考图4）：两个独立小浮条 —— 当前行左上、下一行右侧居中，均可拖动
- * - 桌面全屏歌词：通屏宽横幅居中，当前行大字 + 下一行小字
- * - 每 200ms 轮询 DesktopLyricBus 刷新文字/颜色/背景；模式切换重建窗口
+ * - 两行模式（对照参考图4）：一个可拖动窗口 —— 当前行左上、下一行右下，两行字号相同，
+ *   当前行播完、行索引推进时两行同时轮换；背景贴字自适应宽度（不固定宽）
+ * - 桌面全屏歌词：行数可设（默认 4 行，围绕当前行取词），横幅宽度随歌词自适应，
+ *   当前行大字 + KTV 扫色，其余行 0.7 倍
+ * - 两种模式均可 KTV 逐字变色（进度由播放器写入总线，服务侧墙钟外插平滑）
+ * - 每 200ms 轮询 DesktopLyricBus 刷新文字/颜色/背景；模式/行数变化重建窗口
  */
 class LyricOverlayService : Service() {
 
@@ -120,21 +151,30 @@ class LyricOverlayService : Service() {
         private const val NOTIF_ID = 20417
         private const val CHANNEL_ID = "desktop_lyric"
         private const val POLL_MS = 200L
+        /** KTV 未唱部分颜色：60% 白（描边保证可读） */
+        private val KTV_UNSONG_COLOR = 0x99FFFFFF.toInt()
     }
 
     private lateinit var wm: WindowManager
     private val handler = Handler(Looper.getMainLooper())
 
-    /** 当前添加到窗口的所有根视图（两行模式 2 个 / 全屏 1 个） */
+    /** 当前添加到窗口的所有根视图（两行模式 1 个 / 全屏 1 个） */
     private val roots = ArrayList<View>()
+
+    /** 两行模式的两个文字视图（同一窗口：左上当前行 / 右下下一行，同字号同窗轮换） */
     private var line1: OutlineTextView? = null
     private var line2: OutlineTextView? = null
+    /** 两行模式贴字药丸背景（背景不透明度实时刷，宽度随歌词自适应） */
+    private val pills = ArrayList<View>()
 
-    /** 当前窗口布局所用模式（false 两行 / true 全屏），与总线不一致时重建 */
+    /** 全屏模式的行槽（行数可设，围绕当前行滚动取词） */
+    private val slots = ArrayList<OutlineTextView>()
+
+    /** 构建窗口时记录的偏好，与总线不一致时重建（模式/行数） */
     private var builtFullscreen: Boolean = false
+    private var builtLines: Int = 0
 
-    private var params1 = WindowManager.LayoutParams()
-    private var params2 = WindowManager.LayoutParams()
+    private var pairParams = WindowManager.LayoutParams()
 
     private val tick = object : Runnable {
         override fun run() {
@@ -215,108 +255,187 @@ class LyricOverlayService : Service() {
     private fun rebuild() {
         for (v in roots) runCatching { wm.removeView(v) }
         roots.clear()
+        pills.clear()
+        slots.clear()
+        line1 = null
+        line2 = null
 
         val fs = DesktopLyricBus.fullscreen
         builtFullscreen = fs
+        builtLines = DesktopLyricBus.linesCount
 
         if (!fs) {
-            // ---- 两行模式（参考图4）：当前行左上浮条 + 下一行右侧居中浮条 ----
-            val (root1, t1) = buildLineWindow()
-            params1 = baseParams()
-            params1.gravity = Gravity.TOP or Gravity.START
-            params1.x = dp(42f)
-            params1.y = dp(120f)
-            wm.addView(root1, params1)
-            makeDraggable(root1, params1)
-            line1 = t1
-            roots.add(root1)
-
-            val (root2, t2) = buildLineWindow()
-            params2 = baseParams()
-            params2.gravity = Gravity.END or Gravity.CENTER_VERTICAL
-            params2.x = dp(48f)
-            params2.y = dp(150f)
-            wm.addView(root2, params2)
-            makeDraggable(root2, params2)
-            line2 = t2
-            roots.add(root2)
-        } else {
-            // ---- 桌面全屏歌词：通屏宽横幅，屏幕垂直居中 ----
-            val container = LinearLayout(this)
-            container.orientation = LinearLayout.VERTICAL
-            container.setPadding(dp(16f), dp(10f), dp(16f), dp(12f))
-            val t1 = OutlineTextView(this)
-            t1.maxLines = 1
-            t1.ellipsize = TextUtils.TruncateAt.END
-            t1.typeface = Typeface.DEFAULT_BOLD
-            t1.gravity = Gravity.CENTER
-            t1.includeFontPadding = false
-            val t2 = OutlineTextView(this)
-            t2.maxLines = 1
-            t2.ellipsize = TextUtils.TruncateAt.END
-            t2.gravity = Gravity.CENTER
-            t2.includeFontPadding = false
-            container.addView(
-                t1,
-                LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT,
-                    LinearLayout.LayoutParams.WRAP_CONTENT
+            // ---- 两行模式（v2.21.1 对照参考图4 重做）：一个可拖动窗口 ——
+            // 当前行左上、下一行右下，两行字号相同；各自贴字药丸背景（宽度随歌词自适应），
+            // 窗口本身全透明；行索引推进时两行同时轮换（line1←当前，line2←下一行）
+            val root = FrameLayout(this)
+            val (pill1, t1) = buildLineWindow()
+            root.addView(
+                pill1,
+                FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.WRAP_CONTENT,
+                    FrameLayout.LayoutParams.WRAP_CONTENT,
+                    Gravity.TOP or Gravity.START
                 )
             )
-            container.addView(
-                t2,
-                LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT,
-                    LinearLayout.LayoutParams.WRAP_CONTENT
-                ).apply { topMargin = dp(6f) }
+            val (pill2, t2) = buildLineWindow()
+            root.addView(
+                pill2,
+                FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.WRAP_CONTENT,
+                    FrameLayout.LayoutParams.WRAP_CONTENT,
+                    Gravity.BOTTOM or Gravity.END
+                )
             )
+            pairParams = baseParams()
+            pairParams.gravity = Gravity.TOP or Gravity.START
+            pairParams.x = dp(42f)
+            pairParams.y = dp(120f)
+            wm.addView(root, pairParams)
+            makeDraggable(root, pairParams)
+            line1 = t1
+            line2 = t2
+            pills.add(pill1)
+            pills.add(pill2)
+            roots.add(root)
+        } else {
+            // ---- 桌面全屏歌词（v2.21.1）：行数可设（默认 4 行，围绕当前行取词），
+            // 横幅宽度随歌词自适应（超宽行按屏宽 88% 截断省略），屏幕居中，整幅可拖动
+            val n = DesktopLyricBus.linesCount.coerceIn(1, 6)
+            val container = LinearLayout(this)
+            container.orientation = LinearLayout.VERTICAL
+            container.setPadding(dp(14f), dp(8f), dp(14f), dp(10f))
+            val maxTextPx = (resources.displayMetrics.widthPixels * 0.88f).toInt() - dp(28f)
+            for (j in 0 until n) {
+                val t = OutlineTextView(this)
+                t.maxLines = 1
+                t.ellipsize = TextUtils.TruncateAt.END
+                t.typeface = Typeface.DEFAULT_BOLD
+                t.gravity = Gravity.CENTER_HORIZONTAL
+                t.includeFontPadding = false
+                t.maxWidth = maxTextPx
+                container.addView(
+                    t,
+                    LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.WRAP_CONTENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT
+                    ).apply {
+                        gravity = Gravity.CENTER_HORIZONTAL
+                        if (j > 0) topMargin = dp(4f)
+                    }
+                )
+            }
             val p = baseParams()
-            p.width = WindowManager.LayoutParams.MATCH_PARENT
             p.gravity = Gravity.CENTER
             p.x = 0
             p.y = 0
             wm.addView(container, p)
             makeDraggable(container, p)
-            line1 = t1
-            line2 = t2
+            for (j in 0 until n) slots.add(container.getChildAt(j) as OutlineTextView)
             roots.add(container)
         }
         renderFrame()
     }
 
     private fun rebuildIfNeeded() {
-        if (roots.isEmpty() || builtFullscreen != DesktopLyricBus.fullscreen) rebuild()
+        if (roots.isEmpty() ||
+            builtFullscreen != DesktopLyricBus.fullscreen ||
+            builtLines != DesktopLyricBus.linesCount
+        ) rebuild()
     }
 
     // ==================== 刷新 ====================
 
     private fun renderFrame() {
-        val t1 = line1 ?: return
-        val cur = DesktopLyricBus.currentText()
-        val nxt = DesktopLyricBus.nextText()
-        val standby = if (DesktopLyricBus.songName.isNotBlank())
-            "♪ ${DesktopLyricBus.songName}"
-        else
-            "AnWind 云音乐 · 桌面歌词"
-
-        t1.text = cur.ifBlank { standby }
-        line2?.text = nxt.ifBlank { if (cur.isBlank()) "开启播放后显示歌词" else "···" }
-
         val color = DesktopLyricBus.textColor
         val size = DesktopLyricBus.sizeSp
-        t1.setTextColor(color)
-        t1.textSize = size
-        t1.outlinePx = (size / 6f) * resources.displayMetrics.density
-
-        line2?.let { t2 ->
-            // 下一行：同色 60% 透明度 + 0.7 倍字号
-            t2.setTextColor((color and 0x00FFFFFF) or 0x99000000.toInt())
-            t2.textSize = size * 0.7f
-            t2.outlinePx = (size * 0.7f / 6f) * resources.displayMetrics.density
+        if (!builtFullscreen) {
+            // ---- 两行模式：两行同字号同窗口，当前行 KTV 扫色，行推进时两行同时轮换 ----
+            val t1 = line1 ?: return
+            val cur = DesktopLyricBus.currentText()
+            val nxt = DesktopLyricBus.nextText()
+            setLine(t1, cur.ifBlank { standbyText() }, size, color, isCurrent = true)
+            line2?.let {
+                setLine(
+                    it,
+                    nxt.ifBlank { if (cur.isBlank()) "开启播放后显示歌词" else "···" },
+                    size, color, isCurrent = false
+                )
+            }
+            for (p in pills) bgOf(p, DesktopLyricBus.bgAlpha)
+        } else {
+            // ---- 全屏模式：围绕当前行取 n 行，当前行大字 + KTV 扫色，其余行 0.7 倍 ----
+            if (slots.isEmpty()) return
+            val n = slots.size
+            val idx = DesktopLyricBus.index
+            val has = DesktopLyricBus.lines.isNotEmpty()
+            val start = (idx - (n - 1) / 2).coerceAtLeast(0)
+            for (j in 0 until n) {
+                val li = start + j
+                val txt = when {
+                    has -> DesktopLyricBus.lineTextAt(li)
+                    j == (n - 1) / 2 -> standbyText()
+                    else -> ""
+                }
+                val isCur = has && li == idx
+                setLine(slots[j], txt, if (isCur) size else size * 0.7f, color, isCurrent = isCur)
+            }
+            for (v in roots) bgOf(v, DesktopLyricBus.bgAlpha)
         }
+    }
 
-        // 背景不透明度实时刷新（0 = 全透明仅描边字）
-        for (v in roots) bgOf(v, DesktopLyricBus.bgAlpha)
+    private fun standbyText(): String = if (DesktopLyricBus.songName.isNotBlank())
+        "♪ ${DesktopLyricBus.songName}"
+    else
+        "AnWind 云音乐 · 桌面歌词"
+
+    /** 刷新一行文字：字号/描边宽度跟随设置；KTV 开启时当前行按播放进度逐字扫色 */
+    private fun setLine(tv: OutlineTextView, text: String, sizeSp: Float, color: Int, isCurrent: Boolean) {
+        val wantPx = sizeSp * resources.displayMetrics.scaledDensity
+        if (kotlin.math.abs(tv.textSize - wantPx) > 0.5f) {
+            tv.textSize = sizeSp
+            tv.outlinePx = (sizeSp / 6f) * resources.displayMetrics.density
+        }
+        if (DesktopLyricBus.ktv) {
+            if (isCurrent) {
+                applyKtvSpans(tv, text, DesktopLyricBus.ktvFraction(), color, KTV_UNSONG_COLOR)
+                return
+            }
+            tv.setTextColor(KTV_UNSONG_COLOR)
+        } else {
+            tv.setTextColor(color)
+        }
+        tv.text = text
+    }
+
+    /**
+     * KTV 逐字变色（v2.21.1）：按字符宽度累计中点是否越过扫色前沿，
+     * 逐字设置已唱（主色）/未唱（半透明白）颜色；代理对合并为一个跨度。
+     */
+    private fun applyKtvSpans(tv: TextView, text: String, frac: Float, sungColor: Int, baseColor: Int) {
+        if (text.isEmpty()) {
+            tv.text = ""
+            return
+        }
+        val paint = tv.paint
+        val total = paint.measureText(text).coerceAtLeast(0.001f)
+        val span = SpannableString(text)
+        var acc = 0f
+        var i = 0
+        while (i < text.length) {
+            var j = i + 1
+            if (Character.isHighSurrogate(text[i]) && j < text.length && Character.isLowSurrogate(text[j])) j++
+            val w = paint.measureText(text, i, j)
+            val sung = acc + w * 0.5f <= frac * total
+            acc += w
+            span.setSpan(
+                ForegroundColorSpan(if (sung) sungColor else baseColor),
+                i, j, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+            )
+            i = j
+        }
+        tv.setTextColor(sungColor)
+        tv.text = span
     }
 
     // ==================== 拖动 ====================

@@ -209,7 +209,7 @@ data class MusicSettings(
     val wallRotateY: Float = -14f,
     /** 整面歌词墙绕 X 轴俯仰角（度，正 = 顶部向后倒），v2.20.3 新增 */
     val wallTiltX: Float = 16f,
-    /** 左右字体差：每行绕 Y 轴行内透视角（度），负向绘制左远右近 = 左小右大（v2.21 新增，0 为关闭） */
+    /** 左右字体差（%，0-45）：行内逐字字号渐变，行首最小、行尾最大 = 左小右大（v2.21.1 起，0 为关闭） */
     val lineYaw3d: Float = 16f,
     /** 当前行高亮颜色（ARGB），KTV 已唱部分同色（v2.21 新增） */
     val highlightColor: Int = 0xFFFFFFFF.toInt(),
@@ -224,10 +224,14 @@ data class MusicSettings(
     val desktopLyricFullscreen: Boolean = false,
     /** 桌面歌词字体颜色（ARGB） */
     val desktopLyricColor: Int = 0xFFFFFFFF.toInt(),
-    /** 桌面歌词背景不透明度 0..1（0 为全透明仅剩描边字） */
-    val desktopLyricBgAlpha: Float = 0.35f,
-    /** 桌面歌词字号（sp），下一行按 0.7 倍缩小 */
+    /** 桌面歌词背景不透明度 0..1（0 为全透明仅剩描边字；v2.21.1 默认全透明） */
+    val desktopLyricBgAlpha: Float = 0f,
+    /** 桌面歌词字号（sp），两行模式两行同字号；全屏模式非当前行按 0.7 倍缩小 */
     val desktopLyricSize: Float = 22f,
+    /** 桌面歌词 KTV 逐字变色（v2.21.1 新增）：当前行按播放进度从左向右扫色 */
+    val desktopLyricKtv: Boolean = true,
+    /** 桌面全屏歌词显示行数（v2.21.1 新增，1..6，默认 4 行，围绕当前行取词） */
+    val desktopLyricLines: Int = 4,
     /** 歌词秀自定义封面图片（content:// 或绝对路径；空 = 使用歌曲专辑封面，v2.21） */
     val coverImage: String? = null,
     /** 歌词秀自定义光盘盘面图片（空 = 与封面同图，v2.21） */
@@ -382,8 +386,14 @@ class MusicStore(private val context: Context) {
             desktopLyricOn = o.optBoolean("desktopLyricOn", false),
             desktopLyricFullscreen = o.optBoolean("desktopLyricFullscreen", false),
             desktopLyricColor = o.optInt("desktopLyricColor", 0xFFFFFFFF.toInt()),
-            desktopLyricBgAlpha = o.optDouble("desktopLyricBgAlpha", 0.35).toFloat().coerceIn(0f, 1f),
+            desktopLyricBgAlpha = run {
+                // v2.21.1：旧默认 0.35 一次性迁移为全透明；用户手动调过的其它值保留
+                val bg = o.optDouble("desktopLyricBgAlpha", 0.0).toFloat().coerceIn(0f, 1f)
+                if (bg == 0.35f) 0f else bg
+            },
             desktopLyricSize = o.optDouble("desktopLyricSize", 22.0).toFloat().coerceIn(14f, 40f),
+            desktopLyricKtv = o.optBoolean("desktopLyricKtv", true),
+            desktopLyricLines = o.optInt("desktopLyricLines", 4).coerceIn(1, 6),
             coverImage = o.optString("coverImage", "").takeIf { it.isNotEmpty() },
             discImage = o.optString("discImage", "").takeIf { it.isNotEmpty() },
             lyricDynamic = o.optBoolean("lyricDynamic", true),
@@ -426,6 +436,8 @@ class MusicStore(private val context: Context) {
                     .put("desktopLyricColor", s.desktopLyricColor)
                     .put("desktopLyricBgAlpha", s.desktopLyricBgAlpha.toDouble())
                     .put("desktopLyricSize", s.desktopLyricSize.toDouble())
+                    .put("desktopLyricKtv", s.desktopLyricKtv)
+                    .put("desktopLyricLines", s.desktopLyricLines)
                     .put("coverImage", s.coverImage ?: "")
                     .put("discImage", s.discImage ?: "")
                     .put("lyricDynamic", s.lyricDynamic)
