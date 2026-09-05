@@ -136,14 +136,15 @@ private class OutlineTextView(context: Context) : TextView(context) {
 }
 
 /**
- * 桌面歌词悬浮窗服务（v2.21.1）：
+ * 桌面歌词悬浮窗服务（v2.21.2）：
  * - 前台服务（specialUse）+ TYPE_APPLICATION_OVERLAY 悬浮窗，需「显示在应用上层」权限
- * - 两行模式（对照参考图4）：一个可拖动窗口 —— 当前行左上、下一行右下，两行字号相同，
- *   当前行播完、行索引推进时两行同时轮换；背景贴字自适应宽度（不固定宽）
- * - 桌面全屏歌词：行数可设（默认 4 行，围绕当前行取词），横幅宽度随歌词自适应，
+ * - 两行模式：一个可拖动窗口 —— 垂直 LinearLayout 当前行顶左、下一行右下（错位不重叠），
+ *   两行字号相同，行索引推进时两行同时轮换；背景贴字自适应宽度（不固定宽）
+ * - 桌面全屏歌词：行数可设（1-15 行，默认 4 行，围绕当前行取词），横幅宽度随歌词自适应，
  *   当前行大字 + KTV 扫色，其余行 0.7 倍
  * - 两种模式均可 KTV 逐字变色（进度由播放器写入总线，服务侧墙钟外插平滑）
  * - 每 200ms 轮询 DesktopLyricBus 刷新文字/颜色/背景；模式/行数变化重建窗口
+ * - 生命周期跟随播放器：播放器窗口关闭/应用退出即随之关闭（Manifest stopWithTask 双保险）
  */
 class LyricOverlayService : Service() {
 
@@ -231,7 +232,7 @@ class LyricOverlayService : Service() {
         )
     }
 
-    /** 构建一行浮条：圆角半透明背景 + 描边文字 */
+    /** 构建一行浮条：圆角半透明背景 + 描边文字（超宽行按屏宽 88% 截断省略） */
     private fun buildLineWindow(): Pair<FrameLayout, OutlineTextView> {
         val root = FrameLayout(this)
         root.setPadding(dp(10f), dp(6f), dp(10f), dp(7f))
@@ -240,6 +241,8 @@ class LyricOverlayService : Service() {
         text.ellipsize = TextUtils.TruncateAt.END
         text.typeface = Typeface.DEFAULT_BOLD
         text.includeFontPadding = false
+        // v2.21.2：两行模式同样限宽 —— 背景/文字随歌词自适应但永不顶出屏幕
+        text.maxWidth = (resources.displayMetrics.widthPixels * 0.88f).toInt() - dp(20f)
         root.addView(text)
         return root to text
     }
@@ -265,27 +268,31 @@ class LyricOverlayService : Service() {
         builtLines = DesktopLyricBus.linesCount
 
         if (!fs) {
-            // ---- 两行模式（v2.21.1 对照参考图4 重做）：一个可拖动窗口 ——
-            // 当前行左上、下一行右下，两行字号相同；各自贴字药丸背景（宽度随歌词自适应），
-            // 窗口本身全透明；行索引推进时两行同时轮换（line1←当前，line2←下一行）
-            val root = FrameLayout(this)
+            // ---- 两行模式（v2.21.2 修重叠）：一个可拖动窗口，垂直 LinearLayout ——
+            // 当前行 pill 顶左（START 对齐）+ 下一行 pill 右下（END 对齐 + 6dp 上间距），
+            // 窗口高度 = 两行之和，彻底避免两行重叠；两行字号相同、整体拖动；
+            // 各自贴字药丸背景（宽度随歌词自适应），窗口本身全透明；
+            // 行索引推进时两行同时轮换（line1←当前，line2←下一行）
+            val root = LinearLayout(this)
+            root.orientation = LinearLayout.VERTICAL
             val (pill1, t1) = buildLineWindow()
             root.addView(
                 pill1,
-                FrameLayout.LayoutParams(
-                    FrameLayout.LayoutParams.WRAP_CONTENT,
-                    FrameLayout.LayoutParams.WRAP_CONTENT,
-                    Gravity.TOP or Gravity.START
-                )
+                LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply { gravity = Gravity.START }
             )
             val (pill2, t2) = buildLineWindow()
             root.addView(
                 pill2,
-                FrameLayout.LayoutParams(
-                    FrameLayout.LayoutParams.WRAP_CONTENT,
-                    FrameLayout.LayoutParams.WRAP_CONTENT,
-                    Gravity.BOTTOM or Gravity.END
-                )
+                LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply {
+                    gravity = Gravity.END
+                    topMargin = dp(6f)
+                }
             )
             pairParams = baseParams()
             pairParams.gravity = Gravity.TOP or Gravity.START
@@ -299,9 +306,9 @@ class LyricOverlayService : Service() {
             pills.add(pill2)
             roots.add(root)
         } else {
-            // ---- 桌面全屏歌词（v2.21.1）：行数可设（默认 4 行，围绕当前行取词），
+            // ---- 桌面全屏歌词（v2.21.2 行数上限扩到 15）：行数可设（默认 4 行，围绕当前行取词），
             // 横幅宽度随歌词自适应（超宽行按屏宽 88% 截断省略），屏幕居中，整幅可拖动
-            val n = DesktopLyricBus.linesCount.coerceIn(1, 6)
+            val n = DesktopLyricBus.linesCount.coerceIn(1, 15)
             val container = LinearLayout(this)
             container.orientation = LinearLayout.VERTICAL
             container.setPadding(dp(14f), dp(8f), dp(14f), dp(10f))

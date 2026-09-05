@@ -87,6 +87,15 @@ class MusicEngine(context: Context) {
     /** 当前正在 prepare 的代号（onPrepared/onError 回调时与 gen 比对防竞态） */
     private var pendingGen = 0
 
+    /** v2.21.2：上次会话已装入队列但尚未起播；首次点播放时先加载并跳转到记忆进度 */
+    private var restorePending = false
+
+    /** v2.21.2：prepare 完成后待跳转的进度（恢复播放用，普通播放为 0） */
+    private var seekOnPreparedMs = 0L
+
+    /** v2.21.2：会话落盘节流起点（elapsedRealtime ms） */
+    private var lastSessionSaveAt = 0L
+
     init {
         player.setOnCompletionListener { onCompleted() }
         player.setOnPreparedListener { mp ->
@@ -94,6 +103,13 @@ class MusicEngine(context: Context) {
             if (isPreparing && pendingGen == gen) {
                 isPreparing = false
                 durationMs = runCatching { mp.duration.toLong() }.getOrDefault(durationMs)
+                // v2.21.2：恢复播放 —— prepared 后先跳转到记忆进度再起播
+                if (seekOnPreparedMs > 0L) {
+                    val target = seekOnPreparedMs.coerceIn(0L, (durationMs - 1000L).coerceAtLeast(0L))
+                    seekOnPreparedMs = 0L
+                    runCatching { mp.seekTo(target.toInt()) }
+                    positionMs = target
+                }
                 runCatching { mp.start() }
                 isPlaying = true
                 startTicker()
@@ -108,6 +124,8 @@ class MusicEngine(context: Context) {
             }
             true
         }
+        // v2.21.2：启动即装回上次退出前的播放会话（暂停待播，点播放从记忆进度继续）
+        restoreSession()
     }
 
     // ==================== 播放入口 ====================
@@ -141,12 +159,19 @@ class MusicEngine(context: Context) {
 
     /** 播放/暂停切换 */
     fun toggle() {
-        if (currentSong == null) return
+        val song = currentSong ?: return
+        // v2.21.2：恢复会话的首次播放 —— 按普通流程加载源，prepared 后自动 seek 到记忆进度
+        if (restorePending) {
+            restorePending = false
+            loadAndPlay(song, resumeMs = seekOnPreparedMs)
+            return
+        }
         runCatching {
             if (player.isPlaying) {
                 player.pause()
                 isPlaying = false
                 ticker?.cancel()
+                saveSession(force = true)
             } else {
                 player.start()
                 isPlaying = true
@@ -162,6 +187,7 @@ class MusicEngine(context: Context) {
             player.seekTo(safe.toInt())
             positionMs = safe
         }
+        saveSession()
     }
 
     /** 上一曲（用户点击，循环队列） */
@@ -208,16 +234,20 @@ class MusicEngine(context: Context) {
 
     // ==================== 内部实现 ====================
 
-    private fun loadAndPlay(song: SongInfo) {
+    private fun loadAndPlay(song: SongInfo, resumeMs: Long = -1L) {
         gen++
         val myGen = gen
         currentSong = song
         isPlaying = false
         isPreparing = true
         playError = null
-        positionMs = 0L
+        positionMs = if (resumeMs > 0L) resumeMs else 0L
         durationMs = song.durationMs
+        seekOnPreparedMs = resumeMs.coerceAtLeast(0L)
+        restorePending = false
         ticker?.cancel()
+        // v2.21.2：切歌即记录新会话（进度从当前起点算起）
+        saveSession(force = true)
 
         scope.launch {
             // 解析播放源优先级：本地 URI > 已下载文件 > 在线解析直链
@@ -265,6 +295,8 @@ class MusicEngine(context: Context) {
         ticker = scope.launch {
             while (isActive && isPlaying) {
                 positionMs = runCatching { player.currentPosition.toLong() }.getOrDefault(positionMs)
+                // v2.21.2：播放中定期记忆进度（saveSession 内部节流）
+                saveSession()
                 delay(300)
             }
         }
@@ -273,10 +305,48 @@ class MusicEngine(context: Context) {
     /** 窗口关闭时释放资源（UI 层在 DisposableEffect 中调用） */
     fun dispose() {
         ticker?.cancel()
+        // v2.21.2：退出前强制落盘最终进度（记忆关闭前正在播放的音乐）
+        saveSession(force = true)
         scope.cancel()
         runCatching {
             if (player.isPlaying) player.stop()
         }
         runCatching { player.release() }
+    }
+
+    // ==================== 播放会话记忆（v2.21.2） ====================
+
+    /**
+     * 装回上次退出前的播放会话：队列 + 当前曲 + 进度。
+     * 只装入状态不起播 —— 底部播放条立即显示上次的歌，点播放从记忆进度继续。
+     */
+    private fun restoreSession() {
+        val s = store.loadLastSession() ?: return
+        if (s.songs.isEmpty()) return
+        queue.clear()
+        queue.addAll(s.songs)
+        val idx = s.index.coerceIn(0, s.songs.size - 1)
+        val song = s.songs[idx]
+        queueIndex = idx
+        currentSong = song
+        durationMs = song.durationMs
+        val pos = s.positionMs.coerceIn(0L, song.durationMs.coerceAtLeast(0L))
+        positionMs = pos
+        restorePending = true
+        seekOnPreparedMs = pos
+    }
+
+    /**
+     * 把当前播放状态写入会话记忆（队列 + 当前曲下标 + 进度）。
+     * 默认 4 秒节流，force = true 时立即落盘（切歌/暂停/退出）。
+     */
+    fun saveSession(force: Boolean = false) {
+        val song = currentSong ?: return
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (!force && now - lastSessionSaveAt < 4000L) return
+        lastSessionSaveAt = now
+        val idx = if (queueIndex in queue.indices) queueIndex
+        else queue.indexOfFirst { it.key == song.key }.coerceAtLeast(0)
+        store.saveLastSession(queue.toList(), idx, positionMs)
     }
 }

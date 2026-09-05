@@ -76,7 +76,8 @@ val LyricAccentColors = listOf(
  *   3D 倾斜参数（大范围）、逐字左右字体差、当前行高亮颜色、KTV 渐进样式、字号、
  *   行切换动画、高亮发光、翻译显示
  * - 桌面歌词：开关（引导悬浮窗权限）、两行/全屏双模式、字体颜色、背景不透明度、
- *   字号、KTV 逐字变色、全屏歌词行数（两种模式背景宽度均随歌词自适应）
+ *   字号、KTV 逐字变色、全屏歌词行数 1-15（两种模式背景宽度均随歌词自适应；
+ *   v2.21.2 起播放器关闭时悬浮窗随之关闭）
  * - 词源：智能回退 / 酷我 / 网易云 / QQ 音乐 / LRCLIB 优先级
  * - 本地扫描：全库 / 仅指定目录（目录列表 + 文件夹选择 + 手动输入）
  * 所有修改即时持久化（onChange → saveMusicSettings），滑条拖动过程中实时生效。
@@ -363,8 +364,8 @@ fun SettingsPage(
                     title = "全屏歌词行数",
                     display = "${settings.desktopLyricLines} 行",
                     value = settings.desktopLyricLines.toFloat(),
-                    range = 1f..6f,
-                    steps = 4,
+                    range = 1f..15f,
+                    steps = 14,
                     onChange = { onChange(settings.copy(desktopLyricLines = it.toInt())) }
                 )
             }
@@ -459,7 +460,7 @@ fun SettingsPage(
 
         SettingsSection("关于") {
             Caption("音源：酷我（搜索 / 播放 / 下载） · 词源：酷我 / 网易云 / QQ 音乐 / LRCLIB")
-            Caption("AnWind 云音乐 v2.21.1 · 界面对照网易云音乐 PC 版 · 3D 歌词秀 · 桌面歌词")
+            Caption("AnWind 云音乐 v2.21.2 · 界面对照网易云音乐 PC 版 · 3D 歌词秀 · 桌面歌词")
         }
         Spacer(Modifier.height(20.dp))
     }

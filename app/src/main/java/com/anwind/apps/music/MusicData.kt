@@ -230,7 +230,7 @@ data class MusicSettings(
     val desktopLyricSize: Float = 22f,
     /** 桌面歌词 KTV 逐字变色（v2.21.1 新增）：当前行按播放进度从左向右扫色 */
     val desktopLyricKtv: Boolean = true,
-    /** 桌面全屏歌词显示行数（v2.21.1 新增，1..6，默认 4 行，围绕当前行取词） */
+    /** 桌面全屏歌词显示行数（v2.21.2 起上限 15 行，默认 4 行，围绕当前行取词） */
     val desktopLyricLines: Int = 4,
     /** 歌词秀自定义封面图片（content:// 或绝对路径；空 = 使用歌曲专辑封面，v2.21） */
     val coverImage: String? = null,
@@ -393,7 +393,7 @@ class MusicStore(private val context: Context) {
             },
             desktopLyricSize = o.optDouble("desktopLyricSize", 22.0).toFloat().coerceIn(14f, 40f),
             desktopLyricKtv = o.optBoolean("desktopLyricKtv", true),
-            desktopLyricLines = o.optInt("desktopLyricLines", 4).coerceIn(1, 6),
+            desktopLyricLines = o.optInt("desktopLyricLines", 4).coerceIn(1, 15),
             coverImage = o.optString("coverImage", "").takeIf { it.isNotEmpty() },
             discImage = o.optString("discImage", "").takeIf { it.isNotEmpty() },
             lyricDynamic = o.optBoolean("lyricDynamic", true),
@@ -479,7 +479,72 @@ class MusicStore(private val context: Context) {
         }
     }
 
+    // ---------- 上次播放会话（v2.21.2：记忆关闭播放器前正在播放的音乐/队列/进度） ----------
+
+    private val sessionFile: File by lazy { File(dir, "lastsession.json") }
+
+    /** 上次会话快照：播放队列 + 当前曲下标 + 进度 */
+    data class LastSession(val songs: List<SongInfo>, val index: Int, val positionMs: Long)
+
+    fun loadLastSession(): LastSession? {
+        if (!sessionFile.isFile) return null
+        return runCatching {
+            val o = JSONObject(sessionFile.readText())
+            val arr = o.optJSONArray("songs") ?: return@runCatching null
+            val list = mutableListOf<SongInfo>()
+            for (i in 0 until arr.length()) {
+                val so = arr.optJSONObject(i) ?: continue
+                list.add(songFromJson(so))
+            }
+            if (list.isEmpty()) null
+            else LastSession(list, o.optInt("index", 0), o.optLong("positionMs", 0L))
+        }.getOrNull()
+    }
+
+    fun saveLastSession(songs: List<SongInfo>, index: Int, positionMs: Long) {
+        runCatching {
+            val arr = JSONArray()
+            for (s in songs.take(300)) arr.put(songToJson(s))
+            sessionFile.writeText(
+                JSONObject()
+                    .put("songs", arr)
+                    .put("index", index)
+                    .put("positionMs", positionMs)
+                    .toString()
+            )
+        }
+    }
+
+    fun clearLastSession() {
+        runCatching { sessionFile.delete() }
+    }
+
     // ---------- 序列化 ----------
+
+    private fun songToJson(s: SongInfo): JSONObject =
+        JSONObject()
+            .put("id", s.id)
+            .put("name", s.name)
+            .put("artist", s.artist)
+            .put("album", s.album)
+            .put("durationMs", s.durationMs)
+            .put("picUrl", s.picUrl)
+            .put("source", s.source)
+            .put("localUri", s.localUri ?: "")
+            .put("downloadedPath", s.downloadedPath ?: "")
+
+    private fun songFromJson(o: JSONObject): SongInfo =
+        SongInfo(
+            id = o.optString("id", ""),
+            name = o.optString("name", ""),
+            artist = o.optString("artist", ""),
+            album = o.optString("album", ""),
+            durationMs = o.optLong("durationMs", 0L),
+            picUrl = o.optString("picUrl", ""),
+            source = o.optString("source", SongInfo.SOURCE_KUWO),
+            localUri = o.optString("localUri", "").takeIf { it.isNotEmpty() },
+            downloadedPath = o.optString("downloadedPath", "").takeIf { it.isNotEmpty() }
+        )
 
     private fun loadSongs(file: File): MutableList<SongInfo> {
         if (!file.isFile) return mutableListOf()
@@ -488,19 +553,7 @@ class MusicStore(private val context: Context) {
             val list = mutableListOf<SongInfo>()
             for (i in 0 until arr.length()) {
                 val o = arr.optJSONObject(i) ?: continue
-                list.add(
-                    SongInfo(
-                        id = o.optString("id", ""),
-                        name = o.optString("name", ""),
-                        artist = o.optString("artist", ""),
-                        album = o.optString("album", ""),
-                        durationMs = o.optLong("durationMs", 0L),
-                        picUrl = o.optString("picUrl", ""),
-                        source = o.optString("source", SongInfo.SOURCE_KUWO),
-                        localUri = o.optString("localUri", "").takeIf { it.isNotEmpty() },
-                        downloadedPath = o.optString("downloadedPath", "").takeIf { it.isNotEmpty() }
-                    )
-                )
+                list.add(songFromJson(o))
             }
             list
         }.getOrDefault(mutableListOf())
@@ -509,20 +562,7 @@ class MusicStore(private val context: Context) {
     private fun saveSongs(file: File, list: List<SongInfo>) {
         runCatching {
             val arr = JSONArray()
-            for (s in list) {
-                arr.put(
-                    JSONObject()
-                        .put("id", s.id)
-                        .put("name", s.name)
-                        .put("artist", s.artist)
-                        .put("album", s.album)
-                        .put("durationMs", s.durationMs)
-                        .put("picUrl", s.picUrl)
-                        .put("source", s.source)
-                        .put("localUri", s.localUri ?: "")
-                        .put("downloadedPath", s.downloadedPath ?: "")
-                )
-            }
+            for (s in list) arr.put(songToJson(s))
             file.writeText(arr.toString())
         }
     }

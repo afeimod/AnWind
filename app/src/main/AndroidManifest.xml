@@ -80,10 +80,12 @@
             </intent-filter>
         </activity>
 
-        <!-- v2.21 桌面歌词悬浮窗前台服务（specialUse：桌面歌词常驻显示） -->
+        <!-- v2.21 桌面歌词悬浮窗前台服务（specialUse：桌面歌词常驻显示）
+             v2.21.2：stopWithTask —— 播放器关闭/任务划掉时服务随之停止，桌面歌词不再常驻 -->
         <service
             android:name="com.anwind.apps.music.LyricOverlayService"
             android:exported="false"
+            android:stopWithTask="true"
             android:foregroundServiceType="specialUse">
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"

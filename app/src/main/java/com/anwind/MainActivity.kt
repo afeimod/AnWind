@@ -284,5 +284,10 @@ class MainActivity : ComponentActivity() {
         super.onDestroy()
         // 清理所有打开的窗口
         com.anwind.core.window.WindowManager.get().closeAll()
+        // v2.21.2：应用真正退出（返回键退出/finish）时同步关闭桌面歌词悬浮窗。
+        // 任务被划掉的场景由 LyricOverlayService 的 stopWithTask 兜底，此处是双保险。
+        if (isFinishing) {
+            com.anwind.apps.music.stopDesktopLyricService(applicationContext)
+        }
     }
 }

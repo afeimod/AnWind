@@ -348,12 +348,15 @@ private fun MusicContent(scope: WindowContentScope) {
         }
     }
 
-    // v2.21：音乐窗口关闭时清空总线，悬浮窗转入待机态（显示歌名）
+    // v2.21.2：音乐播放器窗口关闭/应用退出时 —— 停掉桌面歌词悬浮窗并清空总线
+    // （v2.21.x 旧语义仅清总线转待机态，用户反馈关闭播放器后桌面歌词仍常驻，现改为整个关闭）
+    // 重开播放器窗口时由上方 LaunchedEffect（desktopLyricOn 开关开启时）自动重新拉起服务
     DisposableEffect(Unit) {
         onDispose {
             DesktopLyricBus.lines = emptyList()
             DesktopLyricBus.index = -1
             DesktopLyricBus.playing = false
+            stopDesktopLyricService(context)
         }
     }
 
