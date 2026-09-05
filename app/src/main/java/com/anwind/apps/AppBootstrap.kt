@@ -12,6 +12,7 @@ import com.anwind.apps.notepad.NotepadApp
 import com.anwind.apps.settings.SettingsApp
 import com.anwind.apps.sysinfo.SysInfoApp
 import com.anwind.apps.terminal.TerminalApp
+import com.anwind.apps.terminal.SimpleTerminalApp
 import com.anwind.core.window.AppRegistry
 
 /**
@@ -29,7 +30,9 @@ object AppBootstrap {
         AppRegistry.register(SysInfoApp)
         AppRegistry.register(ImageViewerApp)
         AppRegistry.register(ClockApp)
+        // v2.22：终端双轨 —— 真实 Termux 移植版（默认）+ 旧模拟版（简易终端）
         AppRegistry.register(TerminalApp)
+        AppRegistry.register(SimpleTerminalApp)
         AppRegistry.register(MediaPlayerApp)
         AppRegistry.register(MusicPlayerApp)
         AppRegistry.register(MinesweeperApp)

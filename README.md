@@ -1,6 +1,6 @@
 # AnWind
 
-> 一个 Android 平台的 Windows 风格桌面模拟器，支持 Win95 / XP / 7 / 10 / 11 五代主题切换，内置浏览器、文件管理器、终端等 9 个应用，支持自定义快捷方式。
+> 一个 Android 平台的 Windows 风格桌面模拟器，支持 Win95 / XP / 7 / 10 / 11 五代主题切换，内置浏览器、文件管理器、**真实 Termux 终端**等 10 个应用，支持自定义快捷方式。
 
 ## 项目简介
 
@@ -9,10 +9,11 @@ AnWind 是一个用 **Kotlin + Jetpack Compose** 编写的 Android 桌面启动�
 ### 核心特性
 
 - **5 套 Windows 主题切换** — Windows 95 / XP / 7 / 10 / 11，每套主题都有独立的任务栏样式、窗口边框、配色方案和壁纸，切换后整个 UI 焕然一新
+- **真实 Termux 终端（v2.22）** — 完整移植官方 Termux（termux-app v0.118.0）：真实 PTY + login shell、官方 bootstrap 根文件系统（apt/dpkg/pkg 全家桶）、pkg 安装真实软件包（python/git/openssh…）、两排快捷键栏、AnWind 桌面联动命令（theme/start/open），详见 [docs/TERMUX.md](docs/TERMUX.md)
 - **混合窗口模型** — 主要应用（浏览器/文件管理器）全屏运行，辅助应用（记事本/计算器/设置）以可拖拽、可缩放、可最小化/最大化的浮动窗口运行
 - **完整浏览器** — 基于 WebView 重新实现，支持多标签页、前进/后退/刷新、地址栏、书签、历史记录、首页快捷导航，**支持通过 SAF 读取本地 HTML 文件并渲染**
 - **快捷方式系统** — 长按桌面空白处弹出右键菜单 → 新建快捷方式，支持网页 URL / 本地 HTML 文件 / 应用 三种类型，可自定义名称和 emoji 图标
-- **9 个内置应用** — 浏览器、文件资源管理器、设置、记事本、计算器、系统信息、图片查看器、时钟、终端
+- **9+1 个内置应用** — 浏览器、文件资源管理器、设置、记事本、计算器、系统信息、图片查看器、时钟、终端（真实 Termux + 简易终端并存）
 - **可作为默认 Launcher** — 在 Manifest 中注册了 `HOME` category，可选择设为系统桌面
 - **持久化存储** — 使用 Room 数据库保存快捷方式/书签/历史记录，DataStore 保存偏好设置
 
@@ -28,7 +29,8 @@ AnWind 是一个用 **Kotlin + Jetpack Compose** 编写的 Android 桌面启动�
 | 异步 | Kotlin Coroutines + Flow |
 | 浏览器内核 | Android WebView + WebKit |
 | 最小 SDK | 24 (Android 7.0) |
-| 目标 SDK | 34 (Android 14) |
+| 目标 SDK | 28（Termux W^X 约束，同官方 Termux；详见 docs/TERMUX.md §3） |
+| 原生库 | NDK 26.3 ndkBuild → libtermux.so（PTY/FIFO 桥） |
 | 构建 | Gradle 8.7 + AGP 8.5.2 |
 
 ## 项目结构
@@ -84,7 +86,13 @@ AnWind/
 │       │   │   ├── sysinfo/SysInfoApp.kt
 │       │   │   ├── imageviewer/ImageViewerApp.kt
 │       │   │   ├── clock/ClockApp.kt
-│       │   │   └── terminal/TerminalApp.kt  # 终端（支持 theme 命令切换主题）
+│       │   │   ├── terminal/                 # v2.22：真实 Termux 终端
+│       │   │   │   ├── TerminalApp.kt         #   终端 UI（安装引导/会话/快捷键栏）
+│       │   │   │   ├── SimpleTerminalApp.kt   #   旧模拟终端（简易终端）
+│       │   │   │   └── termux/                #   安装器/会话控制器/命令桥
+│       │   ├── termux/                        # 上游移植（Apache-2.0，包名已改）
+│       │   │   ├── terminal/                  #   terminal-emulator 模块（13 类）
+│       │   │   └── view/                      #   terminal-view 模块（7 类）
 │       │   └── util/EmojiPainter.kt
 │       ├── res/
 │       │   ├── values/                      # strings, colors, themes
@@ -113,6 +121,7 @@ AnWind/
 - **Android Studio** Hedgehog (2023.1.1) 或更高版本
 - **JDK 17**
 - **Android SDK** API 34（编译）/ API 24+（运行）
+- **NDK 26.3.11579264**（Termux 原生库编译，SDK Manager 安装同名版本）
 - **Gradle 8.7**（项目自带 wrapper 配置）
 
 ### 构建步骤
@@ -205,9 +214,9 @@ AnWind/
 
 打开开始菜单 → 设置 → 主题 → 选择任意主题（Win95/XP/7/10/11）→ 整个界面立即变换
 
-**方法二：终端命令**
+**方法二：终端命令（真实 Termux shell）**
 
-打开开始菜单 → 终端 → 输入：
+打开开始菜单 → 终端 → 首次自动安装 Termux 环境（约 30-60 秒，仅需一次）后输入：
 
 ```
 theme win95
@@ -255,19 +264,32 @@ theme win11
 - **下载管理** — 歌曲下载（自动附带 .lrc 歌词文件）、失败重试、进度显示；优先保存到 `Music/AnWindMusic`
 - **播放控制** — 顺序 / 单曲循环 / 随机、音量调节、进度拖拽、自动连播
 
-### 终端命令
+### 终端（真实 Termux，v2.22）
+
+终端现在是完整的官方 Termux 移植（详见 [docs/TERMUX.md](docs/TERMUX.md)）：
+
+```bash
+pkg update && pkg install python git vim openssh   # 真实 apt 官方源，安装真实软件包
+pkg search ffmpeg                                    # 搜索
+ls / cp / mv / grep / sed / curl …                   # 全套 GNU 工具链（71 个预装包）
+termux-info                                          # 环境信息
+```
+
+**AnWind 桌面联动命令**（注入到真实 bash 的 profile.d）：
 
 | 命令 | 作用 |
 |------|------|
-| `help` | 显示帮助 |
-| `ver` | 系统版本 |
-| `date` / `time` | 当前日期/时间 |
-| `dir` / `ls` | 列出目录 |
-| `cd <path>` | 切换目录 |
-| `cls` | 清屏 |
 | `theme <variant>` | 切换主题（win95/xp/win7/win10/win11） |
-| `start <app>` | 启动应用（browser/files/notepad/calc/settings/music） |
-| `exit` | 关闭终端 |
+| `start <app>` | 启动应用（browser/files/notepad/calc/settings/music…） |
+| `apps` | 列出可启动应用 |
+| `open <url>` | 用 AnWind 浏览器打开网址 |
+| `winver` | 显示版本信息 |
+
+**快捷键栏**：第一排 ESC/CTRL/ALT/TAB/方向键；第二排 HOME/PGUP/PGDN/END/⇧/FN，
+SYM 键切换符号层。修饰键点击=粘滞一次，长按=锁定（对齐官方 ExtraKeys）。
+
+**旧版模拟终端**保留为独立的“简易终端”应用（不占桌面图标，开始菜单可找到），
+无需安装 bootstrap 即可用。
 
 ## 主题视觉差异
 

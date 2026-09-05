@@ -46,17 +46,59 @@ android {
     namespace = "com.anwind"
     compileSdk = 34
 
+    // ============================================================
+    // NDK：Termux 移植的 PTY 原生库（libtermux.so）
+    //（terminal-emulator jni/termux.c + AnWind FIFO 桥）
+    // ============================================================
+    ndkVersion = "26.3.11579264"
+
+    externalNativeBuild {
+        ndkBuild {
+            path = file("src/main/cpp/termux/Android.mk")
+        }
+    }
+
     defaultConfig {
         applicationId = "com.anwind"
         minSdk = 24
-        targetSdk = 34
-        versionCode = 40
-        versionName = "2.21.5"
+
+        // ============================================================
+        // ⚠⚠⚠ v2.22 Termux 移植关键约束：targetSdk 必须锁在 28 ⚠⚠⚠
+        // ============================================================
+        // Android 10+ 的 SELinux 策略禁止 targetSdk≥29 的应用 exec()
+        // 自己数据目录里的二进制文件（W^X 限制）。Termux 环境的全部
+        // 原生程序（bash/apt/pkg 及 pkg 安装的一切）都位于
+        // /data/data/com.anwind/files/usr —— 只在 targetSdk≤28 时可执行。
+        // 官方 Termux 也因此自 2019 年起一直锁定 targetSdk 28。
+        //
+        // 对 AnWind 现有功能的影响：全部兼容 ——
+        // - SAF（本地 HTML/文件选择）不依赖 targetSdk
+        // - Room/DataStore/Compose/WebView/Launcher 不受影响
+        // - 已声明 requestLegacyExternalStorage + MANAGE_EXTERNAL_STORAGE
+        // - Android 13+ 通知权限：targetSdk<33 的应用首次建渠道时系统
+        //   自动弹授权（行为略有差异但可用）
+        // 唯一代价：Android 10+ 安装时提示“此应用为旧版 Android 打造”。
+        // ============================================================
+        targetSdk = 28
+        versionCode = 41
+        versionName = "2.22.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
             useSupportLibrary = true
         }
+
+        // NDK：保留全部 ABI，让 APK 可装任意设备
+        //（bootstrap 离线包仅含 aarch64；其他架构打开终端时会收到明确提示）
+        ndk {
+            abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
+        }
+    }
+
+    // bootstrap 归档（assets/termux/*.zip）保持不压缩：
+    // 避免二次压缩浪费构建时间，安装期拷贝更快
+    androidResources {
+        noCompress += listOf("zip")
     }
 
     // ============================================================

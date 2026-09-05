@@ -73,6 +73,18 @@ jobs:
           # 开启缓存，加速二次构建（main 分支可写缓存，其他分支只读）
           cache-read-only: ${{ github.ref != 'refs/heads/main' }}
 
+      # ============ 3.5 安装 NDK（v2.22 Termux 移植：libtermux.so 原生编译） ============
+      # app/build.gradle.kts 中 ndkVersion = "26.3.11579264"，此处需安装同版本
+      - name: 🔬 Install NDK 26.3.11579264
+        run: |
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          ls "$ANDROID_HOME/ndk" 2>/dev/null || echo "(no existing ndk dir)"
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+            "ndk;26.3.11579264" > /dev/null 2>&1 || \
+          yes | sdkmanager "ndk;26.3.11579264" > /dev/null 2>&1
+          echo "=== Installed NDK versions ==="
+          ls "$ANDROID_HOME/ndk"
+
       # ============ 5. 检查 gradle-wrapper.jar 是否存在 ============
       # 如果不存在，自动生成 wrapper（首次推送仓库时常见情况）
       - name: 🔧 Ensure gradle-wrapper.jar exists
