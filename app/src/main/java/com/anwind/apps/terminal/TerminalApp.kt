@@ -23,7 +23,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
-import androidx.compose.foundation.layout.imePadding
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import com.anwind.apps.terminal.termux.AnWindShellBridge
@@ -273,11 +272,20 @@ private fun RealTerminalArea(scope: WindowContentScope) {
         viewRef.value?.let { controller.attach(it) }
     }
 
+    // v2.22.1 IME 修复：移除 imePadding ——
+    // 终端窗口是自绘桌面（WindowHost/WindowChrome）里的浮窗，键盘弹出时
+    // MainActivity 的 windowSoftInputMode=adjustResize 已把整个工作区压缩到
+    // 键盘上方，WindowChrome 的钳制逻辑会把窗口适配到压缩后的工作区。
+    // 此处若再叠加 imePadding（键盘全高 inset），Column 内容被二次压缩：
+    // toolbar/extrakeys 与输入行被挤出可视区，只剩 Column 的黑色背景铺满
+    // 窗口下半部（用户反馈的"调用输入法时下方黑块太大、命令行被截断"）。
+    // 桌面内其他带输入框的应用（记事本/浏览器/模拟终端）均无 imePadding，
+    // 行为一致且正常。TerminalView.updateSize() 在窗口重排后自动跟随最新
+    // 输出行（mTopRow=0），无需额外滚动处理。
     Column(
         modifier = Modifier
             .fillMaxSize()
             .background(Color(0xFF0C0C0C))
-            .imePadding()
     ) {
         // ---------- 工具栏 ----------
         TerminalToolbar(
