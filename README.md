@@ -6,6 +6,13 @@
 
 AnWind 是一个用 **Kotlin + Jetpack Compose** 编写的 Android 桌面启动器（Launcher），将手机桌面改造为 Windows 操作系统的视觉体验。整个项目作为独立 GitHub 仓库交付，可克隆、编译、二次开发。
 
+## 演示图
+
+* 简单演示图
+
+![donate](https://github.com/afeimod/AnWind/blob/main/Screenshot_2026-09-06-15-57-23-134_com.anwind.jpg?raw=true)
+
+
 ### 核心特性
 
 - **5 套 Windows 主题切换** — Windows 95 / XP / 7 / 10 / 11，每套主题都有独立的任务栏样式、窗口边框、配色方案和壁纸，切换后整个 UI 焕然一新
