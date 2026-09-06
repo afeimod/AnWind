@@ -117,7 +117,7 @@ JNI 函数名与 Kotlin 声明严格对应（`TermuxBridge` 检查点）：
 `anwind_bridge.c`（AnWind 专有 FIFO 桥，非上游代码）。
 
 ---
-### 2.4 官方源软件包的前缀重打包（v2.22.1 包工具链，fix8.2 修订）
+### 2.4 官方源软件包的前缀重打包（v2.22.1 包工具链，fix8.3 修订）
 
 bootstrap 重写只覆盖随 APK 内置的根文件系统；`pkg install` 从官方源下载的
 deb 是**按 `com.termux` 前缀构建**的——tar 成员路径本身就是绝对路径
@@ -185,6 +185,21 @@ deb 是**按 `com.termux` 前缀构建**的——tar 成员路径本身就是绝
 > 两道切断：① debfix v4 在记账命中时也快检成员（dpkg-deb -c 流式
 > + grep -m1，官方 deb 的 com.termux 条目在 tar 前部秒停），残留即
 > 强制重跑；② 迁移时清空 apt archives 下载缓存，强制重新下载。
+>
+> **fix8.3（rev 8，引擎级收口 + 部署指纹）**：容器复测证明脚本逻辑
+> 无误后，剩余风险全部收敛到“设备端重写引擎自身的静默失效”。v5
+> 把引擎与验收闭环做到无死角：① reprefix 只读权限文件（tar 保留的
+> 0444/0555，如 man 页/部分配置）内容改写曾因 open(O_RDWR) EACCES
+> 被【静默跳过】，现临时加写位重试、完成后还原权限；② 树内目录
+> 改名失败不再静默（目标已存在/权限异常），--tree 以非零退出，
+> debfix 据此走目录改名降级路径真正修复；③ debfix 重写完成后调用
+> reprefix --verify 独立复检树中残留（目录/文件名/链接目标/文件
+> 内容），一切静默失效显形为可见告警；④ 验收/记账快检 grep 收紧
+> 为任意 com.termux 成员；⑤ 部署指纹：anwind-reprefix --version、
+> anwind-debfix version 子命令与每个会话启动打印的
+> “anwind: pkg 修复链路已激活 (fix8.3, rev 8)” 一行——看不到该行
+> 即说明设备仍在运行旧版 APK（源码修复必须构建安装后才会生效，
+> 这也是历次“改了却没变化”反馈的最常见原因）。
 
 ```
 pkg install X
@@ -221,8 +236,10 @@ pkg install X
 - `anwind.sh` 在每个会话启动时兜底执行同一自愈（静默）。
 
 - **anwind-reprefix**（`cpp/termux/anwind_reprefix.c`，可执行）：等长字节
-  替换引擎，`--file`（单文件）/ `--tree`（目录树）/ 清单增量（stamp 记账）
-  三种模式；只对含 `com.termux` 的文件做 mmap 原地写，其余零改动。
+  替换引擎，`--file`（单文件）/ `--tree`（目录树）/ `--verify`（复检残留）/
+  `--version`（版本指纹）/ 清单增量（stamp 记账）多种模式；只对含
+  `com.termux` 的文件做 mmap 原地写，其余零改动；只读权限文件自动
+  加写位改写后还原（v5），树内改名失败会置错误位并以非零退出（v5）。
 - **等长改名**：deb 解包后 `data/data/com.termux/` 目录直接
   `rename()` 为 `com.anwind/`（同名等长，内容不改）；
 - **维护者脚本权限归一**：`dpkg-deb -b` 要求 preinst/postinst/prerm/postrm

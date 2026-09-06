@@ -70,6 +70,14 @@ _anwind_ensure_dpkg_fix() {
             'DPkg::Options:: "--force-confold";' \
             > "$_acfg" 2>/dev/null
     fi
+    # 部署指纹（fix8.3）：每次会话打印一行。看到本行=新版 APK 已部署、
+    # 修复链路（deb 重打包/前缀重写/path-exclude 兜底）全部就位；
+    # 看不到本行说明仍在运行旧版 APK——源码修复必须构建安装后才会生效。
+    if [ -x "$PREFIX/bin/anwind-reprefix" ]; then
+        echo "anwind: pkg 修复链路已激活 (fix8.3, rev 8)"
+    else
+        echo "anwind: 警告: anwind-reprefix 缺失，pkg 安装将走目录改名降级路径" >&2
+    fi
     return 0
 }
 _anwind_ensure_dpkg_fix

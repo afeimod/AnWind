@@ -21,8 +21,28 @@
  *   anwind-reprefix [--full] [--quiet]
  *     --full   忽略 stamp，处理全部清单（首次部署 / 存量迁移用）
  *     --quiet  静默（钩子模式），仅出错时输出
+ *   anwind-reprefix --tree <dir>
+ *     树模式：等长改写整棵目录树（目录名/文件内容/链接目标），
+ *     向 stdout 输出改动总数；改名失败时 stderr 报错并以 1 退出
+ *     （v5：不再静默——改名失败=官方前缀目录留在树里=dpkg
+ *     unable to stat 的直接病灶，必须让调用方看到并走降级路径）。
+ *   anwind-reprefix --verify <dir>
+ *     复检模式（v5）：独立统计树中残留的 com.termux 出现处
+ *     （目录/文件名 + 链接目标 + 普通文件内容），stdout 输出纯数字。
+ *     供 anwind-debfix 在重写完成后复核，把引擎的任何静默失效
+ *     （段错误被吞/部分失败/只读文件跳过）变成可见诊断。
+ *   anwind-reprefix --version
+ *     版本指纹（v5）：设备端一键核验部署状态。
  *
  * 退出码：0 正常（包括无可改内容）；1 内部错误（不阻塞 dpkg 结果）。
+ *
+ * v5（fix8.3）要点：
+ *   1) patch_file：tar 保留的只读权限（0444/0555，如 man 页/部分
+ *      配置）曾使 open(O_RDWR) EACCES、内容改写被【静默跳过】——
+ *      现临时加写位重试，改写完成后恢复原权限；
+ *   2) walk_tree：目录改名失败不再静默吞掉，置错误位并由 --tree
+ *      以非零退出；
+ *   3) 新增 --verify 复检与 --version 指纹。
  */
 
 #include <stdio.h>
@@ -55,6 +75,8 @@ static const char NEW_PKG[] = "com.anwind"; /* 10 字节（等长） */
 static size_t g_files_patched = 0;
 static size_t g_occurrences   = 0;
 static size_t g_symlinks_patched = 0;
+static size_t g_tree_errors   = 0;   /* v5：树模式中失败的改名数 */
+static size_t g_verify_hits   = 0;   /* v5：verify 模式的残留计数 */
 
 /* ------------------------------------------------------------------
  * 内存区域内的等长替换
@@ -89,12 +111,25 @@ static void patch_file(const char *path)
     if (st.st_size < (off_t)PKG_LEN) return;
 
     int fd = open(path, O_RDWR | O_CLOEXEC);
-    if (fd < 0) return;                          /* 无权限等——跳过不致命 */
+    int restore_mode = 0;
+    if (fd < 0 && errno == EACCES) {
+        /* v5：只读权限文件（0444/0555）曾在此被【静默跳过】，内容
+         * 里的 com.termux 残留（脚本 shebang 路径等）。属主对无写位
+         * 的自有文件同样 open 失败——临时加写位重试，完成后还原。 */
+        if (chmod(path, (st.st_mode & 07777) | S_IWUSR) == 0) {
+            fd = open(path, O_RDWR | O_CLOEXEC);
+            restore_mode = 1;
+        }
+    }
+    if (fd < 0) return;                          /* 仍无权限——跳过 */
 
     void *map = mmap(NULL, (size_t)st.st_size, PROT_READ | PROT_WRITE,
                      MAP_SHARED, fd, 0);
     close(fd);
-    if (map == MAP_FAILED) return;
+    if (map == MAP_FAILED) {
+        if (restore_mode) chmod(path, st.st_mode & 07777);
+        return;
+    }
 
     size_t n = replace_in((char *)map, (size_t)st.st_size);
     if (n > 0) {
@@ -103,6 +138,28 @@ static void patch_file(const char *path)
         g_occurrences += n;
     }
     munmap(map, (size_t)st.st_size);
+    if (restore_mode) chmod(path, st.st_mode & 07777);
+}
+
+/* ------------------------------------------------------------------
+ * 只读计数（--verify 用）：统计内存区域内 com.termux 出现次数，
+ * 不改动内容。与 replace_in 逻辑一致但 const 安全。
+ * ---------------------------------------------------------------- */
+static size_t count_in(const char *buf, size_t len)
+{
+    size_t count = 0;
+    if (len < PKG_LEN) return 0;
+    const size_t last = len - PKG_LEN;
+    size_t i = 0;
+    while (i <= last) {
+        if (buf[i] == 'c' && memcmp(buf + i, OLD_PKG, PKG_LEN) == 0) {
+            count++;
+            i += PKG_LEN;
+        } else {
+            i++;
+        }
+    }
+    return count;
 }
 
 /* ------------------------------------------------------------------
@@ -215,7 +272,65 @@ static void walk_tree(const char *dir)
         snprintf(parent, sizeof(parent), "%.*s", (int)(base - dir), dir);
         char renamed[PATH_MAX];
         snprintf(renamed, sizeof(renamed), "%s%s", parent, name);
-        if (rename(dir, renamed) == 0) g_tree_changes++;
+        if (rename(dir, renamed) == 0) {
+            g_tree_changes++;
+        } else {
+            /* v5：改名失败不再静默。目标已存在（上次中断残留）或
+             * 权限异常都会让官方前缀目录原样留在树里——正是 dpkg
+             * "unable to stat" 的直接病灶。报错并置失败位，--tree
+             * 以非零退出，调用方（anwind-debfix）据此走降级路径。 */
+            fprintf(stderr, "anwind-reprefix: 错误: 改名 %s -> %s: %s\n",
+                    dir, renamed, strerror(errno));
+            g_tree_errors++;
+        }
+    }
+}
+
+/* ------------------------------------------------------------------
+ * 复检（--verify <dir>）：递归统计树中残留的 com.termux 出现处
+ * （目录/文件名 + 链接目标 + 普通文件内容）
+ * ---------------------------------------------------------------- */
+static void verify_path(const char *full)
+{
+    struct stat st;
+    if (lstat(full, &st) != 0) return;
+    if (S_ISDIR(st.st_mode)) {
+        const char *base = strrchr(full, '/');
+        base = base ? base + 1 : full;
+        if (strstr(base, OLD_PKG) != NULL) g_verify_hits++;
+        DIR *d = opendir(full);
+        if (!d) return;
+        struct dirent *e;
+        while ((e = readdir(d)) != NULL) {
+            if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0) continue;
+            char sub[PATH_MAX];
+            snprintf(sub, sizeof(sub), "%s/%s", full, e->d_name);
+            verify_path(sub);
+        }
+        closedir(d);
+    } else if (S_ISLNK(st.st_mode)) {
+        char target[PATH_MAX];
+        ssize_t tl = readlink(full, target, sizeof(target) - 1);
+        if (tl <= 0) return;
+        target[tl] = '\0';
+        for (ssize_t i = 0; i + PKG_LEN <= tl; i++) {
+            if (target[i] == 'c' && memcmp(target + i, OLD_PKG, PKG_LEN) == 0) {
+                g_verify_hits++;
+                break;
+            }
+        }
+    } else if (S_ISREG(st.st_mode)) {
+        const char *base = strrchr(full, '/');
+        base = base ? base + 1 : full;
+        if (strstr(base, OLD_PKG) != NULL) g_verify_hits++;
+        if (st.st_size < (off_t)PKG_LEN) return;
+        int fd = open(full, O_RDONLY | O_CLOEXEC);
+        if (fd < 0) return;
+        void *map = mmap(NULL, (size_t)st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+        close(fd);
+        if (map == MAP_FAILED) return;
+        g_verify_hits += count_in((const char *)map, (size_t)st.st_size);
+        munmap(map, (size_t)st.st_size);
     }
 }
 
@@ -260,14 +375,35 @@ static void update_stamp(void)
 
 int main(int argc, char **argv)
 {
-    int quiet = 0, full = 0;
+    int quiet = 0, full = 0, show_version = 0;
     const char *tree_root = NULL;
+    const char *verify_root = NULL;
     const char *single_file = NULL;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--quiet") == 0) quiet = 1;
         else if (strcmp(argv[i], "--full") == 0) full = 1;
         else if (strcmp(argv[i], "--tree") == 0 && i + 1 < argc) tree_root = argv[++i];
+        else if (strcmp(argv[i], "--verify") == 0 && i + 1 < argc) verify_root = argv[++i];
         else if (strcmp(argv[i], "--file") == 0 && i + 1 < argc) single_file = argv[++i];
+        else if (strcmp(argv[i], "--version") == 0) show_version = 1;
+    }
+
+    /* 版本指纹（v5）：设备端一键核验部署状态 */
+    if (show_version) {
+        printf("anwind-reprefix v5 (fix8.3, EXTRAS_REVISION 8)\n");
+        return 0;
+    }
+
+    /* 复检模式（v5）：输出残留计数（纯数字），供 debfix 独立复核 */
+    if (verify_root != NULL) {
+        struct stat st;
+        if (lstat(verify_root, &st) != 0 || !S_ISDIR(st.st_mode)) {
+            fprintf(stderr, "anwind-reprefix: --verify 需要一个存在的目录\n");
+            return 1;
+        }
+        verify_path(verify_root);
+        printf("%zu\n", g_verify_hits);
+        return 0;
     }
 
     /* 单文件模式：显式补丁一个文件（如迁移期的 dpkg.real，不在任何 .list 里） */
@@ -287,6 +423,14 @@ int main(int argc, char **argv)
         }
         walk_tree(tree_root);
         printf("%zu\n", g_tree_changes);
+        if (g_tree_errors > 0) {
+            /* v5：任何改名失败都让 --tree 非零退出——调用方必须知道
+             * 树未改净（否则官方前缀成员会原样进 deb，dpkg 必然报
+             * unable to stat），并走目录改名降级路径补救。 */
+            fprintf(stderr, "anwind-reprefix: %zu 处改名失败，树未改净\n",
+                    g_tree_errors);
+            return 1;
+        }
         return 0;
     }
 

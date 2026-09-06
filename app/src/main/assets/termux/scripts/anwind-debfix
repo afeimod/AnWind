@@ -1,6 +1,6 @@
 #!/data/data/com.anwind/files/usr/bin/sh
 # ============================================================
-# anwind-debfix v4 — 把官方仓库 deb 重打包为 AnWind 前缀
+# anwind-debfix v5 — 把官方仓库 deb 重打包为 AnWind 前缀
 # ============================================================
 # 官方 deb 按 /data/data/com.termux 前缀构建（tar 成员路径即绝对
 # 路径），不重写 dpkg 会把文件解到别的应用的数据目录。
@@ -9,6 +9,14 @@
 #       （目录名/文件内容/链接目标，com.termux→com.anwind 同为
 #       10 字节）→ dpkg-deb -b 原子回写。等长替换不改变任何文件
 #       大小，md5sums 中的哈希仍与改前内容一致。
+#
+# v5（fix8.3）引擎级收口：
+#   1) 验收/记账快检 grep 从 data/data/com.termux 收紧为任意
+#      com.termux 成员（匹配更严，成本不变——grep -m1 命中即停）；
+#   2) 重写完成后调用 anwind-reprefix --verify 独立复检树中残留，
+#      引擎的一切静默失效（部分失败/只读文件跳过）在此显形；
+#   3) anwind-debfix version 子命令：设备端一键核验部署状态；
+#   4) 成功摘要行带版本号，任何一次重写日志都能证明新 APK 在跑。
 #
 # v4（fix8.2）记账免疫：命中记账也快检成员（dpkg-deb -c 流式 + grep
 #   -m1，官方 deb 的 com.termux 条目在 tar 前部秒停），残留即视为
@@ -37,6 +45,12 @@
 # 幂等：按 文件名+大小+mtime 记账，重复调用直接跳过。
 # ============================================================
 set -u
+
+# 版本指纹（v5，设备端一键核验部署状态）：anwind-debfix version
+if [ "${1:-}" = "version" ]; then
+    echo "anwind-debfix v5 (fix8.3, EXTRAS_REVISION 8)"
+    exit 0
+fi
 
 PREFIX=/data/data/com.anwind/files/usr
 REPREFIX=$PREFIX/bin/anwind-reprefix
@@ -76,11 +90,11 @@ process_one() {
     mtime=$(stat -c %Y "$deb" 2>/dev/null || echo 0)
     stamp="$STAMP_DIR/$base.$size.$mtime"
     if [ -f "$stamp" ]; then
-        # v4 记账免疫：命中也快检成员。历史污染章（v2 静默失败时代盖的）
-        # + apt 缓存复用（官方 deb mtime 恒定）曾构成死闭环——同一批包
-        # 永远跳过重写、永远安装失败且无提示。快检用 dpkg-deb -c 流式
-        # 列成员，官方 deb 的 com.termux 条目在 tar 前部，grep -m1 秒停。
-        if ! dpkg-deb -c "$deb" 2>/dev/null | grep -m1 -qE 'data/data/com\.termux($|/)'; then
+        # v4 记账免疫 + v5 收紧：命中也快检成员。历史污染章（v2 静默
+        # 失败时代盖的）+ apt 缓存复用（官方 deb mtime 恒定）曾构成死
+        # 闭环——同一批包永远跳过重写、永远安装失败且无提示。快检用
+        # dpkg-deb -c 流式列成员；v5 起匹配任意 com.termux 成员（更严）。
+        if ! dpkg-deb -c "$deb" 2>/dev/null | grep -m1 -qE 'com\.termux'; then
             return 0
         fi
         echo "anwind-debfix: 警告: $base 已有记账但仍含官方前缀成员（历史污染章），强制重跑" >&2
@@ -128,6 +142,17 @@ process_one() {
         np=$(printf '%s' "$p" | sed 's/com\.termux/com.anwind/g')
         mv "$p" "$np" 2>/dev/null || true
     done
+    # 重写引擎复检（v5）：--verify 独立统计树中残留的 com.termux
+    # （目录/文件名+链接目标+文件内容）。设备端重写引擎的一切静默
+    # 失效（段错误被吞/部分失败/只读文件跳过）在此显形：路径残留
+    # 会被下方验收/守卫拦截，内容残留则大声告警（不影响 unpack）。
+    if [ -x "$REPREFIX" ]; then
+        left=$("$REPREFIX" --verify "$work/root" 2>/dev/null)
+        case "$left" in ''|*[!0-9]*) left=1 ;; esac
+        if [ "$left" -gt 0 ]; then
+            echo "anwind-debfix: 警告: $base 复检发现 $left 处 com.termux 残留（重写引擎部分失效，请回传本行日志）" >&2
+        fi
+    fi
     # 维护者脚本权限归一（dpkg-deb -b 要求 preinst/postinst/prerm/postrm
     # 权限在 0555-0775 之间；社区 deb 常有 644 的脚本会直接被打包拒绝）
     if [ -d "$work/root/DEBIAN" ]; then
@@ -147,8 +172,9 @@ process_one() {
             rm -rf "$work"
             return 1
         fi
-        # 成品验收（v3）：重建 deb 复查成员，仍含官方前缀则不替换不盖章
-        if dpkg-deb -c "$work/out.deb" 2>/dev/null | grep -m1 -qE 'data/data/com\.termux($|/)'; then
+        # 成品验收（v3 + v5 收紧）：重建 deb 复查成员，仍含官方前缀
+        # 则不替换不盖章。v5 起匹配任意 com.termux 成员（更严）。
+        if dpkg-deb -c "$work/out.deb" 2>/dev/null | grep -m1 -qE 'com\.termux'; then
             echo "anwind-debfix: 错误: $base 重建后仍含 com.termux 成员（不盖章，下次重试）" >&2
             rm -rf "$work"
             return 1
@@ -175,7 +201,7 @@ process_one() {
     if [ "$size2.$mtime2" != "$size.$mtime" ]; then
         : > "$STAMP_DIR/$base.$size2.$mtime2"
     fi
-    echo "anwind-debfix: $base 已重写为 com.anwind 前缀 (count=$count)" >&2
+    echo "anwind-debfix v5: $base 已重写为 com.anwind 前缀 (count=$count)" >&2
     rm -rf "$work"
     return 0
 }

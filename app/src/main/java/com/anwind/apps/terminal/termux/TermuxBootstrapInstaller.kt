@@ -79,8 +79,15 @@ object TermuxBootstrapInstaller {
      * （dpkg-deb -c + grep -m1，官方 deb 的 com.termux 条目在 tar
      * 前部秒停），残留即强制重跑；同时迁移时清 apt archives 缓存，
      * 双保险切断污染闭环。
+     * rev 8：reprefix v5 + debfix v5（fix8.3）引擎级收口。
+     * reprefix：只读权限文件（0444/0555）内容改写曾因 EACCES 被静默
+     * 跳过，现临时加写位重试后还原；树内改名失败不再静默（--tree
+     * 非零退出，debfix 走降级路径）；新增 --verify 复检与 --version
+     * 指纹。debfix：验收/记账 grep 收紧为任意 com.termux 成员；
+     * 重写后 --verify 复检残留并大声告警；anwind-debfix version
+     * 可在设备端一键核验部署状态（会话启动也会打印部署指纹行）。
      */
-    private const val EXTRAS_REVISION = 7
+    private const val EXTRAS_REVISION = 8
 
     /** 安装状态（Compose 界面订阅渲染）。 */
     sealed class InstallState {
