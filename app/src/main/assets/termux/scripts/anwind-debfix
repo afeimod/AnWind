@@ -108,7 +108,7 @@ process_one() {
             echo "anwind-debfix: 警告: anwind-reprefix 执行失败，$base 降级为目录改名" >&2
         fi
     fi
-    # 目录改名降级保底（v3）：reprefix 正常时上面已把 com.termux 改名，
+    # 目录改名降级保底（v4）：reprefix 正常时上面已把 com.termux 改名，
     # 本条件不成立；reprefix 缺失/失败/静默失效时这里把官方前缀目录
     # 改名——dpkg 报 unable to stat 的正是这个目录成员，改名后 unpack
     # 即可通过。文件内容里的 com.termux 由 reprefix 安全网后续处理。
@@ -122,6 +122,12 @@ process_one() {
             return 1
         fi
     fi
+    # 全树残余改名（v4）：任何名字含 com.termux 的目录/文件（含前缀目录
+    # 改名前 walk 漏掉的深层条目）一并改名，-depth 先子后父防路径失效
+    find "$work/root" -depth -name "*com.termux*" 2>/dev/null | while IFS= read -r p; do
+        np=$(printf '%s' "$p" | sed 's/com\.termux/com.anwind/g')
+        mv "$p" "$np" 2>/dev/null || true
+    done
     # 维护者脚本权限归一（dpkg-deb -b 要求 preinst/postinst/prerm/postrm
     # 权限在 0555-0775 之间；社区 deb 常有 644 的脚本会直接被打包拒绝）
     if [ -d "$work/root/DEBIAN" ]; then
@@ -161,6 +167,15 @@ process_one() {
         fi
     fi
     : > "$stamp"
+    # 成品章（v4）：处理后 size+mtime 变化，同文件重复调用（如手动
+    # dpkg -i 同一 deb）时官方章不命中会导致反复重建——补盖成品章，
+    # 双章并存：官方章供 apt 缓存复用官方原件场景，成品章供重复调用。
+    size2=$(stat -c %s "$deb" 2>/dev/null || echo 0)
+    mtime2=$(stat -c %Y "$deb" 2>/dev/null || echo 0)
+    if [ "$size2.$mtime2" != "$size.$mtime" ]; then
+        : > "$STAMP_DIR/$base.$size2.$mtime2"
+    fi
+    echo "anwind-debfix: $base 已重写为 com.anwind 前缀 (count=$count)" >&2
     rm -rf "$work"
     return 0
 }
