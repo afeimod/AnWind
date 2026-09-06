@@ -117,7 +117,7 @@ JNI 函数名与 Kotlin 声明严格对应（`TermuxBridge` 检查点）：
 `anwind_bridge.c`（AnWind 专有 FIFO 桥，非上游代码）。
 
 ---
-### 2.4 官方源软件包的前缀重打包（v2.22.1 包工具链，fix8.3 修订）
+### 2.4 官方源软件包的前缀重打包（v2.22.1 包工具链，fix8.4 修订）
 
 bootstrap 重写只覆盖随 APK 内置的根文件系统；`pkg install` 从官方源下载的
 deb 是**按 `com.termux` 前缀构建**的——tar 成员路径本身就是绝对路径
@@ -200,6 +200,33 @@ deb 是**按 `com.termux` 前缀构建**的——tar 成员路径本身就是绝
 > “anwind: pkg 修复链路已激活 (fix8.3, rev 8)” 一行——看不到该行
 > 即说明设备仍在运行旧版 APK（源码修复必须构建安装后才会生效，
 > 这也是历次“改了却没变化”反馈的最常见原因）。
+>
+> **fix8.4（rev 9，检测层根治——消灭唯一静默分支）**：rev 8 上机
+> 日志证明新 APK 已在设备运行（横幅 + `anwind-debfix v5` 摘要行），
+> pcre 走完整重写路径成功（count=7，与宿主同引擎逐字一致），但同
+> 批 13 包全部静默失败且零警告。逐分支排除后唯一自洽解释：记账
+> 命中后的 `dpkg-deb -c` 快检——**-c 的成员列表由外部 `tar -tv`
+> 生成**（解压内建、列表 exec "tar"，钩子法实测确认），设备端该
+> 列表一旦为空/失败（2>/dev/null 吞掉报错），grep 匹配不到即被误判
+> “干净”→ 脏 deb 永久静默跳过。v6 检测器重构：
+>
+> - **字节级扫描 scan_deb**：`dpkg-deb --fsys-tarfile`（内建解压，
+>   实测不 exec 任何外部程序）导出数据 tar → `grep -aqm1
+>   'com\.termux'` 字节级扫描（成员名+文件内容一次覆盖）；
+>   dpkg-deb 失败/输出为空 → 返回“无法验证”，**绝不当作干净**；
+> - **记账命中三分支**：干净→幂等跳过；脏→撕章强制重跑；无法
+>   验证→提示后走完整重写（安全侧）；
+> - **成品回验路径硬门**：重建 deb 先 `-R` 回解再跑与树侧相同的
+>   `find -name '*com.termux*'` 检查，对【成品成员路径】直接负责
+>   （不信任 -b 行为，不依赖外部 tar）；内容级残留仅大声告警
+>   （不影响 unpack，由安装后 reprefix 安全网继续处理）；
+> - **包装器兜底重试（v3）**：dpkg 失败且有 deb 参数时，对 deb 再
+>   跑一轮 debfix（字节扫描命中即修复），确有修复发生时自动重试
+>   一次——即使前置检测全部误判，同一命令内也能自愈；
+> - 真实 deb 终测（TUNA 同批 15 包）：原始 nano 在 EACCES 根复现
+>   设备故障签名 → v6 处理后解包零 stat 错误、落盘 com.anwind 路径；
+>   15 包成品成员路径零残留；历史章+mtime 钉死+扫描器异常三重
+>   恶劣叠加下 v6 强制重跑成功（v5 在此场景永久静默跳过）。
 
 ```
 pkg install X
@@ -207,19 +234,22 @@ pkg install X
        └─ apt.conf.d/99anwind: Dir::Bin::dpkg → libexec/anwind/dpkg
             （apt/pkg 永远经包装器；libexec/anwind 不属于任何包，
               升级永不覆盖 —— 与 bin/dpkg 状态无关）
-            ├─ anwind-debfix <deb>          ① 安装前：重打包（v3：验收 +
-            │    dpkg-deb -R 解包             降级保底，失败不盖章）
-            │    anwind-reprefix --tree     等长改写目录名/文件内容/链接目标
+            ├─ anwind-debfix <deb>          ① 安装前：重打包（v6：字节级
+            │    dpkg-deb -R 解包             快检+回验硬门；无法验证
+            │    anwind-reprefix --tree       一律按脏处理）
+            │    （等长改写目录名/文件内容/链接目标）
             │    dpkg 包自升级时：新真身同步刷新 dpkg.real
             │    dpkg-deb -b 原子回写       （成员路径变为 com.anwind）
             ├─ dpkg.real --unpack …         ② 解包到 /data/data/com.anwind/...
             │    dpkg.cfg.d/99-anwind-fix  path-exclude 兑底：跳过漏网的
-            │                              com.termux 成员（fix8）
+            │    │                          com.termux 成员（fix8）
+            │    └─ 失败且有 deb 参数 → debfix 再扫一轮，确有修复自动
+            │                               重试一次（fix8.4 兕底）
             └─ anwind-reprefix --quiet      ③ 装完后：按 dpkg info/*.list
                                                增量重写（安全网，幂等）
 ```
 
-**dpkg 包装器三层布局**（`assets/termux/scripts/anwind-dpkg` v2）：
+**dpkg 包装器三层布局**（`assets/termux/scripts/anwind-dpkg` v3）：
 
 | 路径 | 角色 | 升级行为 |
 |------|------|----------|
@@ -247,6 +277,9 @@ pkg install X
 - **幂等记账**：debfix 按 `文件名+大小+mtime` 记账（`var/lib/anwind/debfix/`）。
   fix7 加固：anwind-reprefix 缺失或执行失败时**不写 stamp**（旧版会把
   未重写的 deb 永久标记为已处理——盖章污染），下次调用自动重试；
+  fix8.4 加固：命中记账也必须字节级验证（干净才跳过；扫描器异常
+  视为未处理，走完整重写）——v5 时代设备端 13 包静默失败的唯一
+  分支已在此消灭。
 - **覆盖面**：apt / pkg / 直接 `dpkg -i` / `grun-install` 全部走包装器；
   apt 的 `DPkg::Post-Invoke` 未使用（termux apt 的钩子 shell 路径不保证），
   机制不依赖任何 apt 钩子协议。

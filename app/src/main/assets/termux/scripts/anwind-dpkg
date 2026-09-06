@@ -1,5 +1,5 @@
 #!/data/data/com.anwind/files/usr/bin/sh
-# anwind-dpkg — AnWind dpkg 包装器 v2（fix7：dpkg 自升级免疫）
+# anwind-dpkg — AnWind dpkg 包装器 v3（fix8.4：安装失败兜底重试）
 # ============================================================
 # 官方仓库的 deb 全部按 /data/data/com.termux 前缀构建（tar 成员
 # 路径即绝对路径 data/data/com.termux/...），dpkg 以 instdir=/
@@ -29,7 +29,10 @@
 #   0) 自愈 bin/dpkg（见上）；
 #   1) 参数中的 *.deb 先经 anwind-debfix 重打包为 com.anwind 前缀；
 #   2) 真正的 dpkg（dpkg.real）执行；
-#   3) 返回后再自愈一次（本次若装了 dpkg 包，副本刚被覆盖）并运行
+#   3) 兕底重试（fix8.4）：若 dpkg 失败且参数中有 deb，对 deb 再跑
+#      一轮 debfix（v6 字节级扫描，命中即修复）；确有修复发生时
+#      重试一次 dpkg——即使前置检测全部误判，同一命令内也能自愈；
+#   4) 返回后再自愈一次（本次若装了 dpkg 包，副本刚被覆盖）并运行
 #      anwind-reprefix 增量重写（安全网：修补任何未覆盖到的内容）。
 # 覆盖范围：apt / pkg / 直接 dpkg -i / grun-install 等全部路径。
 # ============================================================
@@ -105,12 +108,14 @@ unset _DPKGCFG _APTCFG
 
 # ---- deb 重打包（com.termux → com.anwind）----
 fix_failed=0
+_seen_deb=0
 for a in "$@"; do
     case "$a" in
         *.deb)
+            _seen_deb=1
             if [ -f "$a" ]; then
                 if [ -x "$FIX" ]; then
-                    "$FIX" "$a" || fix_failed=1
+                    "$FIX" "$a" >/dev/null || fix_failed=1
                 else
                     echo "anwind-dpkg: 警告: anwind-debfix 不可用，$a 未经前缀重写" >&2
                     fix_failed=1
@@ -127,6 +132,34 @@ fi
 # ---- 真身执行 ----
 "$REAL" "$@"
 rc=$?
+
+# ---- 兕底重试（fix8.4）----
+# 正常情况下 debfix 已在执行前把所有 deb 参数重写干净；若 dpkg 仍
+# 失败，对 deb 参数再跑一轮 debfix（v6 字节级扫描，命中即修复）。
+# 只有【确有修复发生】才重试一次——真实错误（依赖冲突等）不会被
+# 无意义地重复执行。
+if [ "$rc" -ne 0 ] && [ "$_seen_deb" -eq 1 ]; then
+    _repaired=0
+    for a in "$@"; do
+        case "$a" in
+            *.deb)
+                [ -f "$a" ] || continue
+                if [ -x "$FIX" ]; then
+                    _n=$("$FIX" "$a" 2>/dev/null | tail -n 1)
+                    case "$_n" in
+                        ANWIND_REPAIRED=1) _repaired=1 ;;
+                    esac
+                fi
+                ;;
+        esac
+    done
+    if [ "$_repaired" -eq 1 ]; then
+        echo "anwind-dpkg: 检测到 deb 仍含官方前缀成员，已修复并自动重试一次..." >&2
+        "$REAL" "$@"
+        rc=$?
+    fi
+fi
+unset _seen_deb _repaired _n
 
 # ---- 自愈（运行后）：本次若升级了 dpkg 包，bin/dpkg 已被覆盖 ----
 heal_bin_dpkg

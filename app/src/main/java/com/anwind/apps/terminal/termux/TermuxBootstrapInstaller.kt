@@ -86,8 +86,17 @@ object TermuxBootstrapInstaller {
      * 指纹。debfix：验收/记账 grep 收紧为任意 com.termux 成员；
      * 重写后 --verify 复检残留并大声告警；anwind-debfix version
      * 可在设备端一键核验部署状态（会话启动也会打印部署指纹行）。
+     * rev 9：debfix v6 + 包装器 v3（fix8.4）检测层根治。
+     * rev 8 上机实测：pcre 完整重写成功（count=7），同批 13 包全部
+     * 静默失败且零警告——唯一自洽分支 = 记账命中后的 dpkg-deb -c
+     * 快检（-c 的成员列表依赖外部 tar，列表为空/失败时 grep 误判
+     * 干净→脏 deb 永久静默跳过）。v6 改用字节级扫描（dpkg-deb
+     * --fsys-tarfile 内建解压不依赖外部 tar + grep 扫描 com.termux
+     * 字节，"无法验证"一律按脏处理），成品验收增加树路径残余硬门；
+     * 包装器在 dpkg 失败且确有修复发生时自动重试一次，同一命令内
+     * 自愈。迁移照例清 debfix 记账与 apt archives 缓存。
      */
-    private const val EXTRAS_REVISION = 8
+    private const val EXTRAS_REVISION = 9
 
     /** 安装状态（Compose 界面订阅渲染）。 */
     sealed class InstallState {
