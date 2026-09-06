@@ -72,8 +72,15 @@ object TermuxBootstrapInstaller {
      * 在落盘前消灭。debfix v3 把全部静默失败路径改为 fail-loud + 不盖章
      * 可重试，并新增目录改名降级保底（reprefix 失效时 unpack 仍可通过）
      * 与重建成品验收（dpkg-deb -c 复查无 com.termux 成员才替换）。
+     * rev 7：anwind-debfix v4（fix8.2）记账免疫 + apt 缓存切断。
+     * 实测定性：v2 时代静默失败盖章的官方 deb 一直留在 apt 下载缓存
+     * 中（mtime 恒定），apt 硬链接复用时记账命中直接跳过重写——
+     * 同一批包永远失败且无任何提示。v4 在记账命中时也快检成员
+     * （dpkg-deb -c + grep -m1，官方 deb 的 com.termux 条目在 tar
+     * 前部秒停），残留即强制重跑；同时迁移时清 apt archives 缓存，
+     * 双保险切断污染闭环。
      */
-    private const val EXTRAS_REVISION = 6
+    private const val EXTRAS_REVISION = 7
 
     /** 安装状态（Compose 界面订阅渲染）。 */
     sealed class InstallState {
@@ -470,6 +477,16 @@ object TermuxBootstrapInstaller {
 
         // (4) 存量安装的 apt 源修复（全新安装时 bootstrap 已内置好源，此处无操作）
         fixAptSources(context)
+
+        // (5) 清 apt 下载缓存（rev 7）：debfix 静默失败时代盖过章的官方
+        // deb 若留在缓存中，apt 会原样硬链接复用（mtime 不变→记账命中→
+        // 跳过重写）。清掉强制重新下载，与 debfix v4 记账免疫双保险。
+        try {
+            val archives = File(context.cacheDir, "apt/archives")
+            archives.listFiles { f -> f.isFile && f.name.endsWith(".deb") }?.forEach { it.delete() }
+        } catch (e: Exception) {
+            android.util.Log.w(TAG, "清理 apt 缓存失败: ${e.message}")
+        }
     }
 
     /**

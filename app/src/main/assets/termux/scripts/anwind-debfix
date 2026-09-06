@@ -1,6 +1,6 @@
 #!/data/data/com.anwind/files/usr/bin/sh
 # ============================================================
-# anwind-debfix v3 — 把官方仓库 deb 重打包为 AnWind 前缀
+# anwind-debfix v4 — 把官方仓库 deb 重打包为 AnWind 前缀
 # ============================================================
 # 官方 deb 按 /data/data/com.termux 前缀构建（tar 成员路径即绝对
 # 路径），不重写 dpkg 会把文件解到别的应用的数据目录。
@@ -9,6 +9,11 @@
 #       （目录名/文件内容/链接目标，com.termux→com.anwind 同为
 #       10 字节）→ dpkg-deb -b 原子回写。等长替换不改变任何文件
 #       大小，md5sums 中的哈希仍与改前内容一致。
+#
+# v4（fix8.2）记账免疫：命中记账也快检成员（dpkg-deb -c 流式 + grep
+#   -m1，官方 deb 的 com.termux 条目在 tar 前部秒停），残留即视为
+#   历史污染章强制重跑。根因闭环：v2 静默失败盖章 → apt 缓存复用
+#   （官方 deb mtime 恒定）→ 记账命中跳过 → 同一批包永远失败且无提示。
 #
 # v3（fix8.1）加固——全部静默失败路径改为 fail-loud + 可重试：
 #   1) dpkg-deb -b 重建失败：旧版静默继续并【盖章】（污染记账，
@@ -70,8 +75,17 @@ process_one() {
     size=$(stat -c %s "$deb" 2>/dev/null || echo 0)
     mtime=$(stat -c %Y "$deb" 2>/dev/null || echo 0)
     stamp="$STAMP_DIR/$base.$size.$mtime"
-    [ -f "$stamp" ] && return 0
-    rm -f "$STAMP_DIR/$base."* 2>/dev/null
+    if [ -f "$stamp" ]; then
+        # v4 记账免疫：命中也快检成员。历史污染章（v2 静默失败时代盖的）
+        # + apt 缓存复用（官方 deb mtime 恒定）曾构成死闭环——同一批包
+        # 永远跳过重写、永远安装失败且无提示。快检用 dpkg-deb -c 流式
+        # 列成员，官方 deb 的 com.termux 条目在 tar 前部，grep -m1 秒停。
+        if ! dpkg-deb -c "$deb" 2>/dev/null | grep -m1 -qE 'data/data/com\.termux($|/)'; then
+            return 0
+        fi
+        echo "anwind-debfix: 警告: $base 已有记账但仍含官方前缀成员（历史污染章），强制重跑" >&2
+        rm -f "$STAMP_DIR/$base."* 2>/dev/null
+    fi
 
     # 前置校验：重写引擎缺失时走降级（目录改名保底），绝不静默盖章
     if [ ! -x "$REPREFIX" ]; then
