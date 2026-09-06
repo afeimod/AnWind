@@ -3,23 +3,36 @@
 # anwind-debfix — 把官方仓库 deb 重打包为 AnWind 前缀
 # ============================================================
 # 官方 deb 按 /data/data/com.termux 前缀构建（tar 成员路径即绝对
-# 路径），不重写 dpkg 会把文件解到别的应用的数据目录。
+# 路径 data/data/com.termux/...，dpkg 以 instdir=/ 按成员路径落盘），
+# 不重写就会写进别的应用的数据目录：
+#   unable to stat './data/data/com.termux' ... Permission denied
 #
 # 原理: dpkg-deb -R 解包 → anwind-reprefix --tree 等长改写
 #       （目录名/文件内容/链接目标，com.termux→com.anwind 同为
-#       10 字节）→ dpkg-deb -b 原子回写。等长替换不改变任何文件
-#       大小，md5sums 中的哈希仍与改前内容一致。
+#       10 字节）→ dpkg-deb -b 原子回写。
+#
+# 2.22.2 改进:
+#   - dpkg-deb 以全路径调用（钩子环境 PATH 不保证）；
+#   - 重建改用 -Zgzip -z1（xz 重压缩在手机上极慢，gzip-1 秒级；
+#     仅存在于本地缓存/临时目录，装完即弃，体积无影响）；
+#   - 重写后重建 DEBIAN/md5sums（等长替换改变内容 → 原哈希失效，
+#     不重建会在后续升级时触发 conffile "本地已修改" 交互询问）；
+#   - 回写前用 dpkg-deb --field 校验，坏包不覆盖原文件。
 #
 # 用法:
-#   anwind-debfix <deb...>   手工转换（dpkg -i 前手动调用）
-#   (无参数)                 从 stdin 读 deb 路径（供钩子使用）
+#   anwind-debfix <deb...>   手工转换
+#   (无参数)                 从 stdin 读 deb 路径（DPkg::Pre-Install-Pkgs 钩子）
 # 幂等：按 文件名+大小+mtime 记账，重复调用直接跳过。
 # ============================================================
 set -u
 
 PREFIX=/data/data/com.anwind/files/usr
 REPREFIX=$PREFIX/bin/anwind-reprefix
+DPKG_DEB=$PREFIX/bin/dpkg-deb
 STAMP_DIR=$PREFIX/var/lib/anwind/debfix
+
+PATH=$PREFIX/bin:$PATH
+export PATH
 mkdir -p "$STAMP_DIR" 2>/dev/null
 
 process_one() {
@@ -29,6 +42,8 @@ process_one() {
         *.deb) ;;
         *) return 0 ;;
     esac
+    [ -x "$DPKG_DEB" ] || return 0
+    [ -x "$REPREFIX" ] || return 0
     base=$(basename "$deb")
     size=$(stat -c %s "$deb" 2>/dev/null || echo 0)
     mtime=$(stat -c %Y "$deb" 2>/dev/null || echo 0)
@@ -36,15 +51,18 @@ process_one() {
     [ -f "$stamp" ] && return 0
     rm -f "$STAMP_DIR/$base."* 2>/dev/null
 
-    work=$(mktemp -d "$STAMP_DIR/work.XXXXXX") || return 1
-    if ! dpkg-deb -R "$deb" "$work/root" 2>/dev/null; then
+    work=$(mktemp -d "$STAMP_DIR/work.XXXXXX") || return 0
+    if ! "$DPKG_DEB" -R "$deb" "$work/root" 2>/dev/null; then
         rm -rf "$work"
-        return 1
+        return 0
     fi
-    count=$("$REPREFIX" --tree "$work/root" 2>/dev/null || echo 0)
-    # 维护者脚本权限归一（dpkg-deb -b 要求 preinst/postinst/prerm/postrm
-    # 权限在 0555-0775 之间；社区 deb 常有 644 的脚本会直接被打包拒绝）
-    if [ -d "$work/root/DEBIAN" ]; then
+    count=$("$REPREFIX" --tree "$work/root" 2>/dev/null)
+    case "$count" in
+        ''|*[!0-9]*) count=0 ;;
+    esac
+    if [ "$count" -gt 0 ] && [ -d "$work/root/DEBIAN" ]; then
+        # 维护者脚本权限归一（dpkg-deb -b 要求 preinst/postinst/prerm/postrm
+        # 权限在 0555-0775 之间；社区 deb 常有 644 的脚本会直接被打包拒绝）
         for s in "$work/root/DEBIAN"/*; do
             [ -f "$s" ] || continue
             case "$(basename "$s")" in
@@ -52,9 +70,26 @@ process_one() {
                 *)                             chmod 0644 "$s" 2>/dev/null ;;
             esac
         done
-    fi
-    if [ "$count" -gt 0 ]; then
-        if dpkg-deb -b "$work/root" "$work/out.deb" >/dev/null 2>&1; then
+        # 重建 md5sums：--tree 重写改变了文件内容，原哈希全部失效；
+        # 只重算原有条目（保留 dpkg 语义，不新增 conffile 检查）
+        if [ -f "$work/root/DEBIAN/md5sums" ]; then
+            (
+                cd "$work/root" 2>/dev/null || exit 0
+                sed -n 's/^[0-9a-fA-F]\{32\} \( \|\*\)//p' DEBIAN/md5sums |
+                    while IFS= read -r p; do
+                        [ -n "$p" ] || continue
+                        [ -f "$p" ] && md5sum "$p" 2>/dev/null
+                    done > DEBIAN/md5sums.new
+            )
+            if [ -s "$work/root/DEBIAN/md5sums.new" ]; then
+                mv -f "$work/root/DEBIAN/md5sums.new" "$work/root/DEBIAN/md5sums"
+            else
+                rm -f "$work/root/DEBIAN/md5sums.new"
+            fi
+        fi
+        # 重建 + 校验 + 原子回写
+        if "$DPKG_DEB" -b -Zgzip -z1 "$work/root" "$work/out.deb" >/dev/null 2>&1 &&
+            "$DPKG_DEB" --field "$work/out.deb" Package >/dev/null 2>&1; then
             mv -f "$work/out.deb" "$deb"
         fi
     fi

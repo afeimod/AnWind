@@ -32,10 +32,12 @@ import java.util.zip.ZipFile
  * 7. 安装 AnWind 专属增强（installAnWindExtras）：profile.d/anwind.sh
  *    （theme/start 等桌面命令注入真实 bash）、命令 FIFO、motd；
  * 8. 安装包工具链（installPackageToolchain）：原生 anwind-reprefix
- *    重写工具 + dpkg 包装器 + anwind-debfix 重打包器 + anwind-mirror
- *    源体检工具 + anwind-glibc 一键脚本——官方源的 deb
+ *    重写工具 + dpkg 包装器 + anwind-debfix 重打包器——官方源的 deb
  *    按 com.termux 前缀构建（tar 成员路径即绝对路径），安装前自动
- *    重打包、装完再增量重写，保证 pkg/apt 装的软件开箱即用；
+ *    重打包、装完再增量重写，保证 pkg/apt 装的软件开箱即用。
+ *    拦截点全部位于 libexec/anwind/（不属于任何包，永不被 dpkg
+ *    包升级覆盖），apt 经 Dir::Bin::dpkg 路由，bin/dpkg 仅留自愈
+ *    trampoline 供手工 dpkg -i 使用；
  * 9. 存量安装增量迁移（migrateIfNeeded）：按修订号检测旧版本安装，
  *    免清数据升级增强组件并全量重写既有文件。
  */
@@ -48,11 +50,13 @@ object TermuxBootstrapInstaller {
     private const val PERMISSION_0700 = 448
 
     /**
-     * 增强组件修订号：anwind.sh / 工具链 / motd / apt 源修复内容变更时 +1。
+     * 增强组件修订号：anwind.sh / 工具链 / motd 内容变更时 +1。
      * 已安装的 bootstrap 检测到修订号落后时会自动增量迁移（免清数据）。
-     * rev 3：新增 anwind-mirror（pool 级源体检/切源）+ 存量安装的
-     * sources.list 自动修复（老版 pkg 轮换到的 packages-cf 镜像对
-     * pool 目录的 .deb 一律 403，导致 pkg update 与 anwind-glibc 全部失败）。
+     *
+     * rev 3（2.22.2）：dpkg 包装器升级免疫改造——2.22.1 把包装器
+     * 脚本放在 bin/dpkg，pkg update 升级 dpkg 包时新版真身覆盖包装
+     * 器，导致后续全部安装退化为 com.termux 字面路径而失败；本版把
+     * 拦截点迁至 libexec/anwind/ 并增加 apt 双保险与 trampoline 自愈。
      */
     private const val EXTRAS_REVISION = 3
 
@@ -395,99 +399,77 @@ object TermuxBootstrapInstaller {
             android.util.Log.w(TAG, "libanwind_reprefix.so 缺失，安装后自动重写不可用")
         }
 
-        // (2) bin/dpkg → libexec/anwind/dpkg.real + 包装器
+        // (2) dpkg 升级免疫链（rev 3）。
+        // bin/dpkg 是 dpkg 软件包自己的文件：pkg update 升级 dpkg 包
+        // 时，包内新版真身会原样解包覆盖到 bin/dpkg。2.22.1 把包装器
+        // 脚本放在这里，升级 dpkg 包后包装器被真身顶掉，后续所有
+        // 安装退化为 com.termux 字面路径（unable to stat ... Permission
+        // denied）。2.22.2 起拦截点移入不属于任何包的 libexec/anwind/：
+        //   - libexec/anwind/dpkg.real    真身（跟随包升级自动同步）
+        //   - libexec/anwind/dpkg-wrap    包装器（apt Dir::Bin::dpkg 指向）
+        //   - bin/dpkg                    三行 trampoline（手工 dpkg -i 用，
+        //                                 被包覆盖后由 dpkg-wrap 自愈还原）
+        //   - etc/apt/apt.conf.d/70anwind Dir::Bin::dpkg + Pre-Install-Pkgs
         val realDpkg = File(prefix, "libexec/anwind/dpkg.real")
         realDpkg.parentFile?.mkdirs()
         val dpkg = File(prefix, "bin/dpkg")
         if (dpkg.isFile && !isOurWrapper(dpkg)) {
+            // bin/dpkg 是真身：全新 bootstrap，或 dpkg 包升级覆盖了旧
+            // trampoline（存量修复场景，顺带把过期的 dpkg.real 升级）
             if (!dpkg.renameTo(realDpkg)) {
                 throw IllegalStateException("移动 dpkg 到 libexec/anwind/dpkg.real 失败")
             }
             // dpkg.real 不在任何 .list 清单里，显式补丁一次（存量迁移场景）
             runReprefix(context, listOf("--file", realDpkg.absolutePath, "--quiet"))
         }
+        val dpkgWrap = File(prefix, "libexec/anwind/dpkg-wrap")
         copyAssetScript(
             context, "termux/scripts/anwind-dpkg",
-            File(prefix, "bin/dpkg"), executable = true
+            dpkgWrap, executable = true
+        )
+        // bin/dpkg trampoline：立即 exec 到 libexec 包装器（本文件随时
+        // 可能被 dpkg 包升级覆盖，故绝不能承载任何后续逻辑）
+        val trampoline = File(prefix, "bin/dpkg")
+        trampoline.writeText(
+            "#!${TermuxEnvironment.ANWIND_FILES_PREFIX}/usr/bin/sh\n" +
+                    "exec \"${dpkgWrap.absolutePath}\" \"\$@\"\n"
+        )
+        Os.chmod(trampoline.absolutePath, PERMISSION_0700)
+        // apt 双保险：Dir::Bin::dpkg 把 apt/pkg 的 dpkg 调用路由到
+        // libexec 包装器；Pre-Install-Pkgs 钩子在 dpkg 执行前再次
+        // 重打包 deb（stdin 逐行接收 deb 路径）并触发 trampoline 自愈
+        val aptConfDir = File(prefix, "etc/apt/apt.conf.d")
+        aptConfDir.mkdirs()
+        File(aptConfDir, "70anwind").writeText(
+            "// AnWind: 官方 deb 按 com.termux 前缀构建，dpkg 解包前需重打包。\n" +
+                    "Dir::Bin::dpkg \"${dpkgWrap.absolutePath}\";\n" +
+                    "DPkg::Pre-Install-Pkgs { \"${TermuxEnvironment.ANWIND_FILES_PREFIX}/usr/bin/anwind-apt-hook\"; };\n"
         )
 
-        // (3) deb 重打包器 + glibc 一键脚本 + 源体检工具
+        // (3) deb 重打包器 + apt 钩子 + glibc 一键脚本
         copyAssetScript(
             context, "termux/scripts/anwind-debfix",
             File(prefix, "bin/anwind-debfix"), executable = true
         )
         copyAssetScript(
+            context, "termux/scripts/anwind-apt-hook",
+            File(prefix, "bin/anwind-apt-hook"), executable = true
+        )
+        copyAssetScript(
             context, "termux/scripts/anwind-glibc",
             File(prefix, "bin/anwind-glibc"), executable = true
         )
-        copyAssetScript(
-            context, "termux/scripts/anwind-mirror",
-            File(prefix, "bin/anwind-mirror"), executable = true
-        )
-
-        // (4) 存量安装的 apt 源修复（全新安装时 bootstrap 已内置好源，此处无操作）
-        fixAptSources(context)
     }
 
-    /**
-     * 首选镜像仓库根（清华 TUNA）。
-     *
-     * 选它有三个原因：pool 级下载稳定；对国内网络速度快；
-     * 域名以 .cn 结尾，老版 termux-tools 的 pkg select_mirror 见到
-     * .cn 源会直接跳过轮换，避免再次被加权随机切到坏镜像。
-     */
-    private const val PREFERRED_MIRROR_ROOT =
-        "https://mirrors.tuna.tsinghua.edu.cn/termux/apt"
-
-    /**
-     * 存量安装的 apt 源修复（纯文本替换、不联网）。
-     *
-     * 背景：老版 termux-tools 的 pkg select_mirror 只测 dists/Release
-     * 就把源加权轮换到 packages-cf.termux.org（Cloudflare），该镜像
-     * dists 可读、pool 目录的 .deb 却一律 403 Forbidden——apt update 正常、
-     * 所有包下载全部失败，pkg update 与 anwind-glibc 因此报错。
-     *
-     * 这里把 sources.list 中已知的坏源/老源/轮换源统一重写到
-     * [PREFERRED_MIRROR_ROOT]（.cn 域名同时让轮换永久跳过本源）。
-     * pool 级验证与 sources.list.d 附加源（gpkg）同步由
-     * bin/anwind-mirror 负责（anwind-glibc 安装前自动调用）。
-     */
-    private fun fixAptSources(context: Context) {
-        val list = File(TermuxEnvironment.prefixDir(context), "etc/apt/sources.list")
-        if (!list.isFile) return
-        val old = try {
-            list.readText()
-        } catch (_: Exception) {
-            return
-        }
-        val root = PREFERRED_MIRROR_ROOT
-        val mainSuffix = "$root/termux-main"
-        val new = old
-            .replace(Regex("https?://packages-cf\\.termux\\.org/apt"), root)
-            .replace(Regex("https?://packages\\.termux\\.org/apt"), root)
-            .replace(Regex("https?://packages\\.termux\\.dev/apt"), root)
-            .replace(Regex("https?://deb\\.kcubeterm\\.me/termux-main"), mainSuffix)
-            .replace(Regex("https?://termux\\.mentality\\.rip/termux-main"), mainSuffix)
-            .replace(Regex("https?://termux\\.librehat\\.com/apt/termux-main"), mainSuffix)
-            .replace(Regex("https?://grimler\\.se/termux-packages-24"), mainSuffix)
-        if (new != old) {
-            try {
-                list.writeText(new)
-                android.util.Log.i(TAG, "apt 源已修复到 TUNA 镜像（原为坏镜像/轮换源）")
-            } catch (e: Exception) {
-                android.util.Log.w(TAG, "apt 源修复写入失败: ${e.message}")
-            }
-        }
-    }
-
-    /** bin/dpkg 是否已是本安装器写入的包装器（防重复移动真身）。 */
+    /** bin/dpkg 是否已是本安装器写入的 trampoline（防重复移动真身）。 */
     private fun isOurWrapper(f: File): Boolean {
         val head = f.inputStream().use { input ->
             val buf = ByteArray(128)
             val n = input.read(buf)
             if (n > 0) String(buf, 0, n, Charsets.UTF_8) else ""
         }
-        return head.contains("anwind-dpkg") || head.contains("dpkg.real")
+        return head.contains("dpkg-wrap") || head.contains("dpkg.real") ||
+                head.contains("anwind-dpkg")
     }
 
     /**

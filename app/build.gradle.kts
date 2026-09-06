@@ -42,92 +42,6 @@ tasks.matching {
         (it.name.startsWith("merge") && it.name.endsWith("Assets"))
 }.configureEach { dependsOn(filterRuffleAssets) }
 
-// ============================================================
-// v2.22.1：anwind-reprefix 可执行构建（打包为 lib*.so 形式）
-// ============================================================
-// 背景：APK 的 native 库目录只收 lib/<abi>/*.so，而 anwind-reprefix
-// 是可执行程序；ndk-build 的 BUILD_EXECUTABLE 又禁止模块文件名带
-// .so 扩展名（"LOCAL_MODULE_FILENAME must not contain a file
-// extension"，见 Android.mk 内说明），无法在 mk 内完成伪装。
-// 方案：Gradle 直接调用同一 NDK 的 clang 包装器（与 ndkBuild 完全
-// 同源的工具链：Bionic libc、API 24），逐 ABI 编译
-// src/main/cpp/termux/anwind_reprefix.c，产出
-//   build/reprefix/<abi>/libanwind_reprefix.so
-// 该目录加入 jniLibs sourceSets 后与普通 so 一样进 APK 的
-// lib/<abi>/；stripReleaseDebugSymbols 对可执行 ELF 同样只是去符号，
-// 不影响其可执行性。安装期由 TermuxBootstrapInstaller 从
-// nativeLibraryDir 拷贝到 $PREFIX/bin/anwind-reprefix 并 chmod 0700。
-// ============================================================
-val reprefixAbis = mapOf(
-    // AGP ABI 名 → NDK clang 目标三元组（+ minSdk API 级别）
-    "arm64-v8a" to "aarch64-linux-android",
-    "armeabi-v7a" to "armv7a-linux-androideabi",
-    "x86" to "i686-linux-android",
-    "x86_64" to "x86_64-linux-android"
-)
-val reprefixApiLevel = 24
-val reprefixSource = file("src/main/cpp/termux/anwind_reprefix.c")
-val reprefixOutDir = layout.buildDirectory.dir("reprefix")
-
-afterEvaluate {
-    // NDK 目录：afterEvaluate 时 AGP 已按 ndkVersion 解析好
-    //（CI 由 workflow 预装 26.3.11579264，与 externalNativeBuild 同一实例）
-    val ndkDir = android.ndkDirectory
-    val osName = System.getProperty("os.name").lowercase()
-    val reprefixHostTag = when {
-        osName.contains("windows") -> "windows-x86_64"
-        osName.contains("mac") || osName.contains("darwin") -> "darwin-x86_64"
-        else -> "linux-x86_64"
-    }
-    val reprefixClangBin = File(ndkDir, "toolchains/llvm/prebuilt/$reprefixHostTag/bin")
-
-    val reprefixAll = tasks.register("buildReprefixExecutables") {
-        group = "build"
-        description = "编译 anwind-reprefix 可执行（4 ABI，产出 libanwind_reprefix.so 进 jniLibs）"
-    }
-
-    reprefixAbis.forEach { (abi, triple) ->
-        val abiTaskName = "buildReprefix" + abi.split("-").joinToString("") { p ->
-            p.replaceFirstChar { it.uppercase() }
-        } // 例：buildReprefixArm64V8a
-        val clang = File(reprefixClangBin, "$triple$reprefixApiLevel-clang")
-        val outDir = reprefixOutDir.get().dir(abi).asFile
-        val outFile = File(outDir, "libanwind_reprefix.so")
-        val abiTask = tasks.register<Exec>(abiTaskName) {
-            group = "build"
-            inputs.file(reprefixSource)
-            outputs.file(outFile)
-            doFirst {
-                outDir.mkdirs()
-                if (!clang.exists()) {
-                    throw GradleException("找不到 NDK clang 包装器：${clang.absolutePath}（请确认 NDK $ndkDir 已安装）")
-                }
-            }
-            commandLine(
-                clang.absolutePath,
-                "-O2", "-Wall", "-Wextra",
-                "-o", outFile.absolutePath,
-                reprefixSource.absolutePath
-            )
-        }
-        // TaskProvider 本身无 dependsOn 方法（上一轮 CI 编译错误根因），
-        // 必须经 configure{} 在其 Task 对象上声明依赖；abiTask 以
-        // TaskProvider 传入即可（Task.dependsOn 会自动解包）
-        reprefixAll.configure { dependsOn(abiTask) }
-    }
-
-    // jniLibs 纳入 build/reprefix（其下 <abi>/libanwind_reprefix.so 布局
-    // 会被 AGP 按标准 jniLibs 结构识别并打进 APK lib/<abi>/）
-    android.sourceSets.getByName("main") {
-        jniLibs.srcDir(reprefixOutDir)
-    }
-    // 锚点：preBuild 先行触发（保证所有 merge 任务之前 so 已就绪，
-    // 与上方 ruffle 过滤的双锚点模式一致）
-    tasks.named("preBuild") { dependsOn(reprefixAll) }
-    tasks.matching { it.name.startsWith("merge") && it.name.contains("JniLib") }
-        .configureEach { dependsOn(reprefixAll) }
-}
-
 android {
     namespace = "com.anwind"
     compileSdk = 34
@@ -166,8 +80,8 @@ android {
         // 唯一代价：Android 10+ 安装时提示“此应用为旧版 Android 打造”。
         // ============================================================
         targetSdk = 28
-        versionCode = 42
-        versionName = "2.22.1"
+        versionCode = 43
+        versionName = "2.22.2"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -289,6 +203,69 @@ android {
         //（lint 报告仍会生成在 app/build/reports/，仅不再使构建失败）
         abortOnError = false
     }
+}
+
+// ============================================================
+// anwind-reprefix 可执行工具的构建链（v2.22.1 引入，v2.22.2 保留）
+// ============================================================
+// 该工具负责把官方源 deb / 存量安装中的 com.termux 等长改写为
+// com.anwind（包安装链路的核心，见 TermuxBootstrapInstaller）。
+// 它是可执行程序而非库：ndk-build 的 BUILD_EXECUTABLE 模块名含
+// ".so" 会触发 CXX1429（LOCAL_MODULE_FILENAME must not contain a
+// file extension），因此不走 Android.mk，改由这里逐 ABI 直调
+// NDK clang 编译为 libanwind_reprefix.so（APK 只打包 lib/<abi>/*.so
+// 的命名技巧），产物并入 jniLibs 随 APK 分发。
+// ============================================================
+val reprefixAbis = mapOf(
+    "arm64-v8a" to "aarch64-linux-android",
+    "armeabi-v7a" to "armv7a-linux-androideabi",
+    "x86" to "i686-linux-android",
+    "x86_64" to "x86_64-linux-android"
+)
+val reprefixApiLevel = 24
+val reprefixSource = file("src/main/cpp/termux/anwind_reprefix.c")
+val reprefixOutDir = layout.buildDirectory.dir("reprefix")
+
+afterEvaluate {
+    // android.ndkDirectory 由 SDK 定位插件配置，须在 evaluate 完成后读取
+    val ndkDir = android.ndkDirectory
+    val osName = System.getProperty("os.name").lowercase()
+    val reprefixHostTag = when {
+        osName.contains("windows") -> "windows-x86_64"
+        osName.contains("mac") || osName.contains("darwin") -> "darwin-x86_64"
+        else -> "linux-x86_64"
+    }
+    val reprefixClangBin = File(ndkDir, "toolchains/llvm/prebuilt/$reprefixHostTag/bin")
+
+    val reprefixAll = tasks.register("buildReprefixExecutables") {
+        group = "build"
+        description = "编译 anwind-reprefix 可执行（全 ABI，伪装 lib*.so 打包）"
+    }
+    reprefixAbis.forEach { (abi, triple) ->
+        val clang = File(reprefixClangBin, "$triple$reprefixApiLevel-clang")
+        val outFile = File(reprefixOutDir.get().dir(abi).asFile, "libanwind_reprefix.so")
+        val abiTask = tasks.register<Exec>("buildReprefix_${abi.replace("-", "_")}") {
+            group = "build"
+            description = "编译 anwind-reprefix（$abi）"
+            inputs.file(reprefixSource)
+            outputs.file(outFile)
+            commandLine(
+                clang.absolutePath, "-O2", "-Wall", "-Wextra",
+                "-o", outFile.absolutePath, reprefixSource.absolutePath
+            )
+        }
+        // TaskProvider 无 dependsOn：须经 configure{} 声明依赖
+        reprefixAll.configure { dependsOn(abiTask) }
+    }
+
+    // 产物并入 jniLibs，随 APK 打包到 lib/<abi>/libanwind_reprefix.so
+    android.sourceSets.getByName("main") {
+        jniLibs.srcDir(reprefixOutDir)
+    }
+    // 双锚点保证库合并前完成编译（preBuild + 全部 merge*JniLib 任务）
+    tasks.named("preBuild") { dependsOn(reprefixAll) }
+    tasks.matching { it.name.startsWith("merge") && it.name.contains("JniLib") }
+        .configureEach { dependsOn(reprefixAll) }
 }
 
 dependencies {

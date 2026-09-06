@@ -1,34 +1,102 @@
 #!/data/data/com.anwind/files/usr/bin/sh
 # ============================================================
-# AnWind dpkg 包装器
+# AnWind dpkg 包装器（2.22.2 升级免疫版）
+# 安装位置：$PREFIX/libexec/anwind/dpkg-wrap
 # ============================================================
 # 官方仓库的 deb 全部按 /data/data/com.termux 前缀构建（tar 成员
 # 路径即绝对路径 data/data/com.termux/...），dpkg 以 instdir=/
-# 按成员路径落盘——不重写就会写进别的应用的数据目录。
+# 按成员路径落盘——不重写就会写进别的应用的数据目录：
+#   unable to stat './data/data/com.termux' (which was about to
+#   be installed): Permission denied
 #
-# 本包装器：
+# 2.22.1 的教训：包装器脚本曾被放在 bin/dpkg，而 bin/dpkg 恰恰是
+# dpkg 软件包自己的文件——pkg update 升级 dpkg 包时新版真身直接
+# 覆盖包装器，之后所有安装退化回字面路径全部失败。
+#
+# 2.22.2 起拦截点移入不属于任何包的 libexec/anwind/：
+#   - libexec/anwind/dpkg.real   真身（跟随 dpkg 包升级自动同步）
+#   - libexec/anwind/dpkg-wrap   本脚本（apt Dir::Bin::dpkg 指向这里）
+#   - bin/dpkg                   三行 trampoline，仅服务手工 dpkg -i，
+#                                被 dpkg 包升级覆盖后由本脚本自愈还原
+#
+# 本包装器职责：
+#   0) 自愈 bin/dpkg trampoline（dpkg 包升级覆盖后还原，并把新版
+#      真身同步回 dpkg.real）；
 #   1) 参数中的 *.deb 先经 anwind-debfix 重打包为 com.anwind 前缀；
 #   2) 真正的 dpkg（dpkg.real）执行；
 #   3) 返回后运行 anwind-reprefix 增量重写（安全网：修补任何
 #      未覆盖到的已安装文件内容）。
-# 覆盖范围：apt / pkg / 直接 dpkg -i / grun-install 等全部路径。
+# 覆盖范围：apt / pkg（Dir::Bin::dpkg + Pre-Install-Pkgs 双保险）、
+# 手工 dpkg -i（trampoline）、grun-install 等全部路径。
 # ============================================================
 
-REAL="/data/data/com.anwind/files/usr/libexec/anwind/dpkg.real"
-FIX="/data/data/com.anwind/files/usr/bin/anwind-debfix"
-REPREFIX="/data/data/com.anwind/files/usr/bin/anwind-reprefix"
+PREFIX=/data/data/com.anwind/files/usr
+LIBEXEC=$PREFIX/libexec/anwind
+WRAP=$LIBEXEC/dpkg-wrap
+REAL=$LIBEXEC/dpkg.real
+TRAMPOLINE=$PREFIX/bin/dpkg
+FIX=$PREFIX/bin/anwind-debfix
+REPREFIX=$PREFIX/bin/anwind-reprefix
 
+PATH=$PREFIX/bin:$PATH
+export PATH
+
+is_elf() {
+    [ -f "$1" ] || return 1
+    [ "$(head -c 4 "$1" 2>/dev/null | od -An -tx1 2>/dev/null | tr -d ' \n')" = "7f454c46" ]
+}
+
+write_trampoline() {
+    {
+        printf '#!%s/bin/sh\n' "$PREFIX"
+        printf 'exec "%s" "$@"\n' "$WRAP"
+    } > "$TRAMPOLINE.tmp" 2>/dev/null &&
+        chmod 0755 "$TRAMPOLINE.tmp" 2>/dev/null &&
+        mv -f "$TRAMPOLINE.tmp" "$TRAMPOLINE" 2>/dev/null
+}
+
+# 自愈：dpkg 包升级会用新版真身（ELF）覆盖 bin/dpkg trampoline。
+# 此时把新真身同步到 dpkg.real（升级过期的真身副本）并还原 trampoline。
+heal_trampoline() {
+    if is_elf "$TRAMPOLINE"; then
+        if ! cmp -s "$TRAMPOLINE" "$REAL" 2>/dev/null; then
+            cp -f "$TRAMPOLINE" "$REAL.tmp" 2>/dev/null &&
+                chmod 0755 "$REAL.tmp" 2>/dev/null &&
+                mv -f "$REAL.tmp" "$REAL" 2>/dev/null
+        fi
+        write_trampoline
+    elif [ ! -e "$TRAMPOLINE" ]; then
+        write_trampoline
+    fi
+}
+
+# 供 anwind-apt-hook 调用：只自愈，不执行 dpkg
+case "${1-}" in
+    --heal-only)
+        [ "$#" -eq 1 ] && { heal_trampoline; exit 0; }
+        ;;
+esac
+
+heal_trampoline
+
+# 1) 参数中的 *.deb 先经 debfix 重打包为 com.anwind 前缀
 for a in "$@"; do
     case "$a" in
         *.deb) [ -f "$a" ] && [ -x "$FIX" ] && "$FIX" "$a" ;;
     esac
 done
 
-"$REAL" "$@"
-rc=$?
-
-if [ -x "$REPREFIX" ]; then
-    "$REPREFIX" --quiet
+# 2) 真 dpkg 执行（dpkg.real 缺失且无法自愈时明确报错，
+#    绝不能回落到 bin/dpkg——那会递归回本包装器）
+if [ -x "$REAL" ]; then
+    "$REAL" "$@"
+    rc=$?
+else
+    echo "anwind-dpkg: dpkg.real 缺失（$REAL），请重启应用触发迁移修复" >&2
+    rc=127
 fi
+
+# 3) 安装后增量重写（安全网：修补未覆盖到的已安装文件内容）
+[ -x "$REPREFIX" ] && "$REPREFIX" --quiet 2>/dev/null
 
 exit $rc
