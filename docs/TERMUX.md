@@ -153,9 +153,30 @@ deb 是**按 `com.termux` 前缀构建**的——tar 成员路径本身就是绝
 > ⚠ 这两份配置含 `com.termux` 字面量，【不能】打进 bootstrap zip——
 > 解压时全量重写会把 `com.termux` 改成 `com.anwind`，配置失效。
 > 只能运行时写入，三路写入互为兑底：安装器 `writeDpkgPathExclude()`
-> （全新安装 + 存量迁移 rev 5，打开 App 即自动迁移）、
+> （全新安装 + 存量迁移，打开 App 即自动迁移）、
 > `profile.d/anwind.sh`（每次会话启动）、`anwind-dpkg` 包装器
 > （每次 dpkg 调用前检查，缺失才写）。
+>
+> **fix8.1 修正（实测推翻 path-exclude 兑底假设）**：在 Debian
+> dpkg 1.22 上实测复现证明，dpkg 的 filter（path-exclude）检查发生在
+> 成员 lstat **之后**——对 "unable to stat ... Permission denied"
+> 的 EACCES 场景，无论配置文件还是命令行参数都**无效**（被排除的
+> 成员仍会先 stat 并炸出）。因此兑底主力改为 **anwind-debfix v3**：
+>
+> - **全部静默失败路径 fail-loud + 不盖章可重试**：旧版在
+>   `dpkg-deb -b` 重建失败时静默继续并照常盖章（记账污染），该 deb
+>   从此不再重写，安装永远失败且无任何提示——正是同一批包反复
+>   失败却查不到原因的结构性根因；
+> - **目录改名降级保底**：reprefix 缺失/执行失败/静默失效时，至少
+>   把树中 `data/data/com.termux` 目录改名——dpkg 报错的正是这个
+>   目录成员，改名后 unpack 即可通过（沙箱对照实验：官方 deb
+>   EACCES 失败，降级成品 rc=0 安装成功）；
+> - **重建成品验收**：`dpkg-deb -b` 后用 `dpkg-deb -c` 复查成员，
+>   仍含 `com.termux` 则不替换不盖章。
+>
+> debfix v3 盖章规则收敛为一条：**只有确认成品无官方前缀成员才
+> 盖章**。存量安装修订号 +1（rev 6）触发迁移，同时清理历史盖章
+> 缓存（旧版静默失败留下的污染章）。
 
 ```
 pkg install X
@@ -163,8 +184,8 @@ pkg install X
        └─ apt.conf.d/99anwind: Dir::Bin::dpkg → libexec/anwind/dpkg
             （apt/pkg 永远经包装器；libexec/anwind 不属于任何包，
               升级永不覆盖 —— 与 bin/dpkg 状态无关）
-            ├─ anwind-debfix <deb>          ① 安装前：重打包
-            │    dpkg-deb -R 解包
+            ├─ anwind-debfix <deb>          ① 安装前：重打包（v3：验收 +
+            │    dpkg-deb -R 解包             降级保底，失败不盖章）
             │    anwind-reprefix --tree     等长改写目录名/文件内容/链接目标
             │    dpkg 包自升级时：新真身同步刷新 dpkg.real
             │    dpkg-deb -b 原子回写       （成员路径变为 com.anwind）

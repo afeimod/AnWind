@@ -1,6 +1,6 @@
 #!/data/data/com.anwind/files/usr/bin/sh
 # ============================================================
-# anwind-debfix v2 — 把官方仓库 deb 重打包为 AnWind 前缀
+# anwind-debfix v3 — 把官方仓库 deb 重打包为 AnWind 前缀
 # ============================================================
 # 官方 deb 按 /data/data/com.termux 前缀构建（tar 成员路径即绝对
 # 路径），不重写 dpkg 会把文件解到别的应用的数据目录。
@@ -10,16 +10,21 @@
 #       10 字节）→ dpkg-deb -b 原子回写。等长替换不改变任何文件
 #       大小，md5sums 中的哈希仍与改前内容一致。
 #
-# v2（fix7）改进：
-#   1) anwind-reprefix 缺失/执行失败时一律 return 1 且【不写 stamp】
-#      ——v1 在 count=0 时照常盖章，会把未重写的 deb 永久标记为
-#      已处理（盖章污染），导致该 deb 后续安装必然 Permission
-#      denied 且不再自动重试；
-#   2) 新增 sync_dpkg_real：处理 dpkg 包自身的 deb 时，把树中
-#      已重写前缀的新 dpkg 真身原子同步到 libexec/anwind/dpkg.real
-#      （此时 dpkg.real 未运行，替换安全）——保证 dpkg 包升级后
-#      dpkg.real 始终保持最新版本，bin/dpkg 包装器自愈后不会
-#      回退到旧版 dpkg。
+# v3（fix8.1）加固——全部静默失败路径改为 fail-loud + 可重试：
+#   1) dpkg-deb -b 重建失败：旧版静默继续并【盖章】（污染记账，
+#      该 deb 永远不再重写，安装永远失败且无任何提示）——现改为
+#      报错 + 不盖章，下次调用自动重试；
+#   2) 成品验收：重建后的 deb 用 dpkg-deb -c 复查成员，仍含
+#      com.termux 成员则不替换不盖章；
+#   3) 目录改名降级保底：reprefix 缺失/执行失败/静默失效（count=0
+#      但树中仍有 com.termux）时，至少把官方前缀目录改名——dpkg
+#      报 unable to stat 的正是这个目录成员，改名后 unpack 即可通过；
+#   4) 盖章规则：只有【确认成品无官方前缀成员】才盖章。
+#
+# v2（fix7）改进：anwind-reprefix 缺失/执行失败时一律 return 1
+#   且【不写 stamp】（v1 在 count=0 时照常盖章，会把未重写的 deb
+#   永久标记为已处理）；新增 sync_dpkg_real（dpkg 包自升级时把
+#   树中已重写的新真身原子刷入 libexec/anwind/dpkg.real）。
 #
 # 用法:
 #   anwind-debfix <deb...>   手工转换（dpkg -i 前手动调用）
@@ -68,22 +73,40 @@ process_one() {
     [ -f "$stamp" ] && return 0
     rm -f "$STAMP_DIR/$base."* 2>/dev/null
 
-    # 前置校验：重写引擎必须可用（缺失时绝不盖章，下次调用可重试）
+    # 前置校验：重写引擎缺失时走降级（目录改名保底），绝不静默盖章
     if [ ! -x "$REPREFIX" ]; then
-        echo "anwind-debfix: anwind-reprefix 不可用，$base 未重写（不盖章）" >&2
-        return 1
+        echo "anwind-debfix: 警告: anwind-reprefix 不可用，$base 降级为目录改名（内容不改写）" >&2
     fi
 
-    work=$(mktemp -d "$STAMP_DIR/work.XXXXXX") || return 1
+    work=$(mktemp -d "$STAMP_DIR/work.XXXXXX") || {
+        echo "anwind-debfix: 错误: mktemp 失败（磁盘满/权限），$base 未处理（不盖章）" >&2
+        return 1
+    }
     if ! dpkg-deb -R "$deb" "$work/root" 2>/dev/null; then
+        echo "anwind-debfix: 警告: dpkg-deb -R 解包失败，$base 未重写（不盖章，下次重试）" >&2
         rm -rf "$work"
         return 1
     fi
-    count=$("$REPREFIX" --tree "$work/root" 2>/dev/null)
-    if [ $? -ne 0 ]; then
-        echo "anwind-debfix: anwind-reprefix 执行失败，$base 未重写（不盖章）" >&2
-        rm -rf "$work"
-        return 1
+    count=0
+    if [ -x "$REPREFIX" ]; then
+        if ! count=$("$REPREFIX" --tree "$work/root" 2>/dev/null); then
+            count=0
+            echo "anwind-debfix: 警告: anwind-reprefix 执行失败，$base 降级为目录改名" >&2
+        fi
+    fi
+    # 目录改名降级保底（v3）：reprefix 正常时上面已把 com.termux 改名，
+    # 本条件不成立；reprefix 缺失/失败/静默失效时这里把官方前缀目录
+    # 改名——dpkg 报 unable to stat 的正是这个目录成员，改名后 unpack
+    # 即可通过。文件内容里的 com.termux 由 reprefix 安全网后续处理。
+    if [ -d "$work/root/data/data/com.termux" ] && [ ! -d "$work/root/data/data/com.anwind" ]; then
+        if mv "$work/root/data/data/com.termux" "$work/root/data/data/com.anwind" 2>/dev/null; then
+            count=$((count + 1))
+            echo "anwind-debfix: $base 已降级改写前缀目录" >&2
+        else
+            echo "anwind-debfix: 错误: $base 目录改名失败，未重写（不盖章）" >&2
+            rm -rf "$work"
+            return 1
+        fi
     fi
     # 维护者脚本权限归一（dpkg-deb -b 要求 preinst/postinst/prerm/postrm
     # 权限在 0555-0775 之间；社区 deb 常有 644 的脚本会直接被打包拒绝）
@@ -99,8 +122,28 @@ process_one() {
     # dpkg 包自升级：同步新真身到 dpkg.real（在 dpkg.real 运行前，安全）
     sync_dpkg_real "$work/root/data/data/com.anwind/files/usr/bin/dpkg"
     if [ "$count" -gt 0 ]; then
-        if dpkg-deb -b "$work/root" "$work/out.deb" >/dev/null 2>&1; then
-            mv -f "$work/out.deb" "$deb"
+        if ! dpkg-deb -b "$work/root" "$work/out.deb" >/dev/null 2>&1; then
+            echo "anwind-debfix: 错误: dpkg-deb -b 重建失败，$base 未重写（不盖章，下次重试）" >&2
+            rm -rf "$work"
+            return 1
+        fi
+        # 成品验收（v3）：重建 deb 复查成员，仍含官方前缀则不替换不盖章
+        if dpkg-deb -c "$work/out.deb" 2>/dev/null | grep -m1 -qE 'data/data/com\.termux($|/)'; then
+            echo "anwind-debfix: 错误: $base 重建后仍含 com.termux 成员（不盖章，下次重试）" >&2
+            rm -rf "$work"
+            return 1
+        fi
+        if ! mv -f "$work/out.deb" "$deb" 2>/dev/null; then
+            echo "anwind-debfix: 错误: $base 回写失败（磁盘/权限），不盖章" >&2
+            rm -rf "$work"
+            return 1
+        fi
+    else
+        # 树中已无官方前缀（含降级后仍无目录的包）：无需重建，直接盖章
+        if [ -d "$work/root/data/data/com.termux" ]; then
+            echo "anwind-debfix: 错误: $base 树中仍残留 com.termux 且 count=0（不盖章）" >&2
+            rm -rf "$work"
+            return 1
         fi
     fi
     : > "$stamp"

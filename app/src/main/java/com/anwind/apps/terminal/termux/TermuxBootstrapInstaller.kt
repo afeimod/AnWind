@@ -67,8 +67,13 @@ object TermuxBootstrapInstaller {
      * 报 Permission denied；写入 etc/dpkg/dpkg.cfg.d/99-anwind-fix 与
      * etc/apt/apt.conf.d/99-anwind-fix（path-exclude + force-confold）
      * 让 dpkg 跳过这些成员而非报错，并消除配置文件交互提示。
+     * rev 6：anwind-debfix v3（fix8.1）。实测 dpkg 的 filter 检查发生在
+     * lstat 之后，path-exclude 对 EACCES 场景无效——官方前缀成员必须
+     * 在落盘前消灭。debfix v3 把全部静默失败路径改为 fail-loud + 不盖章
+     * 可重试，并新增目录改名降级保底（reprefix 失效时 unpack 仍可通过）
+     * 与重建成品验收（dpkg-deb -c 复查无 com.termux 成员才替换）。
      */
-    private const val EXTRAS_REVISION = 5
+    private const val EXTRAS_REVISION = 6
 
     /** 安装状态（Compose 界面订阅渲染）。 */
     sealed class InstallState {

@@ -75,11 +75,11 @@ else
 fi
 
 # ---- path-exclude / force-confold 兜底（fix8，缺失才写，幂等）----
-# 官方 deb 中漏经 anwind-debfix 重写的 /data/data/com.termux 成员
-# （如裸目录条目 ./data/data/com.termux，无尾斜杠）会让 dpkg 报
-# "unable to stat ... Permission denied"。path-exclude 让 dpkg 直接
-# 跳过这些成员（本就不该落入本应用沙箱）；force-confold 消除配置
-# 交互提示。此处保证任何 dpkg 调用路径（apt/pkg/dpkg -i）都带兜底。
+# force-confold 消除配置文件交互提示；path-exclude 顺带防御。
+# ⚠ 实测结论（fix8.1）：dpkg 的 filter 检查发生在 lstat 之后，
+# path-exclude 对 "unable to stat ... Permission denied"（EACCES）
+# 场景无效——官方前缀成员必须在落盘前由 anwind-debfix 消灭（v3
+# 含目录改名降级保底 + 成品验收），本配置只是第二道辅助防线。
 _DPKGCFG=$PREFIX/etc/dpkg/dpkg.cfg.d/99-anwind-fix
 _APTCFG=$PREFIX/etc/apt/apt.conf.d/99-anwind-fix
 if [ ! -f "$_DPKGCFG" ] || [ ! -f "$_APTCFG" ]; then
