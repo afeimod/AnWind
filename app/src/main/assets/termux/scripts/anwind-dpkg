@@ -1,5 +1,5 @@
 #!/data/data/com.anwind/files/usr/bin/sh
-# anwind-dpkg — AnWind dpkg 包装器 v3.1（fix8.5：可观测层+自检+缓存预扫描+apt 钩子）
+# anwind-dpkg — AnWind dpkg 包装器 v3.2（fix8.6：动态库解析保障+真身晋升验证）
 # ============================================================
 # 官方仓库的 deb 全部按 /data/data/com.termux 前缀构建（tar 成员
 # 路径即绝对路径 data/data/com.termux/...），dpkg 以 instdir=/
@@ -34,6 +34,18 @@ BIN=$PREFIX/bin/dpkg
 FIX=$PREFIX/bin/anwind-debfix
 REPREFIX=$PREFIX/bin/anwind-reprefix
 
+# ---- 动态库解析保障（fix8.6，无条件兜底）----
+# 会话环境正常时 LD_LIBRARY_PATH 已由 App 注入（TermuxEnvironment，
+# 对齐上游 Termux）；这里再兜底一层，防御任何绕过 App 环境的调用方
+# （failsafe 会话 / adb / env -i 清洗等）。缺失时仅自带 DT_RPATH 的
+# 二进制可链接；新版官方包改用 DT_RUNPATH（bionic 不认），dpkg.real
+# 换入即报 CANNOT LINK EXECUTABLE ... libmd.so not found（事故实锤：
+# 2026-09-06 pkgfix.log，21:21:27 换真身后所有 dpkg 调用 rc=1）。
+case ":${LD_LIBRARY_PATH:-}:" in
+    *":$PREFIX/lib:"*) : ;;
+    *) export LD_LIBRARY_PATH="$PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" ;;
+esac
+
 # ---- 文件日志（fix8.5）：终端无关的地面真相 ----
 LOGFILE=$PREFIX/var/lib/anwind/pkgfix.log
 mkdir -p "$PREFIX/var/lib/anwind" "$PREFIX/tmp" 2>/dev/null
@@ -65,16 +77,47 @@ heal_bin_dpkg() {
     fi
 }
 
+# ---- 真身可运行性验证（fix8.6）----
+# 新 dpkg ELF 必须在本机可链接运行才允许顶替 dpkg.real：dpkg 包
+# 自升级换入的新真身若依赖的库（如 libmd.so）尚未安装/不可解析，
+# 直接换入会把 dpkg 整个打死，事务内所有后续调用全部失败。
+dpkg_real_runnable() {
+    env LD_LIBRARY_PATH="$PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+        "$1" --version >/dev/null 2>&1
+}
+
+# ---- 暂存真身晋升（fix8.6）：依赖库就绪后自动完成被搁置的同步 ----
+# debfix 的 sync_dpkg_real 自检失败时会暂存到 $REAL.pending（保留旧
+# 真身继续干活）；待其依赖（如随事务解包的 libmd）就绪后在此晋升。
+if [ -f "$REAL.pending" ]; then
+    if dpkg_real_runnable "$REAL.pending"; then
+        cp -f "$REAL" "$REAL.old" 2>/dev/null
+        cp -f "$REAL.pending" "$REAL.tmp.$$" 2>/dev/null \
+            && chmod 700 "$REAL.tmp.$$" 2>/dev/null \
+            && mv -f "$REAL.tmp.$$" "$REAL" 2>/dev/null
+        rm -f "$REAL.pending" 2>/dev/null
+        log "暂存真身依赖就绪 → 晋升 dpkg.real"
+    fi
+fi
+
 # ---- 自愈（运行前）：bin/dpkg 若被 dpkg 升级覆盖为真身 ELF ----
-# 先把新真身提升为 dpkg.real（仅当比现有 dpkg.real 新时），保证
-# dpkg.real 始终是最新版本，再恢复包装器副本。
+# 新真身先验证可运行再提升为 dpkg.real（仅当比现有 dpkg.real 新时）；
+# 不可运行则暂存 pending 待依赖就绪（保留现有 dpkg.real 继续干活），
+# 再恢复包装器副本。
 if [ -f "$BIN" ]; then
     magic=$(head -c 4 "$BIN" 2>/dev/null | od -An -tx1 2>/dev/null | tr -d ' \n')
     if [ "$magic" = "7f454c46" ]; then
         if [ ! -f "$REAL" ] || [ "$BIN" -nt "$REAL" ]; then
-            cp -f "$BIN" "$REAL.tmp.$$" 2>/dev/null \
-                && chmod 700 "$REAL.tmp.$$" 2>/dev/null \
-                && mv -f "$REAL.tmp.$$" "$REAL" 2>/dev/null
+            if dpkg_real_runnable "$BIN"; then
+                cp -f "$BIN" "$REAL.tmp.$$" 2>/dev/null \
+                    && chmod 700 "$REAL.tmp.$$" 2>/dev/null \
+                    && mv -f "$REAL.tmp.$$" "$REAL" 2>/dev/null
+            else
+                cp -f "$BIN" "$REAL.pending.tmp.$$" 2>/dev/null \
+                    && chmod 700 "$REAL.pending.tmp.$$" 2>/dev/null \
+                    && mv -f "$REAL.pending.tmp.$$" "$REAL.pending" 2>/dev/null
+                log "自愈: bin/dpkg 真身暂不可运行 → 暂存 pending，保留现有 dpkg.real"
+            fi
         fi
         heal_bin_dpkg
     fi
@@ -115,7 +158,7 @@ unset _DPKGCFG _APTCFG
 # ---- 调用横幅 + 参数日志（fix8.5）----
 log "===== 调用开始: $# 参数 ====="
 log "args: $*"
-echo "anwind-dpkg v3.1 (fix8.5): dpkg 调用 ($# 参数)" >&2
+echo "anwind-dpkg v3.2 (fix8.6): dpkg 调用 ($# 参数)" >&2
 
 # ---- apt 缓存预扫描（fix8.5）----
 # 把下载缓存中的官方 deb 先重写为 com.anwind 前缀（幂等）：即使后续

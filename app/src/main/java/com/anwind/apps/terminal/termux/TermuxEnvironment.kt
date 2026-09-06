@@ -112,6 +112,16 @@ object TermuxEnvironment {
         env.add("COLORTERM=truecolor")
         env.add("HOME=${homePath(context)}")
         env.add("PREFIX=$prefix")
+
+        // 对齐上游 Termux（TermuxShellUtils.buildEnvironment 必设项）：
+        // 子进程必须能解析 $PREFIX/lib 下的动态库。缺失时仅自带 DT_RPATH
+        // 的二进制可完成链接（老版 bootstrap 二进制可用）；新版官方包改用
+        // DT_RUNPATH（bionic 对主执行文件不认），pkg upgrade 换入的新
+        // dpkg 真身即报 CANNOT LINK EXECUTABLE ".../dpkg.real": library
+        // "libmd.so" not found，整个安装事务失败（2026-09 pkgfix.log 事故）。
+        // /system 二进制走系统 linker 命名空间，不受该变量影响，与上游一致。
+        env.add("LD_LIBRARY_PATH=$prefix/lib")
+
         env.add("BOOTCLASSPATH=${System.getenv("BOOTCLASSPATH") ?: ""}")
         env.add("ANDROID_ROOT=${System.getenv("ANDROID_ROOT") ?: "/system"}")
         env.add("ANDROID_DATA=${System.getenv("ANDROID_DATA") ?: "/data"}")

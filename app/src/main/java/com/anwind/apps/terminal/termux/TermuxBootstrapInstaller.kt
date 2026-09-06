@@ -107,8 +107,23 @@ object TermuxBootstrapInstaller {
      * 预扫描：包装器每次调用先把缓存中的官方 deb 重写为净品；
      * ⑤ 会话启动一次性 anwind-reprefix --full 全量重写 dpkg 数据库
      * （info 目录下的 *.list、status 历史残留 com.termux 路径）。
+     * rev 11：dpkg 真身晋升安全门 + 动态库解析保障（fix8.6）。
+     * 事故定性（pkgfix.log 2026-09-06）：debfix 在 Pre-Install 钩子
+     * 里把重写树中的新 dpkg 1.22.6-5 直接换入 dpkg.real，而新版
+     * 官方包改用 DT_RUNPATH（bionic 对主执行文件不认）且 App 会话
+     * 环境缺 LD_LIBRARY_PATH（上游 Termux 必设，AnWind 遗漏），
+     * 新真身首次链接即 CANNOT LINK EXECUTABLE ... libmd.so not
+     * found，事务内所有后续 dpkg 调用全部 rc=1（pkg upgrade 整体
+     * 失败、无任何包装上）。对策：① TermuxEnvironment.build-
+     * Environment 补设 LD_LIBRARY_PATH=$PREFIX/lib（对齐上游，
+     * /system 二进制走系统命名空间不受影响）；② 包装器无条件兜底
+     * 导出同一变量，覆盖 failsafe/adb 等绕过 App 环境的调用方；
+     * ③ sync_dpkg_real 与包装器晋升路径均先跑 --version 自检，
+     * 不可运行则暂存 dpkg.real.pending、保留旧真身继续干活，待
+     * 依赖（如随事务解包的 libmd）就绪后自动晋升——dpkg 永远
+     * 不会再被换入的真身打死。
      */
-    private const val EXTRAS_REVISION = 10
+    private const val EXTRAS_REVISION = 11
 
     /** 安装状态（Compose 界面订阅渲染）。 */
     sealed class InstallState {
@@ -456,7 +471,8 @@ object TermuxBootstrapInstaller {
         //                               固定调用；libexec/anwind 不属于
         //                               任何软件包，升级永不覆盖）；
         //     libexec/anwind/dpkg.real  dpkg 真身（anwind-debfix 在 dpkg
-        //                               包自升级时自动同步新版本）；
+        //                               包自升级时验证可运行后同步，
+        //                               fix8.6 起不可运行则暂存 pending）；
         //     bin/dpkg                  包装器副本（用户直接调用入口；
         //                               被 dpkg 升级覆盖后由包装器与
         //                               anwind.sh 会话启动自愈恢复）。
