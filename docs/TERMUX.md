@@ -36,7 +36,7 @@
 │  │ /data/data/com.anwind/files/usr/bin/login           │    │
 │  │   → $PREFIX/bin/bash -l  （真实 login shell）         │    │
 │  │   → pkg / apt / dpkg / curl / termux-tools 全家桶    │    │
-│  │   → 官方源 packages.termux.org（apt 增量更新）        │    │
+│  │   → TUNA 镜像源（apt 增量更新，anwind-mirror 可换源） │    │
 │  └─────────────────────────────────────────────────────┘    │
 └─────────────────────────────────────────────────────────────┘
 ```

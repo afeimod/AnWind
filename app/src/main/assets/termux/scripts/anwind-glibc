@@ -8,8 +8,19 @@
 # ============================================================
 set -e
 
+echo "[anwind-glibc] 0/2 检查软件源（pool 级验证，403 自动切换镜像）..."
+# 老版 pkg 的镜像轮换可能把源切到 pool 下载 403 的 packages-cf，
+# 先用 anwind-mirror 验证/切换到真实可用的镜像再安装。
+command -v anwind-mirror >/dev/null 2>&1 && anwind-mirror --quiet \
+    || echo "[anwind-glibc] 警告: anwind-mirror 不可用，跳过源体检"
+
 echo "[anwind-glibc] 1/2 安装 glibc-repo（termux 主仓库，添加 gpkg 源）..."
 pkg install -y glibc-repo
+
+# glibc-repo 会写入 glibc 附加源（termux-glibc，仅官方 cf 缓存域/
+# 直连域提供）；anwind-mirror 会验证其 pool 可用性，失败时自动
+# 切换到直连域，避免第 2 步下载 glibc-runner 失败。
+command -v anwind-mirror >/dev/null 2>&1 && anwind-mirror --quiet || true
 
 echo "[anwind-glibc] 2/2 安装 glibc-runner（glibc 运行时 + grun）..."
 pkg install -y glibc-runner
