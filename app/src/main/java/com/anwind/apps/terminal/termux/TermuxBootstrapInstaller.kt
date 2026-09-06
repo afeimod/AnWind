@@ -61,8 +61,14 @@ object TermuxBootstrapInstaller {
      * （无任何包会覆盖），apt 经 apt.conf.d/99anwind 的 Dir::Bin::dpkg
      * 固定走包装器；bin/dpkg 保留副本并由包装器/会话启动自愈；
      * anwind-debfix 同步刷新 dpkg.real 并修复盖章污染。
+     * rev 5：新增 dpkg path-exclude 双保险（fix8）。官方 deb 中偶有
+     * 未经 anwind-debfix 重写的 /data/data/com.termux 成员（典型如裸
+     * 目录条目 ./data/data/com.termux，无尾斜杠），dpkg lstat 无权访问
+     * 报 Permission denied；写入 etc/dpkg/dpkg.cfg.d/99-anwind-fix 与
+     * etc/apt/apt.conf.d/99-anwind-fix（path-exclude + force-confold）
+     * 让 dpkg 跳过这些成员而非报错，并消除配置文件交互提示。
      */
-    private const val EXTRAS_REVISION = 4
+    private const val EXTRAS_REVISION = 5
 
     /** 安装状态（Compose 界面订阅渲染）。 */
     sealed class InstallState {
@@ -387,6 +393,8 @@ object TermuxBootstrapInstaller {
      * - 原生 anwind-reprefix（libanwind_reprefix.so，等长重写引擎）；
      * - dpkg 包装器：参数中的 *.deb 先经 anwind-debfix 重打包为
      *   com.anwind 前缀，dpkg.real 执行后再做增量重写（安全网）；
+     * - dpkg path-exclude 双保险（fix8，writeDpkgPathExclude）：跳过
+     *   官方 deb 中漏经重写的 com.termux 成员，消除 Permission denied；
      * - anwind-glibc：官方 gpkg 流程（glibc-repo + glibc-runner）。
      */
     private fun installPackageToolchain(context: Context) {
@@ -435,6 +443,7 @@ object TermuxBootstrapInstaller {
             File(prefix, "bin/dpkg"), executable = true
         )
         writeAptDpkgPin(context)
+        writeDpkgPathExclude(context)
 
         // (3) deb 重打包器 + glibc 一键脚本 + 源体检工具
         // 迁移场景同时清理旧版 debfix 的盖章缓存（v2 已修复盖章污染，
@@ -483,6 +492,54 @@ object TermuxBootstrapInstaller {
             File(confDir, "99anwind").writeText(content)
         } catch (e: Exception) {
             android.util.Log.w(TAG, "写入 apt.conf.d/99anwind 失败: ${e.message}")
+        }
+    }
+
+    /**
+     * dpkg 兜底配置（fix8）：写入 etc/dpkg/dpkg.cfg.d/99-anwind-fix 与
+     * etc/apt/apt.conf.d/99-anwind-fix（path-exclude + force-confold）。
+     *
+     * 背景：官方 deb 中偶有未经 anwind-debfix 重写的
+     * /data/data/com.termux 成员（典型如裸目录条目
+     * ./data/data/com.termux，无尾斜杠），dpkg 以 instdir=/ 按成员路径
+     * lstat 时对官方包名前缀无权访问，报 "unable to stat ... Permission
+     * denied"。path-exclude 让 dpkg 直接跳过这些成员（它们本就不该落
+     * 入本应用沙箱，跳过无副作用）；force-confold 自动保留本地配置
+     * 文件，消除 bash.bashrc / profile 升级时的 Y/I/N/O/D/Z 交互。
+     *
+     * 双保险：dpkg.cfg.d 由 dpkg 真身直接读取；apt.conf.d 令 apt 在
+     * 命令行补同样参数，即使 dpkg.cfg.d 意外丢失也兜得住。
+     *
+     * ⚠ 两份配置含 com.termux 字面量，【不能】打进 bootstrap zip——
+     * 解压时 rewriteLegacyPaths 会把 com.termux 改写为 com.anwind 使
+     * 配置失效，只能在运行时写入。同样内容的三路写入互为兜底：
+     * 本函数（全新安装 + 存量迁移 rev 5）、profile.d/anwind.sh
+     * （每次会话启动）、anwind-dpkg 包装器（每次 dpkg 调用，缺失才写）。
+     */
+    private fun writeDpkgPathExclude(context: Context) {
+        val dpkgCfg = File(TermuxEnvironment.etcDir(context), "dpkg/dpkg.cfg.d/99-anwind-fix")
+        val aptCfg = File(TermuxEnvironment.etcDir(context), "apt/apt.conf.d/99-anwind-fix")
+        try {
+            dpkgCfg.parentFile?.mkdirs()
+            dpkgCfg.writeText(buildString {
+                appendLine("# AnWind (com.anwind) dpkg 兜底修复（fix8）")
+                appendLine("# 跳过官方 deb 中漏经重写的 /data/data/com.termux 成员")
+                appendLine("# （如裸目录条目），否则 dpkg 落盘时报 Permission denied。")
+                appendLine("path-exclude=/data/data/com.termux")
+                appendLine("path-exclude=/data/data/com.termux/*")
+                appendLine("force-confold")
+            })
+            aptCfg.parentFile?.mkdirs()
+            aptCfg.writeText(buildString {
+                appendLine("// AnWind (com.anwind) dpkg 兜底修复（fix8）——双保险")
+                appendLine("// 即使 etc/dpkg/dpkg.cfg.d/99-anwind-fix 丢失，apt 调起的")
+                appendLine("// dpkg 也带同样的 path-exclude / force-confold。")
+                appendLine("DPkg::Options:: \"--path-exclude=/data/data/com.termux\";")
+                appendLine("DPkg::Options:: \"--path-exclude=/data/data/com.termux/*\";")
+                appendLine("DPkg::Options:: \"--force-confold\";")
+            })
+        } catch (e: Exception) {
+            android.util.Log.w(TAG, "写入 dpkg path-exclude 配置失败: ${e.message}")
         }
     }
 

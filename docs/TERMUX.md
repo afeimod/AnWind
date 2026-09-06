@@ -117,7 +117,7 @@ JNI 函数名与 Kotlin 声明严格对应（`TermuxBridge` 检查点）：
 `anwind_bridge.c`（AnWind 专有 FIFO 桥，非上游代码）。
 
 ---
-### 2.4 官方源软件包的前缀重打包（v2.22.1 包工具链，fix7 修订）
+### 2.4 官方源软件包的前缀重打包（v2.22.1 包工具链，fix8 修订）
 
 bootstrap 重写只覆盖随 APK 内置的根文件系统；`pkg install` 从官方源下载的
 deb 是**按 `com.termux` 前缀构建**的——tar 成员路径本身就是绝对路径
@@ -132,6 +132,30 @@ deb 是**按 `com.termux` 前缀构建**的——tar 成员路径本身就是绝
 > 实测故障链：tar 升级成功 → dpkg 自升级成功（包装器被杀）→
 > findutils 失败 → 之后所有安装失败。fix7 以"三层布局 + apt 钉扎 +
 > 双重自愈"根治，并对 dpkg 升级本身免疫。
+>
+> **fix8 补充的双重保险（path-exclude）**：即使 debfix 全链路正常，
+> 官方 deb 偶发含未经重写的 `/data/data/com.termux` 成员（典型如
+> 裸目录条目 `./data/data/com.termux`，无尾斜杠，早期 reprefix 的
+> "前缀+尾斜杠"匹配恰好漏掉）——dpkg 以 instdir=/ 按成员路径
+> lstat 时对官方包名前缀无权访问，报
+> `unable to stat './data/data/com.termux': Permission denied`。
+> fix8 写入两层配置让 dpkg 直接【跳过】这些成员而非报错（它们
+> 本就不该落入 AnWind 沙箱，跳过无副作用）：
+>
+> | 文件 | 内容 | 作用 |
+> |------|------|------|
+> | `etc/dpkg/dpkg.cfg.d/99-anwind-fix` | `path-exclude=/data/data/com.termux`、`path-exclude=/data/data/com.termux/*`、`force-confold` | dpkg 真身直接读取，任何调用路径生效 |
+> | `etc/apt/apt.conf.d/99-anwind-fix` | `DPkg::Options:: "--path-exclude=…"` ×2、`"--force-confold"` | apt 命令行再补一遍，dpkg.cfg.d 意外丢失也兑得住 |
+>
+> `force-confold` 同时消除 bash.bashrc / profile 升级时的
+> Y/I/N/O/D/Z 交互提示。
+>
+> ⚠ 这两份配置含 `com.termux` 字面量，【不能】打进 bootstrap zip——
+> 解压时全量重写会把 `com.termux` 改成 `com.anwind`，配置失效。
+> 只能运行时写入，三路写入互为兑底：安装器 `writeDpkgPathExclude()`
+> （全新安装 + 存量迁移 rev 5，打开 App 即自动迁移）、
+> `profile.d/anwind.sh`（每次会话启动）、`anwind-dpkg` 包装器
+> （每次 dpkg 调用前检查，缺失才写）。
 
 ```
 pkg install X
@@ -145,6 +169,8 @@ pkg install X
             │    dpkg 包自升级时：新真身同步刷新 dpkg.real
             │    dpkg-deb -b 原子回写       （成员路径变为 com.anwind）
             ├─ dpkg.real --unpack …         ② 解包到 /data/data/com.anwind/...
+            │    dpkg.cfg.d/99-anwind-fix  path-exclude 兑底：跳过漏网的
+            │                              com.termux 成员（fix8）
             └─ anwind-reprefix --quiet      ③ 装完后：按 dpkg info/*.list
                                                增量重写（安全网，幂等）
 ```
@@ -288,7 +314,8 @@ grun-install <deb>         # 安装 glibc 版 .deb
 # - 服务器端（termux-api 等 companion app）功能不可用（未安装对应 App）
 # - termux-setup-storage 需手动执行且受限（AnWind 已有文件管理器，建议用 SAF）
 # - bootstrap 为 2022.01.07-r1 官方版；pkg update 后即与最新源同步
-# - 官方源 deb 由 dpkg 包装器自动重打包为 com.anwind 前缀（见 §2.4）
+# - 官方源 deb 由 dpkg 包装器自动重打包为 com.anwind 前缀（见 §2.4）；
+#   path-exclude 双保险跳过漏网的 com.termux 成员（fix8）
 
 # AnWind 桌面联动
 theme win11

@@ -74,6 +74,35 @@ else
     heal_bin_dpkg
 fi
 
+# ---- path-exclude / force-confold 兜底（fix8，缺失才写，幂等）----
+# 官方 deb 中漏经 anwind-debfix 重写的 /data/data/com.termux 成员
+# （如裸目录条目 ./data/data/com.termux，无尾斜杠）会让 dpkg 报
+# "unable to stat ... Permission denied"。path-exclude 让 dpkg 直接
+# 跳过这些成员（本就不该落入本应用沙箱）；force-confold 消除配置
+# 交互提示。此处保证任何 dpkg 调用路径（apt/pkg/dpkg -i）都带兜底。
+_DPKGCFG=$PREFIX/etc/dpkg/dpkg.cfg.d/99-anwind-fix
+_APTCFG=$PREFIX/etc/apt/apt.conf.d/99-anwind-fix
+if [ ! -f "$_DPKGCFG" ] || [ ! -f "$_APTCFG" ]; then
+    mkdir -p "$PREFIX/etc/dpkg/dpkg.cfg.d" "$PREFIX/etc/apt/apt.conf.d" 2>/dev/null
+    [ -f "$_DPKGCFG" ] || printf '%s\n' \
+        '# AnWind (com.anwind) dpkg 兜底修复（fix8）' \
+        '# 跳过官方 deb 中漏经重写的 /data/data/com.termux 成员' \
+        '# （如裸目录条目），否则 dpkg 落盘时报 Permission denied。' \
+        'path-exclude=/data/data/com.termux' \
+        'path-exclude=/data/data/com.termux/*' \
+        'force-confold' \
+        > "$_DPKGCFG" 2>/dev/null
+    [ -f "$_APTCFG" ] || printf '%s\n' \
+        '// AnWind (com.anwind) dpkg 兜底修复（fix8）——双保险' \
+        '// 即使 etc/dpkg/dpkg.cfg.d/99-anwind-fix 丢失，apt 调起的' \
+        '// dpkg 也带同样的 path-exclude / force-confold。' \
+        'DPkg::Options:: "--path-exclude=/data/data/com.termux";' \
+        'DPkg::Options:: "--path-exclude=/data/data/com.termux/*";' \
+        'DPkg::Options:: "--force-confold";' \
+        > "$_APTCFG" 2>/dev/null
+fi
+unset _DPKGCFG _APTCFG
+
 # ---- deb 重打包（com.termux → com.anwind）----
 fix_failed=0
 for a in "$@"; do
