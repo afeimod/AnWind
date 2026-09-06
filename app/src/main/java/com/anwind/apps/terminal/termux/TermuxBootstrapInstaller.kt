@@ -106,7 +106,7 @@ object TermuxBootstrapInstaller {
      * 记账，字节级复查每个 deb 参数，残留即可见地再修；④ apt 缓存
      * 预扫描：包装器每次调用先把缓存中的官方 deb 重写为净品；
      * ⑤ 会话启动一次性 anwind-reprefix --full 全量重写 dpkg 数据库
-     * （info/*.list、status 历史残留 com.termux 路径）。
+     * （info 目录下的 *.list、status 历史残留 com.termux 路径）。
      */
     private const val EXTRAS_REVISION = 10
 
