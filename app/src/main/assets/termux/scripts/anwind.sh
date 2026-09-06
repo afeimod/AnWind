@@ -9,6 +9,36 @@
 # 原理：命令写入 FIFO，由 App 主进程读取并执行。
 # ============================================================
 
+# ---- dpkg 包装器自愈（fix7 兜底，静默）----
+# dpkg 包自升级会用新真身 ELF 覆盖 bin/dpkg（包装器副本）。apt 经
+# apt.conf.d/99anwind 走 libexec/anwind/dpkg 不受影响，但用户直接
+# 调用的 bin/dpkg 需要恢复：若其为 ELF（被覆盖），先提升为
+# dpkg.real（保持版本最新），再从包装器本体恢复副本。
+_anwind_heal_dpkg() {
+    _bin="$PREFIX/bin/dpkg"
+    _wrap="$PREFIX/libexec/anwind/dpkg"
+    _real="$PREFIX/libexec/anwind/dpkg.real"
+    [ -f "$_wrap" ] || return 0
+    if [ -f "$_bin" ]; then
+        _magic=$(head -c 4 "$_bin" 2>/dev/null | od -An -tx1 2>/dev/null | tr -d ' \n')
+        if [ "$_magic" = "7f454c46" ]; then
+            if [ ! -f "$_real" ] || [ "$_bin" -nt "$_real" ]; then
+                cp -f "$_bin" "$_real.tmp" 2>/dev/null \
+                    && chmod 700 "$_real.tmp" 2>/dev/null \
+                    && mv -f "$_real.tmp" "$_real" 2>/dev/null
+            fi
+        fi
+    fi
+    if ! cmp -s "$_wrap" "$_bin" 2>/dev/null; then
+        cp -f "$_wrap" "$_bin.tmp" 2>/dev/null \
+            && chmod 700 "$_bin.tmp" 2>/dev/null \
+            && mv -f "$_bin.tmp" "$_bin" 2>/dev/null
+    fi
+    return 0
+}
+_anwind_heal_dpkg
+unset -f _anwind_heal_dpkg
+
 ANWIND_CMD_FIFO="$PREFIX/var/anwind.cmd"
 
 _anwind_send() {

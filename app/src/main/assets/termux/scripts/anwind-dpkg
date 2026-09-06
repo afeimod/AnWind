@@ -1,102 +1,110 @@
 #!/data/data/com.anwind/files/usr/bin/sh
-# ============================================================
-# AnWind dpkg 包装器（2.22.2 升级免疫版）
-# 安装位置：$PREFIX/libexec/anwind/dpkg-wrap
+# anwind-dpkg — AnWind dpkg 包装器 v2（fix7：dpkg 自升级免疫）
 # ============================================================
 # 官方仓库的 deb 全部按 /data/data/com.termux 前缀构建（tar 成员
 # 路径即绝对路径 data/data/com.termux/...），dpkg 以 instdir=/
-# 按成员路径落盘——不重写就会写进别的应用的数据目录：
-#   unable to stat './data/data/com.termux' (which was about to
-#   be installed): Permission denied
+# 按成员路径落盘——不重写就会写进别的应用的数据目录（报错表现为
+# unable to stat './data/data/com.termux': Permission denied）。
 #
-# 2.22.1 的教训：包装器脚本曾被放在 bin/dpkg，而 bin/dpkg 恰恰是
-# dpkg 软件包自己的文件——pkg update 升级 dpkg 包时新版真身直接
-# 覆盖包装器，之后所有安装退化回字面路径全部失败。
+# fix6 的缺陷：包装器只部署在 bin/dpkg 一处。dpkg 包自升级时，
+# deb 里的 bin/dpkg 真身 ELF 会覆盖 bin/dpkg（包装器脚本）——
+# 此后 apt/pkg 全部绕过 deb 重打包，pkg update / pkg install
+# 全线失败。这正是 v2.22.1 用户实测复现的故障链：
+#   tar 升级成功 → dpkg 自升级成功（包装器被杀）→ findutils 失败
+#   → 之后所有安装失败。
 #
-# 2.22.2 起拦截点移入不属于任何包的 libexec/anwind/：
-#   - libexec/anwind/dpkg.real   真身（跟随 dpkg 包升级自动同步）
-#   - libexec/anwind/dpkg-wrap   本脚本（apt Dir::Bin::dpkg 指向这里）
-#   - bin/dpkg                   三行 trampoline，仅服务手工 dpkg -i，
-#                                被 dpkg 包升级覆盖后由本脚本自愈还原
+# fix7 三层布局（对 dpkg 包自升级免疫）：
+#   libexec/anwind/dpkg       包装器本体。libexec/anwind 不属于任何
+#                             软件包，任何升级都不会覆盖；apt 经
+#                             apt.conf.d/99anwind 的 Dir::Bin::dpkg
+#                             固定调用这里（由安装器写入）；
+#   libexec/anwind/dpkg.real  dpkg 真身。anwind-debfix 在 dpkg 包
+#                             自升级时自动把新真身同步到这里；
+#   bin/dpkg                  包装器副本，供用户直接调用。若被 dpkg
+#                             升级覆盖为真身 ELF，本包装器会在运行
+#                             前后自愈：先把新真身提升为 dpkg.real
+#                             （保持版本最新），再原子恢复包装器副本。
 #
 # 本包装器职责：
-#   0) 自愈 bin/dpkg trampoline（dpkg 包升级覆盖后还原，并把新版
-#      真身同步回 dpkg.real）；
+#   0) 自愈 bin/dpkg（见上）；
 #   1) 参数中的 *.deb 先经 anwind-debfix 重打包为 com.anwind 前缀；
 #   2) 真正的 dpkg（dpkg.real）执行；
-#   3) 返回后运行 anwind-reprefix 增量重写（安全网：修补任何
-#      未覆盖到的已安装文件内容）。
-# 覆盖范围：apt / pkg（Dir::Bin::dpkg + Pre-Install-Pkgs 双保险）、
-# 手工 dpkg -i（trampoline）、grun-install 等全部路径。
+#   3) 返回后再自愈一次（本次若装了 dpkg 包，副本刚被覆盖）并运行
+#      anwind-reprefix 增量重写（安全网：修补任何未覆盖到的内容）。
+# 覆盖范围：apt / pkg / 直接 dpkg -i / grun-install 等全部路径。
 # ============================================================
 
 PREFIX=/data/data/com.anwind/files/usr
-LIBEXEC=$PREFIX/libexec/anwind
-WRAP=$LIBEXEC/dpkg-wrap
-REAL=$LIBEXEC/dpkg.real
-TRAMPOLINE=$PREFIX/bin/dpkg
+REAL=$PREFIX/libexec/anwind/dpkg.real
+WRAP=$PREFIX/libexec/anwind/dpkg
+BIN=$PREFIX/bin/dpkg
 FIX=$PREFIX/bin/anwind-debfix
 REPREFIX=$PREFIX/bin/anwind-reprefix
 
-PATH=$PREFIX/bin:$PATH
-export PATH
+# 包装器本体优先（apt 经 Dir::Bin::dpkg 调用时 $0 即本体；
+# 用户经 bin/dpkg 调用时 $0 是副本，恢复动作以本体为模板）
+SELF=$0
+if [ -f "$WRAP" ]; then SELF=$WRAP; fi
 
-is_elf() {
-    [ -f "$1" ] || return 1
-    [ "$(head -c 4 "$1" 2>/dev/null | od -An -tx1 2>/dev/null | tr -d ' \n')" = "7f454c46" ]
-}
-
-write_trampoline() {
-    {
-        printf '#!%s/bin/sh\n' "$PREFIX"
-        printf 'exec "%s" "$@"\n' "$WRAP"
-    } > "$TRAMPOLINE.tmp" 2>/dev/null &&
-        chmod 0755 "$TRAMPOLINE.tmp" 2>/dev/null &&
-        mv -f "$TRAMPOLINE.tmp" "$TRAMPOLINE" 2>/dev/null
-}
-
-# 自愈：dpkg 包升级会用新版真身（ELF）覆盖 bin/dpkg trampoline。
-# 此时把新真身同步到 dpkg.real（升级过期的真身副本）并还原 trampoline。
-heal_trampoline() {
-    if is_elf "$TRAMPOLINE"; then
-        if ! cmp -s "$TRAMPOLINE" "$REAL" 2>/dev/null; then
-            cp -f "$TRAMPOLINE" "$REAL.tmp" 2>/dev/null &&
-                chmod 0755 "$REAL.tmp" 2>/dev/null &&
-                mv -f "$REAL.tmp" "$REAL" 2>/dev/null
-        fi
-        write_trampoline
-    elif [ ! -e "$TRAMPOLINE" ]; then
-        write_trampoline
+# 原子恢复 bin/dpkg 为包装器副本（cp 到临时文件再 mv，不破坏正在
+# 执行的旧 inode）
+heal_bin_dpkg() {
+    [ -f "$SELF" ] || return 0
+    if ! cmp -s "$SELF" "$BIN" 2>/dev/null; then
+        cp -f "$SELF" "$BIN.tmp.$$" 2>/dev/null \
+            && chmod 700 "$BIN.tmp.$$" 2>/dev/null \
+            && mv -f "$BIN.tmp.$$" "$BIN" 2>/dev/null
     fi
 }
 
-# 供 anwind-apt-hook 调用：只自愈，不执行 dpkg
-case "${1-}" in
-    --heal-only)
-        [ "$#" -eq 1 ] && { heal_trampoline; exit 0; }
-        ;;
-esac
-
-heal_trampoline
-
-# 1) 参数中的 *.deb 先经 debfix 重打包为 com.anwind 前缀
-for a in "$@"; do
-    case "$a" in
-        *.deb) [ -f "$a" ] && [ -x "$FIX" ] && "$FIX" "$a" ;;
-    esac
-done
-
-# 2) 真 dpkg 执行（dpkg.real 缺失且无法自愈时明确报错，
-#    绝不能回落到 bin/dpkg——那会递归回本包装器）
-if [ -x "$REAL" ]; then
-    "$REAL" "$@"
-    rc=$?
+# ---- 自愈（运行前）：bin/dpkg 若被 dpkg 升级覆盖为真身 ELF ----
+# 先把新真身提升为 dpkg.real（仅当比现有 dpkg.real 新时），保证
+# dpkg.real 始终是最新版本，再恢复包装器副本。
+if [ -f "$BIN" ]; then
+    magic=$(head -c 4 "$BIN" 2>/dev/null | od -An -tx1 2>/dev/null | tr -d ' \n')
+    if [ "$magic" = "7f454c46" ]; then
+        if [ ! -f "$REAL" ] || [ "$BIN" -nt "$REAL" ]; then
+            cp -f "$BIN" "$REAL.tmp.$$" 2>/dev/null \
+                && chmod 700 "$REAL.tmp.$$" 2>/dev/null \
+                && mv -f "$REAL.tmp.$$" "$REAL" 2>/dev/null
+        fi
+        heal_bin_dpkg
+    fi
 else
-    echo "anwind-dpkg: dpkg.real 缺失（$REAL），请重启应用触发迁移修复" >&2
-    rc=127
+    heal_bin_dpkg
 fi
 
-# 3) 安装后增量重写（安全网：修补未覆盖到的已安装文件内容）
-[ -x "$REPREFIX" ] && "$REPREFIX" --quiet 2>/dev/null
+# ---- deb 重打包（com.termux → com.anwind）----
+fix_failed=0
+for a in "$@"; do
+    case "$a" in
+        *.deb)
+            if [ -f "$a" ]; then
+                if [ -x "$FIX" ]; then
+                    "$FIX" "$a" || fix_failed=1
+                else
+                    echo "anwind-dpkg: 警告: anwind-debfix 不可用，$a 未经前缀重写" >&2
+                    fix_failed=1
+                fi
+            fi
+            ;;
+    esac
+done
+if [ "$fix_failed" -eq 1 ]; then
+    echo "anwind-dpkg: 提示: 部分 deb 未能完成前缀重写，对应包可能安装失败" \
+         "（重试 pkg update / 安装命令即可）" >&2
+fi
+
+# ---- 真身执行 ----
+"$REAL" "$@"
+rc=$?
+
+# ---- 自愈（运行后）：本次若升级了 dpkg 包，bin/dpkg 已被覆盖 ----
+heal_bin_dpkg
+
+# ---- 安全网：按 dpkg 清单增量重写安装内容 ----
+if [ -x "$REPREFIX" ]; then
+    "$REPREFIX" --quiet
+fi
 
 exit $rc

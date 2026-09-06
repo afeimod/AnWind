@@ -39,7 +39,7 @@ object TermuxEnvironment {
     const val BOOTSTRAP_SOURCE_URL =
         "https://github.com/termux/termux-packages/releases/download/bootstrap-$BOOTSTRAP_BUILD_VERSION/bootstrap-%s.zip"
     const val BOOTSTRAP_AARCH64_SHA256 =
-        "0fe6d0159d12fcb8baf7750ce9072b9b36f742662b02ad4da145ab85873614cd"
+        "c584d723555978f62fc8010101dbc22b8cc273734e8553bbded5ceca72d255e6"
 
     // ------------------------------------------------------------------
     // 运行期路径（全部由 Context 派生，避免硬编码二次引入）

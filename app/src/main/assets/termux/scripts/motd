@@ -4,6 +4,7 @@
   pkg install <包名>   安装软件包（官方 apt 源）
   pkg search <关键字>  搜索软件包
   pkg update           更新软件源
+  anwind-mirror        体检/切换 apt 软件源（下载 403 时用）
   anwind-glibc         一键安装 glibc 运行环境
   theme win11          切换 AnWind 桌面主题
   apps / start 浏览器  联动 AnWind 应用

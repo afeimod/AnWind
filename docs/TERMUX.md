@@ -36,7 +36,7 @@
 │  │ /data/data/com.anwind/files/usr/bin/login           │    │
 │  │   → $PREFIX/bin/bash -l  （真实 login shell）         │    │
 │  │   → pkg / apt / dpkg / curl / termux-tools 全家桶    │    │
-│  │   → 官方源 packages.termux.org（apt 增量更新）        │    │
+│  │   → TUNA 镜像源（apt 增量更新，anwind-mirror 可换源） │    │
 │  └─────────────────────────────────────────────────────┘    │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -117,39 +117,53 @@ JNI 函数名与 Kotlin 声明严格对应（`TermuxBridge` 检查点）：
 `anwind_bridge.c`（AnWind 专有 FIFO 桥，非上游代码）。
 
 ---
-### 2.4 官方源软件包的前缀重打包（v2.22.2 包工具链）
+### 2.4 官方源软件包的前缀重打包（v2.22.1 包工具链，fix7 修订）
 
 bootstrap 重写只覆盖随 APK 内置的根文件系统；`pkg install` 从官方源下载的
 deb 是**按 `com.termux` 前缀构建**的——tar 成员路径本身就是绝对路径
 `./data/data/com.termux/files/usr/...`，而 dpkg 以 `instdir=/` 按成员路径
-落盘，不处理就会把文件写进别的应用的数据目录（直接安装失败）。为此
-v2.22.1 引入重打包链路，v2.22.2 将其改造为**升级免疫**架构
-（v2.22.1 把包装器脚本放在 `bin/dpkg`，而 `bin/dpkg` 恰是 dpkg 软件包
-自己的文件——`pkg update` 升级 dpkg 包时新版真身直接覆盖包装器，
-之后所有安装退化为 `com.termux` 字面路径而失败，报
-`unable to stat './data/data/com.termux' ... Permission denied`）：
+落盘，不处理就会把文件写进别的应用的数据目录（直接安装失败）。
+
+> **fix7 修复的致命缺陷**：旧版（fix6 及以前）包装器只部署在
+> `bin/dpkg` 一处。dpkg 包**自升级**时，deb 内的 `bin/dpkg` 真身 ELF
+> 会覆盖 `bin/dpkg`（包装器脚本）——此后 apt/pkg 全部绕过 deb 重打包，
+> `pkg update` / `pkg install` 全线报
+> `unable to stat './data/data/com.termux': Permission denied`。
+> 实测故障链：tar 升级成功 → dpkg 自升级成功（包装器被杀）→
+> findutils 失败 → 之后所有安装失败。fix7 以"三层布局 + apt 钉扎 +
+> 双重自愈"根治，并对 dpkg 升级本身免疫。
 
 ```
 pkg install X
   └─ apt 下载 deb（官方源，校验签名/哈希）
-       ├─ DPkg::Pre-Install-Pkgs 钩子（etc/apt/apt.conf.d/70anwind）
-       │    └─ anwind-apt-hook：trampoline 自愈 + deb 重打包（双保险①）
-       └─ Dir::Bin::dpkg → libexec/anwind/dpkg-wrap（双保险②）
-            ├─ 自愈 bin/dpkg trampoline，同步真身到 dpkg.real
-            ├─ anwind-debfix <deb>          安装前：重打包
+       └─ apt.conf.d/99anwind: Dir::Bin::dpkg → libexec/anwind/dpkg
+            （apt/pkg 永远经包装器；libexec/anwind 不属于任何包，
+              升级永不覆盖 —— 与 bin/dpkg 状态无关）
+            ├─ anwind-debfix <deb>          ① 安装前：重打包
             │    dpkg-deb -R 解包
             │    anwind-reprefix --tree     等长改写目录名/文件内容/链接目标
-            │    重建 DEBIAN/md5sums        （内容变了，原哈希失效）
-            │    dpkg-deb -b -Zgzip -z1     校验后原子回写（成员路径变为 com.anwind）
-            ├─ dpkg.real --unpack …         解包到 /data/data/com.anwind/...
-            └─ anwind-reprefix --quiet      装完后：按 dpkg info/*.list
+            │    dpkg 包自升级时：新真身同步刷新 dpkg.real
+            │    dpkg-deb -b 原子回写       （成员路径变为 com.anwind）
+            ├─ dpkg.real --unpack …         ② 解包到 /data/data/com.anwind/...
+            └─ anwind-reprefix --quiet      ③ 装完后：按 dpkg info/*.list
                                                增量重写（安全网，幂等）
 ```
 
-关键点：**拦截点全部位于 `libexec/anwind/`**——该目录不属于任何软件包，
-dpkg 包升级永远不会触碰它。`bin/dpkg` 仅是一个三行 trampoline（exec 到
-libexec 包装器），被 dpkg 包升级覆盖后由 dpkg-wrap 在下次调用时自愈
-还原，并把升级后的新真身同步回 `dpkg.real`。
+**dpkg 包装器三层布局**（`assets/termux/scripts/anwind-dpkg` v2）：
+
+| 路径 | 角色 | 升级行为 |
+|------|------|----------|
+| `libexec/anwind/dpkg` | 包装器**本体**（apt 经 Dir::Bin::dpkg 固定调用） | 无任何包拥有此路径，永不覆盖 |
+| `libexec/anwind/dpkg.real` | dpkg **真身** | anwind-debfix 在 dpkg 包自升级时自动同步新版本 |
+| `bin/dpkg` | 包装器**副本**（用户直接调用入口） | 被 dpkg 升级覆盖后由包装器自愈恢复 |
+
+**双重自愈**（包装器每次运行前后执行）：
+
+- 运行前：`bin/dpkg` 若已被覆盖为真身 ELF（上一次升级后未恢复），
+  先提升为 `dpkg.real`（仅当比现役真身新，保证版本最新），再从本体
+  原子恢复副本；
+- 运行后：本次若安装了 dpkg 包（副本刚被覆盖），再次原子恢复；
+- `anwind.sh` 在每个会话启动时兜底执行同一自愈（静默）。
 
 - **anwind-reprefix**（`cpp/termux/anwind_reprefix.c`，可执行）：等长字节
   替换引擎，`--file`（单文件）/ `--tree`（目录树）/ 清单增量（stamp 记账）
@@ -158,16 +172,18 @@ libexec 包装器），被 dpkg 包升级覆盖后由 dpkg-wrap 在下次调用�
   `rename()` 为 `com.anwind/`（同名等长，内容不改）；
 - **维护者脚本权限归一**：`dpkg-deb -b` 要求 preinst/postinst/prerm/postrm
   权限在 0555–0775，社区 deb 常有 644 脚本，debfix 重建前统一 chmod；
-- **幂等记账**：debfix 按 `文件名+大小+mtime` 记账（`var/lib/anwind/debfix/`），
-  重复安装不重复重打包；
-- **md5sums 重建**：等长替换改变了文件内容，原 md5sums 哈希全部失效，
-  debfix 在重写后重算原有条目，避免后续升级触发 conffile
-  “本地已修改”交互询问与 `dpkg --verify` 误报；
-- **覆盖面**：apt / pkg（Dir::Bin::dpkg + Pre-Install-Pkgs 双保险）、
-  手工 `dpkg -i`（trampoline）/ `grun-install` 全部被覆盖；
+- **幂等记账**：debfix 按 `文件名+大小+mtime` 记账（`var/lib/anwind/debfix/`）。
+  fix7 加固：anwind-reprefix 缺失或执行失败时**不写 stamp**（旧版会把
+  未重写的 deb 永久标记为已处理——盖章污染），下次调用自动重试；
+- **覆盖面**：apt / pkg / 直接 `dpkg -i` / `grun-install` 全部走包装器；
+  apt 的 `DPkg::Post-Invoke` 未使用（termux apt 的钩子 shell 路径不保证），
+  机制不依赖任何 apt 钩子协议。
 - **已知取舍**：① 重建后的 deb 与索引哈希不一致，apt 在后续安装时会对该
   缓存重新下载（正常现象，每次安装仅一轮）；② `dpkg --verify` 会因内容
   等长改写报 md5 差异（不影响安装与运行）。
+- **dpkg 自升级全链路（fix7 后）**：升级事务中 debfix 先把新真身同步到
+  `dpkg.real` → `dpkg.real` 解包覆盖 `bin/dpkg` → 包装器运行后自愈恢复
+  `bin/dpkg` 副本；apt 侧始终经 `libexec/anwind/dpkg`，全程无感。
 
 
 ---
@@ -342,8 +358,7 @@ app/src/main/
 ├── assets/termux/
 │   ├── bootstrap-aarch64.zip      # 官方 bootstrap（SHA-256 校验）
 │   └── scripts/                   # anwind.sh / motd / anwind-dpkg /
-│                                  # anwind-debfix / anwind-apt-hook /
-│                                  # anwind-glibc 定稿
+│                                  # anwind-debfix / anwind-glibc 定稿
 └── res/
     ├── drawable/text_select_handle_*.xml  # 文本选择手柄（上游）
     └── values/strings.xml         # +3 条终端字符串
