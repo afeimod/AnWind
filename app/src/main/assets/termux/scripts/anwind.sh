@@ -39,42 +39,48 @@ _anwind_heal_dpkg() {
 _anwind_heal_dpkg
 unset -f _anwind_heal_dpkg
 
-# ---- dpkg path-exclude 兜底（fix8，静默幂等）----
+# ---- dpkg 兜底配置 + Pre-Install-Pkgs 钩子（fix8.5，无条件重写）----
 # 官方 deb 中漏经 anwind-debfix 重写的 /data/data/com.termux 成员
 # （如裸目录条目 ./data/data/com.termux）会让 dpkg 报
 # "unable to stat ... Permission denied"。path-exclude 让 dpkg 直接
-# 跳过这些成员；force-confold 消除配置文件升级交互提示。
+# 跳过这些成员；force-confold 消除配置文件升级交互提示；
+# Pre-Install-Pkgs 钩子把全部 deb 在 dpkg 前交给 anwind-debfix 重写
+# （绕过包装器的独立第二路径）。
 # 三路写入互为兜底：安装器(Kotlin)/本函数(会话启动)/anwind-dpkg(每次调用)。
 _anwind_ensure_dpkg_fix() {
     _cfg="$PREFIX/etc/dpkg/dpkg.cfg.d/99-anwind-fix"
     _acfg="$PREFIX/etc/apt/apt.conf.d/99-anwind-fix"
-    if [ ! -f "$_cfg" ]; then
-        mkdir -p "${_cfg%/*}" 2>/dev/null
-        printf '%s\n' \
-            '# AnWind (com.anwind) dpkg 兜底修复（fix8）' \
-            '# 跳过官方 deb 中漏经重写的 /data/data/com.termux 成员' \
-            '# （如裸目录条目），否则 dpkg 落盘时报 Permission denied。' \
-            'path-exclude=/data/data/com.termux' \
-            'path-exclude=/data/data/com.termux/*' \
-            'force-confold' \
-            > "$_cfg" 2>/dev/null
+    mkdir -p "${_cfg%/*}" "${_acfg%/*}" 2>/dev/null
+    printf '%s\n' \
+        '# AnWind (com.anwind) dpkg 兜底修复（fix8.5）' \
+        '# 跳过官方 deb 中漏经重写的 /data/data/com.termux 成员' \
+        '# （如裸目录条目），否则 dpkg 落盘时报 Permission denied。' \
+        'path-exclude=/data/data/com.termux' \
+        'path-exclude=/data/data/com.termux/*' \
+        'force-confold' \
+        > "$_cfg" 2>/dev/null
+    printf '%s\n' \
+        '// AnWind (com.anwind) dpkg 兜底修复（fix8.5）' \
+        '// path-exclude/force-confold 双保险；Pre-Install-Pkgs 把全部' \
+        '// deb 在 dpkg 前交给 anwind-debfix 重写（独立第二路径）。' \
+        'DPkg::Options:: "--path-exclude=/data/data/com.termux";' \
+        'DPkg::Options:: "--path-exclude=/data/data/com.termux/*";' \
+        'DPkg::Options:: "--force-confold";' \
+        'DPkg::Pre-Install-Pkgs:: "/data/data/com.anwind/files/usr/bin/anwind-debfix";' \
+        > "$_acfg" 2>/dev/null
+    # dpkg 数据库全量重写（fix8.5，一次性）：清除历史残留的
+    # com.termux 路径（info/*.list、status），根除 unpack-over
+    # 旧清单时对旧路径的 stat 失败。
+    _dbstamp="$PREFIX/var/lib/anwind/dbfull.stamp"
+    if [ -x "$PREFIX/bin/anwind-reprefix" ] && [ ! -f "$_dbstamp" ]; then
+        "$PREFIX/bin/anwind-reprefix" --full --quiet >/dev/null 2>&1
+        : > "$_dbstamp" 2>/dev/null
     fi
-    if [ ! -f "$_acfg" ]; then
-        mkdir -p "${_acfg%/*}" 2>/dev/null
-        printf '%s\n' \
-            '// AnWind (com.anwind) dpkg 兜底修复（fix8）——双保险' \
-            '// 即使 etc/dpkg/dpkg.cfg.d/99-anwind-fix 丢失，apt 调起的' \
-            '// dpkg 也带同样的 path-exclude / force-confold。' \
-            'DPkg::Options:: "--path-exclude=/data/data/com.termux";' \
-            'DPkg::Options:: "--path-exclude=/data/data/com.termux/*";' \
-            'DPkg::Options:: "--force-confold";' \
-            > "$_acfg" 2>/dev/null
-    fi
-    # 部署指纹（fix8.4）：每次会话打印一行。看到本行=新版 APK 已部署、
-    # 修复链路（deb 重打包/前缀重写/path-exclude 兜底）全部就位；
+    # 部署指纹（fix8.5）：每次会话打印一行。看到本行=新版 APK 已部署、
+    # 修复链路（deb 重打包/前缀重写/兜底配置/apt 钩子）全部就位；
     # 看不到本行说明仍在运行旧版 APK——源码修复必须构建安装后才会生效。
     if [ -x "$PREFIX/bin/anwind-reprefix" ]; then
-        echo "anwind: pkg 修复链路已激活 (fix8.4, rev 9)"
+        echo "anwind: pkg 修复链路已激活 (fix8.5, rev 10)"
     else
         echo "anwind: 警告: anwind-reprefix 缺失，pkg 安装将走目录改名降级路径" >&2
     fi

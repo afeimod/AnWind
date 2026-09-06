@@ -268,7 +268,7 @@ private fun MediaPlayerContent(scope: WindowContentScope) {
     // ===== 打开文件（v2.14.10：改用应用内文件资源管理器，不再拉起系统文件选择器） =====
     // 「打开文件」拉起文件资源管理器媒体选择模式（初始直达 Music）；
     // 用户点选音频/视频后经 FilePickBus 回传本窗口直接播放；
-    // 本窗口已关闭/最小化时由资源管理器兑底开新窗口（launchArgs.path）。
+    // 本窗口已关闭/最小化时由资源管理器兜底开新窗口（launchArgs.path）。
     fun openMediaPicker() {
         wm.open(
             appId = "file_explorer",

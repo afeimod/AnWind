@@ -10,6 +10,18 @@
 #       10 字节）→ dpkg-deb -b 原子回写。等长替换不改变任何文件
 #       大小，md5sums 中的哈希仍与改前内容一致。
 #
+# v6.1（fix8.5）可观测层 + 独立第二路径：
+#   rev 9 上机复测：v6 摘要行照常打印（libcrypt/pcre），但 13 包依旧
+#   零输出失败——其中 command-not-found_3.5.0-10 为全新版本（不可能
+#   有记账），而 v6 对全新官方 deb 数学上必然打印摘要行。结论：要么
+#   终端显示丢行，要么调用链存在未知环节。对策：
+#   1) 文件日志 pkgfix.log：debfix 每个决策（含“记账命中→跳过”）
+#      全部落盘——终端无关的地面真相，cat 即可定位；
+#   2) apt 级 Pre-Install-Pkgs 钩子（由包装器/安装器写入 apt.conf）：
+#      apt 在调 dpkg 前把全部 deb 路径喂给 anwind-debfix（stdin 模式）
+#      ——绕过包装器的独立重写路径；
+#   3) 包装器自检 + 缓存预扫描（见 anwind-dpkg v3.1）。
+#
 # v6（fix8.4）检测层根治——消灭唯一静默失败分支：
 #   设备实测（fix8.3/rev 8 上机日志）：pcre 走完整重写路径成功
 #   (count=7)，同批 13 包全部静默失败且零警告。逐分支排除后唯一
@@ -42,9 +54,9 @@
 # ============================================================
 set -u
 
-# 版本指纹（v6，设备端一键核验部署状态）：anwind-debfix version
+# 版本指纹（v6.1，设备端一键核验部署状态）：anwind-debfix version
 if [ "${1:-}" = "version" ]; then
-    echo "anwind-debfix v6 (fix8.4, EXTRAS_REVISION 9)"
+    echo "anwind-debfix v6.1 (fix8.5, EXTRAS_REVISION 10)"
     exit 0
 fi
 
@@ -52,7 +64,23 @@ PREFIX=/data/data/com.anwind/files/usr
 REPREFIX=$PREFIX/bin/anwind-reprefix
 STAMP_DIR=$PREFIX/var/lib/anwind/debfix
 REAL_DPKG=$PREFIX/libexec/anwind/dpkg.real
+LOGFILE=$PREFIX/var/lib/anwind/pkgfix.log
 mkdir -p "$STAMP_DIR" 2>/dev/null
+
+# ---- 文件日志（fix8.5）：终端无关的地面真相 ----
+# 所有决策（含静默跳过）都落盘；超 256KB 自动截尾。日志失败绝不影响主流程。
+log() {
+    printf '%s debfix: %s\n' "$(date '+%m-%d %H:%M:%S' 2>/dev/null || echo '?')" "$*" >> "$LOGFILE" 2>/dev/null || :
+}
+log_trunc() {
+    [ -f "$LOGFILE" ] || return 0
+    _sz=$(stat -c %s "$LOGFILE" 2>/dev/null || echo 0)
+    [ "$_sz" -gt 262144 ] || return 0
+    tail -n 300 "$LOGFILE" > "$LOGFILE.t" 2>/dev/null \
+        && mv -f "$LOGFILE.t" "$LOGFILE" 2>/dev/null || :
+    return 0
+}
+log_trunc
 
 is_elf() { # $1=文件 — 输出 0/1
     [ -f "$1" ] || return 1
@@ -111,14 +139,19 @@ process_one() {
         scan_deb "$deb"
         scan_rc=$?
         if [ "$scan_rc" -eq 0 ]; then
+            log "$base: 记账命中，字节扫描=净 → 跳过（终端不打印，日志必记）"
             return 0
         fi
         if [ "$scan_rc" -eq 1 ]; then
             echo "anwind-debfix: 警告: $base 已有记账但仍含 com.termux 字节（历史污染章），强制重跑" >&2
+            log "$base: 记账命中但扫描=脏（历史污染章）→ 撕章强制重写"
         else
             echo "anwind-debfix: 提示: $base 无法字节级核验（dpkg-deb 异常），按未处理处理，走完整重写" >&2
+            log "$base: 记账命中但扫描器异常 → 按未处理完整重写"
         fi
         rm -f "$STAMP_DIR/$base."* 2>/dev/null
+    else
+        log "$base: 无记账 → 完整重写"
     fi
 
     # 前置校验：重写引擎缺失时走降级（目录改名保底），绝不静默盖章
@@ -242,7 +275,8 @@ process_one() {
     if [ "$size2.$mtime2" != "$size.$mtime" ]; then
         : > "$STAMP_DIR/$base.$size2.$mtime2"
     fi
-    echo "anwind-debfix v6: $base 已重写为 com.anwind 前缀 (count=$count)" >&2
+    echo "anwind-debfix v6.1: $base 已重写为 com.anwind 前缀 (count=$count)" >&2
+    log "$base: 重写完成 count=$count repaired=$repaired"
     echo "ANWIND_REPAIRED=$repaired"
     rm -rf "$work"
     return 0

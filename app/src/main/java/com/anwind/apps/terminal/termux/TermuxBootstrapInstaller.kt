@@ -95,8 +95,20 @@ object TermuxBootstrapInstaller {
      * 字节，"无法验证"一律按脏处理），成品验收增加树路径残余硬门；
      * 包装器在 dpkg 失败且确有修复发生时自动重试一次，同一命令内
      * 自愈。迁移照例清 debfix 记账与 apt archives 缓存。
+     * rev 10：可观测层 + 独立第二路径（fix8.5）。rev 9 上机复测：v6 摘要
+     * 行照常打印（libcrypt/pcre），但同批 13 包依旧零输出失败（其中
+     * command-not-found_3.5.0-10 为全新版本，不可能有记账——v6 对全新
+     * 官方 deb 必然打印摘要行）。对策：① 文件日志 pkgfix.log：包装器
+     * 每次调用的参数全量与 debfix 每个决策（含静默跳过）全部落盘，
+     * cat 即可定位（终端丢行不再影响诊断）；② Pre-Install-Pkgs 钩子
+     * （本函数随 apt.conf 一并写入）：apt 调 dpkg 前把全部 deb 路径经
+     * stdin 喂给 anwind-debfix，绕过包装器循环；③ 包装器自检：不信任
+     * 记账，字节级复查每个 deb 参数，残留即可见地再修；④ apt 缓存
+     * 预扫描：包装器每次调用先把缓存中的官方 deb 重写为净品；
+     * ⑤ 会话启动一次性 anwind-reprefix --full 全量重写 dpkg 数据库
+     * （info/*.list、status 历史残留 com.termux 路径）。
      */
-    private const val EXTRAS_REVISION = 9
+    private const val EXTRAS_REVISION = 10
 
     /** 安装状态（Compose 界面订阅渲染）。 */
     sealed class InstallState {
@@ -560,7 +572,7 @@ object TermuxBootstrapInstaller {
         try {
             dpkgCfg.parentFile?.mkdirs()
             dpkgCfg.writeText(buildString {
-                appendLine("# AnWind (com.anwind) dpkg 兜底修复（fix8）")
+                appendLine("# AnWind (com.anwind) dpkg 兜底修复（fix8.5）")
                 appendLine("# 跳过官方 deb 中漏经重写的 /data/data/com.termux 成员")
                 appendLine("# （如裸目录条目），否则 dpkg 落盘时报 Permission denied。")
                 appendLine("path-exclude=/data/data/com.termux")
@@ -569,12 +581,14 @@ object TermuxBootstrapInstaller {
             })
             aptCfg.parentFile?.mkdirs()
             aptCfg.writeText(buildString {
-                appendLine("// AnWind (com.anwind) dpkg 兜底修复（fix8）——双保险")
+                appendLine("// AnWind (com.anwind) dpkg 兜底修复（fix8.5）——双保险")
                 appendLine("// 即使 etc/dpkg/dpkg.cfg.d/99-anwind-fix 丢失，apt 调起的")
                 appendLine("// dpkg 也带同样的 path-exclude / force-confold。")
                 appendLine("DPkg::Options:: \"--path-exclude=/data/data/com.termux\";")
                 appendLine("DPkg::Options:: \"--path-exclude=/data/data/com.termux/*\";")
                 appendLine("DPkg::Options:: \"--force-confold\";")
+                // fix8.5：apt 级独立第二路径——dpkg 前把全部 deb 交给 debfix 重写
+                appendLine("DPkg::Pre-Install-Pkgs:: \"/data/data/com.anwind/files/usr/bin/anwind-debfix\";")
             })
         } catch (e: Exception) {
             android.util.Log.w(TAG, "写入 dpkg path-exclude 配置失败: ${e.message}")

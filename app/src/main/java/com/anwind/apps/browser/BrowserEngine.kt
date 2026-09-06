@@ -70,7 +70,7 @@ import javax.net.ssl.X509TrustManager
  * 4. PC 页面 viewport 自适配（无 viewport meta 的页面按 1200px 基准缩放）。
  * 5. 禁用 WebView 算法暗色（MIUI 强制深色不介入网页渲染）。
  *
- * v2.14.3 灰屏根因修复（弹窗时序 + 渲染层 + 渲染进程兑底，录屏/日志定位）：
+ * v2.14.3 灰屏根因修复（弹窗时序 + 渲染层 + 渲染进程兜底，录屏/日志定位）：
  * 用户录屏：4399 首页正常，点击游戏（window.open 弹窗）瞬间整页浅灰，
  * 有声音无画面、无加载圈，持续 8s+ 无任何重绘。日志：弹窗 WebView
  * 以 0,0-0,0 创建（脱离视图树加载），被销毁时 1080x868 且 invalidated+dirty
@@ -88,7 +88,7 @@ import javax.net.ssl.X509TrustManager
  *    根视图上能活，但 AnWind 的 WebView 嵌在 Compose AndroidView 多窗口环境，
  *    v2.8 已用录屏证实强制硬件层导致"页面加载完成但永不绘制"。恢复默认
  *    LAYER_TYPE_NONE + 窗口级硬件加速（Manifest hardwareAccelerated=true）。
- * 3. onRenderProcessGone 兑底（WebView 自身问题）：不接管会被系统杀进程。
+ * 3. onRenderProcessGone 兜底（WebView 自身问题）：不接管会被系统杀进程。
  *    渲染进程崩溃/OOM 后丢弃死亡 WebView，标签重置未加载态并 renderEpoch+1
  *    触发 key() 重组重建新 WebView 自动重载页面。
  *
@@ -521,7 +521,7 @@ object BrowserEngine {
                 view?.evaluateJavascript(View3dController.LOOK_SETUP_SCRIPT, null)
             }
 
-            // v2.14.5 曾在此注入 viewport 缩放脚本（SPA 兑底），v2.14.6 撤销，
+            // v2.14.5 曾在此注入 viewport 缩放脚本（SPA 兜底），v2.14.6 撤销，
             // v2.14.9 缩小域改为捏合期间动态改写 viewport meta（理由同
             // onPageCommitVisible 注释）
 
@@ -544,7 +544,7 @@ object BrowserEngine {
         }
 
         /**
-         * v2.14.3：渲染进程崩溃/OOM 兑底（WebView 自身的问题）。
+         * v2.14.3：渲染进程崩溃/OOM 兜底（WebView 自身的问题）。
          * 不 override 该回调时，Chromium 会直接把【整个应用进程】杀掉。
          * 处理：丢弃死亡 WebView，标签重置为未加载态，renderEpoch+1 触发
          * key() 重组 → factory 重建新 WebView → 自动重载崩溃前页面。
@@ -955,7 +955,7 @@ object BrowserEngine {
             private const val RUFFLE_CDN_JSDELIVR = "https://cdn.jsdelivr.net/npm/@ruffle-rs/ruffle@0.5.0/"
 
             /**
-             * WebGL 像素管线守卫（v2.14.4，HTML5 游戏灰屏兑底）：
+             * WebGL 像素管线守卫（v2.14.4，HTML5 游戏灰屏兜底）：
              * 嵌入式合成环境下存在"上下文创建成功、绘制调用不报错、但像素
              * 读回全零"的坏 GPU 路径 —— 游戏照跑（有声音）画面永远空白。
              * document-start 同步 clear→readPixels 探测；损坏时让
@@ -1237,7 +1237,7 @@ object BrowserEngine {
 
             /**
              * Ruffle 引擎加载入口（gamehtml RuffleInjector fullInjection 演化）：
-             * 链式加载器 + 立即触发。4399 域名页 onPageStarted 直载兑底用。
+             * 链式加载器 + 立即触发。4399 域名页 onPageStarted 直载兜底用。
              */
             private const val RUFFLE_LOADER_SCRIPT = RUFFLE_CHAIN_SCRIPT + """
                 (function(){

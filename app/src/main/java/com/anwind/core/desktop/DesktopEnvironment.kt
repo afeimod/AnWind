@@ -473,7 +473,7 @@ fun DesktopEnvironment(
                 timeFormat24h = timeFormat24h,
                 pinHash = lockPinHash.ifBlank { null },
                 onClearPin = {
-                    // 忘记密码兑底：应用级作用域写库（窗口/组合销毁不影响）
+                    // 忘记密码兜底：应用级作用域写库（窗口/组合销毁不影响）
                     composeScope.launch { app.settingsStore.setLockPinHash("") }
                 },
                 onUnlock = { LockController.unlock() }

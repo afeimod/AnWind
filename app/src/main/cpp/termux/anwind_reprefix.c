@@ -390,7 +390,7 @@ int main(int argc, char **argv)
 
     /* 版本指纹（v5）：设备端一键核验部署状态 */
     if (show_version) {
-        printf("anwind-reprefix v5.1 (fix8.4, EXTRAS_REVISION 9)\n");
+        printf("anwind-reprefix v5.2 (fix8.5, EXTRAS_REVISION 10)\n");
         return 0;
     }
 

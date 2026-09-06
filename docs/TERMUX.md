@@ -117,7 +117,7 @@ JNI 函数名与 Kotlin 声明严格对应（`TermuxBridge` 检查点）：
 `anwind_bridge.c`（AnWind 专有 FIFO 桥，非上游代码）。
 
 ---
-### 2.4 官方源软件包的前缀重打包（v2.22.1 包工具链，fix8.4 修订）
+### 2.4 官方源软件包的前缀重打包（v2.22.1 包工具链，fix8.5 修订）
 
 bootstrap 重写只覆盖随 APK 内置的根文件系统；`pkg install` 从官方源下载的
 deb 是**按 `com.termux` 前缀构建**的——tar 成员路径本身就是绝对路径
@@ -152,16 +152,16 @@ deb 是**按 `com.termux` 前缀构建**的——tar 成员路径本身就是绝
 >
 > ⚠ 这两份配置含 `com.termux` 字面量，【不能】打进 bootstrap zip——
 > 解压时全量重写会把 `com.termux` 改成 `com.anwind`，配置失效。
-> 只能运行时写入，三路写入互为兑底：安装器 `writeDpkgPathExclude()`
+> 只能运行时写入，三路写入互为兜底：安装器 `writeDpkgPathExclude()`
 > （全新安装 + 存量迁移，打开 App 即自动迁移）、
 > `profile.d/anwind.sh`（每次会话启动）、`anwind-dpkg` 包装器
 > （每次 dpkg 调用前检查，缺失才写）。
 >
-> **fix8.1 修正（实测推翻 path-exclude 兑底假设）**：在 Debian
+> **fix8.1 修正（实测推翻 path-exclude 兜底假设）**：在 Debian
 > dpkg 1.22 上实测复现证明，dpkg 的 filter（path-exclude）检查发生在
 > 成员 lstat **之后**——对 "unable to stat ... Permission denied"
 > 的 EACCES 场景，无论配置文件还是命令行参数都**无效**（被排除的
-> 成员仍会先 stat 并炸出）。因此兑底主力改为 **anwind-debfix v3**：
+> 成员仍会先 stat 并炸出）。因此兜底主力改为 **anwind-debfix v3**：
 >
 > - **全部静默失败路径 fail-loud + 不盖章可重试**：旧版在
 >   `dpkg-deb -b` 重建失败时静默继续并照常盖章（记账污染），该 deb
@@ -228,25 +228,73 @@ deb 是**按 `com.termux` 前缀构建**的——tar 成员路径本身就是绝
 >   15 包成品成员路径零残留；历史章+mtime 钉死+扫描器异常三重
 >   恶劣叠加下 v6 强制重跑成功（v5 在此场景永久静默跳过）。
 
+> **fix8.5（rev 10，可观测层 + 独立第二路径）**：rev 9 上机复测：v6
+> 摘要行照常打印（libcrypt/pcre），但同批 13 包依旧零输出失败——
+> 其中 command-not-found_3.5.0-10 为全新版本（不可能有记账），而 v6
+> 对全新官方 deb 数学上必然打印摘要行。结论：要么终端显示丢行，
+> 要么调用链存在未知环节。对策（四层互相独立）：
+>
+> - **文件日志 pkgfix.log**：包装器每次调用的参数全量与 debfix 每个
+>   决策（含"记账命中→跳过"这类终端静默路径）全部落盘到
+>   `var/lib/anwind/pkgfix.log`（超 256KB 自动截尾）——终端丢行
+>   不再影响诊断，`cat` 即可定位；
+> - **Pre-Install-Pkgs 钩子**：写入 apt.conf（安装器/会话/包装器三路
+>   无条件重写），apt 调 dpkg 前把全部 deb 路径经 stdin 喂给
+>   anwind-debfix——绕过包装器循环的独立重写路径；
+> - **包装器自检**：不信任 debfix 记账与返回值，字节级复查每个 deb
+>   参数，残留即可见地再修一次；另有调用横幅
+>   `anwind-dpkg v3.1 (fix8.5): dpkg 调用 (N 参数)` 每次必打；
+> - **apt 缓存预扫描 + 数据库全量重写**：包装器每次调用先把缓存
+>   中的官方 deb 重写为净品；会话启动一次性 `anwind-reprefix --full`
+>   清除 dpkg 数据库（info/*.list、status）中历史残留的 com.termux
+>   路径。
+>
+> **fix8.5（rev 10，可观测层 + 独立第二路径）**：rev 9 上机复测：v6
+> 摘要行照常打印（libcrypt/pcre），但同批 13 包依旧零输出失败——
+> 其中 command-not-found_3.5.0-10 为全新版本（不可能有记账），而 v6
+> 对全新官方 deb 数学上必然打印摘要行。结论：要么终端显示丢行，
+> 要么调用链存在未知环节。对策（四层互相独立）：
+>
+> - **文件日志 pkgfix.log**：包装器每次调用的参数全量与 debfix 每个
+>   决策（含"记账命中→跳过"这类终端静默路径）全部落盘到
+>   `var/lib/anwind/pkgfix.log`（超 256KB 自动截尾）——终端丢行
+>   不再影响诊断，`cat` 即可定位；
+> - **Pre-Install-Pkgs 钩子**：写入 apt.conf（安装器/会话/包装器三路
+>   无条件重写），apt 调 dpkg 前把全部 deb 路径经 stdin 喂给
+>   anwind-debfix——绕过包装器循环的独立重写路径；
+> - **包装器自检**：不信任 debfix 记账与返回值，字节级复查每个 deb
+>   参数，残留即可见地再修一次；另有调用横幅
+>   `anwind-dpkg v3.1 (fix8.5): dpkg 调用 (N 参数)` 每次必打；
+> - **apt 缓存预扫描 + 数据库全量重写**：包装器每次调用先把缓存
+>   中的官方 deb 重写为净品；会话启动一次性 `anwind-reprefix --full`
+>   清除 dpkg 数据库（info/*.list、status）中历史残留的 com.termux
+>   路径。
+
 ```
 pkg install X
   └─ apt 下载 deb（官方源，校验签名/哈希）
+     └─ DPkg::Pre-Install-Pkgs（fix8.5）：全部 deb 路径经 stdin → anwind-debfix
+         （独立第二路径，绕过包装器循环）
        └─ apt.conf.d/99anwind: Dir::Bin::dpkg → libexec/anwind/dpkg
             （apt/pkg 永远经包装器；libexec/anwind 不属于任何包，
               升级永不覆盖 —— 与 bin/dpkg 状态无关）
-            ├─ anwind-debfix <deb>          ① 安装前：重打包（v6：字节级
-            │    dpkg-deb -R 解包             快检+回验硬门；无法验证
-            │    anwind-reprefix --tree       一律按脏处理）
+            ├─ 缓存预扫描（fix8.5）＋ anwind-debfix <deb>  ① 安装前：重打包
+            │    dpkg-deb -R 解包             （v6.1：字节级快检+回验硬门；
+            │    anwind-reprefix --tree        无法验证一律按脏处理）
             │    （等长改写目录名/文件内容/链接目标）
-            │    dpkg 包自升级时：新真身同步刷新 dpkg.real
-            │    dpkg-deb -b 原子回写       （成员路径变为 com.anwind）
+            │    包装器自检（fix8.5）：字节级复查，残留即可见地再修
+            │    dpkg-deb -b 原子回写       （成员路径变为 com.anwind；
+            │                                 dpkg 包自升级时同步 dpkg.real）
             ├─ dpkg.real --unpack …         ② 解包到 /data/data/com.anwind/...
-            │    dpkg.cfg.d/99-anwind-fix  path-exclude 兑底：跳过漏网的
+            │    dpkg.cfg.d/99-anwind-fix  path-exclude 兜底：跳过漏网的
             │    │                          com.termux 成员（fix8）
             │    └─ 失败且有 deb 参数 → debfix 再扫一轮，确有修复自动
-            │                               重试一次（fix8.4 兕底）
+            │                               重试一次（fix8.4 兜底）
             └─ anwind-reprefix --quiet      ③ 装完后：按 dpkg info/*.list
                                                增量重写（安全网，幂等）
+
+  全程 → var/lib/anwind/pkgfix.log（fix8.5：每次调用参数全量 +
+          每个 deb 的决策/结果；终端丢行时 cat 本文件即得地面真相）
 ```
 
 **dpkg 包装器三层布局**（`assets/termux/scripts/anwind-dpkg` v3）：

@@ -301,7 +301,7 @@ private fun MusicContent(scope: WindowContentScope) {
     }
 
     // ===== 歌词获取（当前歌曲变化时自动拉取） =====
-    // v2.21.4：首发未命中 → 自动深度下载兑底（扩展关键词 + 全词源宽松匹配），
+    // v2.21.4：首发未命中 → 自动深度下载兜底（扩展关键词 + 全词源宽松匹配），
     // 命中即写缓存并提示「已自动下载歌词」；lyricRefreshTick 变化时强制重取（手动/搜索页下载歌词后）
     var lyricDoc by remember { mutableStateOf<LyricsDoc?>(null) }
     var lyricLoading by remember { mutableStateOf(false) }
