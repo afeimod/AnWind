@@ -132,7 +132,7 @@ object TermuxBootstrapInstaller {
      * 为内置客户端（官方包会覆盖脚本且其类名经重写后不存在），
      * anwind-x11 启动前也按标记自愈。
      */
-    private const val EXTRAS_REVISION = 15
+    private const val EXTRAS_REVISION = 16
 
     /** 安装状态（Compose 界面订阅渲染）。 */
     sealed class InstallState {
@@ -546,7 +546,7 @@ object TermuxBootstrapInstaller {
     }
 
     /**
-     * 部署内置 X11 桌面的终端侧组件（rev 15，全新安装与存量迁移共用）：
+     * 部署内置 X11 桌面的终端侧组件（rev 16，全新安装与存量迁移共用）：
      * - bin/termux-x11：X server 客户端（app_process 拉起宿主 APK 内的
      *   com.termux.x11.CmdEntryPoint，即 lorie 合成器 + Xwayland）；
      * - bin/anwind-x11：一键启动（服务 + 自动尝试 xfce4 等桌面会话）；
@@ -588,6 +588,14 @@ object TermuxBootstrapInstaller {
         copyAssetScript(
             context, "termux/scripts/anwind-x11-stop",
             File(masterDir, "anwind-x11-stop"), executable = true
+        )
+        // XKB 键盘数据（X server 初始化必需，缺失时 native start() 直接
+        // 退出——"$XKB_CONFIG_ROOT is not set"）：随 APK 分发（源自
+        // xkeyboard-config 2.48），客户端首次启动自动解压为 xkb/ 并导出
+        // XKB_CONFIG_ROOT，使 X 服务零 pkg 依赖。
+        copyAssetScript(
+            context, "termux/x11-xkb.tar.gz",
+            File(masterDir, "xkb.tar.gz"), executable = false
         )
         refreshX11Env(context)
     }

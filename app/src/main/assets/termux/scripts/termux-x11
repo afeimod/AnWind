@@ -1,5 +1,5 @@
 #!/data/data/com.anwind/files/usr/bin/sh
-# ANWIND_X11_CLIENT rev14 —— AnWind 内置客户端识别标记（勿删，
+# ANWIND_X11_CLIENT rev16 —— AnWind 内置客户端识别标记（勿删，
 # anwind-x11 靠本行检测文件是否被 termux-x11-nightly 官方包覆盖）
 # ============================================================
 # AnWind 内置 X11 客户端（v2.22.2）
@@ -13,6 +13,8 @@
 # - X11 socket 落在 AnWind 自身的 tmp 目录；
 # - 进程 nice-name 为 anwindx11，独立于官方应用的 com.termux.x11。
 # ============================================================
+
+PREFIX=/data/data/com.anwind/files/usr
 
 # 保留调用方库环境（X server 启动后会原样传给会话进程）
 [ -z "${LD_LIBRARY_PATH+x}" ] || export XSTARTUP_LD_LIBRARY_PATH="$LD_LIBRARY_PATH"
@@ -52,6 +54,21 @@ fi
 
 # app_process 不需要 Termux 的库搜索路径
 unset LD_LIBRARY_PATH LD_PRELOAD
+
+# XKB 键盘数据：X server 初始化必需，缺失时 start() 直接退出（
+# "$XKB_CONFIG_ROOT is not set" → System.exit(1)，用户实测）。
+# 数据随 APK 分发：etc/anwind/x11/xkb.tar.gz 首次启动自动解压；
+# 或由 pkg 的 xkeyboard-config 包提供 share/X11/xkb（二选一）。
+XKB_DIR="$PREFIX/etc/anwind/x11/xkb"
+if [ ! -d "$XKB_DIR/rules" ] && [ -r "$PREFIX/etc/anwind/x11/xkb.tar.gz" ]; then
+    mkdir -p "$XKB_DIR" 2>/dev/null
+    tar -xzf "$PREFIX/etc/anwind/x11/xkb.tar.gz" -C "$XKB_DIR" 2>/dev/null
+fi
+if [ -d "$XKB_DIR/rules" ]; then
+    export XKB_CONFIG_ROOT="$XKB_DIR"
+elif [ -d "$PREFIX/share/X11/xkb/rules" ]; then
+    export XKB_CONFIG_ROOT="$PREFIX/share/X11/xkb"
+fi
 
 # 服务已在运行则不重复拉起（nice-name 精确匹配 anwindx11；
 # ps 探测逐级兜底 busybox/toybox，避免误判已在运行而重复拉起）

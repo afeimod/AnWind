@@ -1,6 +1,6 @@
 #!/data/data/com.anwind/files/usr/bin/sh
 # ============================================================
-# AnWind X11 桌面一键启动（v2.22.2 rev15）
+# AnWind X11 桌面一键启动（v2.22.2 rev16）
 # ============================================================
 # 用法：
 #   anwind-x11              启动 X11 服务（显示号默认 :1）并自动尝试
@@ -53,13 +53,13 @@ if [ "${1:-}" = "doctor" ] || [ "${1:-}" = "--doctor" ]; then
     _ok()  { echo "  [OK] $1"; }
     _bad() { echo "  [!!] $1"; _fails=$((_fails + 1)); }
     _none() { echo "  [--] $1"; }
-    echo "==== AnWind X11 体检（rev15）===="
+    echo "==== AnWind X11 体检（rev16）===="
     echo
     echo "[1/4] X 服务组件（内置于 AnWind APK，无需 pkg 安装）"
     if [ -x "$PREFIX/bin/termux-x11" ] && grep -q 'ANWIND_X11_CLIENT' "$PREFIX/bin/termux-x11" 2>/dev/null; then
         _ok "bin/termux-x11 内置客户端就绪"
     else
-        _bad "bin/termux-x11 缺失/被覆盖/不可执行 → 打开一次 AnWind 主界面触发组件迁移（rev15），或确认 APK 为 fix9.4 及以上"
+        _bad "bin/termux-x11 缺失/被覆盖/不可执行 → 打开一次 AnWind 主界面触发组件迁移（rev16），或确认 APK 为 fix9.5 及以上"
     fi
     if [ -r "$PREFIX/etc/anwind/x11/termux-x11" ]; then
         _ok "主副本 etc/anwind/x11/termux-x11 就绪（防覆盖自愈源）"
@@ -87,6 +87,11 @@ if [ "${1:-}" = "doctor" ] || [ "${1:-}" = "--doctor" ]; then
         _ok "/system/bin/app_process 就绪"
     else
         _bad "/system/bin/app_process 缺失（非标准 Android 系统）"
+    fi
+    if [ -d "$PREFIX/etc/anwind/x11/xkb/rules" ] || [ -r "$PREFIX/etc/anwind/x11/xkb.tar.gz" ] || [ -d "$PREFIX/share/X11/xkb/rules" ]; then
+        _ok "XKB 键盘数据就绪（X 服务零 pkg 依赖）"
+    else
+        _bad "XKB 键盘数据缺失 → 打开一次 AnWind 主界面重新部署（rev16），或 pkg install xkeyboard-config"
     fi
     if [ -w "$XDG_RUNTIME_DIR" ]; then
         _ok "XDG_RUNTIME_DIR 可写（$XDG_RUNTIME_DIR）"
@@ -138,7 +143,7 @@ if [ $# -gt 0 ]; then
 fi
 
 # ---- 启动日志：从第一行写起，任何失败都能 cat 回传定位 ----
-echo "==== anwind-x11 启动 $(date '+%Y-%m-%d %H:%M:%S') rev15 显示号 $DISP ====" >"$X11_LOG"
+echo "==== anwind-x11 启动 $(date '+%Y-%m-%d %H:%M:%S') rev16 显示号 $DISP ====" >"$X11_LOG"
 note() { echo "$1"; echo "[anwind-x11] $1" >>"$X11_LOG"; }
 die() {
     echo "anwind-x11: $1" >&2
@@ -161,7 +166,7 @@ fi
 
 # ---- 前置检查：客户端本体（缺它必然空转，日志会是一片空白） ----
 if [ ! -x "$X11_CLIENT" ] || [ ! -s "$X11_CLIENT" ]; then
-    die "内置客户端 $X11_CLIENT 缺失/不可执行/为空 —— 请先打开一次 AnWind 主界面（触发组件迁移）再试；若仍失败请确认 APK 为 fix9.4 及以上版本"
+    die "内置客户端 $X11_CLIENT 缺失/不可执行/为空 —— 请先打开一次 AnWind 主界面（触发组件迁移）再试；若仍失败请确认 APK 为 fix9.5 及以上版本"
 fi
 
 # ---- 前置检查：libXlorie.so（X 服务引擎，缺失则启动必然失败） ----
@@ -173,6 +178,13 @@ if [ -r "$PREFIX/etc/anwind-x11.env" ]; then
     fi
 else
     note "警告：etc/anwind-x11.env 缺失，X 服务可能无法定位宿主组件——打开一次 AnWind 主界面自动生成"
+fi
+
+# ---- 前置检查：XKB 键盘数据（X server 初始化必需） ----
+if [ ! -d "$PREFIX/etc/anwind/x11/xkb/rules" ] \
+    && [ ! -r "$PREFIX/etc/anwind/x11/xkb.tar.gz" ] \
+    && [ ! -d "$PREFIX/share/X11/xkb/rules" ]; then
+    die "缺少 XKB 键盘数据 —— 打开一次 AnWind 主界面重新部署组件（rev16），或执行 pkg install xkeyboard-config"
 fi
 
 termux-x11 "$DISP" >>"$X11_LOG" 2>&1 &
