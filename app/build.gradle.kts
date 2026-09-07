@@ -336,6 +336,23 @@ dependencies {
     // nativeLibraryDir 兜底加载逻辑，见 termux-x11/CmdEntryPoint.java）。
     implementation(project(":termux-x11"))
 
+    // ============================================================
+    // v2.22.2 fix9.7：补 :app 对 androidx.appcompat / androidx.preference 的
+    // 编译期依赖（CI 实证 ：app:compileReleaseKotlin 失败）
+    // ============================================================
+    // fix9.6 起 :app 的 Kotlin 代码直接引用 termux-x11 的公开类：
+    //   AnWindApp.kt:91          LoriePreferences.prefs = Prefs(this)
+    //   X11Surface.kt:63/123/... remember { LoriePreferences.prefs }、prefs != null、
+    //                            prefs.displayResolutionMode.get() 等
+    //   X11WindowController.kt:175 LoriePreferences.prefs?.let { view.reloadPreferences(it) }
+    // 这些类的父类（LoriePreferences extends AppCompatActivity；Prefs → PrefsProto
+    // extends PreferenceDataStore）必须出现在 :app 的编译类路径上，Kotlin 才能完成
+    // 父类链解析。虽然 termux-x11 侧已改为 api 导出（见其 build.gradle.kts），
+    // 此处按同版本再显式声明一次，双保险防再犯：
+    // ============================================================
+    implementation("androidx.appcompat:appcompat:1.6.1")
+    implementation("androidx.preference:preference:1.1.1")
+
     // Document file (for local HTML access via SAF)
     implementation("androidx.documentfile:documentfile:1.0.1")
 

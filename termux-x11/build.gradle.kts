@@ -58,9 +58,23 @@ dependencies {
     implementation("org.jetbrains.kotlin:kotlin-stdlib-jdk8:1.9.25")
     implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:2.7.0")
     implementation("androidx.lifecycle:lifecycle-livedata-ktx:2.6.1")
-    implementation("androidx.appcompat:appcompat:1.6.1")
+    // ============================================================
+    // fix9.7：appcompat / preference 改用 api 导出（原 implementation）
+    // ============================================================
+    // 本模块的公开类把这两个库的类型当父类暴露在对外 ABI 上：
+    //   LoriePreferences extends AppCompatActivity
+    //                    implements PreferenceFragmentCompat.OnPreferenceStartFragmentCallback
+    //   LoriePreferences.PrefsProto extends PreferenceDataStore（Prefs 的父类）
+    // implementation 依赖不进入消费者（:app）的编译类路径，:app 的 Kotlin
+    // 代码一旦引用 LoriePreferences/Prefs（fix9.6 起在 AnWindApp.kt:91、
+    // X11Surface.kt、X11WindowController.kt 直接引用），Kotlin 编译器解析
+    // 父类链即失败："unresolved supertypes: androidx.appcompat.app.
+    // AppCompatActivity / androidx.preference.PreferenceDataStore"。
+    // api 语义正确：父类 ABI 必须传递给消费者。
+    // ============================================================
+    api("androidx.appcompat:appcompat:1.6.1")
     implementation("androidx.core:core:1.6.0")
-    implementation("androidx.preference:preference:1.1.1")
+    api("androidx.preference:preference:1.1.1")
     implementation("com.google.android.material:material:1.9.0")
     implementation("androidx.constraintlayout:constraintlayout:2.1.4")
     // Wine 容器备份功能（TarCompressorUtils）使用，与参考实现一致
