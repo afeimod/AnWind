@@ -2,6 +2,23 @@
 # ============================================================
 # anwind-debfix v6 — 把官方仓库 deb 重打包为 AnWind 前缀
 # ============================================================
+# v6.4（fix9.11）gpkg conffiles 尾逗号缺陷修复 + -b 错误可见化：
+#   用户实测：anwind-glibc 第 2 步（glibc-runner 事务）必然失败，
+#   终端只回显 E: Sub-process anwind-debfix returned an error code
+#   (1)，同批其余包全部重写成功（bash-completion-glibc count=6）。
+#   根因（真实 glibc_2.44 包实测复现）：gpkg（termux-pacman）构建
+#   的 DEBIAN/conffiles 存在尾逗号条目（如
+#   /data/data/com.termux/.../etc/gai.conf,）—— pacman 转换残渣。
+#   dpkg-deb -b 会硬校验「conffile 必须存在于包内」，尾逗号条目
+#   在树中不存在 → 重建直接拒绝 → process_one rc=1 → apt
+#   Pre-Install-Pkgs 钩子整体失败 → 事务中止，glibc 永远装不上。
+#   对策：
+#   1) dpkg-deb -b 前规范化 conffiles：去行尾逗号/空白、去空行、
+#      剔除树中不存在的条目（修正数落盘日志 + 终端提示）；
+#   2) dpkg-deb -b stderr 不再丢弃：失败时把 dpkg-deb 的真实报错
+#      首行回显到终端（此前被 /dev/null 吞掉，设备上永远看不到
+#      失败原因，只能靠猜测）。
+#
 # 官方 deb 按 /data/data/com.termux 前缀构建（tar 成员路径即绝对
 # 路径），不重写 dpkg 会把文件解到别的应用的数据目录。
 #
@@ -78,9 +95,9 @@
 # ============================================================
 set -u
 
-# 版本指纹（v6.2，设备端一键核验部署状态）：anwind-debfix version
+# 版本指纹（v6.4，设备端一键核验部署状态）：anwind-debfix version
 if [ "${1:-}" = "version" ]; then
-    echo "anwind-debfix v6.3 (fix9.2, EXTRAS_REVISION 13)"
+    echo "anwind-debfix v6.4 (fix9.11, EXTRAS_REVISION 21)"
     exit 0
 fi
 
@@ -171,6 +188,55 @@ sync_dpkg_real() {
             && mv -f "$REAL_DPKG.pending.tmp.$$" "$REAL_DPKG.pending" 2>/dev/null
         echo "anwind-debfix: 警告: 新 dpkg 真身暂不可运行（依赖库未就绪），已暂存待依赖就绪后自动晋升" >&2
         log "dpkg: 新真身自检失败 → 暂存 dpkg.real.pending，保留现有 dpkg.real"
+    fi
+    return 0
+}
+
+# ------------------------------------------------------------------
+# normalize_conffiles <树根> — v6.4：gpkg conffiles 尾逗号缺陷修复
+#   gpkg（termux-pacman）构建的 DEBIAN/conffiles 存在尾逗号条目
+#   （pacman 包转换残渣，如实测 glibc_2.44 首行
+#   /data/data/com.termux/.../etc/gai.conf,）。dpkg-deb -b 硬校验
+#   「conffile 必须存在于包内」，尾逗号条目不存在 → 重建直接拒绝
+#   → 钩子 rc=1 → glibc 安装事务整体失败。
+#   规范化：去行尾逗号与两端空白、去空行、剔除树中不存在的条目。
+#   仅在写入成功时替换原文件；任何失败都不影响主流程（保持原文）。
+# ------------------------------------------------------------------
+normalize_conffiles() {
+    _nc_root="$1"
+    _nc_f="$_nc_root/DEBIAN/conffiles"
+    [ -f "$_nc_f" ] || return 0
+    _nc_tmp="$_nc_f.norm.$$"
+    if ! : > "$_nc_tmp" 2>/dev/null; then
+        rm -f "$_nc_tmp" 2>/dev/null
+        return 0
+    fi
+    _nc_fixed=0
+    while IFS= read -r _nc_line || [ -n "$_nc_line" ]; do
+        # 去两端空白 + 行尾逗号（pacman 转换残渣，可重复叠加）
+        _nc_path=$(printf '%s' "$_nc_line" \
+            | sed -e 's/[[:space:]]*$//' -e 's/,$//' -e 's/^[[:space:]]*//')
+        [ -n "$_nc_path" ] || continue
+        # 条目必须在树中存在（conffiles 为绝对路径成员；找不到即
+        # 打包缺陷条目，直接剔除 —— 否则 dpkg-deb -b 拒绝重建）
+        if [ ! -e "$_nc_root/$_nc_path" ]; then
+            _nc_fixed=$((_nc_fixed + 1))
+            continue
+        fi
+        # 行本身被清理过（尾逗号/空白/回车）也计入修正数
+        [ "$_nc_path" = "$_nc_line" ] || _nc_fixed=$((_nc_fixed + 1))
+        printf '%s\n' "$_nc_path" >> "$_nc_tmp"
+    done < "$_nc_f"
+    # 内容有变化才替换（含：原有尾逗号被清理、无效条目被剔除）
+    if ! cmp -s "$_nc_f" "$_nc_tmp"; then
+        if mv -f "$_nc_tmp" "$_nc_f" 2>/dev/null; then
+            echo "anwind-debfix: 提示: conffiles 已规范化（剔除/修正 $_nc_fixed 条无效条目）" >&2
+            log "$base: conffiles 规范化，修正 $_nc_fixed 条"
+        else
+            rm -f "$_nc_tmp" 2>/dev/null
+        fi
+    else
+        rm -f "$_nc_tmp" 2>/dev/null
     fi
     return 0
 }
@@ -288,6 +354,9 @@ process_one() {
             esac
         done
     fi
+    # v6.4：conffiles 规范化（gpkg 尾逗号缺陷）——必须在 dpkg-deb -b
+    # 之前执行，否则 glibc 等带尾逗条目的包重建必败（详见函数头注释）
+    normalize_conffiles "$work/root"
     # dpkg 包自升级：同步新真身到 dpkg.real（在 dpkg.real 运行前，安全）
     sync_dpkg_real "$work/root/data/data/com.anwind/files/usr/bin/dpkg"
     # v6.3：termux-x11-nightly → 把树内 bin/termux-x11 换成内置客户端。
@@ -313,11 +382,17 @@ process_one() {
     fi
     repaired=0
     if [ "$count" -gt 0 ]; then
-        if ! dpkg-deb -b "$work/root" "$work/out.deb" >/dev/null 2>&1; then
+        # v6.4：stderr 落盘不丢弃 —— 失败时回显 dpkg-deb 真实报错首行，
+        # 消灭“只能看到 rc=1 却永远不知道为什么”的可观测黑洞
+        if ! dpkg-deb -b "$work/root" "$work/out.deb" >"$work/build.log" 2>&1; then
             echo "anwind-debfix: 错误: dpkg-deb -b 重建失败，$base 未重写（不盖章，下次重试）" >&2
+            sed -n '1,5p' "$work/build.log" 2>/dev/null \
+                | sed 's/^/anwind-debfix:   dpkg-deb: /' >&2
+            log "$base: dpkg-deb -b 重建失败: $(head -n 2 "$work/build.log" 2>/dev/null | tr '\n' ' ')"
             rm -rf "$work"
             return 1
         fi
+        rm -f "$work/build.log" 2>/dev/null
         # 成品回验（v6 路径硬门）：把重建成品再解包一遍，跑与树侧完全
         # 相同的路径检查——dpkg 报 unable to stat 的是成员路径，这里对
         # 【成品成员路径】直接负责，不信任 -b 的任何行为。-R 全程只用
@@ -360,7 +435,7 @@ process_one() {
     if [ "$size2.$mtime2" != "$size.$mtime" ]; then
         : > "$STAMP_DIR/$base.$size2.$mtime2"
     fi
-    echo "anwind-debfix v6.3: $base 已重写为 com.anwind 前缀 (count=$count)" >&2
+    echo "anwind-debfix v6.4: $base 已重写为 com.anwind 前缀 (count=$count)" >&2
     log "$base: 重写完成 count=$count repaired=$repaired"
     echo "ANWIND_REPAIRED=$repaired"
     rm -rf "$work"

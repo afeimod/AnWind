@@ -80,8 +80,8 @@ class ExtraKeysModifierState {
  * - [TerminalSessionClient]：会话输出 → 刷新视图（主线程）
  * - [TerminalViewClient]：视图输入/手势 → 快捷键修饰状态、软键盘、缩放
  *
- * 会话不随窗口关闭而销毁（与 Termux 后台会话一致），
- * 由 [TermuxTerminalHolder] 持有；进程退出时随进程结束。
+ * 会话由 [TermuxTerminalHolder] 持有，多终端窗口共享；最后一个终端
+ * 窗口关闭时结束会话（fix9.11），进程退出时随进程结束。
  */
 class TermuxSessionController(
     private val context: Context,

@@ -322,6 +322,17 @@ pkg install X
   `rename()` 为 `com.anwind/`（同名等长，内容不改）；
 - **维护者脚本权限归一**：`dpkg-deb -b` 要求 preinst/postinst/prerm/postrm
   权限在 0555–0775，社区 deb 常有 644 脚本，debfix 重建前统一 chmod；
+- **conffiles 规范化（v6.4，fix9.11）**：gpkg（termux-pacman）构建的
+  `DEBIAN/conffiles` 存在尾逗号条目（实测 glibc_2.44 首行
+  `/data/data/com.termux/.../etc/gai.conf,`——pacman 转换残渣）。
+  `dpkg-deb -b` 硬校验「conffile 必须存在于包内」，尾逗号条目不存在 →
+  重打包直接拒绝 → apt Pre-Install-Pkgs 钩子 rc=1 → anwind-glibc
+  安装事务整体失败（`E: Sub-process anwind-debfix returned an error
+  code (1)`）。debfix 现于 `-b` 前规范化 conffiles（去尾逗号/空白、
+  剔除树中不存在的条目），并把 `-b` 的 stderr 落盘回显（此前被
+  `/dev/null` 吞掉，设备上永远看不到失败原因）。真实 glibc 包本地
+  复现：修复前钩子 rc=1（glibc 必败），修复后全事务 rc=0、成品
+  字节级零 com.termux 残留；
 - **幂等记账**：debfix 按 `文件名+大小+mtime` 记账（`var/lib/anwind/debfix/`）。
   fix7 加固：anwind-reprefix 缺失或执行失败时**不写 stamp**（旧版会把
   未重写的 deb 永久标记为已处理——盖章污染），下次调用自动重试；

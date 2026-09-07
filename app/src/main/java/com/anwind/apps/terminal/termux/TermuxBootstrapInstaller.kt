@@ -168,8 +168,19 @@ object TermuxBootstrapInstaller {
      *   新增公开 ensureRescueLibs（AnWindApp 每次启动调用，与迁移
      *   路径互为备份）；anwind-pkgfix v1.1 新增宿主 APK 内嵌 bootstrap
      *   提取（纯 shell 自救，不依赖打开主界面/迁移完成）。
+     * rev 21（fix9.11）：anwind-glibc 安装必败修复（用户实测：第 2 步
+     *   glibc-runner 事务报 E: Sub-process anwind-debfix returned an
+     *   error code (1)，pkgfix 全通过也装不上）：
+     *   根因（真实 glibc_2.44 包本地复现实锤）：gpkg（termux-pacman）
+     *   构建的 DEBIAN/conffiles 存在尾逗号条目（/data/data/com.termux/
+     *   .../etc/gai.conf,——pacman 转换残渣），dpkg-deb -b 硬校验
+     *   「conffile 必须存在于包内」→ glibc 重打包直接拒绝 → apt
+     *   Pre-Install-Pkgs 钩子 rc=1 → 整个事务中止。对策：
+     *   anwind-debfix v6.4 —— ① dpkg-deb -b 前规范化 conffiles
+     *   （去尾逗号/空白、剔除树中不存在的条目）；② -b stderr 落盘，
+     *   失败时回显 dpkg-deb 真实报错首行（此前被 /dev/null 吞掉）。
      */
-    private const val EXTRAS_REVISION = 20
+    private const val EXTRAS_REVISION = 21
 
     /** 安装状态（Compose 界面订阅渲染）。 */
     sealed class InstallState {

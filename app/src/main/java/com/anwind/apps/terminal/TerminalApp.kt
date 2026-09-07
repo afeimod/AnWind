@@ -33,6 +33,7 @@ import com.anwind.termux.view.TerminalView
 import com.anwind.core.window.AppDef
 import com.anwind.core.window.LaunchMode
 import com.anwind.core.window.WindowContentScope
+import com.anwind.core.window.WindowManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -44,7 +45,7 @@ import kotlinx.coroutines.withContext
  * - 会话为真实 login shell（bash），pkg/apt 可用；
  * - 视图为 termux 官方 TerminalView（Apache-2.0 移植）；
  * - 两排快捷键栏 + 可切换符号层（ESC/CTRL/ALT/TAB/方向/Home/PgUp…）；
- * - 会话不随窗口关闭销毁（后台保留），窗口标题跟随会话标题。
+ * - 最后一个终端窗口关闭时结束会话（fix9.11）；重开终端即全新 shell。
  */
 val TerminalApp = AppDef(
     id = "terminal",
@@ -62,6 +63,11 @@ val TerminalApp = AppDef(
 private fun TerminalContent(scope: WindowContentScope) {
     val context = LocalContext.current
     val installState by TermuxBootstrapInstaller.state.collectAsState()
+
+    // v2.22.3（fix9.11）：窗口关闭 → 结束会话（最后一个终端窗口时）。
+    // 与 BrowserApp 的窗口资源清理同模式：WindowState.onClose 由
+    // WindowManager.close 触发；赋值幂等，重组重复执行无副作用。
+    scope.windowState.onClose = { TermuxTerminalHolder.closeSessionIfLastWindow() }
 
     // 打开终端即触发按需安装（已安装则秒过），成功后启动桌面命令桥
     LaunchedEffect(Unit) {
@@ -209,7 +215,7 @@ private fun BootstrapFailedUI(state: TermuxBootstrapInstaller.InstallState.Faile
 // 真实终端区域
 // ====================================================================
 
-/** 应用级会话持有者：窗口关闭后 shell 会话仍在后台运行。 */
+/** 应用级会话持有者：多终端窗口共享同一会话。 */
 object TermuxTerminalHolder {
     val modifiers = ExtraKeysModifierState()
 
@@ -246,6 +252,32 @@ object TermuxTerminalHolder {
         sessionFinished = false
         revision++
         return controller!!
+    }
+
+    /**
+     * v2.22.3（fix9.11）：终端窗口关闭 → 结束会话。
+     *
+     * 修复反馈：“点关闭窗口按钮终端没有被关，点击终端还是关闭前的
+     * 状态” —— 旧设计会话不随窗口关闭销毁（后台保留），窗口重开后
+     * 直接拿回旧 shell，用户感知为“终端关不掉”。现改为：最后一个
+     * 终端窗口关闭时 SIGKILL 会话并清空持有者，下次打开即全新会话；
+     * 仍有其他终端窗口（多窗口共享同一会话）时保留。
+     *
+     * 时序说明：WindowManager.close 先回调 onClose 再从列表摘除
+     * 窗口 —— 此刻 windowsForApp("terminal") 仍含正在关闭的窗口，
+     * size>1 表示还有其他终端窗口存活。先摘除 onSessionFinished
+     * 再 kill，防止退出回调异步污染后续新会话的 sessionFinished 状态。
+     */
+    fun closeSessionIfLastWindow() {
+        val remaining = WindowManager.get().windowsForApp("terminal")
+        if (remaining.size > 1) return
+        controller?.let { old ->
+            old.onSessionFinished = null
+            old.session?.finishIfRunning()
+            old.cleanup()
+        }
+        controller = null
+        sessionFinished = false
     }
 }
 

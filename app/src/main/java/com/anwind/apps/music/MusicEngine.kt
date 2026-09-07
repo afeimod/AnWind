@@ -4,6 +4,8 @@ import android.content.Context
 import android.media.AudioAttributes
 import android.media.MediaPlayer
 import android.net.Uri
+import android.os.SystemClock
+import android.widget.Toast
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -18,12 +20,49 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 /**
- * 云音乐播放引擎（v2.17）：
+ * 应用级播放引擎持有者（v2.22.3/fix9.11）：
+ *
+ * 修复反馈：“音乐播放器最小化后就强制关闭音乐了，而且桌面歌词也被关闭了”。
+ * 旧实现引擎随窗口组合创建/销毁（MusicContent 内 remember +
+ * DisposableEffect.dispose），而桌面窗口系统最小化即不渲染
+ * （WindowHost 只渲染可见窗口）→ 组合销毁 → engine.dispose() 停播 +
+ * 歌词服务被拉停。
+ *
+ * 现引擎升级为进程级单例：最小化只销毁窗口 UI，播放、进度记忆与
+ * 桌面歌词总线（DesktopLyricBus）由引擎在后台 scope 继续推进；
+ * 显式关闭最后一个播放器窗口时才经 [shutdown] 停止（保留
+ * v2.21.2 语义“关闭播放器即停止音乐与桌面歌词”）。
+ */
+object MusicEngineHolder {
+
+    @Volatile
+    private var instance: MusicEngine? = null
+
+    fun obtain(context: Context): MusicEngine =
+        instance ?: synchronized(this) {
+            instance ?: MusicEngine(context.applicationContext).also { instance = it }
+        }
+
+    fun peek(): MusicEngine? = instance
+
+    /** 停止播放并释放引擎（显式关闭最后一个播放器窗口时调用）。 */
+    fun shutdown() {
+        synchronized(this) {
+            instance?.dispose()
+            instance = null
+        }
+    }
+}
+
+/**
+ * 云音乐播放引擎（v2.17；v2.22.3 引擎级歌词与总线推进）：
  * - 基于 android.media.MediaPlayer 的流媒体播放（酷我解析直链 / 本地 URI）
  * - 播放代号（gen）防竞态：连续切歌时旧任务的异步回调全部静默丢弃
  *   （与项目中媒体播放器 v2.10 的 playGen 方案一致）
  * - 播放队列 + 三种模式：顺序播放 / 单曲循环 / 随机播放
  * - 500ms 步进的进度上报（Compose State，UI 直接读取）
+ * - v2.22.3（fix9.11）：歌词拉取与 DesktopLyricBus 推进收编到引擎 ——
+ *   播放器窗口最小化（组合销毁）后歌词照常推进、桌面歌词悬浮窗不中断
  */
 class MusicEngine(context: Context) {
 
@@ -50,6 +89,17 @@ class MusicEngine(context: Context) {
     /** 播放模式：顺序 / 单曲循环 / 随机 */
     var playMode by mutableStateOf(store.loadPlayMode())
         private set
+
+    // ==================== 歌词状态（v2.22.3 引擎级，UI 直读） ====================
+
+    /** 当前曲歌词文档（引擎自动拉取；含深度下载兑底） */
+    var lyricDoc by mutableStateOf<LyricsDoc?>(null)
+        private set
+    var lyricLoading by mutableStateOf(false)
+        private set
+
+    /** 歌词拉取代号：切歌/强制刷新防竞态（与播放 gen 同思路） */
+    private var lyricGen = 0
 
     private val volumeState = mutableStateOf(0.8f)
 
@@ -172,6 +222,8 @@ class MusicEngine(context: Context) {
                 isPlaying = false
                 ticker?.cancel()
                 saveSession(force = true)
+                // v2.22.3：暂停时同步总线（悬浮窗 KTV 冻结在当前进度）
+                pushLyricBus()
             } else {
                 player.start()
                 isPlaying = true
@@ -188,6 +240,8 @@ class MusicEngine(context: Context) {
             positionMs = safe
         }
         saveSession()
+        // v2.22.3：跳转后同步总线（悬浮窗跟随进度/歌词行）
+        pushLyricBus()
     }
 
     /** 上一曲（用户点击，循环队列） */
@@ -232,6 +286,81 @@ class MusicEngine(context: Context) {
         playError = null
     }
 
+    // ==================== 歌词拉取与桌面歌词总线（v2.22.3/fix9.11） ====================
+    // 旧实现由播放器窗口组合内的 LaunchedEffect 驱动：最小化即组合销毁，
+    // 总线停止更新 → 桌面歌词冻结/关闭。现收编到引擎（独立 scope），
+    // 窗口是否存在不再影响歌词与悬浮窗。
+
+    /**
+     * 拉取当前曲歌词：缓存优先；未命中走深度下载兑底（扩展关键词 +
+     * 全词源宽松匹配，命中即写缓存并提示）。force=true 跳过缓存
+     * （手动下载歌词后刷新用）。
+     */
+    fun refreshLyrics(force: Boolean = false) {
+        val song = currentSong ?: return
+        val myGen = ++lyricGen
+        lyricDoc = null
+        lyricLoading = true
+        scope.launch {
+            val enginePref = store.loadMusicSettings().lyricEngine
+            var doc = fetchLyrics(store, song, force = force, engine = enginePref)
+            if (doc == null) {
+                doc = fetchLyricsDeep(store, song, force = true, engine = enginePref)
+                if (doc != null) {
+                    runCatching {
+                        Toast.makeText(appContext, "已自动下载歌词：${song.name}", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            }
+            if (myGen != lyricGen) return@launch
+            lyricDoc = doc
+            lyricLoading = false
+            pushLyricBus()
+        }
+    }
+
+    /** 切歌后触发（非强制，缓存命中秒回） */
+    private fun refreshLyricsForCurrent() {
+        if (currentSong == null) {
+            lyricDoc = null
+            lyricLoading = false
+            return
+        }
+        refreshLyrics(force = false)
+    }
+
+    /**
+     * 播放状态 → 桌面歌词总线：歌词行/KTV 进度/歌名/播放态一次写入，
+     * 悬浮窗服务 200ms 轮询本总线。引擎在播放 ticker 中周期调用，
+     * 最小化/无窗口后依然推进。
+     */
+    fun pushLyricBus() {
+        val doc = lyricDoc
+        val song = currentSong
+        DesktopLyricBus.songName = song?.name.orEmpty()
+        DesktopLyricBus.playing = isPlaying
+        if (doc == null || song == null) {
+            DesktopLyricBus.lines = emptyList()
+            DesktopLyricBus.index = -1
+            DesktopLyricBus.lineStartMs = 0L
+            DesktopLyricBus.lineEndMs = 0L
+        } else {
+            DesktopLyricBus.lines = doc.lines
+            val idx = doc.indexAt(positionMs)
+            DesktopLyricBus.index = idx
+            if (idx >= 0) {
+                DesktopLyricBus.lineStartMs = doc.lines.getOrNull(idx)?.timeMs ?: 0L
+                DesktopLyricBus.lineEndMs = doc.lines.getOrNull(idx + 1)?.timeMs
+                    ?: durationMs
+            } else {
+                DesktopLyricBus.lineStartMs = 0L
+                DesktopLyricBus.lineEndMs = 0L
+            }
+        }
+        DesktopLyricBus.positionMs = positionMs
+        DesktopLyricBus.posUpdatedAt = SystemClock.uptimeMillis()
+    }
+
     // ==================== 内部实现 ====================
 
     private fun loadAndPlay(song: SongInfo, resumeMs: Long = -1L) {
@@ -248,6 +377,9 @@ class MusicEngine(context: Context) {
         ticker?.cancel()
         // v2.21.2：切歌即记录新会话（进度从当前起点算起）
         saveSession(force = true)
+        // v2.22.3：切歌即刷新总线（新歌名/重置歌词行）+ 后台拉取新曲歌词
+        pushLyricBus()
+        refreshLyricsForCurrent()
 
         scope.launch {
             // 解析播放源优先级：本地 URI > 已下载文件 > 在线解析直链
@@ -303,12 +435,17 @@ class MusicEngine(context: Context) {
                 positionMs = runCatching { player.currentPosition.toLong() }.getOrDefault(positionMs)
                 // v2.21.2：播放中定期记忆进度（saveSession 内部节流）
                 saveSession()
+                // v2.22.3：播放中周期推进桌面歌词总线（引擎级，不依赖窗口）
+                pushLyricBus()
                 delay(300)
             }
         }
     }
 
-    /** 窗口关闭时释放资源（UI 层在 DisposableEffect 中调用） */
+    /**
+     * 停止并释放引擎（v2.22.3 起仅由 MusicEngineHolder.shutdown 在
+     * 「显式关闭最后一个播放器窗口」时调用；最小化不再触发释放）。
+     */
     fun dispose() {
         ticker?.cancel()
         // v2.21.2：退出前强制落盘最终进度（记忆关闭前正在播放的音乐）
@@ -340,6 +477,8 @@ class MusicEngine(context: Context) {
         positionMs = pos
         restorePending = true
         seekOnPreparedMs = pos
+        // v2.22.3：装回会话后即拉取歌词（重开窗口/重建设置前歌词页可用）
+        refreshLyricsForCurrent()
     }
 
     /**

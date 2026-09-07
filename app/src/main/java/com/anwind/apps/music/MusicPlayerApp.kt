@@ -1,6 +1,5 @@
 package com.anwind.apps.music
 
-import android.os.SystemClock
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
@@ -113,10 +112,12 @@ class DownloadItem(val song: SongInfo) {
 @Composable
 private fun MusicContent(scope: WindowContentScope) {
     val context = LocalContext.current
-    val engine = remember { MusicEngine(context) }
-    DisposableEffect(Unit) {
-        onDispose { engine.dispose() }
-    }
+    // v2.22.3（fix9.11）：应用级单例引擎 —— 修复“播放器最小化后音乐被强制关闭、
+    // 桌面歌词一并消失”。桌面窗口系统最小化即不渲染（WindowHost 只渲染可见
+    // 窗口），旧实现在组合销毁时 engine.dispose() 停播。现引擎进程级常驻，
+    // 最小化只销毁窗口 UI；显式关闭最后一个播放器窗口时才经下方
+    // windowState.onClose 停止。
+    val engine = remember(context) { MusicEngineHolder.obtain(context) }
 
     fun toast(msg: String) = Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
 
@@ -300,59 +301,20 @@ private fun MusicContent(scope: WindowContentScope) {
         }
     }
 
-    // ===== 歌词获取（当前歌曲变化时自动拉取） =====
-    // v2.21.4：首发未命中 → 自动深度下载兜底（扩展关键词 + 全词源宽松匹配），
-    // 命中即写缓存并提示「已自动下载歌词」；lyricRefreshTick 变化时强制重取（手动/搜索页下载歌词后）
-    var lyricDoc by remember { mutableStateOf<LyricsDoc?>(null) }
-    var lyricLoading by remember { mutableStateOf(false) }
-    LaunchedEffect(engine.currentSong?.key, musicSettings.lyricEngine, lyricRefreshTick) {
-        val song = engine.currentSong
-        lyricDoc = null
-        if (song != null) {
-            lyricLoading = true
-            var doc = fetchLyrics(engine.store, song, engine = musicSettings.lyricEngine)
-            if (doc == null) {
-                doc = fetchLyricsDeep(engine.store, song, engine = musicSettings.lyricEngine)
-                if (doc != null) toast("已自动下载歌词：${song.name}")
-            }
-            lyricDoc = doc
-            lyricLoading = false
-        }
+    // ===== 歌词获取（v2.22.3 收编到引擎） =====
+    // 切歌/装回会话时引擎自动后台拉取（缓存优先 + 深度下载兑底），
+    // UI 直读 engine.lyricDoc / engine.lyricLoading；窗口最小化后
+    // 歌词照常推进、桌面歌词不中断。lyricRefreshTick：手动/搜索页
+    // 下载歌词后强制跳过缓存刷新当前曲（v2.21.4）
+    LaunchedEffect(lyricRefreshTick) {
+        if (lyricRefreshTick > 0) engine.refreshLyrics(force = true)
     }
 
-    // ===== v2.21 桌面歌词：播放状态推送到悬浮窗总线 =====
-    // 每次进度 tick（500ms）重新计算当前行/下一行；悬浮窗服务自身 200ms 轮询本总线；
-    // v2.21.1 同时写入 KTV 进度源（当前行起止时间 + 进度时间戳，服务侧墙钟外插平滑）
-    LaunchedEffect(engine.positionMs, lyricDoc, engine.currentSong?.key) {
-        val doc = lyricDoc
-        val song = engine.currentSong
-        DesktopLyricBus.songName = song?.name.orEmpty()
-        DesktopLyricBus.playing = engine.isPlaying
-        if (doc == null || song == null) {
-            DesktopLyricBus.lines = emptyList()
-            DesktopLyricBus.index = -1
-            DesktopLyricBus.lineStartMs = 0L
-            DesktopLyricBus.lineEndMs = 0L
-        } else {
-            DesktopLyricBus.lines = doc.lines
-            val idx = doc.indexAt(engine.positionMs)
-            DesktopLyricBus.index = idx
-            if (idx >= 0) {
-                DesktopLyricBus.lineStartMs = doc.lines.getOrNull(idx)?.timeMs ?: 0L
-                DesktopLyricBus.lineEndMs = doc.lines.getOrNull(idx + 1)?.timeMs
-                    ?: engine.durationMs
-            } else {
-                DesktopLyricBus.lineStartMs = 0L
-                DesktopLyricBus.lineEndMs = 0L
-            }
-        }
-        DesktopLyricBus.positionMs = engine.positionMs
-        DesktopLyricBus.posUpdatedAt = SystemClock.uptimeMillis()
-    }
-
-    // v2.21：桌面歌词相关设置变化 —— 推送偏好镜像到总线，并唤醒服务：
-    // 开启时 start（服务已运行则触发 onStartCommand → 按需重建窗口，如模式/行数切换），
-    // 关闭时 stop；颜色/透明度/字号/KTV 开关由服务 200ms 轮询总线自动生效，无需重建
+    // ===== v2.21 桌面歌词偏好推送（v2.22.3 保留） =====
+    // 引擎已负责把播放进度/歌词行推进到 DesktopLyricBus（引擎级，最小化后照常）；
+    // 此处仅负责“偏好变化 → 推送镜像 + 拉起/关闭悬浮窗服务”：
+    // 开启时 start（服务已运行则触发 onStartCommand → 按需重建窗口），
+    // 关闭时 stop；颜色/透明度/字号/KTV 开关由服务 200ms 轮询总线自动生效
     LaunchedEffect(
         musicSettings.desktopLyricOn,
         musicSettings.desktopLyricFullscreen,
@@ -370,11 +332,16 @@ private fun MusicContent(scope: WindowContentScope) {
         }
     }
 
-    // v2.21.2：音乐播放器窗口关闭/应用退出时 —— 停掉桌面歌词悬浮窗并清空总线
-    // （v2.21.x 旧语义仅清总线转待机态，用户反馈关闭播放器后桌面歌词仍常驻，现改为整个关闭）
-    // 重开播放器窗口时由上方 LaunchedEffect（desktopLyricOn 开关开启时）自动重新拉起服务
-    DisposableEffect(Unit) {
-        onDispose {
+    // v2.22.3（fix9.11）：窗口关闭/最小化语义分离 ——
+    //   最小化：组合销毁但不做任何清理（引擎单例常驻，音乐与桌面歌词照常）；
+    //   显式关闭：WindowManager.close 先触发 windowState.onClose 再摘除窗口，
+    //   此刻 windowsForApp("music") 仍含正在关闭的窗口 —— 仅当它是最后一个
+    //   播放器窗口时停止引擎并关闭桌面歌词（保留 v2.21.2 语义：关闭播放器
+    //   = 结束音乐与桌面歌词；多窗口时等其他窗口也关了才停）。
+    scope.windowState.onClose = {
+        if (WindowManager.get().windowsForApp("music").size <= 1) {
+            MusicEngineHolder.shutdown()
+            DesktopLyricBus.songName = ""
             DesktopLyricBus.lines = emptyList()
             DesktopLyricBus.index = -1
             DesktopLyricBus.playing = false
@@ -565,8 +532,8 @@ private fun MusicContent(scope: WindowContentScope) {
                         durationMs = engine.durationMs,
                         isPlaying = engine.isPlaying,
                         isPreparing = engine.isPreparing,
-                        lyric = lyricDoc,
-                        lyricLoading = lyricLoading,
+                        lyric = engine.lyricDoc,
+                        lyricLoading = engine.lyricLoading,
                         playMode = engine.playMode,
                         settingsProvider = { musicSettings },
                         positionProvider = { engine.rawPositionMs() },

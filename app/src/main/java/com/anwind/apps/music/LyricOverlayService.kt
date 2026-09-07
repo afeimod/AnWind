@@ -33,8 +33,9 @@ import android.widget.LinearLayout
 import android.widget.TextView
 
 /**
- * 桌面歌词跨组件总线（v2.21）：
- * - 应用内播放器（MusicContent）在每次播放进度 tick 时写入当前歌词行状态；
+ * 桌面歌词跨组件总线（v2.21；v2.22.3 起写入方改为引擎）：
+ * - 应用内播放引擎（MusicEngine，进程级单例）在每次播放进度 tick 时写入当前
+ *   歌词行状态 —— 播放器窗口最小化（组合销毁）后依然推进；
  * - 悬浮窗服务（LyricOverlayService）每 200ms 轮询读取并刷新文字/颜色/KTV 扫色；
  * - 设置页改动桌面歌词偏好后调用 applySettings 即时推送（同一进程内 volatile 可见）。
  */
@@ -151,7 +152,9 @@ private class OutlineTextView(context: Context) : TextView(context) {
  * - 锁定/解锁（v2.21.3）：悬浮窗上的锁定按钮 + 通知栏「锁定/解锁」动作 + 设置页开关；
  *   锁定后 FLAG_NOT_TOUCHABLE 触摸穿透（不挡其他应用、只作桌面展示），位置记忆到 desklyric.json
  * - 每 200ms 轮询 DesktopLyricBus 刷新文字/颜色/背景；模式/行数/锁定变化重建窗口
- * - 生命周期跟随播放器：播放器窗口关闭/应用退出即随之关闭（Manifest stopWithTask 双保险）
+ * - 生命周期：跟随播放引擎 —— 播放器窗口最小化不影响本服务（引擎持续
+ *   推进总线，fix9.11）；显式关闭最后一个播放器窗口/应用退出时随之关闭
+ *   （窗口 onClose 调 stopDesktopLyricService + Manifest stopWithTask 双保险）
  */
 class LyricOverlayService : Service() {
 
