@@ -38,14 +38,18 @@ object TermuxEnvironment {
      * fix9.9：SYMLINKS.txt 补 libexpat.so.1 / libgpg-error.so.0 两条
      * soname 条目（bootstrap 原包把 libexpat.so / libgpg-error.so 以
      * dev 名入库且无 soname 链接，导致 dbus-daemon 等按 DT_NEEDED
-     * 查找 libexpat.so.1 必然失败）——SHA-256 随之更新。
+     * 查找 libexpat.so.1 必然失败）。
+     * fix9.10：归档内新增 xkb/x11-xkb.tar.gz 成员（XKB 键盘数据随
+     * bootstrap 分发——独立 assets/termux/x11-xkb.tar.gz 在用户 CI
+     * 仓库管线中会整文件丢失，fresh 安装必失败截图实锤；而 bootstrap
+     * *.zip 从未丢过）——SHA-256 随之更新。
      */
     const val TERMUX_APP_VERSION = "0.118.0"
     const val BOOTSTRAP_BUILD_VERSION = "2022.01.07-r1"
     const val BOOTSTRAP_SOURCE_URL =
         "https://github.com/termux/termux-packages/releases/download/bootstrap-$BOOTSTRAP_BUILD_VERSION/bootstrap-%s.zip"
     const val BOOTSTRAP_AARCH64_SHA256 =
-        "86805e3a2d4a0c9ad22e04709cb9e6cec8365da593afb95df06c430e54f118b3"
+        "34949b5f70b5b030c472d8a8af54121f0cb06388d212c6bf7f87b8eefe6f935f"
 
     // ------------------------------------------------------------------
     // 运行期路径（全部由 Context 派生，避免硬编码二次引入）

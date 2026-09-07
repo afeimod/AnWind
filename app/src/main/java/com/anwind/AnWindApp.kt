@@ -105,6 +105,10 @@ class AnWindApp : Application() {
         applicationScope.launch(Dispatchers.IO) {
             com.anwind.apps.terminal.termux.TermuxBootstrapInstaller
                 .refreshX11Env(this@AnWindApp)
+            // fix9.10：救援库就位保障（幂等）——与迁移路径互为备份，
+            // 迁移异常中断时打开主界面一次仍可部署 etc/anwind/rescue
+            com.anwind.apps.terminal.termux.TermuxBootstrapInstaller
+                .ensureRescueLibs(this@AnWindApp)
         }
     }
 

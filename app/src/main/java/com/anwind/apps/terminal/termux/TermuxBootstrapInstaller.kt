@@ -154,8 +154,22 @@ object TermuxBootstrapInstaller {
      * ③ 新脚本 bin/anwind-pkgfix：离线补 soname 链接 + 救援库兑底
      *   + 逐二进制实跑验证（不依赖 apt/pkg/网络，幂等）；
      * ④ anwind-x11 rev19：预检失败先自动跑 anwind-pkgfix 再重测。
+     * rev 20（fix9.10）：fresh 安装全灭修复（用户截图实锤：9.7~9.9
+     * 首次启动终端报 "Bootstrap 安装失败 / termux/x11-xkb.tar.gz"）：
+     * ① 根因：XKB 数据曾是独立 assets/termux/x11-xkb.tar.gz，该资产
+     *   在用户 CI 仓库管线中整文件丢失（git 提交/检出环节，*.zip 从未
+     *   丢过），installX11Client 单点依赖它 → 收尾一步抛
+     *   FileNotFoundException → 安装失败 + revision 不落盘 → 每次启动
+     *   迁移重跑再失败（死循环）；
+     *   对策：XKB 数据改随 bootstrap 归档分发（xkb/ 成员，SHA 同步）+
+     *   installXkbData 三级容错（bootstrap 内 → asset → 存量保留），
+     *   任何来源缺失仅告警绝不阻断安装；
+     * ② 救援链补强：installRescueLibs 条目名归一化 + 逐文件日志；
+     *   新增公开 ensureRescueLibs（AnWindApp 每次启动调用，与迁移
+     *   路径互为备份）；anwind-pkgfix v1.1 新增宿主 APK 内嵌 bootstrap
+     *   提取（纯 shell 自救，不依赖打开主界面/迁移完成）。
      */
-    private const val EXTRAS_REVISION = 19
+    private const val EXTRAS_REVISION = 20
 
     /** 安装状态（Compose 界面订阅渲染）。 */
     sealed class InstallState {
@@ -620,14 +634,49 @@ object TermuxBootstrapInstaller {
             File(masterDir, "anwind-x11-stop"), executable = true
         )
         // XKB 键盘数据（X server 初始化必需，缺失时 native start() 直接
-        // 退出——"$XKB_CONFIG_ROOT is not set"）：随 APK 分发（源自
-        // xkeyboard-config 2.48），客户端首次启动自动解压为 xkb/ 并导出
-        // XKB_CONFIG_ROOT，使 X 服务零 pkg 依赖。
-        copyAssetScript(
-            context, "termux/x11-xkb.tar.gz",
-            File(masterDir, "xkb.tar.gz"), executable = false
-        )
+        // 退出——"$XKB_CONFIG_ROOT is not set"）：客户端首次启动自动解压
+        // 为 xkb/ 并导出 XKB_CONFIG_ROOT，使 X 服务零 pkg 依赖。
+        // fix9.10 三级容错部署（旧版为单点资产拷贝——而独立 *.tar.gz
+        // 资产在用户 CI 仓库管线中会整文件丢失，fresh 安装 9.7~9.9 全部
+        // 死于"Bootstrap 安装失败 / termux/x11-xkb.tar.gz"，截图实锤；
+        // 任何来源缺失都不得阻断 bootstrap 安装，终端主体必须可用）。
+        installXkbData(context, masterDir)
         refreshX11Env(context)
+    }
+
+    /**
+     * XKB 键盘数据三级容错部署（fix9.10）。旧版单点依赖独立资产
+     * termux/x11-xkb.tar.gz，该资产在用户 CI 仓库管线中曾整文件丢失，
+     * 令 fresh 安装在收尾一步全盘报废（FileNotFoundException 即裸资产
+     * 名）。三级来源按序兜底，全部缺失仅告警（X11 会话由 anwind-x11
+     * 给 pkg install xkeyboard-config 补救指引，终端主体不受影响）：
+     *  ① $PREFIX/xkb/x11-xkb.tar.gz —— bootstrap 归档内置成员
+     *    （fix9.10 起新增，*.zip 载体从未在管线中丢失；fresh 安装时
+     *    本次解包的天然副产品）；
+     *  ② assets/termux/x11-xkb.tar.gz —— 旧独立资产（保留随包兼容）；
+     *  ③ 既有 etc/anwind/x11/xkb.tar.gz —— 存量安装直接保留（幂等）。
+     */
+    private fun installXkbData(context: Context, masterDir: File) {
+        val dest = File(masterDir, "xkb.tar.gz")
+        // ③ 存量副本有效 → 直接保留（迁移路径零拷贝快速通道）
+        if (dest.isFile && dest.length() > 1024) return
+        masterDir.mkdirs()
+        // ① bootstrap 归档内置（fix9.10 主来源）
+        val inBootstrap = File(TermuxEnvironment.prefixDir(context), "xkb/x11-xkb.tar.gz")
+        if (inBootstrap.isFile && inBootstrap.length() > 1024) {
+            inBootstrap.copyTo(dest, overwrite = true)
+            return
+        }
+        // ② 旧独立资产（兼容旧包/旧管线仍可用的场景）
+        try {
+            copyAssetScript(context, "termux/x11-xkb.tar.gz", dest, executable = false)
+        } catch (e: Exception) {
+            // 绝不阻断 bootstrap 安装：终端可用性 > X11 桌面
+            android.util.Log.w(
+                TAG, "XKB 数据三级来源均缺失（终端不受影响，X11 会话启动时" +
+                        "将由 anwind-x11 给出 pkg install xkeyboard-config 指引）: ${e.message}"
+            )
+        }
     }
 
     /**
@@ -636,6 +685,9 @@ object TermuxBootstrapInstaller {
      * 供 bin/anwind-pkgfix 在真身整文件丢失（dpkg 事故遗留）时兑底
      * 复制。幂等：三文件齐全则直接返回；失败仅告警（非致命——多数
      * 场景真身都在，只需 soname 链接修复）。
+     * fix9.10 加固：条目名归一化匹配（容忍历史/未来归档的 "./" 与
+     * "usr/" 前缀变体），逐文件日志使 "0/3 静默零提取" 类异常在
+     * logcat 可见，不再无感空转。
      */
     private fun installRescueLibs(context: Context) {
         val rescueDir = File(
@@ -651,15 +703,19 @@ object TermuxBootstrapInstaller {
         rescueDir.mkdirs()
         try {
             val assetName = "${TermuxEnvironment.BOOTSTRAP_ASSET_DIR}/bootstrap-aarch64.zip"
-            val want = wanted.toSet()
             context.assets.open(assetName).use { input ->
                 java.util.zip.ZipInputStream(input).use { zin ->
                     while (true) {
                         val entry: ZipEntry = zin.nextEntry ?: break
-                        if (entry.name in want) {
-                            val out = File(rescueDir, entry.name.substringAfterLast('/'))
+                        val norm = entry.name.removePrefix("./").removePrefix("usr/")
+                        if (norm in wanted) {
+                            val out = File(rescueDir, norm.substringAfterLast('/'))
                             out.outputStream().use { zin.copyTo(it, 64 * 1024) }
                             Os.chmod(out.absolutePath, PERMISSION_0644)
+                            android.util.Log.i(
+                                TAG,
+                                "rescue lib extracted: ${out.name} (${out.length()}B)"
+                            )
                         }
                         zin.closeEntry()
                     }
@@ -670,6 +726,18 @@ object TermuxBootstrapInstaller {
         } catch (e: Exception) {
             android.util.Log.w(TAG, "救援库部署失败（非致命）: ${e.message}")
         }
+    }
+
+    /**
+     * fix9.10：救援库就位保障 —— 公开供 AnWindApp 每次启动调用。
+     * 与迁移路径（installPackageToolchain → installRescueLibs）互为
+     * 备份：迁移异常中断（如 9.7~9.9 时代 xkb 资产缺失引发的安装
+     * 失败）或尚未触发时，打开主界面一次仍可部署救援库。幂等：
+     * 三真身齐全即时返回；未装 bootstrap 静默跳过。
+     */
+    fun ensureRescueLibs(context: Context) {
+        if (!isInstalled(context)) return
+        installRescueLibs(context)
     }
 
     /**

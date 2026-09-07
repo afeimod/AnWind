@@ -1,6 +1,6 @@
 #!/data/data/com.anwind/files/usr/bin/sh
 # ============================================================
-# AnWind X11 桌面一键启动（v2.22.2 rev19）
+# AnWind X11 桌面一键启动（v2.22.2 rev20）
 # ============================================================
 # 用法：
 #   anwind-x11              启动 X11 服务（显示号默认 :1）并自动尝试
@@ -38,6 +38,12 @@
 #   后无法用包管理器自救）。预检失败时先自动跑 anwind-pkgfix
 #   （离线补 soname 链接 + 救援库兜底，幂等），生效则照常启动会话；
 #   仍失败才给出 pkg 修复命令。手动全量诊断：anwind-pkgfix
+#
+# rev20（fix9.10）：9.7~9.9 fresh 安装全灭根因修复——x11-xkb.tar.gz
+#   独立资产在 CI 仓库管线中整文件丢失，导致安装收尾一步全盘报废、
+#   revision 永不落盘（每次启动迁移重跑再失败）。改随 bootstrap
+#   归档分发 + 三级容错；pkgfix v1.1 新增宿主 APK 内嵌 bootstrap
+#   提取救援库（预检自愈链在纯 shell 下亦可闭环）
 #
 # rev14 排障增强：启动全程写入 $PREFIX/tmp/anwind-x11.log（前置检查、
 #   自愈动作、X 服务输出一站齐全，日志不再出现"空白"）；X 服务静默
@@ -142,13 +148,13 @@ if [ "${1:-}" = "doctor" ] || [ "${1:-}" = "--doctor" ]; then
     _ok()  { echo "  [OK] $1"; }
     _bad() { echo "  [!!] $1"; _fails=$((_fails + 1)); }
     _none() { echo "  [--] $1"; }
-    echo "==== AnWind X11 体检（rev19）===="
+    echo "==== AnWind X11 体检（rev20）===="
     echo
     echo "[1/4] X 服务组件（内置于 AnWind APK，无需 pkg 安装）"
     if [ -x "$PREFIX/bin/termux-x11" ] && grep -q 'ANWIND_X11_CLIENT' "$PREFIX/bin/termux-x11" 2>/dev/null; then
         _ok "bin/termux-x11 内置客户端就绪"
     else
-        _bad "bin/termux-x11 缺失/被覆盖/不可执行 → 打开一次 AnWind 主界面触发组件迁移（rev19），或确认 APK 为 fix9.6 及以上"
+        _bad "bin/termux-x11 缺失/被覆盖/不可执行 → 打开一次 AnWind 主界面触发组件迁移（rev20），或确认 APK 为 fix9.6 及以上"
     fi
     if [ -r "$PREFIX/etc/anwind/x11/termux-x11" ]; then
         _ok "主副本 etc/anwind/x11/termux-x11 就绪（防覆盖自愈源）"
@@ -180,7 +186,7 @@ if [ "${1:-}" = "doctor" ] || [ "${1:-}" = "--doctor" ]; then
     if [ -d "$PREFIX/etc/anwind/x11/xkb/rules" ] || [ -r "$PREFIX/etc/anwind/x11/xkb.tar.gz" ] || [ -d "$PREFIX/share/X11/xkb/rules" ]; then
         _ok "XKB 键盘数据就绪（X 服务零 pkg 依赖）"
     else
-        _bad "XKB 键盘数据缺失 → 打开一次 AnWind 主界面重新部署（rev19），或 pkg install xkeyboard-config"
+        _bad "XKB 键盘数据缺失 → 打开一次 AnWind 主界面重新部署（rev20 三级容错），或 pkg install xkeyboard-config"
     fi
     if [ -w "$XDG_RUNTIME_DIR" ]; then
         _ok "XDG_RUNTIME_DIR 可写（$XDG_RUNTIME_DIR）"
@@ -244,7 +250,7 @@ if [ $# -gt 0 ]; then
 fi
 
 # ---- 启动日志：从第一行写起，任何失败都能 cat 回传定位 ----
-echo "==== anwind-x11 启动 $(date '+%Y-%m-%d %H:%M:%S') rev19 显示号 $DISP ====" >"$X11_LOG"
+echo "==== anwind-x11 启动 $(date '+%Y-%m-%d %H:%M:%S') rev20 显示号 $DISP ====" >"$X11_LOG"
 note() { echo "$1"; echo "[anwind-x11] $1" >>"$X11_LOG"; }
 die() {
     echo "anwind-x11: $1" >&2
@@ -285,7 +291,7 @@ fi
 if [ ! -d "$PREFIX/etc/anwind/x11/xkb/rules" ] \
     && [ ! -r "$PREFIX/etc/anwind/x11/xkb.tar.gz" ] \
     && [ ! -d "$PREFIX/share/X11/xkb/rules" ]; then
-    die "缺少 XKB 键盘数据 —— 打开一次 AnWind 主界面重新部署组件（rev19），或执行 pkg install xkeyboard-config"
+    die "缺少 XKB 键盘数据 —— 打开一次 AnWind 主界面重新部署组件（rev20 三级容错），或执行 pkg install xkeyboard-config"
 fi
 
 termux-x11 "$DISP" >>"$X11_LOG" 2>&1 &
