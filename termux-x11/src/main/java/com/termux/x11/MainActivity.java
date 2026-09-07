@@ -190,6 +190,11 @@ public class MainActivity extends LoriePreferences {
                 termuxActivityListener.onX11PreferenceSwitchChange(true);
             }
         });
+        // AnWind 修复（fix9.6）：等待连接页的"退出"按钮此前从未绑定监听器，
+        // 点击无任何反应（用户视角=界面卡死点不动）。
+        View stubExit = findViewById(R.id.exit_button);
+        if (stubExit != null)
+            stubExit.setOnClickListener((l) -> finishAffinity());
         LorieView lorieView = findViewById(R.id.lorieView);
         View lorieParent = (View) lorieView.getParent();
 //        Log.d("Mainactivity","frm==lorieParent:"+String.valueOf(frm==lorieParent));
@@ -229,7 +234,13 @@ public class MainActivity extends LoriePreferences {
                 mExtraKeys.unsetSpecialKeys();
             return result;
         };
-        lorieParent.setOnTouchListener((v, event) -> true);
+        // AnWind 修复（fix9.6）："X11 显示动不了/叉叉也划不动"的根因——
+        // 本行曾被改成 (v, event) -> true 把所有触摸事件整条吞掉（只消费不
+        // 转发），且 LorieView 自身没有 onTouchEvent，触摸输入从此没有
+        // 任何路径进入 X server。恢复上游行为：转发给输入处理器，由
+        // TouchInputHandler 按当前输入模式（直触/触控板）注入 X。
+        lorieParent.setOnTouchListener((v, event) ->
+            mInputHandler.handleTouchEvent(lorieParent, lorieView, event));
         lorieView.setOnHoverListener((v, e) -> mInputHandler.handleTouchEvent(lorieParent, lorieView, e));
         lorieView.setOnKeyListener(mLorieKeyListener);
 

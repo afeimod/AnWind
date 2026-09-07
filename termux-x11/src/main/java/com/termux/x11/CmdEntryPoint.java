@@ -141,8 +141,13 @@ public class CmdEntryPoint extends ICmdEntryInterface.Stub {
     // In some cases Android Activity part can not connect opened port.
     // In this case opened port works like a lock file.
     private void sendBroadcastDelayed() {
-        if (!connected())
+        if (!connected()) {
+            // AnWind（fix9.6）：广播是"终端 → App 显示端"的唯一通路，
+            // 留一条 logcat 轨迹（doctor 的 logcat 摘要可抓到），否则
+            // "窗口没弹出来"时无从判断是广播没发还是没被接收。
+            Log.i("CmdEntryPoint", "ACTION_START broadcast: waiting for display client");
             sendBroadcast(intent);
+        }
 
         handler.postDelayed(this::sendBroadcastDelayed, 1000);
     }

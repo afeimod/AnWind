@@ -5,12 +5,15 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.preference.PreferenceManager
 import androidx.room.Room
 import com.anwind.data.db.AppDatabase
 import com.anwind.data.prefs.SettingsStore
 import com.anwind.core.theme.ThemeManager
-import com.anwind.apps.x11.X11Desktop
+import com.anwind.apps.x11.X11WindowController
 import com.termux.x11.CmdEntryPoint
+import com.termux.x11.LoriePreferences
+import com.termux.x11.Prefs
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -38,17 +41,37 @@ class AnWindApp : Application() {
     val applicationScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     /**
-     * v2.22.2 内置 X11 桌面：终端侧 `anwind-x11` 客户端（app_process 进程）
-     * 每秒广播一次 ACTION_START（附带 X 连接 fd 的 binder）直到被取用。
-     * 此处去抖后拉起全屏 X11 桌面 Activity；binder 由桌面 Activity 自己的
-     * 动态接收器从重播中取出并完成连接（见 X11Desktop 注释）。
+     * v2.22.2 fix9.6：终端侧 X server 的连接广播改由 X11WindowController 处理
+     * （在 AnWind 桌面内弹出/聚焦 X11 窗口并完成渲染连接），不再拉起独立
+     * 全屏 Activity（保留作兼容推障入口，可从等待页手动进入）。
      */
     private val x11LaunchReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             if (intent.action == CmdEntryPoint.ACTION_START) {
-                X11Desktop.openFromBroadcast(context)
+                X11WindowController.onBroadcastReceived(context, intent)
             }
         }
+    }
+
+    /**
+     * v2.22.2 fix9.6：X11 偏好默认值一次性迁移。
+     *
+     * fix9.6 改变三个默认值：全屏沉浸（fullscreen/hideCutout，修复被
+     * 手机导航键遮挡）、默认关闭 X11 自带键盘栏（showAdditionalKbd /
+     * additionalKbdVisible）。存量安装里这些键已被旧默认值落盘，仅改
+     * Prefs 默认值不生效 —— 用 anwindDefaultsRev 标记一次性覆写。
+     * 旧版偏好面板在 AnWind 中无入口，用户不可能手动改过这些键，覆写安全。
+     */
+    private fun migrateX11Defaults() {
+        val sp = PreferenceManager.getDefaultSharedPreferences(this)
+        if (sp.getInt("anwindDefaultsRev", 0) >= 1) return
+        sp.edit()
+            .putInt("anwindDefaultsRev", 1)
+            .putBoolean("fullscreen", true)
+            .putBoolean("hideCutout", true)
+            .putBoolean("showAdditionalKbd", false)
+            .putBoolean("additionalKbdVisible", false)
+            .apply()
     }
 
     override fun onCreate() {
@@ -61,6 +84,12 @@ class AnWindApp : Application() {
 
         themeManager = ThemeManager(this)
         settingsStore = SettingsStore(this)
+
+        // v2.22.2 fix9.6：X11 偏好提前就位 —— 桌面窗口内的 LorieView
+        // （onMeasure/getDimensionsFromSettings/onCreateInputConnection）
+        // 读取静态 prefs，不等 X11 Activity 创建，避免 NPE 与测量错误。
+        LoriePreferences.prefs = Prefs(this)
+        migrateX11Defaults()
 
         // 注册所有内置应用
         com.anwind.apps.AppBootstrap.registerAll()

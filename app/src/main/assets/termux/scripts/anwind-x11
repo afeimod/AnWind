@@ -1,6 +1,6 @@
 #!/data/data/com.anwind/files/usr/bin/sh
 # ============================================================
-# AnWind X11 桌面一键启动（v2.22.2 rev16）
+# AnWind X11 桌面一键启动（v2.22.2 rev17）
 # ============================================================
 # 用法：
 #   anwind-x11              启动 X11 服务（显示号默认 :1）并自动尝试
@@ -10,8 +10,11 @@
 #   anwind-x11 doctor       体检：逐项检查 X11 组件与依赖，缺失项
 #                           直接给出处理/安装命令（不启动服务）
 #
-# 服务启动后 AnWind 会自动弹出全屏 X11 桌面（不占用终端界面）；
-# 画面分辨率默认跟随本机屏幕，可在桌面右上角设置中调整。
+# 服务启动后 AnWind 桌面内会自动弹出 X11 窗口（fix9.6 起，不再占用
+# 整屏）：窗口可自由拖拽/缩放，控制条可切换分辨率、一键真全屏；
+# 若未自动弹出，点击桌面/开始菜单的 X11 桌面图标即可。
+# 手动启动会话请带 dbus-launch（避免桌面无会话总线黑屏）：
+#   env DISPLAY=:1 dbus-launch startxfce4
 # 停止服务：anwind-x11-stop
 #
 # 依赖说明（重要）：
@@ -53,13 +56,13 @@ if [ "${1:-}" = "doctor" ] || [ "${1:-}" = "--doctor" ]; then
     _ok()  { echo "  [OK] $1"; }
     _bad() { echo "  [!!] $1"; _fails=$((_fails + 1)); }
     _none() { echo "  [--] $1"; }
-    echo "==== AnWind X11 体检（rev16）===="
+    echo "==== AnWind X11 体检（rev17）===="
     echo
     echo "[1/4] X 服务组件（内置于 AnWind APK，无需 pkg 安装）"
     if [ -x "$PREFIX/bin/termux-x11" ] && grep -q 'ANWIND_X11_CLIENT' "$PREFIX/bin/termux-x11" 2>/dev/null; then
         _ok "bin/termux-x11 内置客户端就绪"
     else
-        _bad "bin/termux-x11 缺失/被覆盖/不可执行 → 打开一次 AnWind 主界面触发组件迁移（rev16），或确认 APK 为 fix9.5 及以上"
+        _bad "bin/termux-x11 缺失/被覆盖/不可执行 → 打开一次 AnWind 主界面触发组件迁移（rev17），或确认 APK 为 fix9.6 及以上"
     fi
     if [ -r "$PREFIX/etc/anwind/x11/termux-x11" ]; then
         _ok "主副本 etc/anwind/x11/termux-x11 就绪（防覆盖自愈源）"
@@ -91,7 +94,7 @@ if [ "${1:-}" = "doctor" ] || [ "${1:-}" = "--doctor" ]; then
     if [ -d "$PREFIX/etc/anwind/x11/xkb/rules" ] || [ -r "$PREFIX/etc/anwind/x11/xkb.tar.gz" ] || [ -d "$PREFIX/share/X11/xkb/rules" ]; then
         _ok "XKB 键盘数据就绪（X 服务零 pkg 依赖）"
     else
-        _bad "XKB 键盘数据缺失 → 打开一次 AnWind 主界面重新部署（rev16），或 pkg install xkeyboard-config"
+        _bad "XKB 键盘数据缺失 → 打开一次 AnWind 主界面重新部署（rev17），或 pkg install xkeyboard-config"
     fi
     if [ -w "$XDG_RUNTIME_DIR" ]; then
         _ok "XDG_RUNTIME_DIR 可写（$XDG_RUNTIME_DIR）"
@@ -143,7 +146,7 @@ if [ $# -gt 0 ]; then
 fi
 
 # ---- 启动日志：从第一行写起，任何失败都能 cat 回传定位 ----
-echo "==== anwind-x11 启动 $(date '+%Y-%m-%d %H:%M:%S') rev16 显示号 $DISP ====" >"$X11_LOG"
+echo "==== anwind-x11 启动 $(date '+%Y-%m-%d %H:%M:%S') rev17 显示号 $DISP ====" >"$X11_LOG"
 note() { echo "$1"; echo "[anwind-x11] $1" >>"$X11_LOG"; }
 die() {
     echo "anwind-x11: $1" >&2
@@ -166,7 +169,7 @@ fi
 
 # ---- 前置检查：客户端本体（缺它必然空转，日志会是一片空白） ----
 if [ ! -x "$X11_CLIENT" ] || [ ! -s "$X11_CLIENT" ]; then
-    die "内置客户端 $X11_CLIENT 缺失/不可执行/为空 —— 请先打开一次 AnWind 主界面（触发组件迁移）再试；若仍失败请确认 APK 为 fix9.5 及以上版本"
+    die "内置客户端 $X11_CLIENT 缺失/不可执行/为空 —— 请先打开一次 AnWind 主界面（触发组件迁移）再试；若仍失败请确认 APK 为 fix9.6 及以上版本"
 fi
 
 # ---- 前置检查：libXlorie.so（X 服务引擎，缺失则启动必然失败） ----
@@ -184,7 +187,7 @@ fi
 if [ ! -d "$PREFIX/etc/anwind/x11/xkb/rules" ] \
     && [ ! -r "$PREFIX/etc/anwind/x11/xkb.tar.gz" ] \
     && [ ! -d "$PREFIX/share/X11/xkb/rules" ]; then
-    die "缺少 XKB 键盘数据 —— 打开一次 AnWind 主界面重新部署组件（rev16），或执行 pkg install xkeyboard-config"
+    die "缺少 XKB 键盘数据 —— 打开一次 AnWind 主界面重新部署组件（rev17），或执行 pkg install xkeyboard-config"
 fi
 
 termux-x11 "$DISP" >>"$X11_LOG" 2>&1 &
@@ -212,7 +215,7 @@ if ! x11_running; then
     echo "anwind-x11: 完整日志: cat $X11_LOG ；一键体检: anwind-x11 doctor" >&2
     exit 1
 fi
-echo "X11 服务已启动（显示号 $DISP），正在唤起 AnWind X11 桌面……"
+echo "X11 服务已启动（显示号 $DISP），AnWind 桌面窗口将自动弹出并连接……"
 echo "[anwind-x11] X11 服务进程已就位（显示号 $DISP）" >>"$X11_LOG"
 
 # 会话启动策略：显式命令 > xfce4 > openbox > 提示
@@ -234,5 +237,7 @@ else
     echo "  pkg install x11-repo && pkg install openbox      # 轻量窗口管理器"
     echo "  pkg install x11-repo && pkg install xterm        # 最小化验证"
     echo "  env DISPLAY=$DISP xterm                          # 或直接运行单个 X 程序"
+    echo "  手动启动 xfce4 请带 dbus-launch（否则无会话总线，桌面可能黑屏）："
+    echo "  env DISPLAY=$DISP dbus-launch startxfce4"
     echo "  提示：anwind-x11 doctor 可随时体检组件与依赖"
 fi

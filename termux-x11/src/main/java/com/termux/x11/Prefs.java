@@ -17,9 +17,13 @@ public class Prefs extends LoriePreferences.PrefsProto {
   public final BooleanPreference displayStretch = new BooleanPreference("displayStretch", false);
   public final BooleanPreference Reseed = new BooleanPreference("Reseed", true);
   public final BooleanPreference PIP = new BooleanPreference("PIP", false);
-  public final BooleanPreference fullscreen = new BooleanPreference("fullscreen", false);
+  // AnWind（fix9.6）：默认值按手机单手使用场景调整——
+  // fullscreen/hideCutout 默认开（修复"被手机导航键挡住"），
+  // 自带键盘栏默认关（用户要求默认关闭 X11 自带键盘）。
+  // 存量安装由 AnWindApp 的 anwindDefaultsRev 一次性迁移覆盖。
+  public final BooleanPreference fullscreen = new BooleanPreference("fullscreen", true);
   public final ListPreference forceOrientation = new ListPreference("forceOrientation", "auto", R.array.forceOrientationVariants, R.array.forceOrientationVariants);
-  public final BooleanPreference hideCutout = new BooleanPreference("hideCutout", false);
+  public final BooleanPreference hideCutout = new BooleanPreference("hideCutout", true);
   public final BooleanPreference keepScreenOn = new BooleanPreference("keepScreenOn", true);
   public final ListPreference touchMode = new ListPreference("touchMode", "1", R.array.touchscreenInputModesEntries, R.array.touchscreenInputModesValues);
   public final BooleanPreference scaleTouchpad = new BooleanPreference("scaleTouchpad", true);
@@ -32,8 +36,8 @@ public class Prefs extends LoriePreferences.PrefsProto {
   public final IntPreference capturedPointerSpeedFactor = new IntPreference("capturedPointerSpeedFactor", 100);
   public final BooleanPreference tapToMove = new BooleanPreference("tapToMove", false);
   public final IntPreference touch_sensitivity = new IntPreference("touch_sensitivity", 1);
-  public final BooleanPreference showAdditionalKbd = new BooleanPreference("showAdditionalKbd", true);
-  public final BooleanPreference additionalKbdVisible = new BooleanPreference("additionalKbdVisible", true);
+  public final BooleanPreference showAdditionalKbd = new BooleanPreference("showAdditionalKbd", false);
+  public final BooleanPreference additionalKbdVisible = new BooleanPreference("additionalKbdVisible", false);
   public final BooleanPreference showIMEWhileExternalConnected = new BooleanPreference("showIMEWhileExternalConnected", true);
   public final BooleanPreference preferScancodes = new BooleanPreference("preferScancodes", true);
   public final BooleanPreference hardwareKbdScancodesWorkaround = new BooleanPreference("hardwareKbdScancodesWorkaround", true);

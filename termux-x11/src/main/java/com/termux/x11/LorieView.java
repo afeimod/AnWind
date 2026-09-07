@@ -506,7 +506,7 @@ public class LorieView extends SurfaceView implements InputStub {
 
             currentComposingText = reuse ? newText : null;
 
-            if (a.useTermuxEKBarBehaviour && a.mExtraKeys != null)
+            if (a != null && a.useTermuxEKBarBehaviour && a.mExtraKeys != null)
                 a.mExtraKeys.unsetSpecialKeys();
             commitedText = true;
             return true;
@@ -685,6 +685,15 @@ public class LorieView extends SurfaceView implements InputStub {
         int height = getMeasuredHeight();
         int w = width;
         int h = height;
+        // AnWind（fix9.6）：桌面窗口模式下宿主可能未创建 X11 Activity，
+        // 静态 prefs 尚未就位 —— 此时退化为 "native"（跟随视图尺寸），
+        // 避免直接 NPE 崩溃。
+        if (prefs == null) {
+            p.set(w, h);
+            screenInfo.screenWidth = (short) w;
+            screenInfo.screenHeight = (short) h;
+            return;
+        }
         switch(prefs.displayResolutionMode.get()) {
             case "scaled": {
                 int scale = prefs.displayScale.get();
@@ -728,6 +737,11 @@ public class LorieView extends SurfaceView implements InputStub {
         super.onMeasure(widthMeasureSpec, heightMeasureSpec);
 
         Prefs prefs = MainActivity.getPrefs();
+        // AnWind（fix9.6）：prefs 未就位时按普通 SurfaceView 测量（native 模式）。
+        if (prefs == null) {
+            getHolder().setSizeFromLayout();
+            return;
+        }
         if (prefs.displayStretch.get()
             || "native".equals(prefs.displayResolutionMode.get())
             || "scaled".equals(prefs.displayResolutionMode.get())) {
@@ -790,7 +804,9 @@ public class LorieView extends SurfaceView implements InputStub {
         if (hardwareKbdScancodesWorkaround)
             return false;
 
-        return MainActivity.getInstance().handleKey(event);
+        // AnWind（fix9.6）：桌面窗口模式下无 X11 Activity 实例，交还默认处理。
+        MainActivity host = MainActivity.getInstance();
+        return host != null && host.handleKey(event);
     }
 
     @Override
@@ -882,7 +898,8 @@ public class LorieView extends SurfaceView implements InputStub {
 
     @Override
     public InputConnection onCreateInputConnection(EditorInfo outAttrs) {
-        if (MainActivity.getPrefs().enforceCharBasedInput.get())
+        Prefs prefs = MainActivity.getPrefs();
+        if (prefs != null && prefs.enforceCharBasedInput.get())
             outAttrs.inputType = InputType.TYPE_NULL;
         else
             outAttrs.inputType = InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS | InputType.TYPE_TEXT_VARIATION_NORMAL;
@@ -950,14 +967,16 @@ public class LorieView extends SurfaceView implements InputStub {
     @FastNative
     private native void nativeInit();
     @FastNative private native void surfaceChanged(Surface surface);
-    @FastNative static native void connect(int fd);
+    // AnWind（fix9.6）：connect/connected/sendWindowChange 改 public ——
+    // 桌面窗口模式（com.anwind.apps.x11 包）需要直接调这三个 JNI 入口。
+    @FastNative public static native void connect(int fd);
     @CriticalNative
-    static native boolean connected();
+    public static native boolean connected();
     @FastNative static native void startLogcat(int fd);
     @FastNative static native void setClipboardSyncEnabled(boolean enabled, boolean ignored);
     @FastNative public native void sendClipboardAnnounce();
     @FastNative public native void sendClipboardEvent(byte[] text);
-    @FastNative static native void sendWindowChange(int width, int height, int framerate, String name);
+    @FastNative public static native void sendWindowChange(int width, int height, int framerate, String name);
     @FastNative public native void sendMouseEvent(float x, float y, int whichButton, boolean buttonDown, boolean relative);
     @FastNative public native void sendTouchEvent(int action, int id, int x, int y);
     @FastNative public native void sendStylusEvent(float x, float y, int pressure, int tiltX, int tiltY, int orientation, int buttons, boolean eraser, boolean mouseMode);

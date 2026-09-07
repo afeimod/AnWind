@@ -131,8 +131,11 @@ object TermuxBootstrapInstaller {
      * debfix v6.3 对 termux-x11-nightly 包强制替换 bin/termux-x11
      * 为内置客户端（官方包会覆盖脚本且其类名经重写后不存在），
      * anwind-x11 启动前也按标记自愈。
+     * rev 17（fix9.6）：X11 显示端改桌面窗口模式（广播 → 桌面弹窗 →
+     * fd 连接渲染，全屏 Activity 转兼容兜底）；anwind-x11/termux-x11
+     * 脚本文案同步（窗口模式说明 + 手动会话 dbus-launch 提示）。
      */
-    private const val EXTRAS_REVISION = 16
+    private const val EXTRAS_REVISION = 17
 
     /** 安装状态（Compose 界面订阅渲染）。 */
     sealed class InstallState {
