@@ -46,6 +46,7 @@ object TermuxBootstrapInstaller {
      * 目录/可执行文件的属主读写执行权限，对齐官方 TermuxInstaller。
      */
     private const val PERMISSION_0700 = 448
+    private const val PERMISSION_0644 = 420
     private const val PERMISSION_0600 = 384
 
     /**
@@ -141,8 +142,20 @@ object TermuxBootstrapInstaller {
      * 不再只吐 dbus-launch 的 "EOF in dbus-launch ..." 费解尾错；
      * 兜底导出 LD_LIBRARY_PATH=$PREFIX/lib；doctor 桌面依赖区同步
      * 增加链接自检。
+     * rev 19（fix9.9）：pkg/apt 自身也可能无法链接（用户实测 pkg
+     * install 报 CANNOT LINK liblz4.so.1 → 包管理器死循环无法自救）：
+     * ① 根因一（结构性）：bootstrap 原包把 libexpat.so / libgpg-error.so
+     *   以 dev 名入库且 SYMLINKS.txt 无 soname 条目，而 dpkg status
+     *   已登记 libexpat installed → 依赖方永远不会再解包它们；
+     *   对策：SYMLINKS.txt 补条目重打包（SHA 同步更新，新装治本）；
+     * ② 根因二（事故丢失）：dpkg 事故可能整文件丢 liblz4.so.1；
+     *   对策：installRescueLibs 从 bootstrap 提取 liblz4/libexpat/
+     *   libgpg-error 真身到 etc/anwind/rescue（离线救援库）；
+     * ③ 新脚本 bin/anwind-pkgfix：离线补 soname 链接 + 救援库兑底
+     *   + 逐二进制实跑验证（不依赖 apt/pkg/网络，幂等）；
+     * ④ anwind-x11 rev19：预检失败先自动跑 anwind-pkgfix 再重测。
      */
-    private const val EXTRAS_REVISION = 18
+    private const val EXTRAS_REVISION = 19
 
     /** 安装状态（Compose 界面订阅渲染）。 */
     sealed class InstallState {
@@ -537,6 +550,13 @@ object TermuxBootstrapInstaller {
             context, "termux/scripts/anwind-mirror",
             File(prefix, "bin/anwind-mirror"), executable = true
         )
+        // rev19：pkg/apt 动态库链接离线自愈（fix9.9）——bootstrap
+        // 缺陷/事故丢库导致 pkg 全灭时的自救工具，部署于安装与迁移
+        copyAssetScript(
+            context, "termux/scripts/anwind-pkgfix",
+            File(prefix, "bin/anwind-pkgfix"), executable = true
+        )
+        installRescueLibs(context)
 
         // (4) 存量安装的 apt 源修复（全新安装时 bootstrap 已内置好源，此处无操作）
         fixAptSources(context)
@@ -608,6 +628,48 @@ object TermuxBootstrapInstaller {
             File(masterDir, "xkb.tar.gz"), executable = false
         )
         refreshX11Env(context)
+    }
+
+    /**
+     * rev19（fix9.9）：部署离线救援库 —— 从 bootstrap 归档流式提取
+     * liblz4 / libexpat / libgpg-error 真身到 etc/anwind/rescue/，
+     * 供 bin/anwind-pkgfix 在真身整文件丢失（dpkg 事故遗留）时兑底
+     * 复制。幂等：三文件齐全则直接返回；失败仅告警（非致命——多数
+     * 场景真身都在，只需 soname 链接修复）。
+     */
+    private fun installRescueLibs(context: Context) {
+        val rescueDir = File(
+            File(TermuxEnvironment.prefixDir(context), "etc/anwind"),
+            "rescue"
+        )
+        val wanted = listOf(
+            "lib/liblz4.so.1.9.3",
+            "lib/libexpat.so",
+            "lib/libgpg-error.so"
+        )
+        if (wanted.all { File(rescueDir, it.substringAfterLast('/')).isFile }) return
+        rescueDir.mkdirs()
+        try {
+            val assetName = "${TermuxEnvironment.BOOTSTRAP_ASSET_DIR}/bootstrap-aarch64.zip"
+            val want = wanted.toSet()
+            context.assets.open(assetName).use { input ->
+                java.util.zip.ZipInputStream(input).use { zin ->
+                    while (true) {
+                        val entry: ZipEntry = zin.nextEntry ?: break
+                        if (entry.name in want) {
+                            val out = File(rescueDir, entry.name.substringAfterLast('/'))
+                            out.outputStream().use { zin.copyTo(it, 64 * 1024) }
+                            Os.chmod(out.absolutePath, PERMISSION_0644)
+                        }
+                        zin.closeEntry()
+                    }
+                }
+            }
+            val done = wanted.count { File(rescueDir, it.substringAfterLast('/')).isFile }
+            android.util.Log.i(TAG, "rescue libs deployed: $done/${wanted.size} -> ${rescueDir.absolutePath}")
+        } catch (e: Exception) {
+            android.util.Log.w(TAG, "救援库部署失败（非致命）: ${e.message}")
+        }
     }
 
     /**

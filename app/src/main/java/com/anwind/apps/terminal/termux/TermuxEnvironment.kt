@@ -33,13 +33,19 @@ object TermuxEnvironment {
     const val BOOTSTRAP_ASSET_DIR = "termux"
     const val BOOTSTRAP_ASSET_PREFIX = "$BOOTSTRAP_ASSET_DIR/bootstrap-"
 
-    /** bootstrap 来源（供文档与"关于"信息展示）。 */
+    /**
+     * bootstrap 来源（供文档与"关于"信息展示）。
+     * fix9.9：SYMLINKS.txt 补 libexpat.so.1 / libgpg-error.so.0 两条
+     * soname 条目（bootstrap 原包把 libexpat.so / libgpg-error.so 以
+     * dev 名入库且无 soname 链接，导致 dbus-daemon 等按 DT_NEEDED
+     * 查找 libexpat.so.1 必然失败）——SHA-256 随之更新。
+     */
     const val TERMUX_APP_VERSION = "0.118.0"
     const val BOOTSTRAP_BUILD_VERSION = "2022.01.07-r1"
     const val BOOTSTRAP_SOURCE_URL =
         "https://github.com/termux/termux-packages/releases/download/bootstrap-$BOOTSTRAP_BUILD_VERSION/bootstrap-%s.zip"
     const val BOOTSTRAP_AARCH64_SHA256 =
-        "c584d723555978f62fc8010101dbc22b8cc273734e8553bbded5ceca72d255e6"
+        "86805e3a2d4a0c9ad22e04709cb9e6cec8365da593afb95df06c430e54f118b3"
 
     // ------------------------------------------------------------------
     // 运行期路径（全部由 Context 派生，避免硬编码二次引入）
