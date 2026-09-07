@@ -134,8 +134,15 @@ object TermuxBootstrapInstaller {
      * rev 17（fix9.6）：X11 显示端改桌面窗口模式（广播 → 桌面弹窗 →
      * fd 连接渲染，全屏 Activity 转兼容兜底）；anwind-x11/termux-x11
      * 脚本文案同步（窗口模式说明 + 手动会话 dbus-launch 提示）。
+     * rev 18（fix9.8）：会话依赖链接自检——anwind-x11 启动会话前对
+     * dbus-daemon/xfwm4/xfce4-panel/xfdesktop 逐个探测动态链接，缺库
+     * （CANNOT LINK EXECUTABLE，实证案例：dbus 在而 libexpat.so.1 缺）
+     * 时直接给出 pkg install/reinstall 精确修复命令并暂停自动会话，
+     * 不再只吐 dbus-launch 的 "EOF in dbus-launch ..." 费解尾错；
+     * 兜底导出 LD_LIBRARY_PATH=$PREFIX/lib；doctor 桌面依赖区同步
+     * 增加链接自检。
      */
-    private const val EXTRAS_REVISION = 17
+    private const val EXTRAS_REVISION = 18
 
     /** 安装状态（Compose 界面订阅渲染）。 */
     sealed class InstallState {

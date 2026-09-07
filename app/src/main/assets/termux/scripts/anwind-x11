@@ -1,6 +1,6 @@
 #!/data/data/com.anwind/files/usr/bin/sh
 # ============================================================
-# AnWind X11 桌面一键启动（v2.22.2 rev17）
+# AnWind X11 桌面一键启动（v2.22.2 rev18）
 # ============================================================
 # 用法：
 #   anwind-x11              启动 X11 服务（显示号默认 :1）并自动尝试
@@ -25,6 +25,13 @@
 #   什么都没装则服务照常启动，只是没有可显示的窗口。
 #   用 anwind-x11 doctor 可随时查看缺什么。
 #
+# rev18 会话依赖自检：dbus-daemon/xfwm4/xfce4-panel/xfdesktop 启动会话前
+#   逐个探测动态链接，缺库（CANNOT LINK EXECUTABLE）时直接给出
+#   pkg install/reinstall 精确修复命令（不再只见 dbus-launch 一句费解
+#   的 "EOF in dbus-launch reading address from bus daemon"）；并兜底
+#   导出 LD_LIBRARY_PATH=$PREFIX/lib。doctor 的桌面依赖区同步增加
+#   链接自检。
+#
 # rev14 排障增强：启动全程写入 $PREFIX/tmp/anwind-x11.log（前置检查、
 #   自愈动作、X 服务输出一站齐全，日志不再出现"空白"）；X 服务静默
 #   失败（原因仅在 logcat）时自动附带 logcat 相关摘要；ps 探测增加
@@ -35,6 +42,10 @@
 # ============================================================
 
 PREFIX=/data/data/com.anwind/files/usr
+# rev18：会话/桌面程序的动态库都在 $PREFIX/lib（bionic 不认 DT_RUNPATH，
+# 全靠 LD_LIBRARY_PATH 解析，上游 Termux 亦为会话固定设置）。此处无条件
+# 兜底导出，防个别入口（异常 shell/被清过的环境）导致 CANNOT LINK。
+export LD_LIBRARY_PATH="$PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 X11_LOG="$PREFIX/tmp/anwind-x11.log"
 mkdir -p "$PREFIX/tmp" 2>/dev/null
 
@@ -50,19 +61,87 @@ x11_running() {
     ps_all | grep 'anwindx11' | grep -v grep >/dev/null 2>&1
 }
 
+# ---- 会话依赖库自检（rev18） ----
+# bionic 链接失败时 stderr 形如：
+#   CANNOT LINK EXECUTABLE "...": library "libexpat.so.1" not found: ...
+# 动态链接发生在参数解析之前 —— 对 ELF 二进制喂无害参数（--version）
+# 即可安全探测，不会产生副作用。
+soname_to_pkg() {
+    case "$1" in
+        libexpat.so.1) echo libexpat ;;
+        libdbus-1.so.3) echo dbus ;;
+        libdbus-glib-1.so.2) echo dbus-glib ;;
+        libglib-2.0.so.0|libgobject-2.0.so.0|libgio-2.0.so.0|libgmodule-2.0.so.0) echo glib ;;
+        libffi.so.8) echo libffi ;;
+        libz.so.1) echo zlib ;;
+        liblzma.so.5) echo xz-utils ;;
+        libpng16.so.16) echo libpng ;;
+        libjpeg.so.62) echo libjpeg-turbo ;;
+        libpixman-1.so.0) echo pixman ;;
+        libcairo.so.2) echo cairo ;;
+        libpango-1.0.so.0|libpangocairo-1.0.so.0|libpangoft2-1.0.so.0) echo pango ;;
+        libatk-1.0.so.0|libatk-bridge-2.0.so.0) echo atk ;;
+        libgtk-3.so.0|libgdk-3.so.0) echo gtk3 ;;
+        libharfbuzz.so.0) echo harfbuzz ;;
+        libfontconfig.so.1) echo fontconfig ;;
+        libfreetype.so.6) echo freetype ;;
+        libxml2.so.2) echo libxml2 ;;
+        libX11.so.6) echo libx11 ;;
+        libxcb.so.1) echo libxcb ;;
+        libXext.so.6) echo libxext ;;
+        libXrender.so.1) echo libxrender ;;
+        libXrandr.so.2) echo libxrandr ;;
+        libXinerama.so.1) echo libxinerama ;;
+        libXcursor.so.1) echo libxcursor ;;
+        libXi.so.6) echo libxi ;;
+        libxkbcommon.so.0) echo libxkbcommon ;;
+        libxkbfile.so.1) echo libxkbfile ;;
+        libICE.so.6) echo libice ;;
+        libSM.so.6) echo libsm ;;
+        libXt.so.6) echo libxt ;;
+        libXtst.so.6) echo libxtst ;;
+        libssl.so.3|libcrypto.so.3) echo openssl ;;
+        *) echo "" ;;
+    esac
+}
+
+# link_ok <二进制路径> [自检参数…]：退出 0=链接正常，1=缺动态库/符号；
+# 并置全局 _MISSING_SONAME（缺失库）与 _FIX_PKG（对应 pkg 包名，可为空）。
+link_ok() {
+    _lk_bin="$1"; shift
+    _MISSING_SONAME=""; _FIX_PKG=""
+    [ -x "$_lk_bin" ] || return 0
+    if command -v timeout >/dev/null 2>&1; then
+        _lk_out="$(timeout 8 "$_lk_bin" "$@" 2>&1)" || true
+    else
+        _lk_out="$("$_lk_bin" "$@" 2>&1)" || true
+    fi
+    case "$_lk_out" in
+        *"CANNOT LINK"*|*"not found: needed by"*|*"cannot locate symbol"*)
+            _MISSING_SONAME="$(printf '%s\n' "$_lk_out" | sed -n 's/.*library "\([^"]*\)" not found.*/\1/p' | head -n 1)"
+            if [ -n "$_MISSING_SONAME" ]; then
+                _FIX_PKG="$(soname_to_pkg "$_MISSING_SONAME")"
+                [ -n "$_FIX_PKG" ] || _FIX_PKG="$(dpkg -S "$_MISSING_SONAME" 2>/dev/null | head -n 1 | sed 's/:.*//')"
+            fi
+            return 1
+            ;;
+    esac
+    return 0
+}
+
 # ---- doctor 子命令：一键体检（不启动服务） ----
 if [ "${1:-}" = "doctor" ] || [ "${1:-}" = "--doctor" ]; then
     _fails=0
     _ok()  { echo "  [OK] $1"; }
     _bad() { echo "  [!!] $1"; _fails=$((_fails + 1)); }
     _none() { echo "  [--] $1"; }
-    echo "==== AnWind X11 体检（rev17）===="
+    echo "==== AnWind X11 体检（rev18）===="
     echo
     echo "[1/4] X 服务组件（内置于 AnWind APK，无需 pkg 安装）"
     if [ -x "$PREFIX/bin/termux-x11" ] && grep -q 'ANWIND_X11_CLIENT' "$PREFIX/bin/termux-x11" 2>/dev/null; then
         _ok "bin/termux-x11 内置客户端就绪"
     else
-        _bad "bin/termux-x11 缺失/被覆盖/不可执行 → 打开一次 AnWind 主界面触发组件迁移（rev17），或确认 APK 为 fix9.6 及以上"
+        _bad "bin/termux-x11 缺失/被覆盖/不可执行 → 打开一次 AnWind 主界面触发组件迁移（rev18），或确认 APK 为 fix9.6 及以上"
     fi
     if [ -r "$PREFIX/etc/anwind/x11/termux-x11" ]; then
         _ok "主副本 etc/anwind/x11/termux-x11 就绪（防覆盖自愈源）"
@@ -94,7 +173,7 @@ if [ "${1:-}" = "doctor" ] || [ "${1:-}" = "--doctor" ]; then
     if [ -d "$PREFIX/etc/anwind/x11/xkb/rules" ] || [ -r "$PREFIX/etc/anwind/x11/xkb.tar.gz" ] || [ -d "$PREFIX/share/X11/xkb/rules" ]; then
         _ok "XKB 键盘数据就绪（X 服务零 pkg 依赖）"
     else
-        _bad "XKB 键盘数据缺失 → 打开一次 AnWind 主界面重新部署（rev17），或 pkg install xkeyboard-config"
+        _bad "XKB 键盘数据缺失 → 打开一次 AnWind 主界面重新部署（rev18），或 pkg install xkeyboard-config"
     fi
     if [ -w "$XDG_RUNTIME_DIR" ]; then
         _ok "XDG_RUNTIME_DIR 可写（$XDG_RUNTIME_DIR）"
@@ -117,6 +196,18 @@ if [ "${1:-}" = "doctor" ] || [ "${1:-}" = "--doctor" ]; then
         echo "  → 最小测试：pkg install x11-repo && pkg install xterm（先确认 X 服务可用）"
     fi
     echo
+    echo "  [2/4 追加] 动态库链接自检（rev18）——防会话组件 CANNOT LINK EXECUTABLE"
+    for _pb in dbus-daemon xfwm4 xfce4-panel xfdesktop; do
+        command -v "$_pb" >/dev/null 2>&1 || continue
+        if link_ok "$PREFIX/bin/$_pb" --version; then
+            _ok "$_pb 动态库依赖完整"
+        elif [ -n "$_FIX_PKG" ]; then
+            _bad "$_pb 缺动态库 $_MISSING_SONAME → pkg install $_FIX_PKG（若提示已安装改用 pkg reinstall $_FIX_PKG）"
+        else
+            _bad "$_pb 无法链接（缺 ${_MISSING_SONAME:-未知库}/符号）→ 用 pkg search 查装对应库，或将本输出回传"
+        fi
+    done
+    echo
     echo "[3/4] logcat 近期 X11 相关记录（上次失败的线索）"
     _lc="$(logcat -d -t 500 2>/dev/null | grep -iE 'lorie|CmdEntryPoint|anwindx11|Xwayland' | tail -n 12)"
     if [ -n "$_lc" ]; then
@@ -129,7 +220,7 @@ if [ "${1:-}" = "doctor" ] || [ "${1:-}" = "--doctor" ]; then
     if [ "$_fails" -eq 0 ]; then
         echo "  X 服务侧组件全部就绪，直接运行 anwind-x11 :1 即可。"
     else
-        echo "  X 服务侧存在 $_fails 项缺失，按上面 [!!] 提示处理后重试。"
+        echo "  存在 $_fails 项缺失（X 服务侧/会话依赖），按上面 [!!] 提示处理后重试。"
     fi
     echo "  再次说明：termux-x11-nightly 不是必需依赖（X 服务本体已内置）；"
     echo "  只有桌面 / X 应用需要通过 pkg 安装。"
@@ -146,7 +237,7 @@ if [ $# -gt 0 ]; then
 fi
 
 # ---- 启动日志：从第一行写起，任何失败都能 cat 回传定位 ----
-echo "==== anwind-x11 启动 $(date '+%Y-%m-%d %H:%M:%S') rev17 显示号 $DISP ====" >"$X11_LOG"
+echo "==== anwind-x11 启动 $(date '+%Y-%m-%d %H:%M:%S') rev18 显示号 $DISP ====" >"$X11_LOG"
 note() { echo "$1"; echo "[anwind-x11] $1" >>"$X11_LOG"; }
 die() {
     echo "anwind-x11: $1" >&2
@@ -187,7 +278,7 @@ fi
 if [ ! -d "$PREFIX/etc/anwind/x11/xkb/rules" ] \
     && [ ! -r "$PREFIX/etc/anwind/x11/xkb.tar.gz" ] \
     && [ ! -d "$PREFIX/share/X11/xkb/rules" ]; then
-    die "缺少 XKB 键盘数据 —— 打开一次 AnWind 主界面重新部署组件（rev17），或执行 pkg install xkeyboard-config"
+    die "缺少 XKB 键盘数据 —— 打开一次 AnWind 主界面重新部署组件（rev18），或执行 pkg install xkeyboard-config"
 fi
 
 termux-x11 "$DISP" >>"$X11_LOG" 2>&1 &
@@ -218,9 +309,42 @@ fi
 echo "X11 服务已启动（显示号 $DISP），AnWind 桌面窗口将自动弹出并连接……"
 echo "[anwind-x11] X11 服务进程已就位（显示号 $DISP）" >>"$X11_LOG"
 
-# 会话启动策略：显式命令 > xfce4 > openbox > 提示
+# ---- 会话依赖预检（rev18）：组件缺动态库时给出精确修复命令，并暂停 ----
+# ---- 自动启动会话（修复后重跑即可；X 服务与 X11 窗口不受影响）    ----
+# 典型场景：dbus 在而 libexpat 缺（dpkg 事务中断等致依赖链断裂），bionic
+# 报 "CANNOT LINK EXECUTABLE ... library ... not found"，dbus-launch 只
+# 尾随一句费解的 "EOF in dbus-launch reading address from bus daemon"。
+_sess_fail=0
+if [ $# -eq 0 ]; then
+    if command -v dbus-launch >/dev/null 2>&1 && ! link_ok "$PREFIX/bin/dbus-daemon" --version; then
+        _sess_fail=1
+        if [ -n "$_FIX_PKG" ]; then
+            note "会话依赖缺失：dbus-daemon 无法链接（缺 $_MISSING_SONAME）→ 修复：pkg install $_FIX_PKG ；若提示已安装则 pkg reinstall $_FIX_PKG，然后重跑 anwind-x11 $DISP"
+        else
+            note "会话依赖缺失：dbus-daemon 无法链接（缺 ${_MISSING_SONAME:-未知库}/符号）→ 用 pkg search 查装对应库后重跑，或将日志回传"
+        fi
+    fi
+    if [ "$_sess_fail" -eq 0 ] && command -v startxfce4 >/dev/null 2>&1; then
+        for _pb in xfwm4 xfce4-panel xfdesktop; do
+            command -v "$_pb" >/dev/null 2>&1 || continue
+            if ! link_ok "$PREFIX/bin/$_pb" --version; then
+                _sess_fail=1
+                if [ -n "$_FIX_PKG" ]; then
+                    note "会话依赖缺失：$_pb 缺 $_MISSING_SONAME → pkg install $_FIX_PKG（已装则 pkg reinstall）后重跑 anwind-x11 $DISP"
+                else
+                    note "会话依赖缺失：$_pb 无法链接（缺 ${_MISSING_SONAME:-未知库}/符号）→ pkg search 查装后重跑"
+                fi
+                break
+            fi
+        done
+    fi
+fi
+
+# 会话启动策略：显式命令 > xfce4 > openbox > 提示（预检不过则不自动起会话）
 if [ $# -gt 0 ]; then
     env DISPLAY="$DISP" "$@" &
+elif [ "$_sess_fail" -eq 1 ]; then
+    :   # 预检失败：保留 X 服务与 X11 窗口等待页，装齐库后重跑即可
 elif command -v dbus-launch >/dev/null 2>&1 && command -v startxfce4 >/dev/null 2>&1; then
     echo "检测到 xfce4，正在启动桌面会话……"
     env DISPLAY="$DISP" dbus-launch --exit-with-session startxfce4 >/dev/null 2>&1 &
