@@ -1,6 +1,6 @@
 #!/data/data/com.anwind/files/usr/bin/sh
 # ============================================================
-# AnWind X11 桌面一键启动（v2.22.2 rev14）
+# AnWind X11 桌面一键启动（v2.22.2 rev15）
 # ============================================================
 # 用法：
 #   anwind-x11              启动 X11 服务（显示号默认 :1）并自动尝试
@@ -53,13 +53,13 @@ if [ "${1:-}" = "doctor" ] || [ "${1:-}" = "--doctor" ]; then
     _ok()  { echo "  [OK] $1"; }
     _bad() { echo "  [!!] $1"; _fails=$((_fails + 1)); }
     _none() { echo "  [--] $1"; }
-    echo "==== AnWind X11 体检（rev14）===="
+    echo "==== AnWind X11 体检（rev15）===="
     echo
     echo "[1/4] X 服务组件（内置于 AnWind APK，无需 pkg 安装）"
     if [ -x "$PREFIX/bin/termux-x11" ] && grep -q 'ANWIND_X11_CLIENT' "$PREFIX/bin/termux-x11" 2>/dev/null; then
         _ok "bin/termux-x11 内置客户端就绪"
     else
-        _bad "bin/termux-x11 缺失/被覆盖/不可执行 → 打开一次 AnWind 主界面触发组件迁移（rev14），或确认 APK 为 fix9.3 及以上"
+        _bad "bin/termux-x11 缺失/被覆盖/不可执行 → 打开一次 AnWind 主界面触发组件迁移（rev15），或确认 APK 为 fix9.4 及以上"
     fi
     if [ -r "$PREFIX/etc/anwind/x11/termux-x11" ]; then
         _ok "主副本 etc/anwind/x11/termux-x11 就绪（防覆盖自愈源）"
@@ -138,7 +138,7 @@ if [ $# -gt 0 ]; then
 fi
 
 # ---- 启动日志：从第一行写起，任何失败都能 cat 回传定位 ----
-echo "==== anwind-x11 启动 $(date '+%Y-%m-%d %H:%M:%S') rev14 显示号 $DISP ====" >"$X11_LOG"
+echo "==== anwind-x11 启动 $(date '+%Y-%m-%d %H:%M:%S') rev15 显示号 $DISP ====" >"$X11_LOG"
 note() { echo "$1"; echo "[anwind-x11] $1" >>"$X11_LOG"; }
 die() {
     echo "anwind-x11: $1" >&2
@@ -161,7 +161,18 @@ fi
 
 # ---- 前置检查：客户端本体（缺它必然空转，日志会是一片空白） ----
 if [ ! -x "$X11_CLIENT" ] || [ ! -s "$X11_CLIENT" ]; then
-    die "内置客户端 $X11_CLIENT 缺失/不可执行/为空 —— 请先打开一次 AnWind 主界面（触发 rev14 组件迁移）再试；若仍失败请确认 APK 为 fix9.3 及以上版本"
+    die "内置客户端 $X11_CLIENT 缺失/不可执行/为空 —— 请先打开一次 AnWind 主界面（触发组件迁移）再试；若仍失败请确认 APK 为 fix9.4 及以上版本"
+fi
+
+# ---- 前置检查：libXlorie.so（X 服务引擎，缺失则启动必然失败） ----
+if [ -r "$PREFIX/etc/anwind-x11.env" ]; then
+    # shellcheck disable=SC1090
+    . "$PREFIX/etc/anwind-x11.env"
+    if [ -n "${ANWIND_NATIVE_DIR:-}" ] && [ ! -f "$ANWIND_NATIVE_DIR/libXlorie.so" ]; then
+        die "libXlorie.so 不在 $ANWIND_NATIVE_DIR —— APK 可能与本机 ABI 不匹配（建议 universal 包），或安装不完整（重装 APK）"
+    fi
+else
+    note "警告：etc/anwind-x11.env 缺失，X 服务可能无法定位宿主组件——打开一次 AnWind 主界面自动生成"
 fi
 
 termux-x11 "$DISP" >>"$X11_LOG" 2>&1 &

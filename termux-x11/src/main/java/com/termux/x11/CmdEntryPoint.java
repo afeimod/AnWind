@@ -204,40 +204,42 @@ public class CmdEntryPoint extends ICmdEntryInterface.Stub {
         URL res = loader != null ? loader.getResource(path) : null;
         String libPath = res != null ? res.getFile().replace("file:", "") : null;
         // AnWind 适配：宿主 APK 以 useLegacyPackaging=true 打包（anwind-reprefix
-        // 可执行需要解压到 nativeLibraryDir 才能被 shell 调用），lib/ 条目在 APK
-        // 内被压缩，无法直接 dlopen。客户端脚本会经 anwind-x11.env 注入宿主
-        // nativeLibraryDir，此处兜底从解压目录加载 libXlorie.so。
+        // 可执行需要解压到 nativeLibraryDir 才能被 shell 调用），lib/ 条目在
+        // APK 内被压缩，System.load(APK 内条目) 必然抛 UnsatisfiedLinkError。
+        // 注意它是 Error 而非 Exception——上游 catch (Exception) 接不住，
+        // nativeLibraryDir 兜底分支从未执行（X 服务静默死亡、终端日志空白
+        // 的根因，用户实测 logcat 实证）。改为优先从 PM 解压目录
+        // （ANWIND_X11_NATIVE_DIR）加载，失败再试 APK 内条目，catch 用 Throwable。
         String anwindNativeDir = getenv("ANWIND_X11_NATIVE_DIR");
-        if (libPath != null) {
-            try {
-                System.load(libPath);
-            } catch (Exception e) {
-                if (anwindNativeDir != null) {
-                    try {
-                        System.load(anwindNativeDir + "/libXlorie.so");
-                    } catch (Exception e2) {
-                        Log.e("CmdEntryPoint", "Failed to dlopen " + anwindNativeDir + "/libXlorie.so", e2);
-                        System.err.println("Failed to load native library from " + anwindNativeDir + ". Did you install the right apk?");
-                        System.exit(134);
-                    }
-                } else {
-                    Log.e("CmdEntryPoint", "Failed to dlopen " + libPath, e);
-                    System.err.println("Failed to load native library. Did you install the right apk? Try the universal one.");
-                    System.exit(134);
-                }
-            }
-        } else if (anwindNativeDir != null) {
+        boolean loaded = false;
+        String loadErr = null;
+        if (anwindNativeDir != null) {
             try {
                 System.load(anwindNativeDir + "/libXlorie.so");
-            } catch (Exception e2) {
-                Log.e("CmdEntryPoint", "Failed to dlopen " + anwindNativeDir + "/libXlorie.so", e2);
-                System.err.println("Failed to load native library from " + anwindNativeDir + ". Did you install the right apk?");
-                System.exit(134);
+                loaded = true;
+            } catch (Throwable t) {
+                loadErr = t.toString();
+                Log.w("CmdEntryPoint", "dlopen from nativeLibraryDir failed, will try APK entry", t);
             }
-        } else {
+        }
+        if (!loaded && libPath != null) {
+            try {
+                System.load(libPath);
+                loaded = true;
+            } catch (Throwable t) {
+                loadErr = t.toString();
+                Log.w("CmdEntryPoint", "dlopen from APK entry failed", t);
+            }
+        }
+        if (!loaded) {
+            if (loadErr != null)
+                Log.e("CmdEntryPoint", "Failed to load libXlorie.so: " + loadErr);
             // It is critical only when it is not running in Android application process
+            //（App 进程内 LorieView 会经 System.loadLibrary 正常加载，不能退出）
             if (MainActivity.getInstance() == null) {
-                System.err.println("Failed to acquire native library. Did you install the right apk? Try the universal one.");
+                System.err.println("[anwind-x11] libXlorie.so 加载失败"
+                    + (loadErr != null ? "（" + loadErr + "）" : "（未找到可用来源）")
+                    + "。请确认安装与本机 ABI 匹配的 APK（建议 universal 包）。");
                 System.exit(134);
             }
         }
