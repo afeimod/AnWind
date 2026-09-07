@@ -1,0 +1,56 @@
+#!/data/data/com.anwind/files/usr/bin/sh
+# ============================================================
+# AnWind X11 桌面一键启动（v2.22.2）
+# ============================================================
+# 用法：
+#   anwind-x11              启动 X11 服务（显示号默认 :1）并自动尝试
+#                           启动已安装的桌面会话（xfce4 / openbox 等）
+#   anwind-x11 :0           指定显示号
+#   anwind-x11 :1 xterm     服务就绪后运行单个 X 程序
+#
+# 服务启动后 AnWind 会自动弹出全屏 X11 桌面（不占用终端界面）；
+# 画面分辨率默认跟随本机屏幕，可在桌面右上角设置中调整。
+# 停止服务：anwind-x11-stop
+# ============================================================
+
+# lorie 需要 XDG_RUNTIME_DIR 存放 Wayland 运行时 socket
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-${TMPDIR:-/data/data/com.anwind/files/usr/tmp}}"
+mkdir -p "$XDG_RUNTIME_DIR" 2>/dev/null
+
+DISP=":1"
+if [ $# -gt 0 ]; then
+    case "$1" in
+        :*) DISP="$1"; shift ;;
+        *[!0-9]*) ;;          # 非显示号参数（直接透传给会话命令）
+        *) DISP=":$1"; shift ;;
+    esac
+fi
+
+termux-x11 "$DISP" &
+sleep 2
+
+if ! ps -ef 2>/dev/null | grep 'anwindx11' | grep -v grep >/dev/null 2>&1; then
+    echo "anwind-x11: X11 服务启动失败，请重试或重启 AnWind" >&2
+    exit 1
+fi
+echo "X11 服务已启动（显示号 $DISP），正在唤起 AnWind X11 桌面……"
+
+# 会话启动策略：显式命令 > xfce4 > openbox > 提示
+if [ $# -gt 0 ]; then
+    env DISPLAY="$DISP" "$@" &
+elif command -v dbus-launch >/dev/null 2>&1 && command -v startxfce4 >/dev/null 2>&1; then
+    echo "检测到 xfce4，正在启动桌面会话……"
+    env DISPLAY="$DISP" dbus-launch --exit-with-session startxfce4 >/dev/null 2>&1 &
+elif command -v xfce4-session >/dev/null 2>&1; then
+    env DISPLAY="$DISP" dbus-launch --exit-with-session xfce4-session >/dev/null 2>&1 &
+elif command -v openbox-session >/dev/null 2>&1; then
+    env DISPLAY="$DISP" openbox-session >/dev/null 2>&1 &
+elif command -v startlxde >/dev/null 2>&1; then
+    env DISPLAY="$DISP" dbus-launch --exit-with-session startlxde >/dev/null 2>&1 &
+else
+    echo
+    echo "未检测到桌面环境。可选："
+    echo "  pkg install xfce4 dbus       # 安装 xfce4 桌面（推荐）"
+    echo "  pkg install openbox          # 轻量窗口管理器"
+    echo "  env DISPLAY=$DISP xterm      # 或运行单个 X 程序"
+fi

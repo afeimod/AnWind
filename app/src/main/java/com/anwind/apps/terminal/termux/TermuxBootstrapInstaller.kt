@@ -46,6 +46,7 @@ object TermuxBootstrapInstaller {
      * 目录/可执行文件的属主读写执行权限，对齐官方 TermuxInstaller。
      */
     private const val PERMISSION_0700 = 448
+    private const val PERMISSION_0600 = 384
 
     /**
      * 增强组件修订号：anwind.sh / 工具链 / motd / apt 源修复内容变更时 +1。
@@ -122,8 +123,12 @@ object TermuxBootstrapInstaller {
      * 不可运行则暂存 dpkg.real.pending、保留旧真身继续干活，待
      * 依赖（如随事务解包的 libmd）就绪后自动晋升——dpkg 永远
      * 不会再被换入的真身打死。
+     * rev 12：内置 X11 桌面客户端（v2.22.2）—— 部署 termux-x11 /
+     * anwind-x11 / anwind-x11-stop 三个终端命令与宿主组件定位文件
+     * etc/anwind-x11.env（终端侧 anwind-x11 经 app_process 拉起
+     * CmdEntryPoint X server，App 端全屏 X11 桌面自动弹出）。
      */
-    private const val EXTRAS_REVISION = 11
+    private const val EXTRAS_REVISION = 12
 
     /** 安装状态（Compose 界面订阅渲染）。 */
     sealed class InstallState {
@@ -530,6 +535,60 @@ object TermuxBootstrapInstaller {
             archives.listFiles { f -> f.isFile && f.name.endsWith(".deb") }?.forEach { it.delete() }
         } catch (e: Exception) {
             android.util.Log.w(TAG, "清理 apt 缓存失败: ${e.message}")
+        }
+
+        // (6) v2.22.2 内置 X11 桌面客户端（终端侧命令 + 宿主定位文件）
+        installX11Client(context)
+    }
+
+    /**
+     * 部署内置 X11 桌面的终端侧组件（rev 12，全新安装与存量迁移共用）：
+     * - bin/termux-x11：X server 客户端（app_process 拉起宿主 APK 内的
+     *   com.termux.x11.CmdEntryPoint，即 lorie 合成器 + Xwayland）；
+     * - bin/anwind-x11：一键启动（服务 + 自动尝试 xfce4 等桌面会话）；
+     * - bin/anwind-x11-stop：停止服务（nice-name 精确匹配，不影响
+     *   官方 Termux:X11 应用的进程）；
+     * - etc/anwind-x11.env：宿主 APK 路径与 nativeLibraryDir（APK 内的
+     *   libXlorie.so 在 useLegacyPackaging=true 下被压缩，CmdEntryPoint
+     *   需从解压目录加载）。APK 路径随每次升级变化，[refreshX11Env]
+     *   在应用启动时自愈。
+     */
+    private fun installX11Client(context: Context) {
+        val prefix = TermuxEnvironment.prefixDir(context)
+        copyAssetScript(
+            context, "termux/scripts/termux-x11",
+            File(prefix, "bin/termux-x11"), executable = true
+        )
+        copyAssetScript(
+            context, "termux/scripts/anwind-x11",
+            File(prefix, "bin/anwind-x11"), executable = true
+        )
+        copyAssetScript(
+            context, "termux/scripts/anwind-x11-stop",
+            File(prefix, "bin/anwind-x11-stop"), executable = true
+        )
+        refreshX11Env(context)
+    }
+
+    /**
+     * 刷新 etc/anwind-x11.env（宿主 APK 路径 / native 库目录）。
+     * 公开给 AnWindApp 在每次应用启动时调用（APK 升级后路径变化自愈），
+     * bootstrap 未安装时静默跳过。
+     */
+    fun refreshX11Env(context: Context) {
+        if (!isInstalled(context)) return
+        try {
+            val envFile = File(TermuxEnvironment.prefixDir(context), "etc/anwind-x11.env")
+            envFile.parentFile?.mkdirs()
+            val nativeDir = context.applicationInfo.nativeLibraryDir ?: ""
+            envFile.writeText(
+                "# 由 AnWind 自动生成（内置 X11 客户端定位宿主组件，勿手工编辑）\n" +
+                "ANWIND_APK_PATH=${context.packageCodePath}\n" +
+                "ANWIND_NATIVE_DIR=$nativeDir\n"
+            )
+            Os.chmod(envFile.absolutePath, PERMISSION_0600)
+        } catch (e: Exception) {
+            android.util.Log.w(TAG, "X11 客户端环境文件写入失败: ${e.message}")
         }
     }
 

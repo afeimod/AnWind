@@ -165,9 +165,10 @@ android {
         //   自动弹授权（行为略有差异但可用）
         // 唯一代价：Android 10+ 安装时提示“此应用为旧版 Android 打造”。
         // ============================================================
+        // v2.22.2 内置 X11 桌面（版本号随功能递增）
         targetSdk = 28
-        versionCode = 42
-        versionName = "2.22.1"
+        versionCode = 43
+        versionName = "2.22.2"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -328,6 +329,12 @@ dependencies {
 
     // WebView
     implementation("androidx.webkit:webkit:1.11.0")
+
+    // v2.22.2 内置 X11 桌面：X server 显示端（lorie 合成器 + Xwayland
+    // 预编译库 libXlorie.so 全 ABI）。libXlorie.so 随本模块 jniLibs 打包，
+    // 与 app 的 useLegacyPackaging=true 兼容（CmdEntryPoint 有
+    // nativeLibraryDir 兜底加载逻辑，见 termux-x11/CmdEntryPoint.java）。
+    implementation(project(":termux-x11"))
 
     // Document file (for local HTML access via SAF)
     implementation("androidx.documentfile:documentfile:1.0.1")

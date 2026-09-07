@@ -1,0 +1,62 @@
+#!/data/data/com.anwind/files/usr/bin/sh
+# ============================================================
+# AnWind 内置 X11 客户端（v2.22.2）
+# ============================================================
+# 以宿主 APK 为 CLASSPATH，经 app_process 启动
+# com.termux.x11.CmdEntryPoint —— 即 X server 本体
+#（lorie 合成器 + Xwayland in-process，预编译 libXlorie.so）。
+#
+# 与官方 Termux:X11 应用互不冲突：
+# - 广播目标固定为 com.anwind（TERMUX_X11_OVERRIDE_PACKAGE）；
+# - X11 socket 落在 AnWind 自身的 tmp 目录；
+# - 进程 nice-name 为 anwindx11，独立于官方应用的 com.termux.x11。
+# ============================================================
+
+# 保留调用方库环境（X server 启动后会原样传给会话进程）
+[ -z "${LD_LIBRARY_PATH+x}" ] || export XSTARTUP_LD_LIBRARY_PATH="$LD_LIBRARY_PATH"
+[ -z "${LD_PRELOAD+x}" ] || export XSTARTUP_LD_PRELOAD="$LD_PRELOAD"
+[ -z "${CLASSPATH+x}" ] || export XSTARTUP_CLASSPATH="$CLASSPATH"
+
+# 广播目标：只叫醒 AnWind 自己
+export TERMUX_X11_OVERRIDE_PACKAGE=com.anwind
+
+# 宿主 APK 与 native 库目录（安装器写入 etc/anwind-x11.env，
+# AnWind 每次启动会自动刷新，APK 升级后路径自愈）
+X11_ENV_FILE="/data/data/com.anwind/files/usr/etc/anwind-x11.env"
+if [ -r "$X11_ENV_FILE" ]; then
+    # shellcheck disable=SC1090
+    . "$X11_ENV_FILE"
+    if [ -n "$ANWIND_APK_PATH" ]; then
+        export ANWIND_APK_PATH
+        export CLASSPATH="$ANWIND_APK_PATH"
+    fi
+    if [ -n "$ANWIND_NATIVE_DIR" ]; then
+        # CmdEntryPoint 兜底加载 libXlorie.so 用（APK 内 lib 条目被压缩）
+        export ANWIND_X11_NATIVE_DIR="$ANWIND_NATIVE_DIR"
+    fi
+fi
+
+# 兜底：安装器文件缺失时用 pm 查询宿主 APK
+if [ -z "${CLASSPATH:-}" ] || [ ! -r "$CLASSPATH" ]; then
+    CLASSPATH="$(pm path com.anwind 2>/dev/null | head -n 1 | cut -d: -f2-)"
+    if [ -n "$CLASSPATH" ]; then
+        export CLASSPATH
+    fi
+fi
+if [ -z "${CLASSPATH:-}" ] || [ ! -r "$CLASSPATH" ]; then
+    echo "anwind-x11: 无法定位宿主 APK，请打开一次 AnWind 桌面后重试" >&2
+    exit 1
+fi
+
+# app_process 不需要 Termux 的库搜索路径
+unset LD_LIBRARY_PATH LD_PRELOAD
+
+# 服务已在运行则不重复拉起（nice-name 精确匹配 anwindx11）
+if ps -ef 2>/dev/null | grep 'anwindx11' | grep -v grep >/dev/null 2>&1; then
+    echo "X11 服务已在运行（如需重启请先执行 anwind-x11-stop）"
+    exit 0
+fi
+
+exec /system/bin/app_process -Xnoimage-dex2oat / \
+    --nice-name="anwindx11 $*" \
+    com.termux.x11.CmdEntryPoint "$@"

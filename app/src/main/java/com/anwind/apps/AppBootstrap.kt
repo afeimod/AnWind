@@ -13,6 +13,7 @@ import com.anwind.apps.settings.SettingsApp
 import com.anwind.apps.sysinfo.SysInfoApp
 import com.anwind.apps.terminal.TerminalApp
 import com.anwind.apps.terminal.SimpleTerminalApp
+import com.anwind.apps.x11.X11App
 import com.anwind.core.window.AppRegistry
 
 /**
@@ -33,6 +34,8 @@ object AppBootstrap {
         // v2.22：终端双轨 —— 真实 Termux 移植版（默认）+ 旧模拟版（简易终端）
         AppRegistry.register(TerminalApp)
         AppRegistry.register(SimpleTerminalApp)
+        // v2.22.2：内置 X11 桌面（全屏显示端，终端 anwind-x11 命令调起）
+        AppRegistry.register(X11App)
         AppRegistry.register(MediaPlayerApp)
         AppRegistry.register(MusicPlayerApp)
         AppRegistry.register(MinesweeperApp)

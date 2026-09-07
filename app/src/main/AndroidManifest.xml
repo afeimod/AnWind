@@ -2,6 +2,10 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
+    <!-- v2.22.2 内置 X11 桌面：termux-x11 模块 minSdk=26 高于宿主 24，
+         与参考实现一致地放行库最低版本（X11 显示端建议 Android 8.0+） -->
+    <uses-sdk tools:overrideLibrary="com.termux.x11" />
+
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
         android:maxSdkVersion="32" />

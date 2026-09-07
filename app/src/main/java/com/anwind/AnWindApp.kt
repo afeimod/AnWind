@@ -1,14 +1,20 @@
 package com.anwind
 
 import android.app.Application
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import androidx.room.Room
 import com.anwind.data.db.AppDatabase
 import com.anwind.data.prefs.SettingsStore
 import com.anwind.core.theme.ThemeManager
+import com.anwind.apps.x11.X11Desktop
+import com.termux.x11.CmdEntryPoint
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 
 /**
  * 应用入口：初始化 Room DB、ThemeManager、SettingsStore 等单例。
@@ -31,6 +37,20 @@ class AnWindApp : Application() {
      */
     val applicationScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
+    /**
+     * v2.22.2 内置 X11 桌面：终端侧 `anwind-x11` 客户端（app_process 进程）
+     * 每秒广播一次 ACTION_START（附带 X 连接 fd 的 binder）直到被取用。
+     * 此处去抖后拉起全屏 X11 桌面 Activity；binder 由桌面 Activity 自己的
+     * 动态接收器从重播中取出并完成连接（见 X11Desktop 注释）。
+     */
+    private val x11LaunchReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            if (intent.action == CmdEntryPoint.ACTION_START) {
+                X11Desktop.openFromBroadcast(context)
+            }
+        }
+    }
+
     override fun onCreate() {
         super.onCreate()
         instance = this
@@ -44,6 +64,19 @@ class AnWindApp : Application() {
 
         // 注册所有内置应用
         com.anwind.apps.AppBootstrap.registerAll()
+
+        // 内置 X11 桌面：监听终端侧 X server 的连接广播
+        registerReceiver(
+            x11LaunchReceiver,
+            IntentFilter(CmdEntryPoint.ACTION_START)
+        )
+
+        // v2.22.2 X11 客户端宿主定位文件自愈：APK 升级后安装路径变化，
+        // 每次启动在后台线程刷新 etc/anwind-x11.env（未装 bootstrap 时静默）
+        applicationScope.launch(Dispatchers.IO) {
+            com.anwind.apps.terminal.termux.TermuxBootstrapInstaller
+                .refreshX11Env(this@AnWindApp)
+        }
     }
 
     companion object {
