@@ -1,5 +1,5 @@
 #!/data/data/com.anwind/files/usr/bin/sh
-# ANWIND_X11_CLIENT rev13 —— AnWind 内置客户端识别标记（勿删，
+# ANWIND_X11_CLIENT rev14 —— AnWind 内置客户端识别标记（勿删，
 # anwind-x11 靠本行检测文件是否被 termux-x11-nightly 官方包覆盖）
 # ============================================================
 # AnWind 内置 X11 客户端（v2.22.2）
@@ -53,8 +53,10 @@ fi
 # app_process 不需要 Termux 的库搜索路径
 unset LD_LIBRARY_PATH LD_PRELOAD
 
-# 服务已在运行则不重复拉起（nice-name 精确匹配 anwindx11）
-if ps -ef 2>/dev/null | grep 'anwindx11' | grep -v grep >/dev/null 2>&1; then
+# 服务已在运行则不重复拉起（nice-name 精确匹配 anwindx11；
+# ps 探测逐级兜底 busybox/toybox，避免误判已在运行而重复拉起）
+if { ps -ef 2>/dev/null || ps ax 2>/dev/null || ps 2>/dev/null; } \
+    | grep 'anwindx11' | grep -v grep >/dev/null 2>&1; then
     echo "X11 服务已在运行（如需重启请先执行 anwind-x11-stop）"
     exit 0
 fi

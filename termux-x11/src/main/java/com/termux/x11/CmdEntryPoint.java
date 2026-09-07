@@ -52,8 +52,16 @@ public class CmdEntryPoint extends ICmdEntryInterface.Stub {
     }
 
     CmdEntryPoint(String[] args) {
-        if (!start(args))
+        if (!start(args)) {
+            // AnWind 排障适配：start() 失败原先完全静默（终端侧
+            // anwind-x11.log 被重定向后为空文件，无从定位）。原因细节由
+            // native 层写 logcat，这里镜像一条到 stderr，随 anwind-x11
+            // 的重定向落入启动日志。
+            System.err.println("[anwind-x11] X server 初始化失败（start 返回 false）。"
+                + "常见原因：显示号 socket 被残留占用（先执行 anwind-x11-stop）、"
+                + "XDG_RUNTIME_DIR 不可写；详细原因见 logcat（anwind-x11 失败时会自动附带摘要）。");
             System.exit(1);
+        }
 
 //        spawnListeningThread();
         sendBroadcastDelayed();
@@ -185,6 +193,8 @@ public class CmdEntryPoint extends ICmdEntryInterface.Stub {
                 Looper.prepareMainLooper();
         } catch (Exception e) {
             Log.e("CmdEntryPoint", "Something went wrong when preparing MainLooper", e);
+            // AnWind 排障适配：镜像到 stderr（落入 anwind-x11.log）
+            System.err.println("[anwind-x11] MainLooper 初始化异常: " + e);
         }
         handler = new Handler();
         ctx = createContext();

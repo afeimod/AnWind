@@ -1,38 +1,131 @@
 #!/data/data/com.anwind/files/usr/bin/sh
 # ============================================================
-# AnWind X11 桌面一键启动（v2.22.2 rev13）
+# AnWind X11 桌面一键启动（v2.22.2 rev14）
 # ============================================================
 # 用法：
 #   anwind-x11              启动 X11 服务（显示号默认 :1）并自动尝试
 #                           启动已安装的桌面会话（xfce4 / openbox 等）
 #   anwind-x11 :0           指定显示号
 #   anwind-x11 :1 xterm     服务就绪后运行单个 X 程序
+#   anwind-x11 doctor       体检：逐项检查 X11 组件与依赖，缺失项
+#                           直接给出处理/安装命令（不启动服务）
 #
 # 服务启动后 AnWind 会自动弹出全屏 X11 桌面（不占用终端界面）；
 # 画面分辨率默认跟随本机屏幕，可在桌面右上角设置中调整。
 # 停止服务：anwind-x11-stop
 #
+# 依赖说明（重要）：
+#   X 服务本体（CmdEntryPoint + libXlorie.so）内置于 AnWind APK，
+#   不依赖任何 pkg 包；termux-x11-nightly 并非必需依赖（装不装都不
+#   影响内置 X11）。只有桌面会话 / X 应用（xfce4、openbox、xterm…）
+#   需要 pkg install x11-repo 后自行安装——装了什么就自动用什么，
+#   什么都没装则服务照常启动，只是没有可显示的窗口。
+#   用 anwind-x11 doctor 可随时查看缺什么。
+#
+# rev14 排障增强：启动全程写入 $PREFIX/tmp/anwind-x11.log（前置检查、
+#   自愈动作、X 服务输出一站齐全，日志不再出现"空白"）；X 服务静默
+#   失败（原因仅在 logcat）时自动附带 logcat 相关摘要；ps 探测增加
+#   busybox/toybox 兼容兜底。
 # rev13 自愈：`pkg install termux-x11-nightly` 会用官方客户端脚本覆盖
-# bin/termux-x11（官方脚本经前缀重写后引用的类名并不存在，启动即崩，
-# 表现为"X11 服务启动失败"）。启动前按标记检测，被覆盖即从
-# etc/anwind/x11 主副本恢复，无需重装 bootstrap。
+#   bin/termux-x11（官方脚本经前缀重写后引用的类名并不存在，启动即
+#   崩）。启动前按标记检测，被覆盖即从 etc/anwind/x11 主副本恢复。
 # ============================================================
 
 PREFIX=/data/data/com.anwind/files/usr
+X11_LOG="$PREFIX/tmp/anwind-x11.log"
+mkdir -p "$PREFIX/tmp" 2>/dev/null
 
 # lorie 需要 XDG_RUNTIME_DIR 存放 Wayland 运行时 socket
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-${TMPDIR:-$PREFIX/tmp}}"
 mkdir -p "$XDG_RUNTIME_DIR" 2>/dev/null
 
-# ---- 自愈：官方 termux-x11-nightly 包覆盖内置客户端后自动恢复 ----
-X11_MASTER="$PREFIX/etc/anwind/x11/termux-x11"
-X11_CLIENT="$PREFIX/bin/termux-x11"
-if [ -r "$X11_MASTER" ]; then
-    if [ ! -x "$X11_CLIENT" ] || ! grep -q 'ANWIND_X11_CLIENT' "$X11_CLIENT" 2>/dev/null; then
-        cp -f "$X11_MASTER" "$X11_CLIENT" 2>/dev/null \
-            && chmod 700 "$X11_CLIENT" 2>/dev/null \
-            && echo "anwind-x11: 已恢复内置 termux-x11 客户端（曾被 termux-x11-nightly 官方包覆盖）"
+# 进程存在性探测（优先 procps 的 ps -ef，逐级兜底 busybox/toybox ps）
+ps_all() {
+    ps -ef 2>/dev/null || ps ax 2>/dev/null || ps 2>/dev/null
+}
+x11_running() {
+    ps_all | grep 'anwindx11' | grep -v grep >/dev/null 2>&1
+}
+
+# ---- doctor 子命令：一键体检（不启动服务） ----
+if [ "${1:-}" = "doctor" ] || [ "${1:-}" = "--doctor" ]; then
+    _fails=0
+    _ok()  { echo "  [OK] $1"; }
+    _bad() { echo "  [!!] $1"; _fails=$((_fails + 1)); }
+    _none() { echo "  [--] $1"; }
+    echo "==== AnWind X11 体检（rev14）===="
+    echo
+    echo "[1/4] X 服务组件（内置于 AnWind APK，无需 pkg 安装）"
+    if [ -x "$PREFIX/bin/termux-x11" ] && grep -q 'ANWIND_X11_CLIENT' "$PREFIX/bin/termux-x11" 2>/dev/null; then
+        _ok "bin/termux-x11 内置客户端就绪"
+    else
+        _bad "bin/termux-x11 缺失/被覆盖/不可执行 → 打开一次 AnWind 主界面触发组件迁移（rev14），或确认 APK 为 fix9.3 及以上"
     fi
+    if [ -r "$PREFIX/etc/anwind/x11/termux-x11" ]; then
+        _ok "主副本 etc/anwind/x11/termux-x11 就绪（防覆盖自愈源）"
+    else
+        _bad "主副本 etc/anwind/x11/termux-x11 缺失 → 打开一次 AnWind 主界面即自动部署"
+    fi
+    if [ -r "$PREFIX/etc/anwind-x11.env" ]; then
+        _ok "etc/anwind-x11.env 就绪"
+        _apk="$(sed -n 's/^ANWIND_APK_PATH=//p' "$PREFIX/etc/anwind-x11.env" | head -n 1)"
+        _nat="$(sed -n 's/^ANWIND_NATIVE_DIR=//p' "$PREFIX/etc/anwind-x11.env" | head -n 1)"
+        if [ -n "$_apk" ] && [ -r "$_apk" ]; then
+            _ok "宿主 APK 可读（$_apk）"
+        else
+            _bad "宿主 APK 不可读（$_apk）→ 打开一次 AnWind 主界面自动刷新"
+        fi
+        if [ -n "$_nat" ] && [ -f "$_nat/libXlorie.so" ]; then
+            _ok "libXlorie.so 就绪（$_nat）"
+        else
+            _bad "libXlorie.so 缺失（$_nat）→ 确认 APK 与本机 ABI 匹配（建议 universal 包）"
+        fi
+    else
+        _bad "etc/anwind-x11.env 缺失 → 打开一次 AnWind 主界面即自动生成"
+    fi
+    if [ -x /system/bin/app_process ]; then
+        _ok "/system/bin/app_process 就绪"
+    else
+        _bad "/system/bin/app_process 缺失（非标准 Android 系统）"
+    fi
+    if [ -w "$XDG_RUNTIME_DIR" ]; then
+        _ok "XDG_RUNTIME_DIR 可写（$XDG_RUNTIME_DIR）"
+    else
+        _bad "XDG_RUNTIME_DIR 不可写（$XDG_RUNTIME_DIR）→ 重启 AnWind 终端重试"
+    fi
+    echo
+    echo "[2/4] 桌面会话 / X 应用（这部分才需要 pkg 安装，至少装一个）"
+    _any=0
+    for _c in startxfce4 xfce4-session openbox-session startlxde xterm; do
+        if command -v "$_c" >/dev/null 2>&1; then
+            _ok "检测到 $_c"
+            _any=1
+        else
+            _none "未安装 $_c"
+        fi
+    done
+    if [ "$_any" -eq 0 ]; then
+        echo "  → 完整桌面：pkg install x11-repo && pkg install xfce4 dbus"
+        echo "  → 最小测试：pkg install x11-repo && pkg install xterm（先确认 X 服务可用）"
+    fi
+    echo
+    echo "[3/4] logcat 近期 X11 相关记录（上次失败的线索）"
+    _lc="$(logcat -d -t 500 2>/dev/null | grep -iE 'lorie|CmdEntryPoint|anwindx11|Xwayland' | tail -n 12)"
+    if [ -n "$_lc" ]; then
+        echo "$_lc" | sed 's/^/  | /'
+    else
+        echo "  （无相关记录）"
+    fi
+    echo
+    echo "[4/4] 结论"
+    if [ "$_fails" -eq 0 ]; then
+        echo "  X 服务侧组件全部就绪，直接运行 anwind-x11 :1 即可。"
+    else
+        echo "  X 服务侧存在 $_fails 项缺失，按上面 [!!] 提示处理后重试。"
+    fi
+    echo "  再次说明：termux-x11-nightly 不是必需依赖（X 服务本体已内置）；"
+    echo "  只有桌面 / X 应用需要通过 pkg 安装。"
+    exit 0
 fi
 
 DISP=":1"
@@ -44,28 +137,60 @@ if [ $# -gt 0 ]; then
     esac
 fi
 
-# 启动日志（启动失败时按提示 cat 回传，可精确定位原因）
-X11_LOG="$PREFIX/tmp/anwind-x11.log"
-mkdir -p "$PREFIX/tmp" 2>/dev/null
-termux-x11 "$DISP" >"$X11_LOG" 2>&1 &
+# ---- 启动日志：从第一行写起，任何失败都能 cat 回传定位 ----
+echo "==== anwind-x11 启动 $(date '+%Y-%m-%d %H:%M:%S') rev14 显示号 $DISP ====" >"$X11_LOG"
+note() { echo "$1"; echo "[anwind-x11] $1" >>"$X11_LOG"; }
+die() {
+    echo "anwind-x11: $1" >&2
+    echo "[前置检查失败] $1" >>"$X11_LOG"
+    exit 1
+}
+
+# ---- 自愈：官方 termux-x11-nightly 包覆盖内置客户端后自动恢复 ----
+X11_MASTER="$PREFIX/etc/anwind/x11/termux-x11"
+X11_CLIENT="$PREFIX/bin/termux-x11"
+if [ -r "$X11_MASTER" ]; then
+    if [ ! -x "$X11_CLIENT" ] || ! grep -q 'ANWIND_X11_CLIENT' "$X11_CLIENT" 2>/dev/null; then
+        if cp -f "$X11_MASTER" "$X11_CLIENT" 2>/dev/null && chmod 700 "$X11_CLIENT" 2>/dev/null; then
+            note "已恢复内置 termux-x11 客户端（曾被官方包覆盖或已损坏）"
+        else
+            note "警告：主副本存在但恢复 bin/termux-x11 失败（权限？）"
+        fi
+    fi
+fi
+
+# ---- 前置检查：客户端本体（缺它必然空转，日志会是一片空白） ----
+if [ ! -x "$X11_CLIENT" ] || [ ! -s "$X11_CLIENT" ]; then
+    die "内置客户端 $X11_CLIENT 缺失/不可执行/为空 —— 请先打开一次 AnWind 主界面（触发 rev14 组件迁移）再试；若仍失败请确认 APK 为 fix9.3 及以上版本"
+fi
+
+termux-x11 "$DISP" >>"$X11_LOG" 2>&1 &
 
 # 等待服务进程就位（最多约 8 秒；app_process 冷启动在低端机上较慢）
 _n=0
 while [ "$_n" -lt 8 ]; do
     sleep 1
-    if ps -ef 2>/dev/null | grep 'anwindx11' | grep -v grep >/dev/null 2>&1; then
+    if x11_running; then
         break
     fi
     _n=$((_n + 1))
 done
 
-if ! ps -ef 2>/dev/null | grep 'anwindx11' | grep -v grep >/dev/null 2>&1; then
-    echo "anwind-x11: X11 服务启动失败，最近日志：" >&2
-    tail -n 5 "$X11_LOG" 2>/dev/null | sed 's/^/  | /'
-    echo "anwind-x11: 完整日志: cat $X11_LOG （把输出发回即可定位原因）" >&2
+if ! x11_running; then
+    echo "anwind-x11: X11 服务启动失败" >&2
+    echo "---- $X11_LOG 最近 10 行 ----" >&2
+    tail -n 10 "$X11_LOG" 2>/dev/null | sed 's/^/  | /'
+    # X 服务的失败原因常只写 logcat（native 层），这里自动附带摘要
+    _lc="$(logcat -d -t 500 2>/dev/null | grep -iE 'lorie|CmdEntryPoint|anwindx11|Xwayland' | tail -n 12)"
+    if [ -n "$_lc" ]; then
+        echo "---- logcat 相关摘要 ----" >&2
+        echo "$_lc" | sed 's/^/  | /'
+    fi
+    echo "anwind-x11: 完整日志: cat $X11_LOG ；一键体检: anwind-x11 doctor" >&2
     exit 1
 fi
 echo "X11 服务已启动（显示号 $DISP），正在唤起 AnWind X11 桌面……"
+echo "[anwind-x11] X11 服务进程已就位（显示号 $DISP）" >>"$X11_LOG"
 
 # 会话启动策略：显式命令 > xfce4 > openbox > 提示
 if [ $# -gt 0 ]; then
@@ -81,8 +206,10 @@ elif command -v startlxde >/dev/null 2>&1; then
     env DISPLAY="$DISP" dbus-launch --exit-with-session startlxde >/dev/null 2>&1 &
 else
     echo
-    echo "未检测到桌面环境。可选："
-    echo "  pkg install xfce4 dbus       # 安装 xfce4 桌面（推荐）"
-    echo "  pkg install openbox          # 轻量窗口管理器"
-    echo "  env DISPLAY=$DISP xterm      # 或运行单个 X 程序"
+    echo "未检测到桌面环境（X 服务本身正常）。可选："
+    echo "  pkg install x11-repo && pkg install xfce4 dbus   # 安装 xfce4 桌面（推荐）"
+    echo "  pkg install x11-repo && pkg install openbox      # 轻量窗口管理器"
+    echo "  pkg install x11-repo && pkg install xterm        # 最小化验证"
+    echo "  env DISPLAY=$DISP xterm                          # 或直接运行单个 X 程序"
+    echo "  提示：anwind-x11 doctor 可随时体检组件与依赖"
 fi

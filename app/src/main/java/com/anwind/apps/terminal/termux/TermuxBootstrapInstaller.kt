@@ -132,7 +132,7 @@ object TermuxBootstrapInstaller {
      * 为内置客户端（官方包会覆盖脚本且其类名经重写后不存在），
      * anwind-x11 启动前也按标记自愈。
      */
-    private const val EXTRAS_REVISION = 13
+    private const val EXTRAS_REVISION = 14
 
     /** 安装状态（Compose 界面订阅渲染）。 */
     sealed class InstallState {
@@ -546,7 +546,7 @@ object TermuxBootstrapInstaller {
     }
 
     /**
-     * 部署内置 X11 桌面的终端侧组件（rev 13，全新安装与存量迁移共用）：
+     * 部署内置 X11 桌面的终端侧组件（rev 14，全新安装与存量迁移共用）：
      * - bin/termux-x11：X server 客户端（app_process 拉起宿主 APK 内的
      *   com.termux.x11.CmdEntryPoint，即 lorie 合成器 + Xwayland）；
      * - bin/anwind-x11：一键启动（服务 + 自动尝试 xfce4 等桌面会话）；
