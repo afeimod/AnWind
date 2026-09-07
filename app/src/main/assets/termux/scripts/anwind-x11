@@ -1,6 +1,6 @@
 #!/data/data/com.anwind/files/usr/bin/sh
 # ============================================================
-# AnWind X11 桌面一键启动（v2.22.2）
+# AnWind X11 桌面一键启动（v2.22.2 rev13）
 # ============================================================
 # 用法：
 #   anwind-x11              启动 X11 服务（显示号默认 :1）并自动尝试
@@ -11,11 +11,29 @@
 # 服务启动后 AnWind 会自动弹出全屏 X11 桌面（不占用终端界面）；
 # 画面分辨率默认跟随本机屏幕，可在桌面右上角设置中调整。
 # 停止服务：anwind-x11-stop
+#
+# rev13 自愈：`pkg install termux-x11-nightly` 会用官方客户端脚本覆盖
+# bin/termux-x11（官方脚本经前缀重写后引用的类名并不存在，启动即崩，
+# 表现为"X11 服务启动失败"）。启动前按标记检测，被覆盖即从
+# etc/anwind/x11 主副本恢复，无需重装 bootstrap。
 # ============================================================
 
+PREFIX=/data/data/com.anwind/files/usr
+
 # lorie 需要 XDG_RUNTIME_DIR 存放 Wayland 运行时 socket
-export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-${TMPDIR:-/data/data/com.anwind/files/usr/tmp}}"
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-${TMPDIR:-$PREFIX/tmp}}"
 mkdir -p "$XDG_RUNTIME_DIR" 2>/dev/null
+
+# ---- 自愈：官方 termux-x11-nightly 包覆盖内置客户端后自动恢复 ----
+X11_MASTER="$PREFIX/etc/anwind/x11/termux-x11"
+X11_CLIENT="$PREFIX/bin/termux-x11"
+if [ -r "$X11_MASTER" ]; then
+    if [ ! -x "$X11_CLIENT" ] || ! grep -q 'ANWIND_X11_CLIENT' "$X11_CLIENT" 2>/dev/null; then
+        cp -f "$X11_MASTER" "$X11_CLIENT" 2>/dev/null \
+            && chmod 700 "$X11_CLIENT" 2>/dev/null \
+            && echo "anwind-x11: 已恢复内置 termux-x11 客户端（曾被 termux-x11-nightly 官方包覆盖）"
+    fi
+fi
 
 DISP=":1"
 if [ $# -gt 0 ]; then
@@ -26,11 +44,25 @@ if [ $# -gt 0 ]; then
     esac
 fi
 
-termux-x11 "$DISP" &
-sleep 2
+# 启动日志（启动失败时按提示 cat 回传，可精确定位原因）
+X11_LOG="$PREFIX/tmp/anwind-x11.log"
+mkdir -p "$PREFIX/tmp" 2>/dev/null
+termux-x11 "$DISP" >"$X11_LOG" 2>&1 &
+
+# 等待服务进程就位（最多约 8 秒；app_process 冷启动在低端机上较慢）
+_n=0
+while [ "$_n" -lt 8 ]; do
+    sleep 1
+    if ps -ef 2>/dev/null | grep 'anwindx11' | grep -v grep >/dev/null 2>&1; then
+        break
+    fi
+    _n=$((_n + 1))
+done
 
 if ! ps -ef 2>/dev/null | grep 'anwindx11' | grep -v grep >/dev/null 2>&1; then
-    echo "anwind-x11: X11 服务启动失败，请重试或重启 AnWind" >&2
+    echo "anwind-x11: X11 服务启动失败，最近日志：" >&2
+    tail -n 5 "$X11_LOG" 2>/dev/null | sed 's/^/  | /'
+    echo "anwind-x11: 完整日志: cat $X11_LOG （把输出发回即可定位原因）" >&2
     exit 1
 fi
 echo "X11 服务已启动（显示号 $DISP），正在唤起 AnWind X11 桌面……"

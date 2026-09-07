@@ -80,7 +80,10 @@ _anwind_ensure_dpkg_fix() {
     # 修复链路（deb 重打包/前缀重写/兜底配置/apt 钩子）全部就位；
     # 看不到本行说明仍在运行旧版 APK——源码修复必须构建安装后才会生效。
     if [ -x "$PREFIX/bin/anwind-reprefix" ]; then
-        echo "anwind: pkg 修复链路已激活 (fix8.5, rev 10)"
+        # rev 动态读取（fix9.2）：与 var/lib/anwind/install-revision 实际
+        # 值一致，避免版本文案与部署内容脱节（历史上写死 fix8.5/rev 10）。
+        _anwind_rev="$(cat "$PREFIX/var/lib/anwind/install-revision" 2>/dev/null)"
+        echo "anwind: pkg 修复链路已激活 (fix9.2, rev ${_anwind_rev:-13})"
     else
         echo "anwind: 警告: anwind-reprefix 缺失，pkg 安装将走目录改名降级路径" >&2
     fi

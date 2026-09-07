@@ -127,8 +127,12 @@ object TermuxBootstrapInstaller {
      * anwind-x11 / anwind-x11-stop 三个终端命令与宿主组件定位文件
      * etc/anwind-x11.env（终端侧 anwind-x11 经 app_process 拉起
      * CmdEntryPoint X server，App 端全屏 X11 桌面自动弹出）。
+     * rev 13：X11 客户端防覆盖——脚本主副本落盘 etc/anwind/x11/；
+     * debfix v6.3 对 termux-x11-nightly 包强制替换 bin/termux-x11
+     * 为内置客户端（官方包会覆盖脚本且其类名经重写后不存在），
+     * anwind-x11 启动前也按标记自愈。
      */
-    private const val EXTRAS_REVISION = 12
+    private const val EXTRAS_REVISION = 13
 
     /** 安装状态（Compose 界面订阅渲染）。 */
     sealed class InstallState {
@@ -542,7 +546,7 @@ object TermuxBootstrapInstaller {
     }
 
     /**
-     * 部署内置 X11 桌面的终端侧组件（rev 12，全新安装与存量迁移共用）：
+     * 部署内置 X11 桌面的终端侧组件（rev 13，全新安装与存量迁移共用）：
      * - bin/termux-x11：X server 客户端（app_process 拉起宿主 APK 内的
      *   com.termux.x11.CmdEntryPoint，即 lorie 合成器 + Xwayland）；
      * - bin/anwind-x11：一键启动（服务 + 自动尝试 xfce4 等桌面会话）；
@@ -566,6 +570,24 @@ object TermuxBootstrapInstaller {
         copyAssetScript(
             context, "termux/scripts/anwind-x11-stop",
             File(prefix, "bin/anwind-x11-stop"), executable = true
+        )
+        // 主副本（rev13 防覆盖自愈源）：`pkg install termux-x11-nightly`
+        // 会用官方客户端覆盖 bin/termux-x11（重写后引用的类名不存在，
+        // 启动即崩）。debfix v6.3 替换 deb 内客户端、anwind-x11 启动
+        // 前自检恢复，都从这里取审定版本。
+        val masterDir = File(prefix, "etc/anwind/x11")
+        masterDir.mkdirs()
+        copyAssetScript(
+            context, "termux/scripts/termux-x11",
+            File(masterDir, "termux-x11"), executable = true
+        )
+        copyAssetScript(
+            context, "termux/scripts/anwind-x11",
+            File(masterDir, "anwind-x11"), executable = true
+        )
+        copyAssetScript(
+            context, "termux/scripts/anwind-x11-stop",
+            File(masterDir, "anwind-x11-stop"), executable = true
         )
         refreshX11Env(context)
     }
@@ -753,8 +775,17 @@ object TermuxBootstrapInstaller {
                 return
             }
             try {
-                installPackageToolchain(context)
+                // rev13 顺序修正：先跑全量重写，再部署审定脚本。旧顺序
+                // （先部署后重写）下，若用户装过官方 termux-x11-nightly，
+                // bin/termux-x11 属包清单成员，--full 的内容改写会把刚
+                // 部署的内置客户端里 com.termux.x11.CmdEntryPoint 类名
+                // 改成不存在的 com.anwind.x11.*——X11 启动必崩（用户实测）。
+                // 先重写存量树（历史残留/被覆盖脚本一并清理），随后部署的
+                // 脚本不再被任何重写波及（部署内容本就按 com.anwind 编写，
+                // 其中 com.termux.x11.CmdEntryPoint 是宿主 APK 真实类名，
+                // 属合法保留字串）。
                 runReprefix(context, listOf("--full"))
+                installPackageToolchain(context)
                 installAnWindExtras(context)
                 revisionFile(context).writeText("$EXTRAS_REVISION\n")
                 android.util.Log.i(TAG, "Termux extras migrated to revision $EXTRAS_REVISION")

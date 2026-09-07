@@ -10,6 +10,20 @@
 #       10 字节）→ dpkg-deb -b 原子回写。等长替换不改变任何文件
 #       大小，md5sums 中的哈希仍与改前内容一致。
 #
+# v6.3（fix9.2）termux-x11-nightly 特判：
+#   用户实测：pkg install termux-x11-nightly 后 anwind-x11 报
+#   "X11 服务启动失败"。根因：官方包的 bin/termux-x11 客户端脚本经
+#   com.termux→com.anwind 等长重写后，其引用的 CmdEntryPoint 类名
+#   一并被改写为 com.anwind.x11.*——而宿主 APK 内类实际保持
+#   com.termux.x11.*（Java 包名不随应用包名重前缀），客户端启动即崩；
+#   且 dpkg 装包会用官方客户端覆盖 bin/termux-x11 内置脚本。对策
+#  （对齐 jiaxinchen-max/termux-app "自建包顶掉官方包"的思路）：
+#   1) 识别 Package: termux-x11-nightly 的 deb，无论记账是否命中，
+#      强制走完整处理（缓存里的旧 deb 也要换客户端）；
+#   2) 重写树内把 usr/bin/termux-x11 替换为内置客户端
+#     （etc/anwind/x11/termux-x11 主副本，安装器 rev13 部署）；
+#   3) anwind-x11 启动前按标记自检，被覆盖即从主副本恢复（双保险）。
+#
 # v6.2（fix8.6）dpkg 真身晋升安全门：
 #   2026-09-06 事故：Pre-Install 钩子把重写树中的新 dpkg 1.22.6-5
 #   直接换入 dpkg.real，新版官方包改用 DT_RUNPATH（bionic 对主执行
@@ -66,7 +80,7 @@ set -u
 
 # 版本指纹（v6.2，设备端一键核验部署状态）：anwind-debfix version
 if [ "${1:-}" = "version" ]; then
-    echo "anwind-debfix v6.2 (fix8.6, EXTRAS_REVISION 11)"
+    echo "anwind-debfix v6.3 (fix9.2, EXTRAS_REVISION 13)"
     exit 0
 fi
 
@@ -172,23 +186,34 @@ process_one() {
     size=$(stat -c %s "$deb" 2>/dev/null || echo 0)
     mtime=$(stat -c %Y "$deb" 2>/dev/null || echo 0)
     stamp="$STAMP_DIR/$base.$size.$mtime"
+    # v6.3：termux-x11-nightly 特判——即使记账命中/字节扫描为净
+    # （路径已重写），也必须强制完整处理：重写后的官方客户端引用的
+    # 类名不存在，必须替换为内置客户端（见头部 v6.3 说明）。
+    is_nightly=0
+    if [ "$(dpkg-deb -f "$deb" Package 2>/dev/null)" = "termux-x11-nightly" ]; then
+        is_nightly=1
+    fi
     if [ -f "$stamp" ]; then
         # v6 记账三分支：命中也必须字节级验证。"无法验证"绝不当作
         # 干净——这正是 v5 时代 13 个包静默失败且零警告的唯一分支。
-        scan_deb "$deb"
-        scan_rc=$?
-        if [ "$scan_rc" -eq 0 ]; then
-            log "$base: 记账命中，字节扫描=净 → 跳过（终端不打印，日志必记）"
-            return 0
-        fi
-        if [ "$scan_rc" -eq 1 ]; then
-            echo "anwind-debfix: 警告: $base 已有记账但仍含 com.termux 字节（历史污染章），强制重跑" >&2
-            log "$base: 记账命中但扫描=脏（历史污染章）→ 撕章强制重写"
+        if [ "$is_nightly" -eq 1 ]; then
+            log "$base: 记账命中但为 termux-x11-nightly → 强制重处理（换内置客户端）"
         else
-            echo "anwind-debfix: 提示: $base 无法字节级核验（dpkg-deb 异常），按未处理处理，走完整重写" >&2
-            log "$base: 记账命中但扫描器异常 → 按未处理完整重写"
+            scan_deb "$deb"
+            scan_rc=$?
+            if [ "$scan_rc" -eq 0 ]; then
+                log "$base: 记账命中，字节扫描=净 → 跳过（终端不打印，日志必记）"
+                return 0
+            fi
+            if [ "$scan_rc" -eq 1 ]; then
+                echo "anwind-debfix: 警告: $base 已有记账但仍含 com.termux 字节（历史污染章），强制重跑" >&2
+                log "$base: 记账命中但扫描=脏（历史污染章）→ 撕章强制重写"
+            else
+                echo "anwind-debfix: 提示: $base 无法字节级核验（dpkg-deb 异常），按未处理处理，走完整重写" >&2
+                log "$base: 记账命中但扫描器异常 → 按未处理完整重写"
+            fi
+            rm -f "$STAMP_DIR/$base."* 2>/dev/null
         fi
-        rm -f "$STAMP_DIR/$base."* 2>/dev/null
     else
         log "$base: 无记账 → 完整重写"
     fi
@@ -265,6 +290,27 @@ process_one() {
     fi
     # dpkg 包自升级：同步新真身到 dpkg.real（在 dpkg.real 运行前，安全）
     sync_dpkg_real "$work/root/data/data/com.anwind/files/usr/bin/dpkg"
+    # v6.3：termux-x11-nightly → 把树内 bin/termux-x11 换成内置客户端。
+    # 主副本由安装器 rev13 部署到 etc/anwind/x11/；缺失时跳过替换
+    # （anwind-x11 运行时自愈 + 存量迁移仍会恢复）。
+    if [ "$is_nightly" -eq 1 ] \
+       && [ -r "$work/root/DEBIAN/control" ] \
+       && grep -q '^Package: termux-x11-nightly' "$work/root/DEBIAN/control" 2>/dev/null; then
+        _x11_master="$PREFIX/etc/anwind/x11/termux-x11"
+        _x11_target="$work/root/data/data/com.anwind/files/usr/bin/termux-x11"
+        if [ -f "$_x11_target" ] && [ -r "$_x11_master" ]; then
+            if cp -f "$_x11_master" "$_x11_target" 2>/dev/null; then
+                chmod 0755 "$_x11_target" 2>/dev/null
+                count=$((count + 1))
+                echo "anwind-debfix: $base 已换用 AnWind 内置 X11 客户端（termux-x11-nightly 特判）" >&2
+                log "$base: bin/termux-x11 已替换为内置客户端（nightly 特判）"
+            else
+                log "$base: 内置客户端替换失败（cp），保持重写版"
+            fi
+        else
+            log "$base: nightly 特判跳过（树内无 bin/termux-x11 或主副本缺失）"
+        fi
+    fi
     repaired=0
     if [ "$count" -gt 0 ]; then
         if ! dpkg-deb -b "$work/root" "$work/out.deb" >/dev/null 2>&1; then
@@ -314,7 +360,7 @@ process_one() {
     if [ "$size2.$mtime2" != "$size.$mtime" ]; then
         : > "$STAMP_DIR/$base.$size2.$mtime2"
     fi
-    echo "anwind-debfix v6.2: $base 已重写为 com.anwind 前缀 (count=$count)" >&2
+    echo "anwind-debfix v6.3: $base 已重写为 com.anwind 前缀 (count=$count)" >&2
     log "$base: 重写完成 count=$count repaired=$repaired"
     echo "ANWIND_REPAIRED=$repaired"
     rm -rf "$work"
