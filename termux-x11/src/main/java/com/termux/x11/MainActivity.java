@@ -165,6 +165,21 @@ public class MainActivity extends LoriePreferences {
     }
 
     @Override
+    public boolean dispatchTouchEvent(MotionEvent ev) {
+        // AnWind（v2.22.3 fix10）：虚拟手柄触摸路由 —— 原本本 fork 的
+        // MainActivity 从未把触摸事件交给 InputControlsView（Winlator
+        // 上游在 dispatchTouchEvent 里路由），导致全屏模式下点了屏幕上
+        // 的手柄按钮也没反应。手柄层可见且有 profile 时优先进入手柄层，
+        // 未命中的按钮区域回落到 touchpad（触控板鼠标）。
+        if (inputControlsView != null
+            && inputControlsView.getVisibility() == View.VISIBLE
+            && inputControlsView.getProfile() != null
+            && inputControlsView.handleTouchEvent(ev))
+            return true;
+        return super.dispatchTouchEvent(ev);
+    }
+
+    @Override
     @SuppressLint({"AppCompatMethod", "ObsoleteSdkInt", "ClickableViewAccessibility", "WrongConstant", "UnspecifiedRegisterReceiverFlag", "ResourceType", "MissingInflatedId"})
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -290,11 +305,9 @@ public class MainActivity extends LoriePreferences {
             && !shouldShowRequestPermissionRationale(Manifest.permission.POST_NOTIFICATIONS)) {
             requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 0);
         }
-        winHandler = new WinHandler(this);
-        lorieView.setWinHandler(winHandler);
-        Executors.newSingleThreadExecutor().execute(() -> {
-            winHandler.start();
-        });
+        // AnWind（v2.22.3 fix10）：WinHandler 由 X11InputHub 单例提供
+        // （浮动窗口/全屏共享，幂等启动，不再各自 new + start 抢 7947 端口）。
+        // 真正的接线在 setupInputController() 中完成。
     }
 
     private static void closeSoftKeyboard() {
@@ -309,7 +322,9 @@ public class MainActivity extends LoriePreferences {
 
     @Override
     protected void onDestroy() {
-        winHandler.stop();
+        // AnWind（v2.22.3 fix10）：不再调用 winHandler.stop() ——
+        // WinHandler 现由 X11InputHub 持有并与浮动窗口共享，全屏 Activity
+        // 销毁不应中断手柄通道；注册器随进程销毁自动释放。
         unregisterReceiver(receiver);
         super.onDestroy();
     }
@@ -331,6 +346,15 @@ public class MainActivity extends LoriePreferences {
         inputControlsView.setVisibility(View.GONE);
         frm.addView(inputControlsView);
         inputControlsManager = new InputControlsManager(this);
+
+        // AnWind（v2.22.3 fix10）：接入 X11InputHub —— 与浮动窗口共享
+        // 同一个 WinHandler（UDP 7947 单实例，避免两处抢占端口互相踢）。
+        // 全屏 Activity 退出不再 stop()，手柄链路随 app 进程存活。
+        X11InputHub hub = X11InputHub.get(getApplicationContext());
+        winHandler = hub.getWinHandler();
+        xServer.setWinHandler(winHandler);
+        hub.setActiveControlsView(inputControlsView);
+
         String shortcutPath = getIntent().getStringExtra("shortcut_path");
         container = new Container(0);
         if (shortcutPath != null && !shortcutPath.isEmpty())

@@ -702,9 +702,19 @@ public class LorieView extends SurfaceView implements InputStub {
                 break;
             }
             case "exact": {
-                String[] resolution = prefs.displayResolutionExact.get().split("x");
-                w = Integer.parseInt(resolution[0]);
-                h = Integer.parseInt(resolution[1]);
+                // AnWind（v2.22.3 fix10）：容错解析 —— 分辨率可由终端侧
+                // glibc-runner 写入（.anwind-x11-res 协议），格式异常时
+                // 不允许在 onMeasure 里抛 NumberFormatException 炸掉窗口，
+                // 回退 1280x720。
+                try {
+                    String[] resolution = prefs.displayResolutionExact.get().split("x");
+                    w = Integer.parseInt(resolution[0].trim());
+                    h = Integer.parseInt(resolution[1].trim());
+                    if (w < 160 || h < 120 || w > 7680 || h > 4320) throw new NumberFormatException();
+                } catch (Exception ignored) {
+                    w = 1280;
+                    h = 720;
+                }
                 break;
             }
             case "custom": {
