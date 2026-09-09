@@ -100,6 +100,11 @@ class AnWindApp : Application() {
             IntentFilter(CmdEntryPoint.ACTION_START)
         )
 
+        // v2.22.3 fix10：分辨率握手桥 —— 监听 glibc-runner 写入的
+        // $PREFIX/tmp/.anwind-x11-res（-d WxH 虚拟桌面/全屏分辨率），
+        // 让 X11 窗口的 X 屏幕真正按游戏分辨率创建（等比缩放显示）。
+        com.anwind.apps.x11.X11ResolutionLink.start(this)
+
         // v2.22.2 X11 客户端宿主定位文件自愈：APK 升级后安装路径变化，
         // 每次启动在后台线程刷新 etc/anwind-x11.env（未装 bootstrap 时静默）
         applicationScope.launch(Dispatchers.IO) {

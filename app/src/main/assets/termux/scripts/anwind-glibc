@@ -25,6 +25,29 @@ command -v anwind-mirror >/dev/null 2>&1 && anwind-mirror --quiet || true
 echo "[anwind-glibc] 2/2 安装 glibc-runner（glibc 运行时 + grun）..."
 pkg install -y glibc-runner
 
+# ============================================================
+# fix10：恢复 AnWind 增强版 glibc-runner（v3.2-anwind3）
+# pkg 安装的官方 glibc-runner 会覆盖 bin/glibc-runner，丢掉两个
+# AnWind 专属能力：
+#   [Z1] z 盘修复 —— 悬空盘符自动重建、z: 指向 /（旧版悬空后
+#        wine 里 z 盘一片空白）
+#   [R1] 分辨率握手 —— -d 分辨率写入 tmp/.anwind-x11-res，
+#        AnWind X11 窗口按游戏分辨率渲染（旧版游戏缩成一小块）
+# 主副本在 etc/anwind/glibc-runner（bootstrap 安装时部署）；主副本
+# 缺失时保留 pkg 官方版（功能可用，仅少 AnWind 增强）。
+# ============================================================
+GR_BIN="$PREFIX/bin/glibc-runner"
+GR_MASTER="$PREFIX/etc/anwind/glibc-runner"
+if [ -r "$GR_MASTER" ]; then
+    if ! grep -q 'v3\.2-anwind' "$GR_BIN" 2>/dev/null || [ "$GR_BIN" -ot "$GR_MASTER" ] 2>/dev/null; then
+        if cp -f "$GR_MASTER" "$GR_BIN" 2>/dev/null && chmod 700 "$GR_BIN" 2>/dev/null; then
+            echo "[anwind-glibc] 已恢复 AnWind 增强版 glibc-runner（z 盘修复 + 分辨率握手）"
+        else
+            echo "[anwind-glibc] 警告: 恢复增强版 glibc-runner 失败（权限？），当前为官方版"
+        fi
+    fi
+fi
+
 echo
 echo "[anwind-glibc] 完成。常用命令："
 echo "  grun <命令>          以 glibc 环境运行指定命令，如 grun ./a.out"

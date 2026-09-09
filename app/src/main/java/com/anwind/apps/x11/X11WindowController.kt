@@ -86,6 +86,10 @@ object X11WindowController {
             return
         }
 
+        // v2.22.4 fix11c：会话在手 → 前台常驻保活（App 进程不被冻结/杀，
+        // X server 作为被绑定方优先级随之提升；会话结束后服务自停）。
+        X11KeepAliveService.start(context.applicationContext)
+
         if (_state.value != State.Connected) _state.value = State.Waiting
 
         if (isNewSession || _state.value == State.Waiting)
@@ -202,4 +206,13 @@ object X11WindowController {
 
     /** 当前是否有活跃会话（供等待页展示提示）。 */
     fun hasSession(): Boolean = sessionBinder != null
+
+    /**
+     * v2.22.4 fix11c：X server 会话是否真实存活（binder 层面）。
+     * 供常驻服务巡检：anwind-x11-stop / 进程被杀后 binder 死亡 → 服务自停。
+     */
+    fun isSessionAlive(): Boolean {
+        val svc = service ?: return false
+        return runCatching { svc.asBinder().isBinderAlive }.getOrDefault(false)
+    }
 }

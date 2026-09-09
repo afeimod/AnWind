@@ -25,7 +25,9 @@ val X11App = AppDef(
     launchMode = LaunchMode.FLOATING,
     defaultWidth = 640.dp,
     defaultHeight = 480.dp,
-    pinnedToDesktop = true
+    pinnedToDesktop = true,
+    // v2.22.4 fix11c：长按标题栏打开 X11 设置面板（分辨率/拉伸/剪贴板/握手重放）
+    onTitleBarLongPress = { _ -> X11SettingsBridge.requestShow() }
 ) { scope ->
     X11Surface(scope)
 }

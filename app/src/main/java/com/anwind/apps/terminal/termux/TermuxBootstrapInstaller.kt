@@ -180,7 +180,18 @@ object TermuxBootstrapInstaller {
      *   （去尾逗号/空白、剔除树中不存在的条目）；② -b stderr 落盘，
      *   失败时回显 dpkg-deb 真实报错首行（此前被 /dev/null 吞掉）。
      */
-    private const val EXTRAS_REVISION = 21
+    // rev22（v2.22.3 fix10）：部署增强版 glibc-runner 主副本
+    // （z 盘悬空自愈 + -d 分辨率握手协议），存量安装随迁移自动就位
+    // rev23（v2.22.4 fix11c）：bin/glibc-runner 改为强制覆盖 —— rev22 只在
+    // bin 缺失时才部署，存量 glibc 安装里旧官方脚本永不被替换，-d 分辨率
+    // 握手因此从未生效（用户实锤：控制条一直显示"X: 跟随窗口"）
+    // rev24（v2.22.5 fix13）：fix12 教训 —— [R2]（-dWxH 移除 explorer 虚拟
+    // 桌面）改了脚本却没升 revision（仍=23），fix11c 存量用户 extras 已是
+    // 23 → 迁移跳过 → 设备上永远跑旧脚本 → 用户实测"-d 后仍是 wine 蓝色
+    // 桌面"。今后凡改动 assets/termux/scripts/ 下任何脚本，必须同步升
+    // revision！
+    // rev25（v2.22.5 fix14）：提示文案更新（游戏全屏 Alt+Enter 引导）
+    private const val EXTRAS_REVISION = 25
 
     /** 安装状态（Compose 界面订阅渲染）。 */
     sealed class InstallState {
@@ -581,6 +592,30 @@ object TermuxBootstrapInstaller {
             context, "termux/scripts/anwind-pkgfix",
             File(prefix, "bin/anwind-pkgfix"), executable = true
         )
+        // v2.22.3 fix10：增强版 glibc-runner（z 盘修复 + -d 分辨率握手）
+        // ① 部署主副本 etc/anwind/glibc-runner（pkg 安装/升级 glibc-runner
+        //    包会用官方脚本覆盖 bin/glibc-runner，主副本用于恢复）；
+        // ② bin/glibc-runner：v2.22.4 fix11c 起无条件覆盖部署 —— rev22 的
+        //    "仅缺失时部署"导致存量安装永远用旧官方脚本（无 -d 握手/z 盘
+        //    修复，用户实测黑边+小窗），被替换的旧官方版本份为
+        //    bin/glibc-runner.pkg.bak 一次（可随时手工回滚）；
+        // ③ anwind-glibc 安装完成后同样做覆盖恢复（见 anwind-glibc 尾部）。
+        runCatching {
+            val grBin = File(prefix, "bin/glibc-runner")
+            val grMaster = File(prefix, "etc/anwind/glibc-runner")
+            copyAssetScript(
+                context, "termux/scripts/glibc-runner",
+                grMaster, executable = true
+            )
+            if (grBin.exists()) {
+                val bak = File(prefix, "bin/glibc-runner.pkg.bak")
+                if (!bak.exists()) runCatching { grBin.copyTo(bak, overwrite = false) }
+            }
+            copyAssetScript(
+                context, "termux/scripts/glibc-runner",
+                grBin, executable = true
+            )
+        }
         installRescueLibs(context)
 
         // (4) 存量安装的 apt 源修复（全新安装时 bootstrap 已内置好源，此处无操作）

@@ -2,6 +2,8 @@ package com.anwind.core.window
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
@@ -21,7 +23,9 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.changedToUp
 import androidx.compose.ui.layout.layout
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -29,6 +33,7 @@ import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import com.anwind.core.theme.LocalWinTheme
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.math.roundToInt
 
 /**
@@ -71,6 +76,9 @@ fun WindowChrome(
 ) {
     val theme = LocalWinTheme.current
     val wm = remember { WindowManager.get() }
+    // v2.22.4 fix11c：标题栏长按 → 应用自定义入口（X11 设置面板）
+    val chromeContext = LocalContext.current
+    val appDef = remember(state.appId) { AppRegistry.get(state.appId) }
 
     // 根据是否最大化决定尺寸/位置（FULLSCREEN 模式也占满工作区；真全屏占满整屏）
     val isMaximized = state.isMaximized || state.launchMode == LaunchMode.FULLSCREEN
@@ -203,12 +211,48 @@ fun WindowChrome(
                                     wm.toggleMaximize(state.id)
                                 }
                             }
+                            // v2.22.5 fix12：长按不再走 detectTapGestures
+                            // （系统默认 400ms 太灵敏，拖动窗口时易误触菜单）
                         )
+                    }
+                    // v2.22.5 fix12：标题栏长按 3 秒才触发应用入口
+                    // （X11 桌面长按 = X11 设置面板）。
+                    // 取消条件（满足任一即不弹菜单，保证不影响拖动窗口）：
+                    //   3 秒内抬起 / 被拖动手势消费 / 移出触控 slop。
+                    .pointerInput(state.id) {
+                        awaitEachGesture {
+                            val down = awaitFirstDown(requireUnconsumed = false)
+                            // withTimeoutOrNull 超时返回 null = 按住满 3 秒
+                            // 未抬起/未拖动 → 长按成立；否则返回非 null。
+                            val result = withTimeoutOrNull(3000L) {
+                                var cancelled = false
+                                while (true) {
+                                    val event = awaitPointerEvent()
+                                    val change = event.changes
+                                        .firstOrNull { it.id == down.id }
+                                    if (change == null || change.changedToUp() ||
+                                        change.isConsumed
+                                    ) {
+                                        cancelled = true
+                                        break
+                                    }
+                                    val moved =
+                                        (change.position - down.position).getDistance()
+                                    if (moved > viewConfiguration.touchSlop) {
+                                        cancelled = true
+                                        break
+                                    }
+                                }
+                                if (cancelled) "cancelled" else "waiting"
+                            }
+                            if (result == null) {
+                                appDef?.onTitleBarLongPress?.invoke(chromeContext)
+                            }
+                        }
                     },
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 // 左侧应用图标（v2.15：主题化真实应用图标，替换旧色块占位）
-                val appDef = remember(state.appId) { AppRegistry.get(state.appId) }
                 Box(
                     modifier = Modifier
                         .size(theme.windowTitleBarHeight)

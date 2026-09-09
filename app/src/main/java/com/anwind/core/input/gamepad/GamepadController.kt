@@ -368,12 +368,22 @@ object GamepadController {
         }
     }
 
-    /** 底层派发：原始 keydown/keyup 事件（真实事件管线，isTrusted=true） */
+    /**
+     * 底层派发：原始 keydown/keyup 事件。
+     * v2.22.3 fix11b：新增 X11 路由 —— 浏览器无活跃 WebView 时，
+     * 按键经 X11InputHub 直注 X server，桌面虚拟手柄由此控制 X11
+     * 界面（wine/游戏）；有 WebView 时保持原浏览器行为不变。
+     */
     private fun dispatchKeyEventRaw(keyCode: Int, keyAction: Int, downTime: Long) {
-        val wv = targetWebView?.get() ?: return
         val now = android.os.SystemClock.uptimeMillis()
         val ev = KeyEvent(downTime, now, keyAction, keyCode, 0)
-        runCatching { wv.dispatchKeyEvent(ev) }
+        val wv = targetWebView?.get()
+        if (wv != null) {
+            runCatching { wv.dispatchKeyEvent(ev) }
+            return
+        }
+        // 无浏览器目标 → X11 桌面窗口接管（手柄控制 wine/X11）
+        com.termux.x11.X11InputHub.forwardKey(keyCode, keyAction == KeyEvent.ACTION_DOWN)
     }
 
     /** 按下按键（引用计数：已在按下状态的键不重发 DOWN） */
@@ -411,9 +421,38 @@ object GamepadController {
         keyRefCounts.keys.toList().forEach { releaseKey(it) }
     }
 
-    /** 派发鼠标动作（在虚拟鼠标指针位置；无指针则屏幕中心） */
+    /**
+     * 派发鼠标动作。v2.22.3 fix11b：优先在虚拟鼠标指针位置（浏览器），
+     * 无浏览器目标时把左/右/中键与滚轮直注 X11（X 指针当前位置）。
+     */
     fun dispatchMouse(mouseCode: Int) {
-        val wv = targetWebView?.get() ?: return
+        val wv = targetWebView?.get()
+        if (wv == null) {
+            // X11 路由：真实鼠标 down→up 序列 / 滚轮（与 SmartTouchBridge 同参）
+            when (mouseCode) {
+                PadAction.MOUSE_LEFT -> {
+                    com.termux.x11.X11InputHub.forwardMouseButton(
+                        com.termux.x11.input.InputStub.BUTTON_LEFT, true)
+                    com.termux.x11.X11InputHub.forwardMouseButton(
+                        com.termux.x11.input.InputStub.BUTTON_LEFT, false)
+                }
+                PadAction.MOUSE_RIGHT -> {
+                    com.termux.x11.X11InputHub.forwardMouseButton(
+                        com.termux.x11.input.InputStub.BUTTON_RIGHT, true)
+                    com.termux.x11.X11InputHub.forwardMouseButton(
+                        com.termux.x11.input.InputStub.BUTTON_RIGHT, false)
+                }
+                PadAction.MOUSE_MIDDLE -> {
+                    com.termux.x11.X11InputHub.forwardMouseButton(
+                        com.termux.x11.input.InputStub.BUTTON_MIDDLE, true)
+                    com.termux.x11.X11InputHub.forwardMouseButton(
+                        com.termux.x11.input.InputStub.BUTTON_MIDDLE, false)
+                }
+                PadAction.MOUSE_SCROLL_UP -> com.termux.x11.X11InputHub.forwardWheel(-120f)
+                PadAction.MOUSE_SCROLL_DOWN -> com.termux.x11.X11InputHub.forwardWheel(120f)
+            }
+            return
+        }
         // 位置：优先虚拟鼠标指针（根坐标），换算到 WebView 本地坐标
         val pos = com.anwind.core.input.MouseController.position
         val loc = IntArray(2)
@@ -502,8 +541,9 @@ object GamepadController {
         if (pressed) pressKey(keyCode) else releaseKey(keyCode)
     }
 
-    /** 无目标时是否有接收方（覆盖层可显示提示） */
-    fun hasTarget(): Boolean = targetWebView?.get() != null
+    /** 无目标时是否有接收方（覆盖层可显示提示；X11 窗口连接时也算有目标） */
+    fun hasTarget(): Boolean =
+        targetWebView?.get() != null || com.termux.x11.X11InputHub.isX11ForwardReady()
 
     // ============================================================
     // v2.16.4：手柄元素命中几何（窗口坐标 px）

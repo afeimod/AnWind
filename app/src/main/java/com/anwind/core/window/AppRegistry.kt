@@ -1,5 +1,6 @@
 package com.anwind.core.window
 
+import android.content.Context
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -15,6 +16,8 @@ import androidx.compose.ui.unit.dp
  * @property defaultHeight 浮动模式默认高度
  * @property pinnedToTaskbar  是否固定到任务栏
  * @property pinnedToDesktop  是否在桌面显示图标
+ * @property onTitleBarLongPress  标题栏长按回调（v2.22.4 fix11c：X11 用它
+ *                                弹出"X11 设置"面板；null = 无长按行为）
  * @property content       该应用的 Composable 内容，接收 WindowContentScope 参数
  */
 data class AppDef(
@@ -26,6 +29,7 @@ data class AppDef(
     val defaultHeight: Dp = 520.dp,
     val pinnedToTaskbar: Boolean = false,
     val pinnedToDesktop: Boolean = true,
+    val onTitleBarLongPress: ((Context) -> Unit)? = null,
     val content: @Composable (WindowContentScope) -> Unit
 )
 

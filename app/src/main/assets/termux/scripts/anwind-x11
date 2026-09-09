@@ -1,6 +1,6 @@
 #!/data/data/com.anwind/files/usr/bin/sh
 # ============================================================
-# AnWind X11 桌面一键启动（v2.22.2 rev20）
+# AnWind X11 桌面一键启动（v2.22.4 rev21）
 # ============================================================
 # 用法：
 #   anwind-x11              启动 X11 服务（显示号默认 :1）并自动尝试
@@ -45,6 +45,12 @@
 #   归档分发 + 三级容错；pkgfix v1.1 新增宿主 APK 内嵌 bootstrap
 #   提取救援库（预检自愈链在纯 shell 下亦可闭环）
 #
+# rev21（fix11c）：glibc-runner 自愈 —— bin/glibc-runner 被 pkg 安装/
+#   升级覆盖为官方裸脚本后，-d 分辨率握手（.anwind-x11-res）与 z 盘
+#   修复全部失效（症状：游戏锁死在小窗口/黑边，控制条显示"X: 跟随
+#   窗口"）。启动时检测标记，被覆盖即从 etc/anwind/glibc-runner 主
+#   副本恢复；doctor 同步增加体检项。
+#
 # rev14 排障增强：启动全程写入 $PREFIX/tmp/anwind-x11.log（前置检查、
 #   自愈动作、X 服务输出一站齐全，日志不再出现"空白"）；X 服务静默
 #   失败（原因仅在 logcat）时自动附带 logcat 相关摘要；ps 探测增加
@@ -61,6 +67,11 @@ PREFIX=/data/data/com.anwind/files/usr
 export LD_LIBRARY_PATH="$PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 X11_LOG="$PREFIX/tmp/anwind-x11.log"
 mkdir -p "$PREFIX/tmp" 2>/dev/null
+
+# fix10：分辨率握手协议复位 —— 桌面会话场景 X 屏幕回归"跟随窗口"。
+# （游戏分辨率由 glibc-runner -d 写入同一文件；anwind-x11 启动即覆盖为
+# native，避免上次游戏的固定分辨率一直粘住桌面会话。）
+printf 'native\n' > "$PREFIX/tmp/.anwind-x11-res" 2>/dev/null || true
 
 # lorie 需要 XDG_RUNTIME_DIR 存放 Wayland 运行时 socket
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-${TMPDIR:-$PREFIX/tmp}}"
@@ -148,13 +159,20 @@ if [ "${1:-}" = "doctor" ] || [ "${1:-}" = "--doctor" ]; then
     _ok()  { echo "  [OK] $1"; }
     _bad() { echo "  [!!] $1"; _fails=$((_fails + 1)); }
     _none() { echo "  [--] $1"; }
-    echo "==== AnWind X11 体检（rev20）===="
+    echo "==== AnWind X11 体检（rev21）===="
     echo
     echo "[1/4] X 服务组件（内置于 AnWind APK，无需 pkg 安装）"
     if [ -x "$PREFIX/bin/termux-x11" ] && grep -q 'ANWIND_X11_CLIENT' "$PREFIX/bin/termux-x11" 2>/dev/null; then
         _ok "bin/termux-x11 内置客户端就绪"
     else
         _bad "bin/termux-x11 缺失/被覆盖/不可执行 → 打开一次 AnWind 主界面触发组件迁移（rev20），或确认 APK 为 fix9.6 及以上"
+    fi
+    if [ -x "$PREFIX/bin/glibc-runner" ] && grep -q 'anwind-x11-res' "$PREFIX/bin/glibc-runner" 2>/dev/null; then
+        _ok "bin/glibc-runner 增强版就绪（-d 分辨率握手/z 盘修复）"
+    elif [ -r "$PREFIX/etc/anwind/glibc-runner" ]; then
+        _bad "bin/glibc-runner 为官方裸脚本（无 -d 分辨率握手，游戏会锁死小窗）→ 下次 anwind-x11 启动自动恢复；或手动：cp $PREFIX/etc/anwind/glibc-runner $PREFIX/bin/glibc-runner && chmod 700 $PREFIX/bin/glibc-runner"
+    else
+        _none "glibc-runner 未安装（游戏场景由 anwind-glibc 部署）"
     fi
     if [ -r "$PREFIX/etc/anwind/x11/termux-x11" ]; then
         _ok "主副本 etc/anwind/x11/termux-x11 就绪（防覆盖自愈源）"
@@ -250,7 +268,7 @@ if [ $# -gt 0 ]; then
 fi
 
 # ---- 启动日志：从第一行写起，任何失败都能 cat 回传定位 ----
-echo "==== anwind-x11 启动 $(date '+%Y-%m-%d %H:%M:%S') rev20 显示号 $DISP ====" >"$X11_LOG"
+echo "==== anwind-x11 启动 $(date '+%Y-%m-%d %H:%M:%S') rev21 显示号 $DISP ====" >"$X11_LOG"
 note() { echo "$1"; echo "[anwind-x11] $1" >>"$X11_LOG"; }
 die() {
     echo "anwind-x11: $1" >&2
@@ -267,6 +285,20 @@ if [ -r "$X11_MASTER" ]; then
             note "已恢复内置 termux-x11 客户端（曾被官方包覆盖或已损坏）"
         else
             note "警告：主副本存在但恢复 bin/termux-x11 失败（权限？）"
+        fi
+    fi
+fi
+
+# ---- fix11c 自愈：glibc-runner 被 pkg 覆盖为官方裸脚本后自动恢复增强版 ----
+# 增强版特征：含 anwind-x11-res 握手协议（官方脚本无此字符串）。
+GR_MASTER="$PREFIX/etc/anwind/glibc-runner"
+GR_BIN="$PREFIX/bin/glibc-runner"
+if [ -r "$GR_MASTER" ]; then
+    if [ -x "$GR_BIN" ] && ! grep -q 'anwind-x11-res' "$GR_BIN" 2>/dev/null; then
+        if cp -f "$GR_MASTER" "$GR_BIN" 2>/dev/null && chmod 700 "$GR_BIN" 2>/dev/null; then
+            note "已恢复增强版 glibc-runner（官方裸脚本无 -d 分辨率握手/z 盘修复）"
+        else
+            note "警告：主副本存在但恢复 bin/glibc-runner 失败（权限？）"
         fi
     fi
 fi

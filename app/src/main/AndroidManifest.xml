@@ -96,6 +96,17 @@
                 android:value="Desktop lyric overlay" />
         </service>
 
+        <!-- v2.22.4 fix11c：X11 会话前台常驻（防止 X server/App 后台被冻结杀死）。
+             会话结束（anwind-x11-stop / X server 进程死亡）时服务自动退出。 -->
+        <service
+            android:name="com.anwind.apps.x11.X11KeepAliveService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="X11 session keep alive" />
+        </service>
+
         <!-- FileProvider：用于安全地共享真实文件（图片、APK、视频等）给系统 Intent -->
         <provider
             android:name="androidx.core.content.FileProvider"
