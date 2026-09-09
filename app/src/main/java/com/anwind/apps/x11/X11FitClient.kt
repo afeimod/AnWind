@@ -15,6 +15,41 @@ import java.nio.ByteOrder
  * v2.22.5 fix15 —— X11 游戏窗口自适应铺满（根治"窗口化游戏四周黑边"）。
  * v2.22.5 fix16 —— 协议解析全面修正 + OOM 闪退根治。
  * v2.22.5 fix17 —— 自适应从"一次性"升级为"持续维持"，并扩展到跟随窗口会话。
+ * v2.22.6 fix18 —— 协议偏移权威校正（4 处致命错位）+ -d 会话"窗口撑满屏幕"策略。
+ *
+ * fix18 修正的问题（用户实测日志：root=0x0 ≠ 回调缓存 1024x768；
+ * 未发现可铺满的游戏窗口——连续 10 秒；-d 1024x768 游戏窗口只有
+ * 868x652、四周黑边；Alt+Enter 全屏却正常占满）：
+ *   1.【Setup 屏幕尺寸读错位】原代码在 SCREEN 记录的 off+16/off+18 读
+ *      宽高 —— 那里是 current_input_masks（4 字节，一般=0），真正的
+ *      pixWidth/pixHeight 在 off+20/off+22（xcb_screen_t /
+ *      Xproto.h xWindowRoot 均可验证）。后果：日志恒报 root=0x0，
+ *      fallback 回写 screenW/H=0，自适应彻底失效；
+ *   2.【窗口属性读错位】原代码在 r[30]/r[31] 读 map_state 和
+ *      override_redirect —— 那里是 colormap 的第 2/3 字节（合法 XID
+ *      高位字节，几乎从不等于 2/0）。真正的位置在 r[26]/r[27]
+ *      （xcb_get_window_attributes_reply_t）。后果：所有窗口都被判
+ *      "未映射 + override-redirect"，永远"未发现可铺满的游戏窗口"；
+ *   3.【InternAtom 请求缺 padding】原请求在 name_len(2B) 后直接拼
+ *      name —— 协议要求 name_len 后有 2 字节 pad，name 从偏移 8 开始
+ *      （Xproto.h xInternAtomReq：nbytes@4、pad@6、name@8）。后果：
+ *      服务器按偏移 8 解析出错位的原子名 → _NET_FRAME_EXTENTS 永远
+ *      intern 不到 → 边框尺寸始终缺失；
+ *   4.【MoveWindow 请求非法】ConfigureWindow 协议要求：window(4B) 后是
+ *      value_mask(2B)+pad(2B)，随后每项参数占 4 字节值槽（xproto.h
+ *      xConfigureWindowReq：mask@8、pad2@10、values@12 起）。原实现
+ *      无 mask、x/y 直接以 INT16 拼在 window 后 —— 服务器把 x 的低
+ *      16 位当掩码解析，请求长度也对不上 → MoveWindow 全部被拒，
+ *      窗口永远纹丝不动；
+ *   5.【-d 分辨率被窗口尺寸劫持】X 屏幕被 glibc-runner 握手设为
+ *      1024x768 后，游戏窗口仍是它创建时（屏幕还没切换前）被 wine
+ *      截到屏幕尺寸的 868x652 —— 旧策略会把 X 屏幕回缩到 868x652
+ *      （用户要的 1024x768 没了）。现在：exactFromRunner（-d 握手或
+ *      手动固定分辨率）会话改为把游戏窗口主动撑到整个 X 屏幕（客户
+ *      区=1024x768，DXVK 重建交换链即恢复真实分辨率），游戏连续
+ *      4 轮对抗性改回尺寸则退回旧贴合策略；跟随窗口会话维持旧策略。
+ *   （QueryTree/GetGeometry/GetProperty 的偏移经同一套头文件核对
+ *   确认原代码正确，未改动。）
  *
  * fix17 修正的问题（设备实测：固定 1024x768 时游戏 868x652 被 wine 居中、
  * 四周黑块；跟随窗口时仅上方/左侧黑块；日志只有"线程已启动"一条）：
@@ -73,6 +108,9 @@ object X11FitClient {
     private const val TAG = "X11FitClient"
     private const val PREFIX = "/data/data/com.anwind/files/usr"
     private const val POLL_MS = 800L
+
+    /** fix18：-d 会话中游戏连续抗拒外部 resize 的轮数上限（超过则退回贴合策略） */
+    private const val MAX_FIT_FIGHTS = 4
 
     /** fix16：任何协议变长读取的上限（本客户端的回复都很小，超过即为 desync/异常值） */
     private const val MAX_BLOCK = 512 * 1024
@@ -140,6 +178,8 @@ object X11FitClient {
     // ============================================================
     private fun loop() {
         var conn: XConn? = null
+        // fix18：-d 会话中连续 resize 未生效的轮数（游戏自己改回尺寸）
+        var fitFights = 0
 
         while (running) {
             try {
@@ -152,6 +192,9 @@ object X11FitClient {
                     conn = XConn.connectValidated(sw, sh)
                     if (conn == null) { sleep(1500); continue }
                     activeConn = conn
+                    // fix18：连接后重读一轮 screenW/H（fallback 可能已回写服务器
+                    // 实际尺寸），避免本轮用连接前的旧值去适配。
+                    continue
                 }
                 val c = conn!!
 
@@ -185,17 +228,38 @@ object X11FitClient {
                 // 这一支 —— 零动作，不与 wine 抢权。
                 val aligned = game.x == -L && game.y == -T
                 val rootMatch = clientW == sw && clientH == sh
-                if (aligned && rootMatch) { sleep(POLL_MS); continue }
+                if (aligned && rootMatch) {
+                    fitFights = 0
+                    sleep(POLL_MS); continue
+                }
 
-                // 需要维持：wine 重新居中 → 重新平移；X 屏幕被外部改动
-                // （握手重放/手动应用/游戏切模式）→ 重新 applyFit。
-                if (!aligned) c.moveWindow(game.id, -L, -T)
-                if (!rootMatch) X11ResolutionLink.applyFit(clientW, clientH)
-                Log.i(TAG, "自适应: 窗口 ${game.w}x${game.h}@(${game.x},${game.y}) " +
-                    "边框[$L,$R,$T,$B] " +
-                    (if (!aligned) "→ 平移客户区至(0,0) " else "") +
-                    (if (!rootMatch) "→ X屏幕=${clientW}x${clientH}" else ""))
-                sleep(if (!rootMatch) 1200 else POLL_MS)
+                if (X11ResolutionLink.exactFromRunner && fitFights < MAX_FIT_FIGHTS) {
+                    // fix18 撑满策略（-d 握手/手动固定分辨率的会话）：
+                    // X 屏幕就是用户指定的目标分辨率（如 -d1024x768）→ 把
+                    // 游戏窗口主动撑到整个 X 屏幕（客户区 = sw×sh），游戏
+                    // 收到 WM_SIZE/DXVK 重建交换链后即以真实分辨率渲染，
+                    // 四周黑边消失且分辨率不再是 868x652 这类被截断值。
+                    // 若游戏连续 MAX_FIT_FIGHTS 轮自己改回尺寸（对抗），
+                    // fitFights 达上限后自动退回下方贴合策略。
+                    c.moveResizeWindow(game.id, -L, -T, sw + L + R, sh + T + B)
+                    if (!rootMatch) fitFights++
+                    Log.i(TAG, "自适应(撑满): 窗口 ${game.w}x${game.h}@(${game.x},${game.y}) " +
+                        "边框[$L,$R,$T,$B] → 客户区撑到 X 屏幕 ${sw}x${sh}" +
+                        (if (fitFights > 0) "（第 $fitFights 轮）" else ""))
+                    sleep(1200)
+                } else {
+                    // fix17 贴合策略（跟随窗口会话 / 撑满对抗退回）：
+                    // 平移客户区到 (0,0)，X 屏幕贴成客户区尺寸，显示层拉伸铺满。
+                    // 需要维持：wine 重新居中 → 重新平移；X 屏幕被外部改动
+                    // （握手重放/手动应用/游戏切模式）→ 重新 applyFit。
+                    if (!aligned) c.moveWindow(game.id, -L, -T)
+                    if (!rootMatch) X11ResolutionLink.applyFit(clientW, clientH)
+                    Log.i(TAG, "自适应(贴合): 窗口 ${game.w}x${game.h}@(${game.x},${game.y}) " +
+                        "边框[$L,$R,$T,$B] " +
+                        (if (!aligned) "→ 平移客户区至(0,0) " else "") +
+                        (if (!rootMatch) "→ X屏幕=${clientW}x${clientH}" else ""))
+                    sleep(if (!rootMatch) 1200 else POLL_MS)
+                }
             } catch (e: Throwable) {
                 // fix16：捕获 Throwable —— 任何 Error（如 OOM）都不再杀死进程，
                 // 退化为关闭连接 + 退避重试。
@@ -337,10 +401,14 @@ object X11FitClient {
 
         fun internAtom(name: String): Long {
             val nb = name.toByteArray(Charsets.US_ASCII)
-            // 名字从偏移 6 开始（4B 头 + 2B 长度），填充需凑齐 4 的倍数
-            val pad = (4 - (2 + nb.size) % 4) % 4
-            val buf = newReq(16, 1, 2 + nb.size + pad) // only-if-exists=1
+            // fix18：InternAtom 请求体 = name_len(2B) + pad(2B) + name + pad4
+            // （Xproto.h xInternAtomReq：nbytes@4、pad@6、name 从偏移 8 开始）。
+            // 原实现缺 2 字节 pad，name 错位到偏移 6 —— 服务器从偏移 8 解析
+            // 出的原子名错位 → _NET_FRAME_EXTENTS 永远 intern 不到。
+            val pad = (4 - nb.size % 4) % 4
+            val buf = newReq(16, 1, 4 + nb.size + pad) // only-if-exists=1
             buf.putShort(nb.size.toShort())
+            buf.putShort(0)                              // 协议要求的 2 字节 pad
             buf.put(nb)
             buf.put(ByteArray(pad))
             send(buf)
@@ -358,8 +426,9 @@ object X11FitClient {
             send(buf)
             val r = readReply(seq) ?: return null
             val rb = ByteBuffer.wrap(r).order(ByteOrder.LITTLE_ENDIAN)
-            // fix16：format 在回复第 2 字节 r[1]；原读 r[8]（property-type 低
-            // 字节）→ 恒 !=32 → 属性永远读不到。value-length 在 r[16]。
+            // GetProperty 回复（xcb_get_property_reply_t）：format@r[1]
+            // （回复头 detail 位，原 fix16 此项正确）、value_len@r[16]、
+            // value 从 r[32] 起。
             val format = rb.get(1).toInt() and 0xFF
             val valueLen = rb.getInt(16)
             if (format != 32 || valueLen < 4 || r.size < 48) return null
@@ -389,14 +458,16 @@ object X11FitClient {
             send(buf)
             val r = readReply(seq) ?: return null
             val rb = ByteBuffer.wrap(r).order(ByteOrder.LITTLE_ENDIAN)
-            // GetWindowAttributes 回复（全包偏移）：
-            //   visual@8 class@12 bit-grav@14 win-grav@16 planes@20 pixel@24
-            //   save-under@28 map-is-installed@29 map-state@30
-            //   override-redirect@31
-            // fix16：原读 29/30（map-is-installed/save-under）—— 所有窗口
-            // 被判"未映射"，自适应永不触发。
-            val mapState = rb.get(30).toInt()
-            val ovr = rb.get(31).toInt() != 0
+            // GetWindowAttributes 回复（xcb_get_window_attributes_reply_t /
+            //   Xproto.h xGetWindowAttributesReply，全包偏移）：
+            //   visual@8 class@12 bit-grav@14 win-grav@15 planes@16 pixel@20
+            //   save-under@24 map-installed@25 map-state@26 override@27
+            //   colormap@28 all-masks@32
+            // fix18：原读 30/31 —— 那是 colormap 的第 2/3 字节（合法 XID
+            // 高位），所有窗口被判"未映射 + override-redirect"，
+            // "未发现可铺满的游戏窗口"日志的直接元凶。
+            val mapState = rb.get(26).toInt()
+            val ovr = rb.get(27).toInt() != 0
             return Attr(mapState == 2, ovr)
         }
 
@@ -412,12 +483,42 @@ object X11FitClient {
                 rb.getShort(16).toInt() and 0xFFFF, rb.getShort(18).toInt() and 0xFFFF)
         }
 
+        /**
+         * ConfigureWindow（只移动）：fix18 修正编码 ——
+         * 协议要求 [12][pad][len][window(4)][value-mask(2)][pad(2)][x(4)][y(4)]，
+         * mask=CWX|CWY=0x3，每项值占 4 字节槽（INT16 存低 16 位）。
+         * 原实现无 mask、x/y 直接以 INT16 拼 —— 服务器把 x 低 16 位当
+         * 掩码解析且请求长度不符 → 请求被拒，窗口永远不动。
+         */
         fun moveWindow(win: Long, x: Int, y: Int) {
-            val buf = newReq(12, 0, 8)
+            // body 16B = window(4) + mask(2) + pad(2) + x(4) + y(4)；总 20B = 5 words
+            val buf = newReq(12, 0, 16)
             buf.putInt(win.toInt())
-            buf.putShort(x.toShort()); buf.putShort(y.toShort())
+            buf.putShort(0x0003)          // CWX | CWY
+            buf.putShort(0)               // pad
+            buf.putInt(x)
+            buf.putInt(y)
             send(buf)
             // 无回复请求；可能的异步 error 由 readReply 的序列号跳过逻辑消化
+        }
+
+        /**
+         * ConfigureWindow（移动+缩放）：fix18 新增 ——
+         * mask=CWX|CWY|CWWidth|CWHeight=0xF，值槽 [x][y][w][h] 各 4 字节。
+         * fix18 撑满策略用它把游戏窗口客户区一次到位地铺满整个 X 屏幕，
+         * 游戏/DXVK 收到 WM_SIZE 后按目标分辨率重建渲染缓冲。
+         */
+        fun moveResizeWindow(win: Long, x: Int, y: Int, w: Int, h: Int) {
+            // body 24B = window(4) + mask(2) + pad(2) + x/y/w/h(16)；总 28B = 7 words
+            val buf = newReq(12, 0, 24)
+            buf.putInt(win.toInt())
+            buf.putShort(0x000F)          // CWX | CWY | CWWidth | CWHeight
+            buf.putShort(0)               // pad
+            buf.putInt(x)
+            buf.putInt(y)
+            buf.putInt(w)
+            buf.putInt(h)
+            send(buf)
         }
 
         companion object {
@@ -480,10 +581,16 @@ object X11FitClient {
                                 runCatching { sock.close() }; continue
                             }
                             val root = rb.getInt(off).toLong() and 0xFFFFFFFFL
-                            // SCREEN 记录：root@0 cmap@4 white@8 mask@12
-                            // pixWidth@16 pixHeight@18 mmW@20 mmH@22 …
-                            val w = rb.getShort(off + 16).toInt() and 0xFFFF
-                            val h = rb.getShort(off + 18).toInt() and 0xFFFF
+                            // SCREEN 记录（xcb_screen_t / Xproto.h xWindowRoot）：
+                            //   root@+0 cmap@+4 white@+8 black@+12
+                            //   current-input-masks@+16(4B) pixWidth@+20 pixHeight@+22
+                            //   mmW@+24 mmH@+26 …
+                            // fix18：原在 off+16/off+18 读宽高 —— 读到的是
+                            // current_input_masks（通常=0）→ 日志恒报 root=0x0、
+                            // fallback 回写 screenW/H=0。真正 pixWidth/pixHeight
+                            // 在 off+20/off+22。
+                            val w = rb.getShort(off + 20).toInt() and 0xFFFF
+                            val h = rb.getShort(off + 22).toInt() and 0xFFFF
                             val c = XConn(sock, input, out)
                             c.root = root; c.rootW = w; c.rootH = h
                             if (w == wantW && h == wantH) {
@@ -502,10 +609,17 @@ object X11FitClient {
                     }
                 }
                 fallback?.let { c ->
-                    Log.w(TAG, "无 root==${wantW}x${wantH} 的 display，采用实际 root " +
-                        "${c.rootW}x${c.rootH}（服务器为准，回写本地缓存）")
-                    screenW = c.rootW
-                    screenH = c.rootH
+                    // fix18：服务器尺寸合法才回写本地缓存（防御性 —— 解析已
+                    // 修正，此处只在真实失步时兜底，绝不再把 0x0 写进缓存）。
+                    if (c.rootW >= 160 && c.rootH >= 120) {
+                        Log.w(TAG, "无 root==${wantW}x${wantH} 的 display，采用实际 root " +
+                            "${c.rootW}x${c.rootH}（服务器为准，回写本地缓存）")
+                        screenW = c.rootW
+                        screenH = c.rootH
+                    } else {
+                        Log.w(TAG, "实际 root ${c.rootW}x${c.rootH} 尺寸异常，保持回调缓存 " +
+                            "${wantW}x${wantH}（等待服务器就绪）")
+                    }
                     return c
                 }
                 if (!sawSocket) {

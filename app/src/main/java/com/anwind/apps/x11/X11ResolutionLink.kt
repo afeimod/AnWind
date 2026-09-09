@@ -39,6 +39,17 @@ object X11ResolutionLink {
     private const val TAG = "X11ResolutionLink"
     const val DEFAULT_RES = "1280x720"
 
+    /**
+     * fix18：当前 exact 分辨率是否来自 -d 握手/用户手动固定（而非 applyFit
+     * 贴合产生）。X11FitClient 据此选择策略：
+     *   true  → 撑满策略：把游戏窗口主动撑到整个 X 屏幕（游戏以 -d
+     *           指定的真实分辨率渲染，如 -d1024x768 不再被 868x652 截断）；
+     *   false → 贴合策略：平移窗口 + X 屏幕贴窗口尺寸（跟随窗口会话，
+     *           避免拖动窗口时反复触发游戏重建交换链）。
+     * applyFit 自身不置位 —— 贴合产生的 exact 不升级为撑满。
+     */
+    @Volatile var exactFromRunner: Boolean = false
+
     /** $PREFIX/tmp 目录（与终端侧约定，App 自身数据目录，无需存储权限） */
     private const val PREFIX = "/data/data/com.anwind/files/usr"
     private const val RES_DIR = "$PREFIX/tmp"
@@ -130,6 +141,11 @@ object X11ResolutionLink {
             }
         }
 
+        // fix18：登记会话策略标记（native → false，exact（含手动）→ true）。
+        // 置于 prefs 判空之前：即便 LorieView 偏好尚未就绪，-d 握手语义也
+        // 先行登记，待偏好就绪重放 apply() 时保持一致。
+        exactFromRunner = mode == "exact"
+
         val prefs = LoriePreferences.prefs ?: return
         prefs.displayResolutionMode.put(mode)
         // v2.22.3 fix11b：固定分辨率时开启"拉伸铺满"——X 屏幕保持 -d 指定
@@ -197,6 +213,8 @@ object X11ResolutionLink {
         prefs.displayStretch.put(true)
         prefs.displayResolutionExact.put("${w}x${h}")
         _state.value = ResolutionState("exact", "${w}x${h}", true)
+        // fix18：不修改 exactFromRunner —— 贴合产生的 exact 维持原策略，
+        // 避免 -d 会话因一次贴合永久降级。
         X11FitClient.screenW = w
         X11FitClient.screenH = h
         Log.i(TAG, "X 屏幕分辨率 → exact ${w}x${h}（游戏窗口自适应）")
