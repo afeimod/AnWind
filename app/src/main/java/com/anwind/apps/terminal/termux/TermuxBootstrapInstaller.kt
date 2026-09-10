@@ -195,7 +195,13 @@ object TermuxBootstrapInstaller {
     //   wine 虚拟桌面选项（轩辕剑4 类游戏必需）；[R5] -F/--fitwin 撑满
     //   标记（握手值 "WxH fitwin"）；[R6] -d 默认贴合拉伸（App 侧
     //   X11FitClient 策略反转配套）。存量设备随迁移拿到新脚本。
-    private const val EXTRAS_REVISION = 26
+    // rev27（v2.22.7 fix20）：glibc-runner v3.7-anwind1 —— Wine 声音
+    //   管线修复：[A1] pulse 服务端宿主侧加固启动（bionic 隔离子壳 +
+    //   /data/user/N/ 路径改写 + TCP 4713 就绪等待）；[A2] glibc 音频
+    //   客户端库自动补装（libpulse-glibc/alsa-lib-glibc/grep-glibc/
+    //   sed-glibc）；[A5] HKCU Drivers=alsa 钉死自愈；[A6] bionic 工具
+    //   安全化（sed/pgrep/taskset/date/head）。
+    private const val EXTRAS_REVISION = 27
 
     /** 安装状态（Compose 界面订阅渲染）。 */
     sealed class InstallState {

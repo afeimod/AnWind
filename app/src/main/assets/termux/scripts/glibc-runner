@@ -66,12 +66,38 @@
 #       X11FitClient 自适应缩成游戏客户区尺寸 + 显示层拉伸铺满 ——
 #       任意窗口化游戏（含固定分辨率老游戏）无黑边，不再依赖游戏
 #       自己全屏。握手文件携带 "fitwin" 标记（-F）选择撑满模式。
+#
+# v3.7 (AnWind fix20 —— Wine 声音管线修复):
+#  [A1] pulseaudio 服务端启动加固。旧代码两处致命伤:
+#       (a) 在 glr_env_core 切换 LD_LIBRARY_PATH=glibc/lib 之后才启动
+#           bionic pulseaudio → bionic linker 拒载(CANNOT LINK), 服务端
+#           静默失败 → wine 无声; 现 bionic 隔离子壳执行。
+#       (b) 经 /data/user/N/ 绑定路径启动时 /proc/self/exe 与编译期
+#           绝对路径不一致 → "cannot self execute. Are you playing
+#           games?" → 守护进程拒启; 现自动改写为 /data/data/ 形式。
+#       另: TCP 4713 就绪等待(防 winepulse 抢跑回退 alsa);
+#       运行中但未开 TCP 的旧实例自动重启。
+#  [A2] glibc 侧音频客户端库自动补装。wine 经 box64 包装库加载
+#       native aarch64 的 libpulse.so.0/winealsa 载 libasound.so.2,
+#       缺库时报 "Error initializing native libpulse.so.0"。
+#       官方 gpkg 源的 libpulse-glibc/alsa-lib-glibc 缺失时自动
+#       pkg 安装(一次记账防重试, --fix-audio 可强制)。
+#       顺带补 grep-glibc/sed-glibc: 消灭 wine 会话内 bionic
+#       grep/sed 带 glibc LD_LIBRARY_PATH 执行的 CANNOT LINK 噪声。
+#  [A3] PULSE_SERVER=127.0.0.1 保留导出, 启动横幅显示音频就绪状态。
+#  [A4] --fix-audio: 一键修复/诊断(强杀旧实例→清运行时→补库→
+#       重启服务端→端口探测→注册表驱动自愈→诊断输出)。
+#  [A5] Mobox 迁移前缀把 HKCU\Software\Wine\Drivers 钉死为 alsa
+#       时自动改写为 "pulse,alsa"(记账只跑一次)——即使 winepulse
+#       可用也会被该注册表值屏蔽。
+#  [A6] bionic 工具安全化: -f/--findlib 的 sed 管线改纯 bash;
+#       pgrep/taskset 探测移入 bionic 子壳; date/head 走安全包装。
 # ============================================================
 
 APP_PREFIX="${GLR_APP_PREFIX:-/data/data/com.anwind/files/usr}"
 GLIBC_PREFIX="${APP_PREFIX}/glibc"
 GLR_LD=${GLIBC_PREFIX}/lib/ld-linux-aarch64.so.1
-GLR_VERSION="3.6-anwind1"
+GLR_VERSION="3.7-anwind1"
 
 # [R1] 分辨率握手协议文件 (AnWind X11 窗口监听此文件)
 GLR_RES_FILE="${APP_PREFIX}/tmp/.anwind-x11-res"
@@ -121,7 +147,7 @@ show_warning() {
 
 usage() {
     cat <<'USAGE'
-glibc-runner v3.6-anwind1 —— glibc 启动器 + wine 快捷启动 (startonwine 合并版)
+glibc-runner v3.7-anwind1 —— glibc 启动器 + wine 快捷启动 (startonwine 合并版)
 
 【wine 快捷启动】glibc-runner [选项] <游戏.exe | wine子命令>
  -d[WxH], --desktop[=WxH]  X 屏幕 = 指定分辨率; 窗口化游戏自动贴合
@@ -155,6 +181,8 @@ glibc-runner v3.6-anwind1 —— glibc 启动器 + wine 快捷启动 (startonwin
  --fix-prefix              修补前缀: 缺失/损坏/win32 → 备份后重建 win64 + 补盘符
  --fix-drives              补齐标准盘符 z: c: d: e: (DRIVE_D/DRIVE_E=路径 自定义)
  --winecfg / --regedit / --taskmgr   快捷打开对应工具
+ --fix-audio                一键修复/诊断 wine 声音 (pulse 服务端 +
+                            glibc 音频库 + 注册表驱动自愈 + 诊断输出)
 
 【glibc 原生模式】(传入 Linux/box64 二进制时自动走此模式)
  -c/--configure            patchelf 配置二进制 (rpath+interpreter)
@@ -181,6 +209,9 @@ glibc-runner v3.6-anwind1 —— glibc 启动器 + wine 快捷启动 (startonwin
  * 日志默认追加写入 $LOG_PATH (默认 /sdcard/mobox_log.txt), 终端同时回显
  * 盘符指向: z:=/ (根文件系统); d:/e: 可用 DRIVE_D/DRIVE_E 自定义
  * -d 分辨率会实时同步给 AnWind X11 窗口 (游戏按真实分辨率渲染)
+ * 声音: pulse 服务端/glibc 音频库自动拉起补装; 无声先跑 --fix-audio
+ * 勿手工在容器内跑 pulseaudio (路径自检会失败), 交由本脚本处理
+ * 完全跳过音频初始化: 环境变量 GLR_NO_AUDIO_SETUP=1
  * 前缀异常 (闪退报 32-bit/registry 无效): glibc-runner --fix-prefix
 USAGE
 }
@@ -194,13 +225,14 @@ GLR_DESKTOP_GIVEN=0   # [R1] 是否显式传了 -d (与 -dWxH 区分全屏场景
 GLR_FITWIN=0          # fix19 [R5]: -F/--fitwin 撑满模式（握手值带 fitwin 标记）
 GLR_CMD_DRIVES=0; GLR_DRIVES_ARG=""; GLR_OPT_ADDDRIVE=""; GLR_OPT_RMDRIVE=""
 GLR_CMD_KILL=0; GLR_CMD_INIT=0; GLR_CMD_INSTALL=0; GLR_CMD_FIXPREFIX=0; GLR_CMD_FIXDRIVES=0
-GLR_CMD_WINECFG=0; GLR_CMD_REGEDIT=0; GLR_CMD_TASKMGR=0
+GLR_CMD_WINECFG=0; GLR_CMD_REGEDIT=0; GLR_CMD_TASKMGR=0; GLR_CMD_FIXAUDIO=0
+GLR_PULSE_READY=0   # fix20 [A1]: 127.0.0.1:4713 就绪标记(启动横幅用)
 use_opengl=0; dx_dx11=0; unity_mode=0; glr_wow64flag=0; startib=0; f5taskmgr=0
 wine_args=(); additional_args=(); resolution=(); GLR_TASKSET=()
 
 # ---- 参数解析 (+ = 不重排, 位置参数后的内容原样透传) ----
 if ! GLR_PARSED=$(getopt -o "+d::a:hwub5gxnistcfv::FD::" \
-      --long "desktop::,vd::,virtual-desktop::,fitwin,args:,help,wow64,unity,ib,f5taskmgr,opengl,dx11,no-linker,info,shell,configure,findlib,teg,strace::,debug,drives::,adddrive:,rmdrive:,kill,wine:,init,fix-prefix,fix-drives,install-prefix,force,winecfg,regedit,taskmgr,version" \
+      --long "desktop::,vd::,virtual-desktop::,fitwin,args:,help,wow64,unity,ib,f5taskmgr,opengl,dx11,no-linker,info,shell,configure,findlib,teg,strace::,debug,drives::,adddrive:,rmdrive:,kill,wine:,init,fix-prefix,fix-drives,fix-audio,install-prefix,force,winecfg,regedit,taskmgr,version" \
       -n "glibc-runner" -- "$@" 2>&1); then
     echo "$GLR_PARSED" >&2
     usage
@@ -274,6 +306,7 @@ while :; do
         --kill) GLR_CMD_KILL=1; GLR_ADMIN=1 ;;
         --fix-prefix) GLR_CMD_FIXPREFIX=1; GLR_ADMIN=1 ;;
         --fix-drives) GLR_CMD_FIXDRIVES=1; GLR_ADMIN=1 ;;
+        --fix-audio)  GLR_CMD_FIXAUDIO=1; GLR_ADMIN=1 ;;
         --wine) GLR_OPT_WINE="${2:-}"; shift ;;
         --init) GLR_CMD_INIT=1; GLR_ADMIN=1; GLR_WINE=1 ;;
         --install-prefix) GLR_CMD_INSTALL=1; GLR_ADMIN=1; GLR_WINE=1 ;;
@@ -396,8 +429,15 @@ if [ "${GLR_MODE_FINDLIB}" = "1" ]; then
     GLR_READELF=${GLIBC_PREFIX}/bin/readelf
     [ -f "${GLR_READELF}" ] || _glr_error "readelf not found in '${GLIBC_PREFIX}/bin' (pkg install binutils-glibc)"
     glr_switch_env
-    GLR_NEEDED=$("${GLR_LD}" "${GLR_READELF}" -d "$1" 2>/dev/null \
-        | "${APP_PREFIX}/bin/sed" -n 's/.*Shared library: \[\(.*\)\]/\1/p')
+    # fix20 [A6]: sed 管线改纯 bash —— 此处在 glr_switch_env 之后,
+    # bionic sed 带 glibc LD_LIBRARY_PATH 执行会触发 bionic linker 拒载
+    # (CANNOT LINK EXECUTABLE "sed": cannot find "libc.so" from verneed)
+    GLR_NEEDED=""
+    _glr_ln=""
+    while IFS= read -r _glr_ln; do
+        [[ "${_glr_ln}" =~ Shared\ library:\ \[(.*)\] ]] \
+            && GLR_NEEDED+="${BASH_REMATCH[1]}"$'\n'
+    done < <("${GLR_LD}" "${GLR_READELF}" -d "$1" 2>/dev/null)
     GLR_MISS=0
     for GLR_LIB in ${GLR_NEEDED}; do
         case "${GLR_LIB}" in linux-vdso*) continue ;; esac
@@ -459,6 +499,134 @@ glr_env_core() {
     return 0
 }
 
+# ---- fix20 [A6]: bionic 工具安全包装 ----
+# glr_switch_env 之后 LD_LIBRARY_PATH=glibc/lib, bionic 二进制直接执行
+# 会触发 bionic linker 拒载(CANNOT LINK); 经 bionic 隔离子壳执行。
+glr_bionic() {
+    ( export LD_LIBRARY_PATH="${APP_PREFIX}/lib"; unset LD_PRELOAD
+      "$@" ) 2>/dev/null
+}
+# date 替代(日志时间戳): bionic 子壳优先, 失败退纯文本
+glr_now() {
+    glr_bionic date '+%F %T' || date '+%F %T' 2>/dev/null || echo "(no-date)"
+}
+# head -1 替代(读 system.reg 首行): 纯 bash
+glr_first_line() {
+    local _l=""
+    while IFS= read -r _l; do printf '%s\n' "$_l"; return 0; done < "$1" 2>/dev/null
+    return 0
+}
+
+# ---- fix20 [A1]: TCP 端口探测(纯 bash /dev/tcp, 不依赖任何外部工具) ----
+glr_port_up() {
+    local _host="${1:-127.0.0.1}" _port="${2:-4713}"
+    ( exec 3<>"/dev/tcp/${_host}/${_port}" ) 2>/dev/null || return 1
+    exec 3>&- 3<&- 2>/dev/null
+    return 0
+}
+
+# ---- fix20 [A1]: pulseaudio 服务端(bionic)启动加固 ----
+# 责任链: 端口已在听→复用; 运行中但没开 TCP→重启; 不在→拉起; 拉起后
+# 等端口就绪(防 winepulse 抢跑回退 alsa → 无声)。
+glr_start_pulse() {
+    [ "${GLR_NO_AUDIO_SETUP:-0}" = "1" ] && return 0
+    local _pa="${APP_PREFIX}/bin/pulseaudio"
+    if [ ! -x "${_pa}" ]; then
+        _glr_warn "未找到 ${_pa} (pkg install pulseaudio 可补); wine 将无声音"
+        return 1
+    fi
+    # (b) 自检路径改写: pulseaudio 启动时校验 /proc/self/exe 必须指向
+    # 编译期绝对路径(/data/data/com.anwind/...); 经 /data/user/N/ 绑定
+    # 路径执行必报 "cannot self execute. Are you playing games?"
+    case "${_pa}" in
+        /data/user/*) _pa="/data/data/com.anwind/files/usr/bin/pulseaudio" ;;
+    esac
+    [ -x "${_pa}" ] || _pa="${APP_PREFIX}/bin/pulseaudio"
+
+    if glr_port_up 127.0.0.1 4713; then
+        GLR_PULSE_READY=1
+        return 0
+    fi
+
+    # (a) bionic 隔离子壳: 此处(含被 glr_env_full 调用时) LD_LIBRARY_PATH
+    # 已被切到 glibc/lib, 直接 exec bionic pulseaudio 会静默拒载。
+    (
+        export LD_LIBRARY_PATH="${APP_PREFIX}/lib"
+        unset LD_PRELOAD
+        export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-${APP_PREFIX}/tmp}"
+        mkdir -p "${XDG_RUNTIME_DIR}" 2>/dev/null
+        chmod 700 "${XDG_RUNTIME_DIR}" 2>/dev/null
+        # 运行中但未开 TCP 的旧实例(start-tfm 裸配/手工拉起): 先请下场
+        "${_pa}" --check >/dev/null 2>&1 && "${_pa}" -k >/dev/null 2>&1
+        sleep 1
+        "${_pa}" --start \
+            --load="module-native-protocol-tcp auth-ip-acl=127.0.0.1 auth-anonymous=1" \
+            --exit-idle-time=-1 >/dev/null 2>&1
+    )
+    local _i
+    for _i in 1 2 3 4 5 6 7 8; do
+        if glr_port_up 127.0.0.1 4713; then
+            GLR_PULSE_READY=1
+            return 0
+        fi
+        sleep 1
+    done
+    _glr_warn "pulseaudio 已拉起但 127.0.0.1:4713 未就绪; 手工诊断: ${_pa} --start --load='module-native-protocol-tcp auth-ip-acl=127.0.0.1 auth-anonymous=1' --exit-idle-time=-1"
+    return 1
+}
+
+# ---- fix20 [A2]: glibc 侧音频客户端库补装(box64 包装库用) ----
+# wine 的 winepulse/winealsa 经 box64 包装库加载 native aarch64 glibc
+# 库; 缺 libpulse.so.0 时报:
+#   Error initializing native libpulse.so.0 (last dlerror is ...)
+#   Error initializing native libasound.so.2 (last dlerror is ...)
+# 官方 gpkg 源提供 libpulse-glibc/alsa-lib-glibc(依赖闭包完整,
+# RPATH 指向前缀内 pulseaudio 子目录, anwind-debfix 安装时等长重写)。
+glr_ensure_audio_libs() {
+    [ "${GLR_NO_AUDIO_SETUP:-0}" = "1" ] && return 0
+    [ -e "${GLIBC_PREFIX}/lib/libpulse.so.0" ] && return 0
+    local _mark="${GLIBC_PREFIX}/opt/.anwind-audio-libs-tried"
+    # 离线资产: repack 侧预置 tar 包则直接展开(tar 根 = glibc 前缀,
+    # 内含 lib/libpulse.so.0 等布局)
+    local _tgz="${GLIBC_PREFIX}/opt/pulse/pulse-glibc.tar.gz"
+    if [ -f "${_tgz}" ]; then
+        tar -xzf "${_tgz}" -C "${GLIBC_PREFIX}" 2>/dev/null \
+            && [ -e "${GLIBC_PREFIX}/lib/libpulse.so.0" ] \
+            && { echo " [A2] 已从离线资产安装 glibc 音频库: ${_tgz}"; return 0; }
+    fi
+    # 已尝试且失败 → 不每次启动都联网重试(--fix-audio 清记账强制)
+    if [ -f "${_mark}" ]; then
+        _glr_warn "glibc 音频库缺失(libpulse.so.0); 之前自动安装失败已跳过。修复: glibc-runner --fix-audio"
+        return 1
+    fi
+    local _apt_cmd=""
+    command -v pkg >/dev/null 2>&1 && _apt_cmd="pkg"
+    [ -z "${_apt_cmd}" ] && command -v apt >/dev/null 2>&1 && _apt_cmd="apt"
+    if [ -z "${_apt_cmd}" ]; then
+        _glr_warn "glibc 音频库缺失且无 pkg/apt 可用; 手工: pkg install libpulse-glibc alsa-lib-glibc"
+        return 1
+    fi
+    echo " [A2] 首次启动: 安装 glibc 音频库 (libpulse-glibc alsa-lib-glibc, 需网络, 请稍候...)"
+    (
+        export PATH="${APP_PREFIX}/bin:${PATH}"
+        export PREFIX="${PREFIX:-${APP_PREFIX}}"
+        export LD_LIBRARY_PATH="${APP_PREFIX}/lib"
+        export TMPDIR="${APP_PREFIX}/tmp"
+        export HOME="${HOME:-${APP_PREFIX}/home}"
+        unset LD_PRELOAD
+        mkdir -p "${HOME}" "${TMPDIR}" 2>/dev/null
+        "${_apt_cmd}" install -y libpulse-glibc alsa-lib-glibc grep-glibc sed-glibc 2>&1 | tail -n 8
+    )
+    mkdir -p "${GLIBC_PREFIX}/opt" 2>/dev/null
+    : > "${_mark}" 2>/dev/null
+    if [ -e "${GLIBC_PREFIX}/lib/libpulse.so.0" ]; then
+        echo " [A2] glibc 音频库安装成功 (winepulse/winealsa 可用)"
+        return 0
+    fi
+    _glr_warn "libpulse-glibc 自动安装未生效(网络/源问题)。修复: glibc-runner --fix-audio"
+    return 1
+}
+
 # ---- 启动类操作追加: 显示/音频/性能/区域 ----
 glr_env_full() {
     glr_env_core 1
@@ -477,11 +645,11 @@ glr_env_full() {
     fi
     export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-${TMPDIR:-${APP_PREFIX}/tmp}}"
     mkdir -p "${XDG_RUNTIME_DIR}" 2>/dev/null
-    if [ -x "${APP_PREFIX}/bin/pulseaudio" ] && ! pgrep -x pulseaudio >/dev/null 2>&1; then
-        "${APP_PREFIX}/bin/pulseaudio" --start \
-            --load="module-native-protocol-tcp auth-ip-acl=127.0.0.1 auth-anonymous=1" \
-            --exit-idle-time=-1 >/dev/null 2>&1
-    fi
+    # fix20 [A2/A3]: 声音管线 —— glibc 客户端库 + bionic 服务端 + PULSE_SERVER。
+    # 旧代码在此直接 exec bionic pulseaudio, 而此处 LD_LIBRARY_PATH 已被
+    # glr_env_core 切到 glibc/lib → bionic linker 拒载 → 服务端静默失败。
+    glr_ensure_audio_libs
+    glr_start_pulse
     export PULSE_SERVER="${PULSE_SERVER:-127.0.0.1}"
     # box64 动态翻译稳定性预设 (mwine 同款; 环境变量已设则尊重用户)
     export BOX64_DYNAREC_BIGBLOCK="${BOX64_DYNAREC_BIGBLOCK:-0}"
@@ -494,16 +662,19 @@ glr_env_full() {
     [ -f "${GLIBC_PREFIX}/opt/locale.conf" ] && \
         export LC_ALL="$(cat "${GLIBC_PREFIX}/opt/locale.conf" 2>/dev/null)"
     if [ -n "${PRIMARY_CORES:-}" ]; then
-        if command -v taskset >/dev/null 2>&1 && taskset -c "${PRIMARY_CORES}" true 2>/dev/null; then
+        if ( export LD_LIBRARY_PATH="${APP_PREFIX}/lib"; unset LD_PRELOAD
+             command -v taskset >/dev/null 2>&1 \
+             && taskset -c "${PRIMARY_CORES}" true ) 2>/dev/null; then
             GLR_TASKSET=(taskset -c "${PRIMARY_CORES}")
         else
             show_warning "绑定 CPU 核心 (${PRIMARY_CORES}) 失败, 改由系统调度; Termux 在后台时请检查电池权限"
         fi
     fi
-    # virgl (repack 标记存在才拉起)
+    # virgl (repack 标记存在才拉起; fix20 [A6]: pgrep 移入 bionic 子壳)
     if [ -e "${GLIBC_PREFIX}/opt/virgl/virgl-enabled" ] \
        && [ -f "${GLIBC_PREFIX}/opt/virgl/libvirgl_test_server.so" ] \
-       && ! pgrep -f libvirgl_test_server.so >/dev/null 2>&1; then
+       && ! ( export LD_LIBRARY_PATH="${APP_PREFIX}/lib"; unset LD_PRELOAD
+              pgrep -f libvirgl_test_server.so ) >/dev/null 2>&1; then
         "${GLIBC_PREFIX}/opt/virgl/libvirgl_test_server.so" >/dev/null 2>&1 &
     fi
     return 0
@@ -552,7 +723,7 @@ glr_cmd_drives() {
             || _glr_error "盘符不存在: ${letter}:"
         target="$(cd "${GLR_DOSDEVICES}" && realpath -L "${letter}:" 2>/dev/null)"
         echo "== ${letter}: -> ${target}"
-        exec ls -la "${target}"
+        ( export LD_LIBRARY_PATH="${APP_PREFIX}/lib"; exec ls -la "${target}" )
     fi
     echo "== WINEPREFIX 盘符 (${GLR_DOSDEVICES})"
     for d in "${GLR_DOSDEVICES}"/*:; do
@@ -684,10 +855,10 @@ glr_cmd_init() {
     fi
     mkdir -p "${WINEPREFIX}"
     _glr_message "初始化 win64 前缀: ${WINEPREFIX} (首次较慢, 请耐心等待...)"
-    echo "# [glibc-runner --init] $(date '+%F %T')" >> "${GLR_LOG}" 2>/dev/null
+    echo "# [glibc-runner --init] $(glr_now)" >> "${GLR_LOG}" 2>/dev/null
     WINEARCH=win64 "${GLR_LD}" "${GLR_BOX64}" "${GLR_WINE_BIN}" wineboot -i 2>&1 | ${GLR_TEE}
     if [ -f "${WINEPREFIX}/system.reg" ]; then
-        _glr_message "前缀创建成功 ($(head -1 "${WINEPREFIX}/system.reg" 2>/dev/null))"
+        _glr_message "前缀创建成功 ($(glr_first_line "${WINEPREFIX}/system.reg"))"
         glr_ensure_std_drives
     else
         show_error "前缀创建失败, 日志: ${GLR_LOG}"
@@ -706,7 +877,7 @@ glr_cmd_fixprefix() {
     elif [ ! -d "${WINEPREFIX}/drive_c" ] || [ ! -f "${WINEPREFIX}/system.reg" ]; then
         echo "  [!] 前缀不完整 (缺 drive_c 或 system.reg)"
         _need=1
-    elif [ "$(head -1 "${WINEPREFIX}/system.reg" 2>/dev/null)" = "#arch=win32" ]; then
+    elif [ "$(glr_first_line "${WINEPREFIX}/system.reg")" = "#arch=win32" ]; then
         echo "  [!] win32 前缀, wow64 需要 win64"
         _need=1
     else
@@ -719,7 +890,7 @@ glr_cmd_fixprefix() {
         fi
         mkdir -p "${WINEPREFIX}"
         echo "  --> 重建 win64 前缀 (wineboot -i, 已屏蔽 mono/gecko)..."
-        echo "# [glibc-runner --fix-prefix] $(date '+%F %T')" >> "${GLR_LOG}" 2>/dev/null
+        echo "# [glibc-runner --fix-prefix] $(glr_now)" >> "${GLR_LOG}" 2>/dev/null
         (
             unset BOX64_DYNAREC_BIGBLOCK BOX64_DYNAREC_CALLRET WINEESYNC WINEESYNC_TERMUX
             export WINEARCH=win64
@@ -727,7 +898,7 @@ glr_cmd_fixprefix() {
             "${GLR_LD}" "${GLR_BOX64}" "${GLR_WINE_BIN}" wineboot -i
         ) 2>&1 | ${GLR_TEE}
         [ -f "${WINEPREFIX}/system.reg" ] || show_error "wineboot 失败, 见上方输出或日志: ${GLR_LOG}"
-        _glr_message "win64 前缀重建成功 ($(head -1 "${WINEPREFIX}/system.reg" 2>/dev/null))"
+        _glr_message "win64 前缀重建成功 ($(glr_first_line "${WINEPREFIX}/system.reg"))"
     fi
     glr_ensure_std_drives
     _glr_message "前缀修补完成: ${WINEPREFIX}"
@@ -756,7 +927,7 @@ glr_cmd_install() {
     fi
     mkdir -p "${WINEPREFIX}"
 
-    echo "# [glibc-runner --install-prefix] $(date '+%F %T')" >> "${_step_log}"
+    echo "# [glibc-runner --install-prefix] $(glr_now)" >> "${_step_log}"
     echo "# 初始化 win64 前缀 (wineboot -u)"
     (
         unset BOX64_DYNAREC_BIGBLOCK BOX64_DYNAREC_CALLRET WINEESYNC WINEESYNC_TERMUX
@@ -803,7 +974,8 @@ glr_cmd_install() {
     [ -d /sdcard/exagear ]  && ln -sfn /sdcard/exagear  "${GLR_DOSDEVICES}/e:"
     [ -d "${APP_PREFIX}/var/lib/proot-distro/installed-rootfs/debian" ] && \
         ln -sfn "${APP_PREFIX}/var/lib/proot-distro/installed-rootfs/debian" "${GLR_DOSDEVICES}/g:"
-    _sto="$(df -H 2>/dev/null | grep -o '/storage/....-....' | head -1)"
+    _sto="$( ( export LD_LIBRARY_PATH="${APP_PREFIX}/lib"; unset LD_PRELOAD
+        df -H 2>/dev/null | grep -o '/storage/....-....' | head -1 ) 2>/dev/null)"
     [ -n "$_sto" ] && ln -sfn "$_sto" "${GLR_DOSDEVICES}/f:" 2>/dev/null
 
     # 注册表调整 + 字体
@@ -861,6 +1033,90 @@ glr_cmd_install() {
     _glr_message "游戏前缀构建完成! 详细日志: ${_step_log}"
 }
 
+# ---- fix20 [A5]: 前缀 Wine Drivers 注册表自愈 ----
+# Mobox 迁移前缀常把 HKCU\Software\Wine\Drivers 的 audio 值钉死为
+# "alsa" —— 即使 winepulse 可用也不被加载。检测到不含 pulse 时改写
+# 为 "pulse,alsa"(记账只跑一次; --fix-audio 清记账强制重查)。
+glr_audio_drv_fix() {
+    [ "${GLR_NO_AUDIO_SETUP:-0}" = "1" ] && return 0
+    [ -f "${WINEPREFIX}/system.reg" ] || return 0
+    [ -n "${GLR_WINE_BIN:-}" ] || return 0
+    [ "${GLR_WINE_BIN}" = "(未找到)" ] && return 0
+    [ -n "${GLR_BOX64:-}" ] && [ -f "${GLR_BOX64}" ] || return 0
+    local _m="${WINEPREFIX}/moboxmeta/.anwind-audio-drv-fixed"
+    [ -f "${_m}" ] && return 0
+    local _cur=""
+    _cur="$("${GLR_LD}" "${GLR_BOX64}" "${GLR_WINE_BIN}" reg query \
+        "HKCU\\Software\\Wine\\Drivers" /v audio 2>/dev/null)" || true
+    # fix20 [A6]: 纯 bash 去 CR(不经 tr: 此处 LD_LIBRARY_PATH 已是 glibc
+    # 环境, bionic tr 与 grep/sed 同属 verneed 家族, 存在拒载风险)
+    _cur="${_cur//$'\r'/}"
+    if [ -n "${_cur}" ] && [[ "${_cur}" != *pulse* ]]; then
+        if "${GLR_LD}" "${GLR_BOX64}" "${GLR_WINE_BIN}" reg add \
+            "HKCU\\Software\\Wine\\Drivers" /v audio /t REG_SZ /d "pulse,alsa" /f \
+            >/dev/null 2>&1; then
+            echo " [A5] 前缀 Drivers 钉死为 alsa, 已改写为 pulse,alsa (Mobox 迁移自愈)"
+        fi
+    fi
+    mkdir -p "$(dirname "${_m}")" 2>/dev/null
+    touch "${_m}" 2>/dev/null
+    return 0
+}
+
+# ---- fix20 [A4]: --fix-audio 一键修复/诊断 ----
+glr_cmd_fixaudio() {
+    echo "==== glibc-runner ${GLR_VERSION} · 声音修复 ===="
+    echo " APP_PREFIX=${APP_PREFIX}  GLIBC_PREFIX=${GLIBC_PREFIX}"
+    # 0) 清理旧实例与运行时残留(前缀内 pulse-* 运行时目录)
+    if [ -x "${APP_PREFIX}/bin/pulseaudio" ]; then
+        glr_bionic "${APP_PREFIX}/bin/pulseaudio" -k
+        pkill -x pulseaudio 2>/dev/null
+        rm -rf "${APP_PREFIX}"/tmp/pulse-* 2>/dev/null
+    fi
+    # 1) 清记账, 强制重走补装/自愈
+    rm -f "${GLIBC_PREFIX}/opt/.anwind-audio-libs-tried" 2>/dev/null
+    # 2) glibc 侧音频库(离线资产 > pkg 源)
+    glr_load_conf
+    glr_pick_wine || GLR_WINE_BIN=""
+    GLR_BOX64="${GLIBC_PREFIX}/bin/box64"
+    [ -f "${GLR_BOX64}" ] || GLR_BOX64=$(command -v box64 2>/dev/null)
+    WINEPREFIX="${WINEPREFIX:-${GLIBC_PREFIX}/opt/prefix}"
+    rm -f "${WINEPREFIX}/moboxmeta/.anwind-audio-drv-fixed" 2>/dev/null
+    glr_ensure_audio_libs
+    # 3) 服务端拉起 + 端口就绪
+    glr_start_pulse
+    export PULSE_SERVER="${PULSE_SERVER:-127.0.0.1}"
+    # 4) 诊断输出
+    echo
+    echo "== 诊断 =="
+    if [ -e "${GLIBC_PREFIX}/lib/libpulse.so.0" ]; then
+        echo " [OK] glibc 客户端库: libpulse.so.0 (winepulse 可加载)"
+    else
+        echo " [FAIL] glibc 客户端库缺失 → 手工: pkg install libpulse-glibc alsa-lib-glibc"
+    fi
+    if [ -e "${GLIBC_PREFIX}/lib/libasound.so.2" ]; then
+        echo " [OK] glibc 客户端库: libasound.so.2 (winealsa 可加载)"
+    else
+        echo " [--] libasound.so.2 缺失(不影响 pulse 出声)"
+    fi
+    if glr_port_up 127.0.0.1 4713; then
+        echo " [OK] pulse 服务端: 127.0.0.1:4713 就绪 (PULSE_SERVER=${PULSE_SERVER})"
+    else
+        echo " [FAIL] 127.0.0.1:4713 未监听 → 手工: ${APP_PREFIX}/bin/pulseaudio --start --load='module-native-protocol-tcp auth-ip-acl=127.0.0.1 auth-anonymous=1' --exit-idle-time=-1"
+    fi
+    if [ -x "${APP_PREFIX}/bin/pactl" ]; then
+        glr_bionic env PULSE_SERVER=127.0.0.1 "${APP_PREFIX}/bin/pactl" info 2>/dev/null | head -n 4
+    fi
+    # 5) 注册表驱动自愈(需 wine; 切到 glibc 环境再跑)
+    if [ -n "${GLR_WINE_BIN}" ] && [ -n "${GLR_BOX64}" ] && [ -f "${GLR_BOX64}" ]; then
+        glr_switch_env
+        glr_audio_drv_fix
+    fi
+    echo
+    echo "完成。验证: glibc-runner --winecfg → 音频页应有驱动可选; 或直接进游戏听声音。"
+    echo "提示: 勿手工在终端/容器里跑 pulseaudio(路径自检会失败), 交由 glibc-runner 处理。"
+}
+
 # ---- 管理命令分发 ----
 if [ "${GLR_CMD_DRIVES}" = "1" ]; then glr_cmd_drives "$@"; exit 0; fi
 if [ -n "${GLR_OPT_ADDDRIVE}" ]; then glr_cmd_adddrive; exit 0; fi
@@ -869,6 +1125,7 @@ if [ "${GLR_CMD_KILL}" = "1" ]; then glr_cmd_kill; exit 0; fi
 if [ "${GLR_CMD_INIT}" = "1" ]; then glr_cmd_init; exit 0; fi
 if [ "${GLR_CMD_FIXPREFIX}" = "1" ]; then glr_cmd_fixprefix; exit 0; fi
 if [ "${GLR_CMD_FIXDRIVES}" = "1" ]; then glr_env_core 0; glr_ensure_std_drives; exit 0; fi
+if [ "${GLR_CMD_FIXAUDIO}" = "1" ]; then glr_cmd_fixaudio; exit 0; fi
 if [ "${GLR_CMD_INSTALL}" = "1" ]; then glr_cmd_install; exit 0; fi
 
 # ---- --winecfg / --regedit / --taskmgr → 注入为 wine 目标 ----
@@ -955,9 +1212,12 @@ if [ "${GLR_WINE}" = "1" ]; then
             _glr_warn "ib.exe 不存在, 跳过 -b"
         fi
     fi
+    # 附加工具(fix20 [A6]: pgrep 移入 bionic 子壳)
     if [ "${f5taskmgr}" = "1" ]; then
         if [ -f "${GLIBC_PREFIX}/opt/apps/f5taskmgr.exe" ]; then
-            pgrep -f f5taskmgr.exe >/dev/null 2>&1 || glr_side_launch "${GLIBC_PREFIX}/opt/apps/f5taskmgr.exe"
+            ( export LD_LIBRARY_PATH="${APP_PREFIX}/lib"; unset LD_PRELOAD
+              pgrep -f f5taskmgr.exe ) >/dev/null 2>&1 \
+                || glr_side_launch "${GLIBC_PREFIX}/opt/apps/f5taskmgr.exe"
         else
             _glr_warn "f5taskmgr.exe 不存在, 跳过 -5"
         fi
@@ -971,6 +1231,11 @@ if [ "${GLR_WINE}" = "1" ]; then
     echo " display : ${DISPLAY:-?}"
     echo " desktop : ${GLR_OPT_DESKTOP:-全屏}$([ "${GLR_VD:-0}" = "1" ] && echo " (wine虚拟桌面)")$([ "${GLR_FITWIN}" = "1" ] && echo " (撑满)")"
     echo " 日志    : ${GLR_LOG:-(仅终端)}"
+    if [ "${GLR_PULSE_READY:-0}" = "1" ]; then
+        echo " audio   : pulse 就绪 (127.0.0.1:4713)"
+    else
+        echo " audio   : pulse 未就绪 (无声; 修复: glibc-runner --fix-audio)"
+    fi
     echo " 命令    : box64 wine ${wine_args[*]} ${resolution[*]} $* ${additional_args[*]}"
     if [ -n "${GLR_DESKTOP_GIVEN}" ]; then
         echo " 提示    : 窗口化游戏自动贴合拉伸铺满 (X 屏随游戏窗口自适应, 无黑边)"
@@ -1031,7 +1296,10 @@ if [ "${GLR_WINE}" = "1" ]; then
         fi
     fi
 
-    [ -n "${GLR_LOG}" ] && echo "==== $(date '+%F %T') glibc-runner 启动: $* ====" >> "${GLR_LOG}"
+    # fix20 [A5]: Mobox 迁移前缀 Drivers=alsa 钉死自愈(记账只跑一次)
+    glr_audio_drv_fix
+
+    [ -n "${GLR_LOG}" ] && echo "==== $(glr_now) glibc-runner 启动: $* ====" >> "${GLR_LOG}"
 
     # 执行: wine 输出 → 终端 + 日志
     "${GLR_LD}" "${GLR_BOX64}" "${GLR_WINE_BIN}" \
