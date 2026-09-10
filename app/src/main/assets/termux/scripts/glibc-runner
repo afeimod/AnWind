@@ -219,22 +219,30 @@
 #           一次性记账 —— Mobox 迁移/winecfg 勾选"模拟虚拟桌面"/
 #           repack user.reg 资产会持久化虚拟桌面, 不清除则所有程序
 #           被关进蓝底 wine 桌面、游戏窗口居中缩水 (用户截图一)。
-#       (3) 填满对齐 -d (anwind4 修订, 用户实测反馈"-f 像旧版 -d
-#           一样填不满"): 裸 -f 默认分辨率 800x600 → 1280x720
-#           (与 -d [R1] 分辨率修复同款默认), 且 -f 握手值固定携带
-#           "fitwin" 标记 (= 自动叠加 -F/--fitwin 撑满) —— App 侧
-#           X11FitClient 由默认"贴合"(X 屏幕缩小成游戏客户区, 4:3
-#           老游戏在 16:9 窗口必然两侧黑边, 即用户截图 X:732x550
-#           填不满的根源) 反转为"撑满": 游戏窗口客户区被撑到整个
-#           X 屏幕, 画面天然铺满无黑边; 顽固老游戏抗拒 resize 时
-#           App 连续 4 轮对抗后自动退回贴合(与 -d 默认一致, 零退化)。
+#       (3) 填满与 -d 完全同源 (anwind4 引入 fitwin → anwind5 推翻,
+#           用户实测 anwind4 "一样的黑边"): anwind4 曾让 -f 握手值
+#           固定携带 "fitwin" 标记 (自动叠加 -F 撑满) —— 实测推翻:
+#           撑满把游戏窗口客户区 resize 到整个 X 屏幕, 但 DirectDraw
+#           固定分辨率老游戏 (仙剑2/轩剑类) "接受" resize 后仍按原
+#           分辨率区域绘制 → X 层看到 "窗口==屏幕" 假稳定 (App 侧
+#           fix19 注释原文记载过同一现象: -d1024x768 只画 868x652,
+#           右/下黑区烧在 X 画面内部), 整块含黑区的 X 画面被显示层
+#           拉伸后黑边依旧 —— 即用户实测 "一样的黑边"。
+#           anwind5 定稿: -f 握手与 -d 完全同源 (写 "WxH", 不带
+#           fitwin) → App 侧走 fix19 默认"贴合"策略: 游戏窗口只需
+#           平移到 (0,0), X 屏幕缩成游戏客户区尺寸, 显示层把画面
+#           拉伸铺满整个桌面窗口 —— 对任意窗口化游戏 (含 DirectDraw
+#           固定分辨率老游戏) 可靠无黑边, 与用户实测有效的 -d 填满
+#           效果逐位一致; "撑满" 降回 -F/--fitwin 显式可选 (仅对能
+#           跟随 WM_SIZE 重绘的现代游戏有意义), 需要时 -f -F 叠加。
 #       修订史: anwind1 实现"reg add 开注册表桌面"; anwind2 改
 #       "explorer /desktop=shell,WxH 直传参数" —— 两者是同一个
 #       wine 桌面窗口的两种入口, 都带蓝底背景 (用户实测截图确认),
 #       anwind3 定稿: explorer 参数一并去掉, -f = -d 画面直出 +
 #       每次强制清注册表桌面; 旧版遗留的注册表键与 .anwind-vd-on
-#       记账在 -f/非 -f 启动时均自动清除; anwind4 在 anwind3
-#       基础上补齐 (3) 填满对齐 —— 至此 -f 三个动作全部与 -d 同源。
+#       记账在 -f/非 -f 启动时均自动清除; anwind4 曾补 fitwin 撑满
+#       (实测假稳定黑边, 已废弃); anwind5 握手回归 -d 同源贴合 ——
+#       至此 -f 与 -d 在 App 侧会话逐位一致, 仅多每次清桌面。
 #       兼容性重映射: 短选项 -f 由 --findlib 让给 --force-desktop,
 #       --findlib 保留长选项 (glibc 原生模式缺库检查)。
 # ============================================================
@@ -242,7 +250,7 @@
 APP_PREFIX="${GLR_APP_PREFIX:-/data/data/com.anwind/files/usr}"
 GLIBC_PREFIX="${APP_PREFIX}/glibc"
 GLR_LD=${GLIBC_PREFIX}/lib/ld-linux-aarch64.so.1
-GLR_VERSION="3.12-anwind4"
+GLR_VERSION="3.12-anwind5"
 
 # [R1] 分辨率握手协议文件 (AnWind X11 窗口监听此文件)
 GLR_RES_FILE="${APP_PREFIX}/tmp/.anwind-x11-res"
@@ -466,7 +474,7 @@ glr_zink_setup() {
 
 usage() {
     cat <<'USAGE'
-glibc-runner v3.12-anwind4 —— glibc 启动器 + wine 快捷启动 (startonwine 合并版)
+glibc-runner v3.12-anwind5 —— glibc 启动器 + wine 快捷启动 (startonwine 合并版)
 
 【wine 快捷启动】glibc-runner [选项] <游戏.exe | wine子命令>
  -d[WxH], --desktop[=WxH]  X 屏幕 = 指定分辨率; 窗口化游戏自动贴合
@@ -478,20 +486,19 @@ glibc-runner v3.12-anwind4 —— glibc 启动器 + wine 快捷启动 (startonwi
                            -v1024x768 或 -d1024x768 -v
  -f[WxH], --force-desktop[=WxH]
                           强制窗口直出 (针对 wine10 和 proton 版 wine
-                          及以上), 与 -d 同源的三个动作: ① 不传
+                          及以上), 与 -d 同源的两个动作: ① 不传
                           explorer /desktop 参数, 游戏窗口直接显示
                           在项目 X11 桌面窗口 (画面直出); ② 每次启
                           动前清除注册表 wine 蓝色背景桌面 (HKCU\
                           Software\Wine\Explorer 的 Desktop 值与
                           Desktops 键, Mobox 迁移/winecfg 勾选/repack
                           资产常持久化它 → 游戏被关进蓝底桌面、窗口
-                          居中缩水); ③ 撑满填满 (自动叠加 -F): 握手
-                          携带 fitwin 标记, 游戏窗口客户区撑到整个
-                          X 屏幕 → 画面铺满无黑边 (窗口化老游戏不再
-                          因"X 屏幕贴成游戏客户区"而在 16:9 窗口
-                          两侧露黑); 不加分辨率默认 1280x720 (与 -d
-                          同款), 需指定时紧贴: -f1280x720
-                          (GLR_FORCE_VD=1 同效)
+                          居中缩水); 铺满与 -d 完全同源: 握手同款
+                          (窗口化游戏 App 侧自动贴合拉伸铺满, 无黑边,
+                          老游戏不再被 resize 战斗卡住); 不加分辨率
+                          默认 1280x720 (与 -d 同款), 需指定时紧贴:
+                          -f1280x720 (GLR_FORCE_VD=1 同效); 现代游戏
+                          想原生分辨率渲染可再叠 -F (见下)
  -F, --fitwin             撑满模式: 把游戏窗口 resize 到 X 屏幕尺寸
                            (现代游戏按 -d 分辨率原生渲染, 比拉伸清晰;
                            老游戏建议不加, 用默认贴合拉伸)
@@ -540,7 +547,7 @@ glibc-runner v3.12-anwind4 —— glibc 启动器 + wine 快捷启动 (startonwi
 示例:
  glibc-runner -d /sdcard/game/game.exe            # 全屏启动游戏 (不加分辨率)
  glibc-runner -d1280x720 /sdcard/game/game.exe    # 虚拟桌面 1280x720 启动
- glibc-runner -f /sdcard/game/game.exe            # 强制窗口直出+撑满填满+清wine蓝色背景桌面 (默认 1280x720)
+ glibc-runner -f /sdcard/game/game.exe            # 强制窗口直出+清wine蓝色背景桌面 (默认 1280x720, 铺满同 -d)
  glibc-runner -f800x600 /sdcard/game/game.exe     # 同上, X 屏幕 800x600
  glibc-runner -g /sdcard/game/game.exe            # OpenGL3 驱动启动
  glibc-runner taskmgr                             # 直接启动 wine 程序
@@ -556,7 +563,7 @@ glibc-runner v3.12-anwind4 —— glibc 启动器 + wine 快捷启动 (startonwi
    wine 标准根文件系统); d:/e: 可用 DRIVE_D/DRIVE_E 自定义
  * -d 分辨率会实时同步给 AnWind X11 窗口 (游戏按真实分辨率渲染)
  * wine10/proton 上要窗口显示且去掉 wine 蓝色背景桌面: 加 -f 启动
-   (同 -d 画面直出 + 撑满填满 + 每次清除注册表持久化桌面,
+   (同 -d 画面直出 + 每次清除注册表持久化桌面, 铺满同 -d 贴合拉伸,
    详见上方 -f 说明)
  * 声音: pulse 服务端/glibc 音频库自动拉起补装; 无声先跑 --fix-audio
  * 音量偏小: GLR_AUDIO_VOLUME=50~300 (默认 100; 150=软件增益 1.5 倍,
@@ -608,13 +615,14 @@ while :; do
         -s|--shell) GLR_MODE_SHELL=1 ;;
         -c|--configure) GLR_MODE_CONF=1 ;;
         -f|--force-desktop)
-            # fix25 [R7] (anwind4 修订): 强制窗口直出 —— 与 -d [R2]
+            # fix25 [R7] (anwind5 修订): 强制窗口直出 —— 与 -d [R2]
             # 同款画面直出 (不传 explorer /desktop 参数, 直传参数与
             # 注册表是同一个蓝底 wine 桌面的两种入口); 每次启动前
-            # 清除注册表 wine 蓝色背景桌面; 握手固定携带 fitwin
-            # (撑满) 标记 → 游戏窗口撑到整个 X 屏幕, 画面与 -d 一样
-            # 铺满无黑边。裸 -f 默认 1280x720 (与 -d 同款),
-            # -fWxH 指定尺寸(紧贴)。
+            # 清除注册表 wine 蓝色背景桌面; 握手与 -d 完全同源
+            # (写 "WxH", 不带 fitwin) → App 侧贴合拉伸铺满, 与 -d
+            # 填满效果一致 (anwind4 曾强制叠加 -F 撑满, 实测 DirectDraw
+            # 老游戏假稳定黑边, 已回退)。裸 -f 默认 1280x720
+            # (与 -d 同款), -fWxH 指定尺寸(紧贴)。
             GLR_FORCE_VD=1
             GLR_WINE=1
             if [ -n "${2:-}" ]; then
@@ -1973,25 +1981,29 @@ if [ "${GLR_WINE}" = "1" ]; then
         resolution=(explorer "/desktop=shell,${GLR_OPT_DESKTOP}")
     fi
 
-    # fix25 [R7] (v3.12-anwind4 修订): -f/--force-desktop 强制窗口直出
+    # fix25 [R7] (v3.12-anwind5 修订): -f/--force-desktop 强制窗口直出
     #   —— 与 -d [R2] 完全同款: resolution 置空, 不传任何 explorer
     #   /desktop 参数 (anwind2 的直传参数与注册表方式是同一个蓝底
     #   wine 桌面窗口的两种入口, 用户实测截图确认后去除); "窗口"由
     #   握手提供: X 屏幕 = -f 尺寸, 游戏直接渲染在项目 X11 桌面窗口。
-    #   anwind4 填满对齐 -d (用户实测: anwind3 的"贴合"握手让 X 屏
-    #   幕缩成游戏客户区, 4:3 老游戏在 16:9 窗口两侧露黑, 即旧版
-    #   -d 填不满的老毛病): ① 裸 -f 默认 800x600 → 1280x720 (与
-    #   -d [R1] 分辨率修复同款默认); ② -f 握手值固定携带 fitwin
-    #   标记 (自动叠加 -F 撑满) → App 侧 X11FitClient 把游戏窗口
-    #   客户区撑到整个 X 屏幕, 画面铺满无黑边; 顽固老游戏抗拒
-    #   resize 时 App 连续 4 轮对抗后自动退回贴合 (零退化)。
+    #   填满与 -d 完全同源 (anwind5 定稿, 推翻 anwind4): anwind4 曾
+    #   让握手值固定携带 fitwin (自动叠加 -F 撑满), 用户实测"一样的
+    #   黑边" —— DirectDraw 固定分辨率老游戏接受 resize 后仍按原分
+    #   辨率绘制 (App 侧 fix19 注释记载的假稳定: -d1024x768 只画
+    #   868x652), 右/下黑区烧在 X 画面内部, 显示层拉伸也救不回。
+    #   anwind5 回归: -f 握手写 "WxH" (与 -d 同款, 不带 fitwin) →
+    #   App 侧 fix19 默认贴合策略 (游戏窗口平移到 (0,0) + X 屏幕
+    #   缩成游戏客户区 + 显示层拉伸铺满) —— 与用户实测有效的 -d
+    #   填满效果逐位一致; 现代游戏需要原生分辨率渲染时用 -f -F
+    #   显式叠加撑满。
     #   与 -v 同给时 -f 覆盖 -v (explorer 桌面取消)。
     if [ "${GLR_FORCE_VD:-0}" = "1" ]; then
         if [ -z "${GLR_OPT_DESKTOP}" ]; then
             GLR_OPT_DESKTOP="1280x720"    # 裸 -f 默认尺寸 (与 -d 同款)
             GLR_DESKTOP_GIVEN=1           # 确保 res 握手写入 → X 屏幕 == 指定尺寸
         fi
-        GLR_FITWIN=1                  # [R7] anwind4: -f 握手固定带 fitwin → 撑满铺满 (对齐 -d 填满效果)
+        # [R7] anwind5: 不再强制 GLR_FITWIN=1 (anwind4 实测假稳定
+        #   黑边, 已回退); 需要撑满的用户用 -f -F 显式叠加。
         if [ "${GLR_VD:-0}" = "1" ]; then
             _glr_warn "-f 与 -v 同给: 按 -f 强制窗口直出执行 (explorer 虚拟桌面已取消, -f 不带蓝底 wine 桌面)"
         fi
@@ -2043,7 +2055,7 @@ if [ "${GLR_WINE}" = "1" ]; then
     if [ -n "${GLR_DESKTOP_GIVEN}" ]; then
         echo " 提示    : 窗口化游戏自动贴合拉伸铺满 (X 屏随游戏窗口自适应, 无黑边)"
         echo "           游戏报错/闪退 (轩宇剑4类)? 加 -v 启用 wine 虚拟桌面"
-        echo "           wine 蓝色背景桌面? 加 -f (强制窗口直出+撑满填满+每次清注册表桌面)"
+        echo "           wine 蓝色背景桌面? 加 -f (强制窗口直出+每次清注册表桌面, 铺满同 -d)"
         echo "           现代游戏想按 ${GLR_OPT_DESKTOP:-1280x720} 原生渲染可加 -F (窗口撑满)"
     fi
 
@@ -2056,9 +2068,11 @@ if [ "${GLR_WINE}" = "1" ]; then
     #   -d (全屏)    → 写 "1280x720"   (全屏默认桌面分辨率)
     #   -v (虚拟桌面)→ 写 VD 尺寸      (与 explorer /desktop 尺寸一致,
     #                                  VD 窗口铺满 X 屏幕)
-    #   -f (强制窗口直出)→ 写 "WxH fitwin" (X 屏 = 指定尺寸 + 撑满:
-    #                                  游戏窗口客户区撑到整个 X 屏幕,
-    #                                  画面铺满无黑边, 填满对齐 -d)
+    #   -f (强制窗口直出)→ 写 "WxH" (X 屏 = 指定尺寸; 与 -d 完全同
+    #                        源: 窗口化游戏 App 侧贴合拉伸铺满无黑边;
+    #                        anwind4 曾写 "WxH fitwin", 实测 DirectDraw
+    #                        老游戏假稳定黑边, anwind5 回退; 现代游戏
+    #                        要撑满用 -f -F 显式叠加)
     #   不带 -d      → 写 "native"    (跟随窗口, 桌面/文件管理器场景)
     # AnWind 端 FileObserver 实时应用; anwind-x11 启动桌面会话时也会
     # 写 "native" 复位。旧版 App 解析带标记值时 regex 照样提取 WxH,
@@ -2132,7 +2146,7 @@ if [ "${GLR_WINE}" = "1" ]; then
         "${GLR_LD}" "${GLR_BOX64}" "${GLR_WINE_BIN}" reg delete \
             "HKCU\\Software\\Wine\\Explorer\\Desktops" /f >/dev/null 2>&1
         rm -f "${WINEPREFIX}/anwindmeta/.anwind-vd-on" 2>/dev/null   # v3.12-anwind1 遗留记账清理
-        echo " [R7] 已清除注册表 wine 蓝色背景桌面, 强制窗口直出 ${GLR_OPT_DESKTOP} (撑满铺满, 画面同 -d 填满, 无 wine 桌面)"
+        echo " [R7] 已清除注册表 wine 蓝色背景桌面, 强制窗口直出 ${GLR_OPT_DESKTOP} (铺满同 -d 贴合拉伸, 无 wine 桌面)"
     elif [ "${GLR_FORCE_VD:-0}" != "1" ] \
          && [ -f "${WINEPREFIX}/anwindmeta/.anwind-vd-on" ] \
          && [ -f "${WINEPREFIX}/system.reg" ]; then

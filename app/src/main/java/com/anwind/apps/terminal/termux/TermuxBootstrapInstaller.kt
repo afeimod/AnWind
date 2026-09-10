@@ -251,13 +251,20 @@ object TermuxBootstrapInstaller {
     //   不记账）；握手分辨率=-f 尺寸。旧版遗留注册表键与
     //   .anwind-vd-on 记账在 -f/非 -f 启动时均自动清除。
     // rev35 = fix25 填满对齐（v3.12-anwind4）：用户实测反馈 -f 仍像
-    //   旧版 -d 一样"填不满"（截图 X:732x550：贴合握手把 X 屏幕缩成
-    //   游戏客户区，4:3 老游戏在 16:9 窗口两侧露黑）——anwind4 ① 裸
-    //   -f 默认 800x600→1280x720（与 -d 同款默认）；② -f 握手值固定
-    //   携带 fitwin 标记（自动叠加 -F 撑满）→ App 侧 X11FitClient
-    //   把游戏窗口客户区撑到整个 X 屏幕，画面铺满无黑边；顽固老游戏
-    //   抗拒 resize 时 App 4 轮对抗后自动退回贴合（零退化）。
-    private const val EXTRAS_REVISION = 35
+    //   旧版 -d 一样"填不满"——anwind4 ① 裸 -f 默认 800x600→1280x720
+    //   （与 -d 同款默认）；② -f 握手值固定携带 fitwin 标记（自动叠加
+    //   -F 撑满）→ App 侧 X11FitClient 把游戏窗口客户区撑到整个 X 屏幕。
+    //   【实测推翻：DirectDraw 固定分辨率老游戏"接受" resize 后仍按原
+    //   分辨率绘制（fix19 注释记载的假稳定：-d1024x768 只画 868x652），
+    //   右/下黑区烧在 X 画面内部，显示层拉伸后黑边依旧——用户复测
+    //   "一样的黑边"】
+    // rev36 = fix25 铺满回归（v3.12-anwind5）：-f 握手回归与 -d 完全
+    //   同源（写 "WxH"，不再携带 fitwin）→ App 侧走 fix19 默认"贴合"
+    //   策略：游戏窗口平移到 (0,0) + X 屏幕缩成游戏客户区 + 显示层
+    //   拉伸铺满整个桌面窗口——与用户实测有效的 -d 填满效果逐位一致，
+    //   对任意窗口化游戏（含 DirectDraw 固定分辨率老游戏）可靠无黑边；
+    //   "撑满"降回 -F/--fitwin 显式可选（现代游戏 -f -F 叠加）。
+    private const val EXTRAS_REVISION = 36
 
     /** 安装状态（Compose 界面订阅渲染）。 */
     sealed class InstallState {
