@@ -107,12 +107,50 @@
 #  [V5] 修复 fix20 遗留: glr_port_up 的 "exec 3>&- 3<&- 2>/dev/null"
 #       把脚本 stderr 永久吞进 /dev/null → 端口就绪后的所有警告
 #       (含音量警告)静默丢失; 已删除该行(fd3 随子壳自动关闭)。
+#
+# v3.9 (AnWind fix22 —— 前缀构建修复 + Z 盘新指向 + zink 渲染):
+#  [B1] 修复"无 .wine 前缀时无法构建前缀/没有正确 wineboot": 根因
+#       是 [W11]/[Z1] 的"每次启动自动补盘符"在 wineboot 之前就
+#       mkdir -p 了 dosdevices/ —— 而 wine(server 端)只在"自己亲
+#       手创建 dosdevices"时才会顺带创建 drive_c 与 c:/z: 链接
+#       (wine server.c: mkdir dosdevices 成功 → 建 drive_c/c:/z:;
+#       EEXIST → 整段跳过)。预创建的空壳 dosdevices → C: 盘永不
+#       出现 → 前缀报废, wine 每次启动刷
+#         "could not open working directory C:\\windows\\system32"
+#       且旧成功判据只查 system.reg → 半成品也放行("假成功")。
+#       修复: (a) glr_ensure_std_drives 在前缀未初始化(无
+#       system.reg)时整体跳过, 绝不预创建 dosdevices; (b) 自动初始
+#       化改走 startonwine 语义的 glr_bootstrap_prefix: 旧/半成品前
+#       缺先备份挪走 → 干净环境下 wineboot -u(dynarec 干扰项与
+#       esync 按参考脚本关闭, mono/gecko/gstreamer 屏蔽) →
+#       system.reg+drive_c+c: 三重验收; --init/--fix-prefix 同源
+#       收敛; (c) 已损坏前缀(有 system.reg 无 drive_c)自动检测重建。
+#  [B2] Z 盘指向改为 /data/data/com.anwind/files/usr (DRIVE_Z 环境
+#       变量/conf 可改, DRIVE_Z=/ 恢复 wine 标准根文件系统) —— Z:
+#       覆盖整个 Termux 前缀, 对齐 Mobox z:=files 语义。旧指向 / 
+#       自动迁移(一次性提示); 用户自设其它有效目标保留。
+#       --install-prefix 同步。
+#  [B3] CWD 盘符映射守卫: wine 把 Unix 工作目录映射为 Windows CWD,
+#       未映射时回退 C:\\windows 并刷 "could not find DOS drive…"
+#       警告(游戏相对路径资源/CD 检测跟着丢)。z: 改指 usr 后终端默
+#       认目录 $HOME 恰在 z: 之外 —— 守卫自动切换到 游戏目录(可映
+#       射)或 $APP_PREFIX(z: 根, 恒可映射)。
+#  [K1] -z/--zink (GLR_ZINK=1 同效): mesa zink 渲染(OpenGL on
+#       Vulkan; Adreno GPU 经 Turnip 硬件加速)。zink_dri.so 缺失时
+#       自动补装 mesa-glibc + vulkan-icd-loader-glibc +
+#       mesa-vulkan-icd-freedreno-glibc(离线资产 opt/mesa/
+#       mesa-zink.tar.gz 优先, 一次记账; GLR_NO_GRAPHICS_SETUP=1
+#       逃生门), 并导出 MESA_LOADER_DRIVER_OVERRIDE/GALLIUM_DRIVER/
+#       __GLX_VENDOR_LIBRARY_NAME/LIBGL_DRIVERS_PATH + Turnip ICD
+#       (VK_DRIVER_FILES + VK_ICD_FILENAMES 兼容)。
+#  [K2] zink 诊断: 启动横幅 gl 行 + -i 信息输出 dri 驱动与 ICD 状态;
+#       Turnip ICD 缺失(非 Adreno)时提示而非硬失败。
 # ============================================================
 
 APP_PREFIX="${GLR_APP_PREFIX:-/data/data/com.anwind/files/usr}"
 GLIBC_PREFIX="${APP_PREFIX}/glibc"
 GLR_LD=${GLIBC_PREFIX}/lib/ld-linux-aarch64.so.1
-GLR_VERSION="3.8-anwind1"
+GLR_VERSION="3.9-anwind1"
 
 # [R1] 分辨率握手协议文件 (AnWind X11 窗口监听此文件)
 GLR_RES_FILE="${APP_PREFIX}/tmp/.anwind-x11-res"
@@ -160,9 +198,104 @@ show_warning() {
     [ -n "${GLR_ZENITY}" ] && "${GLR_ZENITY}" --warning --text="glibc-runner: $1" --timeout 3 >/dev/null 2>&1 &
 }
 
+# ============================================================
+# fix22 [K]: mesa zink 渲染 (OpenGL on Vulkan, Adreno/Turnip)
+# ============================================================
+# termux-glibc 源的 mesa-glibc(24.2.6) 自带 dri/zink_dri.so;
+# Turnip ICD = mesa-vulkan-icd-freedreno-glibc(Adreno 专用);
+# 链路: wine opengl32 --box64 dlopen--> libGL(GLVND) -> mesa
+# zink_dri.so -> libvulkan.so.1 -> Turnip ICD -> Adreno GPU。
+
+glr_zink_dri() {  # 检测 zink_dri.so(找到则回显路径并返回 0)
+    local _p="${GLIBC_PREFIX}/lib/dri/zink_dri.so"
+    if [ -e "${_p}" ]; then printf '%s\n' "${_p}"; return 0; fi
+    return 1
+}
+
+glr_zink_icd() {  # 检测 Turnip(freedreno) ICD json(找到则回显路径)
+    local _f
+    for _f in "${GLIBC_PREFIX}"/share/vulkan/icd.d/*freedreno*.json \
+              "${GLIBC_PREFIX}"/share/vulkan/icd.d/*turnip*.json; do
+        [ -f "${_f}" ] || continue
+        printf '%s\n' "${_f}"
+        return 0
+    done
+    return 1
+}
+
+# [K1] zink 三件套自动补装(离线资产优先, 一次记账; --fix-audio 同款)
+glr_ensure_zink_libs() {
+    [ "${GLR_NO_GRAPHICS_SETUP:-0}" = "1" ] && return 0
+    glr_zink_dri >/dev/null && return 0
+    local _mark="${GLIBC_PREFIX}/opt/.anwind-zink-libs-tried"
+    # 离线资产: repack 侧预置 tar 包(tar 根 = glibc 前缀, 含
+    # lib/dri/zink_dri.so 与 share/vulkan/icd.d/ 布局)
+    local _tgz="${GLIBC_PREFIX}/opt/mesa/mesa-zink.tar.gz"
+    if [ -f "${_tgz}" ]; then
+        tar -xzf "${_tgz}" -C "${GLIBC_PREFIX}" 2>/dev/null \
+            && glr_zink_dri >/dev/null \
+            && { echo " [K1] 已从离线资产安装 mesa zink: ${_tgz}"; return 0; }
+    fi
+    # 已尝试且失败 → 不每次启动都联网重试
+    if [ -f "${_mark}" ]; then
+        _glr_warn "mesa zink 驱动缺失(dri/zink_dri.so); 之前自动安装失败已跳过。修复: pkg install mesa-glibc vulkan-icd-loader-glibc mesa-vulkan-icd-freedreno-glibc"
+        return 1
+    fi
+    local _apt_cmd=""
+    command -v pkg >/dev/null 2>&1 && _apt_cmd="pkg"
+    [ -z "${_apt_cmd}" ] && command -v apt >/dev/null 2>&1 && _apt_cmd="apt"
+    if [ -z "${_apt_cmd}" ]; then
+        _glr_warn "mesa zink 驱动缺失且无 pkg/apt 可用; 手工: pkg install mesa-glibc vulkan-icd-loader-glibc mesa-vulkan-icd-freedreno-glibc"
+        return 1
+    fi
+    echo " [K1] 首次 zink: 安装 mesa + Vulkan 组件 (mesa-glibc vulkan-icd-loader-glibc mesa-vulkan-icd-freedreno-glibc, 需网络, 体量较大, 请稍候...)"
+    (
+        export PATH="${APP_PREFIX}/bin:${PATH}"
+        export PREFIX="${PREFIX:-${APP_PREFIX}}"
+        export LD_LIBRARY_PATH="${APP_PREFIX}/lib"
+        export TMPDIR="${APP_PREFIX}/tmp"
+        export HOME="${HOME:-${APP_PREFIX}/home}"
+        unset LD_PRELOAD
+        mkdir -p "${HOME}" "${TMPDIR}" 2>/dev/null
+        "${_apt_cmd}" install -y mesa-glibc vulkan-icd-loader-glibc mesa-vulkan-icd-freedreno-glibc 2>&1 | tail -n 8
+    )
+    mkdir -p "${GLIBC_PREFIX}/opt" 2>/dev/null
+    : > "${_mark}" 2>/dev/null
+    if glr_zink_dri >/dev/null; then
+        echo " [K1] mesa zink 安装成功 (dri/zink_dri.so 就绪)"
+        return 0
+    fi
+    _glr_warn "mesa zink 自动安装未生效(网络/源问题)。手工: pkg install mesa-glibc vulkan-icd-loader-glibc mesa-vulkan-icd-freedreno-glibc"
+    return 1
+}
+
+# [K1/K2] -z/GLR_ZINK=1 时启用: 补装组件 + 导出选择变量 + 状态汇报
+glr_zink_setup() {
+    [ "${GLR_ZINK:-0}" = "1" ] || return 0
+    glr_ensure_zink_libs
+    export MESA_LOADER_DRIVER_OVERRIDE="zink"     # mesa 22+ 强制驱动
+    export GALLIUM_DRIVER="zink"                   # 旧版 mesa 兼容
+    export __GLX_VENDOR_LIBRARY_NAME="mesa"       # GLVND 选 mesa vendor
+    export LIBGL_DRIVERS_PATH="${LIBGL_DRIVERS_PATH:-${GLIBC_PREFIX}/lib/dri}"
+    local _icd
+    _icd="$(glr_zink_icd)"
+    if [ -n "${_icd}" ]; then
+        # 显式指定 ICD: glibc 加载器默认搜索路径不含 $GLIBC_PREFIX/
+        # share/vulkan/icd.d, 不指定会找不到 Turnip
+        export VK_DRIVER_FILES="${_icd}"
+        export VK_ICD_FILENAMES="${_icd}"           # 旧加载器兼容
+        GLR_ZINK_STATUS="zink (ICD: $(basename "${_icd}"))"
+    else
+        _glr_warn "未检测到 Turnip(freedreno) Vulkan ICD —— zink 需 Adreno GPU; 安装: pkg install mesa-vulkan-icd-freedreno-glibc (非 Adreno 设备无硬件加速)"
+        GLR_ZINK_STATUS="zink (无 Turnip ICD: 无硬件加速)"
+    fi
+    glr_zink_dri >/dev/null || GLR_ZINK_STATUS="zink 不可用 (缺 dri/zink_dri.so)"
+    return 0
+}
+
 usage() {
     cat <<'USAGE'
-glibc-runner v3.8-anwind1 —— glibc 启动器 + wine 快捷启动 (startonwine 合并版)
+glibc-runner v3.9-anwind1 —— glibc 启动器 + wine 快捷启动 (startonwine 合并版)
 
 【wine 快捷启动】glibc-runner [选项] <游戏.exe | wine子命令>
  -d[WxH], --desktop[=WxH]  X 屏幕 = 指定分辨率; 窗口化游戏自动贴合
@@ -176,6 +309,8 @@ glibc-runner v3.8-anwind1 —— glibc 启动器 + wine 快捷启动 (startonwin
                            (现代游戏按 -d 分辨率原生渲染, 比拉伸清晰;
                            老游戏建议不加, 用默认贴合拉伸)
  -g, --opengl              以 OpenGL3 渲染驱动启动 (--rendering-driver opengl3)
+ -z, --zink                mesa zink 渲染 (OpenGL→Vulkan, Adreno+Turnip
+                            硬件加速; 组件缺失自动安装; GLR_ZINK=1 同效)
  -x, --dx11                给游戏追加 -dx11 参数
  -u, --unity               Unity 单线程渲染 (-force-gfx-direct)
  -a, --args <参数>         透传给 wine 的参数, 可多次使用
@@ -223,11 +358,14 @@ glibc-runner v3.8-anwind1 —— glibc 启动器 + wine 快捷启动 (startonwin
 注意:
  * 选项必须写在 exe 路径之前 (exe 之后的参数原样传给游戏)
  * 日志默认追加写入 $LOG_PATH (默认 /sdcard/mobox_log.txt), 终端同时回显
- * 盘符指向: z:=/ (根文件系统); d:/e: 可用 DRIVE_D/DRIVE_E 自定义
+ * 盘符指向: z:=/data/data/com.anwind/files/usr (DRIVE_Z 可改, =/ 恢复
+   wine 标准根文件系统); d:/e: 可用 DRIVE_D/DRIVE_E 自定义
  * -d 分辨率会实时同步给 AnWind X11 窗口 (游戏按真实分辨率渲染)
  * 声音: pulse 服务端/glibc 音频库自动拉起补装; 无声先跑 --fix-audio
  * 音量偏小: GLR_AUDIO_VOLUME=50~300 (默认 100; 150=软件增益 1.5 倍,
    过大有削顶/底噪, 逐档试听; 亦检查 Android 媒体音量与游戏内音量)
+ * 需要 zink 渲染的游戏: 加 -z 启动 (GLR_ZINK=1 同效; Adreno 经
+   Turnip 硬件加速, mesa/Vulkan 组件缺失时自动联网安装)
  * 勿手工在容器内跑 pulseaudio (路径自检会失败), 交由本脚本处理
  * 完全跳过音频初始化: 环境变量 GLR_NO_AUDIO_SETUP=1
  * 前缀异常 (闪退报 32-bit/registry 无效): glibc-runner --fix-prefix
@@ -246,12 +384,14 @@ GLR_CMD_KILL=0; GLR_CMD_INIT=0; GLR_CMD_INSTALL=0; GLR_CMD_FIXPREFIX=0; GLR_CMD_
 GLR_CMD_WINECFG=0; GLR_CMD_REGEDIT=0; GLR_CMD_TASKMGR=0; GLR_CMD_FIXAUDIO=0
 GLR_PULSE_READY=0   # fix20 [A1]: 127.0.0.1:4713 就绪标记(启动横幅用)
 GLR_AUDIO_VOL_APPLIED=""  # fix21 [V1]: 已生效的 sink 音量(横幅/诊断用)
+GLR_ZINK="${GLR_ZINK:-0}"  # fix22 [K1]: -z/--zink 或环境变量置 1
+GLR_ZINK_STATUS=""         # fix22 [K2]: zink 状态(横幅/诊断用)
 use_opengl=0; dx_dx11=0; unity_mode=0; glr_wow64flag=0; startib=0; f5taskmgr=0
 wine_args=(); additional_args=(); resolution=(); GLR_TASKSET=()
 
 # ---- 参数解析 (+ = 不重排, 位置参数后的内容原样透传) ----
-if ! GLR_PARSED=$(getopt -o "+d::a:hwub5gxnistcfv::FD::" \
-      --long "desktop::,vd::,virtual-desktop::,fitwin,args:,help,wow64,unity,ib,f5taskmgr,opengl,dx11,no-linker,info,shell,configure,findlib,teg,strace::,debug,drives::,adddrive:,rmdrive:,kill,wine:,init,fix-prefix,fix-drives,fix-audio,install-prefix,force,winecfg,regedit,taskmgr,version" \
+if ! GLR_PARSED=$(getopt -o "+d::a:hwub5gzxnistcfv::FD::" \
+      --long "desktop::,vd::,virtual-desktop::,fitwin,args:,help,wow64,unity,ib,f5taskmgr,opengl,dx11,zink,no-linker,info,shell,configure,findlib,teg,strace::,debug,drives::,adddrive:,rmdrive:,kill,wine:,init,fix-prefix,fix-drives,fix-audio,install-prefix,force,winecfg,regedit,taskmgr,version" \
       -n "glibc-runner" -- "$@" 2>&1); then
     echo "$GLR_PARSED" >&2
     usage
@@ -310,6 +450,10 @@ while :; do
         -a|--args) wine_args+=("$2"); shift ;;
         -g|--opengl) use_opengl=1; GLR_WINE=1 ;;
         -x|--dx11) dx_dx11=1; GLR_WINE=1 ;;
+        -z|--zink)
+            # fix22 [K1]: mesa zink 渲染(OpenGL on Vulkan; Adreno/
+            # Turnip 硬件加速)。GLR_ZINK=1 环境变量同效。
+            GLR_ZINK=1; GLR_WINE=1 ;;
         -u|--unity) unity_mode=1; GLR_WINE=1 ;;
         -w|--wow64) glr_wow64flag=1 ;;
         -b|--ib) startib=1; GLR_WINE=1 ;;
@@ -426,6 +570,18 @@ if [ "${GLR_MODE_INFO}" = "1" ]; then
             echo "drives:"
             ( cd "${WINEPREFIX}/dosdevices" 2>/dev/null && \
               for _d in *:; do echo "  ${_d%:} -> $(readlink "$_d" 2>/dev/null)"; done )
+        fi
+        # fix22 [K2]: zink / Turnip ICD 可用性
+        if glr_zink_dri >/dev/null; then
+            echo "zink    : $(glr_zink_dri)"
+        else
+            echo "zink    : (未安装; pkg install mesa-glibc; -z/GLR_ZINK=1 启用)"
+        fi
+        _glr_icd="$(glr_zink_icd 2>/dev/null)"
+        if [ -n "${_glr_icd}" ]; then
+            echo "vulkan  : ${_glr_icd} (Turnip ICD)"
+        else
+            echo "vulkan  : (无 Turnip ICD; Adreno 加速需 mesa-vulkan-icd-freedreno-glibc)"
         fi
     else
         echo "wine='(未找到, 检查 ${GLIBC_PREFIX}/wine-*/ 或 conf)'"
@@ -708,6 +864,7 @@ glr_env_full() {
     glr_ensure_audio_libs
     glr_start_pulse
     glr_pulse_volume   # fix21 [V1]: sink 音量归一(默认100%, GLR_AUDIO_VOLUME 可调)
+    glr_zink_setup     # fix22 [K1]: -z/GLR_ZINK=1 时启用 mesa zink(缺件自动补装)
     export PULSE_SERVER="${PULSE_SERVER:-127.0.0.1}"
     # box64 动态翻译稳定性预设 (mwine 同款; 环境变量已设则尊重用户)
     export BOX64_DYNAREC_BIGBLOCK="${BOX64_DYNAREC_BIGBLOCK:-0}"
@@ -764,6 +921,66 @@ glr_side_launch() {  # 附加 wine 工具后台启动 (ib / f5taskmgr)
         "${GLR_LD}" "${GLR_BOX64}" "${GLR_WINE_BIN}" \
             ${resolution[@]+"${resolution[@]}"} "$1" >/dev/null 2>&1 &
     fi
+}
+
+# ---- fix22 [B3]: Unix 工作目录 → 盘符映射守卫 ----
+# wine 启动时把 Unix CWD 映射为 Windows 工作目录(getcwd→盘符根);
+# 未映射(不在任何盘符下)时回退 C:\\windows 并刷警告:
+#   "Warning: could not find DOS drive for current working directory ..."
+# 游戏的相对路径资源(CD 检测/存档/视频)跟着丢。z: 改指 $APP_PREFIX
+# 后, 终端默认目录 $HOME(…/files/home)恰在 z: 之外 —— 这正是高频
+# 踩中的场景。策略: 已映射不动; 未映射 → 游戏所在目录(可映射则用)
+# → $APP_PREFIX(z: 根, 恒可映射)。
+glr_ensure_cwd() {
+    local _gdir="${1:-}" _cwd _tgt _rt _rg _mapped="" _l
+    _cwd="$(pwd -P 2>/dev/null)" || _cwd=""
+    if [ -z "${_cwd}" ]; then
+        cd "${APP_PREFIX}" 2>/dev/null
+        return 0
+    fi
+    # 收集"已映射根": 各盘符目标(相对链接按 dosdevices 解析)+drive_c 本体
+    if [ -d "${GLR_DOSDEVICES}" ]; then
+        for _tgt in "${GLR_DOSDEVICES}"/*:; do
+            [ -e "${_tgt}" ] || [ -L "${_tgt}" ] || continue
+            _l="$(readlink "${_tgt}" 2>/dev/null)"
+            [ -n "${_l}" ] || continue
+            case "${_l}" in
+                /*) ;;
+                *)  _l="${GLR_DOSDEVICES}/${_l}" ;;
+            esac
+            _rt="$(cd "${_l}" 2>/dev/null && pwd -P)"
+            [ -n "${_rt}" ] && _mapped="${_mapped}${_rt}"$'\n'
+        done
+    fi
+    [ -d "${WINEPREFIX}/drive_c" ] && _mapped="${_mapped}${WINEPREFIX}/drive_c"$'\n'
+    if [ -z "${_mapped}" ]; then
+        cd "${APP_PREFIX}" 2>/dev/null
+        echo " [B3] 工作目录守卫: 无可用盘符, 已切换到 ${APP_PREFIX}"
+        return 0
+    fi
+    while IFS= read -r _rt; do
+        [ -n "${_rt}" ] || continue
+        if [ "${_cwd}" = "${_rt}" ] || [[ "${_cwd}" == "${_rt}"/* ]]; then
+            return 0
+        fi
+    done <<< "${_mapped}"
+    # 未映射: 游戏目录可映射则优先
+    if [ -n "${_gdir}" ] && [ -d "${_gdir}" ]; then
+        _rg="$(cd "${_gdir}" 2>/dev/null && pwd -P)"
+        if [ -n "${_rg}" ]; then
+            while IFS= read -r _rt; do
+                [ -n "${_rt}" ] || continue
+                if [ "${_rg}" = "${_rt}" ] || [[ "${_rg}" == "${_rt}"/* ]]; then
+                    cd "${_gdir}" 2>/dev/null \
+                        && echo " [B3] 工作目录未映射盘符, 已切换到游戏目录: ${_gdir}"
+                    return 0
+                fi
+            done <<< "${_mapped}"
+        fi
+    fi
+    cd "${APP_PREFIX}" 2>/dev/null \
+        && echo " [B3] 工作目录未映射盘符, 已切换: ${APP_PREFIX} (z: 根; 游戏相对路径按此解析)"
+    return 0
 }
 
 # ---- [W5] 盘符管理 ----
@@ -832,20 +1049,50 @@ glr_cmd_rmdrive() {
 #      z: 一旦指向失效路径 (旧版本/迁移残留/包覆盖), 永不重建,
 #      wine 里 z 盘就是一片空白。现改用 `[ -e ]` (跟随链接判定),
 #      悬空即删除重建;
-#   2) z: 统一指向 / (wine 标准: z 盘 = 根文件系统), 目录恒非空,
-#      且天然覆盖 app 私有目录 (/data/data/com.anwind/...) 与
-#      共享存储 (/sdcard), 浏览文件不再依赖 d:/e: 是否配好;
-#   3) z: 的创建不再依赖 drive_c 存在 (前缀未初始化时也能先修好 z:)。
+#   2) z: 指向 $APP_PREFIX (fix22 [B2]; DRIVE_Z 可改, DRIVE_Z=/ 恢复
+#      wine 标准根文件系统), 目录恒非空, Z: 覆盖整个 Termux 前缀
+#      (glibc/opt/... 对 Mobox 式 Z: 路径直接可见); 旧指向 / 自动
+#      迁移(一次性提示), 用户自设的其它有效目标保留;
+#   3) fix22 [B1]: 前缀未初始化(无 system.reg)时整体跳过 ——
+#      绝不预创建 dosdevices(wine 只在自己创建 dosdevices 时才建
+#      drive_c/c:/z:; 预创建空壳 = C: 永不出现 = 前缀报废)。
+
+# fix22 [B2]: z:→/ 迁移一次性提示(quiet 模式也可见, 记账防刷屏)
+glr_z_migrate_note() {
+    local _m="${WINEPREFIX}/moboxmeta/.anwind-z-migrated"
+    [ -f "${_m}" ] && return 0
+    mkdir -p "$(dirname "${_m}")" 2>/dev/null
+    touch "${_m}" 2>/dev/null
+    echo " [B2] z: 盘已迁移: / → ${1} (Z: 覆盖 Termux 前缀; 恢复根: DRIVE_Z=/)"
+}
+
 glr_ensure_std_drives() {
-    local _q="${1:-}" _d="" _e="" _c
+    local _q="${1:-}" _d="" _e="" _c _zt _cur
+    # fix22 [B1]: 前缀未初始化 → 整体跳过, 不碰 dosdevices(见上)
+    if [ ! -f "${WINEPREFIX}/system.reg" ]; then
+        [ -n "${_q}" ] || echo "  [跳过] 盘符补齐: 前缀未初始化(${WINEPREFIX}); 启动任意游戏或 --init 会自动构建"
+        return 0
+    fi
     mkdir -p "${GLR_DOSDEVICES}" 2>/dev/null
 
-    # z: 根文件系统 ([Z1] 见上)
+    # z: → Termux 前缀 (fix22 [B2]; [Z1] 语义升级, 见上注释)
+    _zt="${DRIVE_Z:-${APP_PREFIX}}"
     if [ -e "${GLR_DOSDEVICES}/z:" ]; then
-        [ -n "$_q" ] || echo "  [=] z: 已存在 -> $(readlink "${GLR_DOSDEVICES}/z:" 2>/dev/null)"
+        _cur="$(readlink "${GLR_DOSDEVICES}/z:" 2>/dev/null)"
+        if [ "${_cur}" = "${_zt}" ]; then
+            [ -n "${_q}" ] || echo "  [=] z: 已存在 -> ${_cur}"
+        elif [ "${_cur}" = "/" ]; then
+            # 旧指向(wine 默认/fix12 遗留) → 自动迁移
+            rm -f "${GLR_DOSDEVICES}/z:" 2>/dev/null
+            ln -sfn "${_zt}" "${GLR_DOSDEVICES}/z:" 2>/dev/null
+            glr_z_migrate_note "${_zt}"
+            [ -n "${_q}" ] || echo "  [+] z: / → ${_zt} (fix22 迁移)"
+        else
+            [ -n "${_q}" ] || echo "  [=] z: 自定义指向保留 -> ${_cur} (默认 ${_zt}; 恢复: DRIVE_Z)"
+        fi
     else
         rm -f "${GLR_DOSDEVICES}/z:" 2>/dev/null
-        ln -sfn / "${GLR_DOSDEVICES}/z:" && echo "  [+] z: -> /"
+        ln -sfn "${_zt}" "${GLR_DOSDEVICES}/z:" && echo "  [+] z: -> ${_zt}"
     fi
 
     # c: 系统盘 (需要 drive_c; 悬空则重建, 前缀缺失时给出提示)
@@ -903,23 +1150,63 @@ glr_cmd_kill() {
     _glr_message "wineserver 已终止 (wineserver -k)"
 }
 
-# ---- [W6] --init: 最小 win64 前缀 ----
+# ---- fix22 [B1]: 前缀自动构建(startonwine 语义) ----
+# 供 自动初始化(游戏启动时)/--init/--fix-prefix 共用。要点(与
+#  startonwine/start-tfm 逐条对齐):
+#   1) 绝不在已有 dosdevices 上 wineboot —— wine(server 端)只在
+#      "自己创建 dosdevices"时才建 drive_c/c:/z:; 预创建空壳 = C:
+#      永不出现 = 前缀报废(用户实测: "could not open working
+#      directory C:\\windows\\system32" 每次启动刷屏)。旧/半成品
+#      前缀先备份挪走, 再从头构建。
+#   2) wineboot 阶段关闭 box64 dynarec 干扰项与 esync(startonwine
+#      同款); 屏蔽 mono/gecko/winegstreamer(首装弹窗/挂死)。
+#   3) 验收 = system.reg + drive_c + c: 三件套(旧判据只查
+#      system.reg, 半成品也放行 → "假成功")。
+glr_bootstrap_prefix() {
+    local _bak
+    GLR_LOGBOOT="${GLR_LOGBOOT:-${APP_PREFIX}/tmp/mobox_wineboot.txt}"
+    if [ -e "${WINEPREFIX}" ]; then
+        _bak="${WINEPREFIX}.bak.$(date +%s 2>/dev/null || echo $$)"
+        if mv "${WINEPREFIX}" "${_bak}" 2>/dev/null; then
+            _glr_message "旧前缀已备份到: ${_bak}"
+        else
+            rm -rf "${WINEPREFIX}" 2>/dev/null
+        fi
+    fi
+    mkdir -p "${WINEPREFIX}"
+    echo "# [glibc-runner prefix bootstrap] $(glr_now) (WINEPREFIX=${WINEPREFIX})" >> "${GLR_LOGBOOT}" 2>/dev/null
+    (
+        cd "${APP_PREFIX}" 2>/dev/null || cd /
+        unset BOX64_DYNAREC_BIGBLOCK BOX64_DYNAREC_CALLRET WINEESYNC WINEESYNC_TERMUX
+        export WINEARCH=win64
+        export WINEDLLOVERRIDES="mscoree,mshtml,winegstreamer="
+        "${GLR_LD}" "${GLR_BOX64}" "${GLR_WINE_BIN}" wineboot -u
+    ) >> "${GLR_LOGBOOT}" 2>&1
+    if [ -f "${WINEPREFIX}/system.reg" ] && [ -d "${WINEPREFIX}/drive_c" ] \
+       && [ -e "${GLR_DOSDEVICES}/c:" ]; then
+        _glr_message "win64 前缀构建成功: ${WINEPREFIX} ($(glr_first_line "${WINEPREFIX}/system.reg"))"
+        return 0
+    fi
+    _glr_warn "前缀构建不完整(system.reg/drive_c/c: 有缺失); 完整日志: ${GLR_LOGBOOT}"
+    return 1
+}
+
+# ---- [W6] --init: 最小 win64 前缀 (fix22 [B1]: 走 glr_bootstrap_prefix) ----
 glr_cmd_init() {
     glr_env_full
     glr_setup_log
-    if [ -f "${WINEPREFIX}/system.reg" ]; then
+    if [ -f "${WINEPREFIX}/system.reg" ] && [ -d "${WINEPREFIX}/drive_c" ] \
+       && [ -e "${GLR_DOSDEVICES}/c:" ]; then
         _glr_message "前缀已存在: ${WINEPREFIX} (如需用 repack 资产重建: --install-prefix --force)"
+        glr_ensure_std_drives
         return 0
     fi
-    mkdir -p "${WINEPREFIX}"
-    _glr_message "初始化 win64 前缀: ${WINEPREFIX} (首次较慢, 请耐心等待...)"
+    _glr_message "初始化 win64 前缀: ${WINEPREFIX} (首次较慢, 请耐心等待; 详细日志: ${GLR_LOGBOOT})"
     echo "# [glibc-runner --init] $(glr_now)" >> "${GLR_LOG}" 2>/dev/null
-    WINEARCH=win64 "${GLR_LD}" "${GLR_BOX64}" "${GLR_WINE_BIN}" wineboot -i 2>&1 | ${GLR_TEE}
-    if [ -f "${WINEPREFIX}/system.reg" ]; then
-        _glr_message "前缀创建成功 ($(glr_first_line "${WINEPREFIX}/system.reg"))"
+    if glr_bootstrap_prefix; then
         glr_ensure_std_drives
     else
-        show_error "前缀创建失败, 日志: ${GLR_LOG}"
+        show_error "前缀创建失败, 完整日志: ${GLR_LOGBOOT}"
     fi
 }
 
@@ -927,13 +1214,14 @@ glr_cmd_init() {
 glr_cmd_fixprefix() {
     glr_env_full
     glr_setup_log
-    local _need=0 _bak
+    local _need=0
     echo "==> 修补前缀: ${WINEPREFIX}"
     if [ ! -d "${WINEPREFIX}" ]; then
         echo "  [!] 前缀目录不存在"
         _need=1
-    elif [ ! -d "${WINEPREFIX}/drive_c" ] || [ ! -f "${WINEPREFIX}/system.reg" ]; then
-        echo "  [!] 前缀不完整 (缺 drive_c 或 system.reg)"
+    elif [ ! -d "${WINEPREFIX}/drive_c" ] || [ ! -f "${WINEPREFIX}/system.reg" ] \
+         || [ ! -e "${GLR_DOSDEVICES}/c:" ]; then
+        echo "  [!] 前缀不完整 (缺 drive_c / system.reg / c: 盘符)"
         _need=1
     elif [ "$(glr_first_line "${WINEPREFIX}/system.reg")" = "#arch=win32" ]; then
         echo "  [!] win32 前缀, wow64 需要 win64"
@@ -942,20 +1230,9 @@ glr_cmd_fixprefix() {
         echo "  [=] 前缀结构正常"
     fi
     if [ "$_need" = "1" ]; then
-        if [ -d "${WINEPREFIX}" ]; then
-            _bak="${WINEPREFIX}.bak.$(date +%s)"
-            mv "${WINEPREFIX}" "${_bak}" && _glr_message "旧前缀已备份到: ${_bak}"
-        fi
-        mkdir -p "${WINEPREFIX}"
-        echo "  --> 重建 win64 前缀 (wineboot -i, 已屏蔽 mono/gecko)..."
+        echo "  --> 重建 win64 前缀 (wineboot, 已屏蔽 mono/gecko; 旧前缀自动备份)..."
         echo "# [glibc-runner --fix-prefix] $(glr_now)" >> "${GLR_LOG}" 2>/dev/null
-        (
-            unset BOX64_DYNAREC_BIGBLOCK BOX64_DYNAREC_CALLRET WINEESYNC WINEESYNC_TERMUX
-            export WINEARCH=win64
-            export WINEDLLOVERRIDES="mscoree,mshtml="
-            "${GLR_LD}" "${GLR_BOX64}" "${GLR_WINE_BIN}" wineboot -i
-        ) 2>&1 | ${GLR_TEE}
-        [ -f "${WINEPREFIX}/system.reg" ] || show_error "wineboot 失败, 见上方输出或日志: ${GLR_LOG}"
+        glr_bootstrap_prefix || show_error "wineboot 失败, 完整日志: ${GLR_LOGBOOT}"
         _glr_message "win64 前缀重建成功 ($(glr_first_line "${WINEPREFIX}/system.reg"))"
     fi
     glr_ensure_std_drives
@@ -1023,11 +1300,11 @@ glr_cmd_install() {
         cp -r "${SRC}/start/." "${WINEPREFIX}/drive_c/ProgramData/Microsoft/Windows/Start Menu/" 2>/dev/null
     fi
 
-    # 盘符 ([Z1]: z: 指向 / ; 旧值 /data/data/com.anwind/files 悬空/为空时也重建)
+    # 盘符 (fix22 [B2]: z: → DRIVE_Z, 默认 $APP_PREFIX; 其余同 startonwine)
     echo "# 配置盘符"
     mkdir -p "${GLR_DOSDEVICES}"
     rm -f "${GLR_DOSDEVICES}/z:"
-    ln -sfn / "${GLR_DOSDEVICES}/z:"
+    ln -sfn "${DRIVE_Z:-${APP_PREFIX}}" "${GLR_DOSDEVICES}/z:"
     [ -d /sdcard/Download ] && ln -sfn /sdcard/Download "${GLR_DOSDEVICES}/d:"
     [ -d /sdcard/exagear ]  && ln -sfn /sdcard/exagear  "${GLR_DOSDEVICES}/e:"
     [ -d "${APP_PREFIX}/var/lib/proot-distro/installed-rootfs/debian" ] && \
@@ -1246,11 +1523,16 @@ if [ "${GLR_WINE}" = "1" ]; then
     fi
 
     # 第一个位置参数是文件 → start /unix (其余作为该程序的参数)
+    _gdir=""
     if [ -f "$1" ]; then
         _p1="$(realpath "$1")"
+        _gdir="$(dirname "${_p1}")"   # fix22 [B3]: CWD 守卫候选目录
         shift
         set -- start /unix "$_p1" "$@"
     fi
+
+    # fix22 [B3]: Unix 工作目录 → 盘符映射守卫(见 glr_ensure_cwd)
+    glr_ensure_cwd "${_gdir}"
 
     [ "${glr_wow64flag}" = "1" ] && _glr_warn "wow64 选项忽略: 本环境为纯 wow64 wine (无 box86)"
 
@@ -1311,6 +1593,9 @@ if [ "${GLR_WINE}" = "1" ]; then
     else
         echo " audio   : pulse 未就绪 (无声; 修复: glibc-runner --fix-audio)"
     fi
+    if [ -n "${GLR_ZINK_STATUS}" ]; then
+        echo " gl      : ${GLR_ZINK_STATUS}"
+    fi
     echo " 命令    : box64 wine ${wine_args[*]} ${resolution[*]} $* ${additional_args[*]}"
     if [ -n "${GLR_DESKTOP_GIVEN}" ]; then
         echo " 提示    : 窗口化游戏自动贴合拉伸铺满 (X 屏随游戏窗口自适应, 无黑边)"
@@ -1342,14 +1627,20 @@ if [ "${GLR_WINE}" = "1" ]; then
         printf 'native\n' > "${GLR_RES_FILE}" 2>/dev/null
     fi
 
-    # 前缀缺失 → 自动最小初始化
-    if [ ! -f "${WINEPREFIX}/system.reg" ]; then
-        _glr_message "前缀不存在或未初始化, 自动创建 win64 前缀: ${WINEPREFIX}"
-        mkdir -p "${WINEPREFIX}"
-        echo "# [glibc-runner auto-init] $(date '+%F %T')" >> "${GLR_LOG}" 2>/dev/null
-        WINEARCH=win64 "${GLR_LD}" "${GLR_BOX64}" "${GLR_WINE_BIN}" wineboot -i 2>&1 | ${GLR_TEE}
-        [ -f "${WINEPREFIX}/system.reg" ] || show_error "前缀自动创建失败, 见上方输出或日志: ${GLR_LOG}"
-        glr_ensure_std_drives
+    # 前缀缺失/不完整 → 自动构建 (fix22 [B1]: startonwine 语义)
+    #   旧版: glr_env_core 的盘符补齐会在 wineboot 前预创建 dosdevices
+    #   空壳 → wine 永不创建 drive_c/c: → 前缀报废 + "could not open
+    #   working directory C:\\windows\\system32" 每次启动刷屏; 且成功
+    #   判据只查 system.reg, 半成品也放行。现在三重验收(system.reg +
+    #   drive_c + c:), 损坏前缀(有 reg 无 drive_c)也自动重建。
+    if [ ! -f "${WINEPREFIX}/system.reg" ] || [ ! -d "${WINEPREFIX}/drive_c" ] \
+       || [ ! -e "${GLR_DOSDEVICES}/c:" ]; then
+        _glr_message "前缀不存在/未初始化/不完整, 自动构建 win64 前缀: ${WINEPREFIX} (首次较慢, 请耐心等待...)"
+        if glr_bootstrap_prefix; then
+            glr_ensure_std_drives
+        else
+            show_error "前缀自动构建失败, 完整日志: ${GLR_LOGBOOT}"
+        fi
     fi
 
     # [R3] 纯净游戏画面 (v3.4 fix13): 部分前缀 (Mobox 迁移/winecfg 手动

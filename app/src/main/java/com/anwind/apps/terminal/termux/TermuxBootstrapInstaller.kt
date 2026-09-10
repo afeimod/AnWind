@@ -204,7 +204,15 @@ object TermuxBootstrapInstaller {
     // rev28 = fix21：声音偏小/“被压住”——[V1] pulse sink 音量归一（默认
     //   100%，GLR_AUDIO_VOLUME=50~300 可调）；[V2] --fix-audio 诊断增强
     //   （sink 状态/静音/音量 + 活动流）；[V3] 启动横幅显示生效音量。
-    private const val EXTRAS_REVISION = 28
+    // rev29 = fix22：前缀构建 + Z 盘 + zink——[B1] 修复“无 .wine 前缀时
+    //   wineboot 构建失败”（旧版在 wineboot 前预创建 dosdevices 空壳 →
+    //   wine 永不创建 drive_c/c: → 前缀报废，每次启动刷 "could not open
+    //   working directory C:\windows\system32"；现改走 startonwine 语义
+    //   的三重验收自动构建，损坏前缀自动备份重建）；[B2] Z 盘指向
+    //   /data/data/com.anwind/files/usr（DRIVE_Z 可改，旧 z:→/ 自动迁移）；
+    //   [B3] CWD 盘符映射守卫；[K1] -z/--zink mesa zink 渲染（Adreno/
+    //   Turnip，缺件自动补装 mesa-glibc + vulkan 组件）。
+    private const val EXTRAS_REVISION = 29
 
     /** 安装状态（Compose 界面订阅渲染）。 */
     sealed class InstallState {
