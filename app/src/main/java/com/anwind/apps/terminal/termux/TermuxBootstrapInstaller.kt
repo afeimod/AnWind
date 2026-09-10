@@ -250,7 +250,14 @@ object TermuxBootstrapInstaller {
     //   -f 启动前 reg delete 清注册表桌面（-d [R3] 同款手段、"强制"
     //   不记账）；握手分辨率=-f 尺寸。旧版遗留注册表键与
     //   .anwind-vd-on 记账在 -f/非 -f 启动时均自动清除。
-    private const val EXTRAS_REVISION = 34
+    // rev35 = fix25 填满对齐（v3.12-anwind4）：用户实测反馈 -f 仍像
+    //   旧版 -d 一样"填不满"（截图 X:732x550：贴合握手把 X 屏幕缩成
+    //   游戏客户区，4:3 老游戏在 16:9 窗口两侧露黑）——anwind4 ① 裸
+    //   -f 默认 800x600→1280x720（与 -d 同款默认）；② -f 握手值固定
+    //   携带 fitwin 标记（自动叠加 -F 撑满）→ App 侧 X11FitClient
+    //   把游戏窗口客户区撑到整个 X 屏幕，画面铺满无黑边；顽固老游戏
+    //   抗拒 resize 时 App 4 轮对抗后自动退回贴合（零退化）。
+    private const val EXTRAS_REVISION = 35
 
     /** 安装状态（Compose 界面订阅渲染）。 */
     sealed class InstallState {
