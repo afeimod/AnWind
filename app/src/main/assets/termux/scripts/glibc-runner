@@ -190,12 +190,29 @@
 #       tar/cp/7z 经 bionic 隔离子壳执行(glr_run_bionic, stderr 保留
 #       进日志); 备份后缀时间戳改 glr_epoch(bionic date); 资产查找的
 #       ls|head 改纯 bash glob(glr_first_match)。
+#
+# v3.11 (AnWind fix24 —— repack 资产直读 startonwine 固定目录 + anwindmeta):
+#  [F5] 资产查找/注册表导入/DXVK 安装按 startonwine v2.6 原样直读固定
+#       目录 ${GLIBC_PREFIX}/opt/prefix
+#       (= /data/data/com.anwind/files/usr/glibc/opt/prefix):
+#         marlett.ttf       → drive_c/windows/Fonts
+#         user.reg → system.reg → fix-services.reg 依次经 wine regedit
+#           原样导入(顺序= startonwine; 不再嗅探文件头 —— 资产固定在
+#           opt/prefix, 不再从前缀根/prefix.bak.* 搜索找回)
+#         fix-fonts.tar.xz  → tar 解压到 drive_c/windows
+#         drive_c.7z / directx.7z / start/ / mesa/ / d3d/ 同目录直读
+#       DXVK 唯一来源 ${GLIBC_PREFIX}/opt/dxvk1/dxvk-*.tar.gz, 直接
+#         tar 解压到 drive_c/windows(移除 x64/x32 → system32/syswow64
+#         布局映射 —— 与 startonwine 一致只做解压, 不找 mobox)
+#  [M1] 前缀幂等标记目录 moboxmeta → anwindmeta(构建前缀/自愈/盘符
+#       迁移/音频/虚拟桌面清理等标记全部改存 ${WINEPREFIX}/anwindmeta/;
+#       旧 moboxmeta 目录不再读写, 升级后各修复项首启重新应用一次)
 # ============================================================
 
 APP_PREFIX="${GLR_APP_PREFIX:-/data/data/com.anwind/files/usr}"
 GLIBC_PREFIX="${APP_PREFIX}/glibc"
 GLR_LD=${GLIBC_PREFIX}/lib/ld-linux-aarch64.so.1
-GLR_VERSION="3.10-anwind1"
+GLR_VERSION="3.11-anwind1"
 
 # [R1] 分辨率握手协议文件 (AnWind X11 窗口监听此文件)
 GLR_RES_FILE="${APP_PREFIX}/tmp/.anwind-x11-res"
@@ -1214,7 +1231,7 @@ glr_cmd_rmdrive() {
 
 # fix22 [B2]: z:→/ 迁移一次性提示(quiet 模式也可见, 记账防刷屏)
 glr_z_migrate_note() {
-    local _m="${WINEPREFIX}/moboxmeta/.anwind-z-migrated"
+    local _m="${WINEPREFIX}/anwindmeta/.anwind-z-migrated"   # fix24 [M1]
     [ -f "${_m}" ] && return 0
     mkdir -p "$(dirname "${_m}")" 2>/dev/null
     touch "${_m}" 2>/dev/null
@@ -1346,87 +1363,36 @@ glr_bootstrap_prefix() {
     return 1
 }
 
-# ---- fix23 [F4]: repack 前缀资产(glibc/opt/prefix) ----
-# startonwine v2.6 同款语义(资产存在才生效, 全部可选):
-#   fix-fonts.tar.xz  → 解压到 drive_c/windows (Mobox 字体修复包)
-#   user.reg/system.reg/fix-services.reg → 经 wine regedit 导入(合并)
+# ---- fix24 [F5]: repack 前缀资产(直读固定目录, startonwine v2.6 原样) ----
+# 资产目录固定为 ${GLIBC_PREFIX}/opt/prefix
+# (= /data/data/com.anwind/files/usr/glibc/opt/prefix), 与 startonwine
+# 完全一致:
 #   marlett.ttf       → drive_c/windows/Fonts
-#   dxvk-*.tar.gz     → 解压到 drive_c/windows (opt/dxvk1/ 优先,
-#     前缀根/ 兑底 —— 用户 repack 的 dxvk-2.3.1.tar.gz 两处都可能放;
-#     标准 dxvk 发布包 x64/x32 布局自动映射 system32/syswow64)
-#
-# ⚠ Mobox 惯例: 资产与前缀同目录(opt/prefix 既是 WINEPREFIX 又放
-#   资产文件)。由此两个现实问题, 都做了兼容:
-#   1) fix22 旧版重建前缀时把整个 opt/prefix(含资产) mv 进了
-#      prefix.bak.* —— 资产查找顺序: 前缀根 → prefix.bak.*(最新,
-#      升级现场自动找回, 无需手工搬回);
-#   2) user.reg/system.reg 与 wine 活体注册表同名: 前缀根/bak 里的
-#      同名文件先嗅探头部 —— "WINE REGISTRY Version 2" 是 wine 活体
-#      注册表(导入=自我导入, 跳过); "Windows Registry Editor"/
-#      "REGEDIT4" 才是 regedit 可导入的 Mobox 资产。
-# 幂等标记(moboxmeta/): fonts-fix-applied / services-fix-applied
-# (startonwine 标记名兼容) / .anwind-repk-regs-applied /
+#   user.reg / system.reg / fix-services.reg → 经 wine regedit 原样导入
+#     (顺序: user.reg → system.reg → fix-services.reg)
+#   fix-fonts.tar.xz  → tar 解压到 drive_c/windows
+#   drive_c.7z / directx.7z / start/ / mesa/ / d3d/ → 同目录直读
+#   dxvk-*.tar.gz     → 唯一来源 ${GLIBC_PREFIX}/opt/dxvk1/, 直接 tar
+#     解压到 drive_c/windows(不做任何布局映射)
+# 旧 fix23 的"前缀根 → prefix.bak.* 搜索 + 注册表头嗅探"已移除(用户要求:
+# 不找 mobox, 只认 startonwine 固定路径)。
+# 幂等标记(anwindmeta/, fix24 [M1] 由 moboxmeta 改名): fonts-fix-applied /
+# services-fix-applied (startonwine 标记名兼容) / .anwind-repk-regs-applied /
 # .anwind-dxvk-applied —— 消费方: 游戏启动自愈 / --init / --fix-prefix
 # (新构建前缀首启自动全量补齐, 已应用过的不重复)
 
-glr_is_regedit_file() {  # $1=文件; 0=regedit 可导入格式(regedit 导出)
-    local _h=""
-    _h="$(glr_first_line "$1" 2>/dev/null)"
-    case "${_h}" in
-        "Windows Registry Editor"*|"Wine Registry Editor"*|"REGEDIT4"*|"["*)
-            return 0 ;;
-        *)  return 1 ;;   # "WINE REGISTRY Version 2"=wine 活体注册表等
-    esac
-}
-
-# 资产文件查找: 前缀根(用户指定位置) → prefix.bak.*(取最新, fix22
-# 升级现场自愈找回)。回显找到的绝对路径; 找不到 rc=1。
-glr_asset_file() {  # $1 = 文件名
-    local _n="$1" _c _found=""
-    if [ -f "${WINEPREFIX}/${_n}" ]; then
-        _found="${WINEPREFIX}/${_n}"
-    else
-        # glob 按时间戳升序展开 → 取最后一个命中的(最新 bak)
-        for _c in "${WINEPREFIX}".bak.*; do
-            [ -f "${_c}/${_n}" ] && _found="${_c}/${_n}"
-        done
-    fi
-    [ -n "${_found}" ] || return 1
-    printf '%s\n' "${_found}"
+glr_asset_file() {  # $1 = 文件名 → opt/prefix/ 下存在则回显绝对路径
+    local _p="${GLIBC_PREFIX}/opt/prefix/$1"
+    [ -f "${_p}" ] || return 1
+    printf '%s\n' "${_p}"
     return 0
 }
 
 glr_asset_dir() {  # $1 = 目录名(start / mesa / d3d)
-    local _n="$1" _c _found=""
-    if [ -d "${WINEPREFIX}/${_n}" ]; then
-        _found="${WINEPREFIX}/${_n}"
-    else
-        for _c in "${WINEPREFIX}".bak.*; do
-            [ -d "${_c}/${_n}" ] && _found="${_c}/${_n}"
-        done
-    fi
-    [ -n "${_found}" ] || return 1
-    printf '%s\n' "${_found}"
+    local _p="${GLIBC_PREFIX}/opt/prefix/$1"
+    [ -d "${_p}" ] || return 1
+    printf '%s\n' "${_p}"
     return 0
-}
-
-# 注册表资产查找(带格式嗅探): user.reg/system.reg 在前缀根与 .bak 里
-# 都可能是 wine 活体注册表 —— 逐个候选位置嗅探, 只返回第一个
-# regedit 可导入格式的文件(根优先, .bak 取最新)。
-glr_reg_asset() {  # $1 = user.reg|system.reg|fix-services.reg
-    local _n="$1" _c _p _sniff
-    _sniff="0"
-    case "${_n}" in user.reg|system.reg) _sniff="1" ;; esac
-    for _c in "${WINEPREFIX}" "${WINEPREFIX}".bak.*; do
-        _p="${_c}/${_n}"
-        [ -f "${_p}" ] || continue
-        if [ "${_sniff}" = "1" ] && ! glr_is_regedit_file "${_p}"; then
-            continue
-        fi
-        printf '%s\n' "${_p}"
-        return 0
-    done
-    return 1
 }
 
 glr_reg_import() {   # $1 = .reg 文件; 经 box64+wine regedit 导入
@@ -1434,47 +1400,29 @@ glr_reg_import() {   # $1 = .reg 文件; 经 box64+wine regedit 导入
     [ -n "${GLR_WINE_BIN:-}" ] || return 0
     [ "${GLR_WINE_BIN}" = "(未找到)" ] && return 0
     [ -n "${GLR_BOX64:-}" ] && [ -f "${GLR_BOX64}" ] || return 0
-    echo " [F4] 导入注册表: $(basename "$1")"
+    echo " [F5] 导入注册表: $(basename "$1")"
     "${GLR_LD}" "${GLR_BOX64}" "${GLR_WINE_BIN}" regedit "$1" \
         >> "${GLR_LOGBOOT:-/dev/null}" 2>&1
 }
 
-# dxvk tar 查找: opt/dxvk1/(startonwine 标准位) → 前缀根 → .bak(最新)
+# dxvk tar: opt/dxvk1/(startonwine 唯一来源, dxvk-2.3.1.tar.gz 等)
 glr_dxvk_tarball() {
-    local _c _f _found=""
-    for _f in "${GLIBC_PREFIX}/opt/dxvk1"/dxvk-*.tar.gz \
-              "${WINEPREFIX}"/dxvk-*.tar.gz; do
-        [ -f "${_f}" ] && { printf '%s\n' "${_f}"; return 0; }
+    local _f
+    for _f in "${GLIBC_PREFIX}/opt/dxvk1"/dxvk-*.tar.gz; do
+        [ -f "${_f}" ] || continue
+        printf '%s\n' "${_f}"
+        return 0
     done
-    for _c in "${WINEPREFIX}".bak.*; do
-        for _f in "${_c}"/dxvk-*.tar.gz; do
-            [ -f "${_f}" ] && _found="${_f}"   # 取最新的 bak
-        done
-    done
-    [ -n "${_found}" ] || return 1
-    printf '%s\n' "${_found}"
-    return 0
+    return 1
 }
 
-glr_dxvk_install() {  # 解压 dxvk tar → drive_c/windows + 布局自适应
-    local _f _w _r
+glr_dxvk_install() {  # startonwine 原样: 直接 tar 解压 → drive_c/windows
+    local _f _w
     _f="$(glr_dxvk_tarball)" || return 1
-    echo " [F4] 安装 DXVK: ${_f} → drive_c/windows"
+    echo " [F5] 安装 DXVK: ${_f} → drive_c/windows"
     _w="${WINEPREFIX}/drive_c/windows"
     mkdir -p "${_w}" 2>/dev/null
     glr_run_bionic tar -xf "${_f}" -C "${_w}/" 2>> "${GLR_LOGBOOT:-/dev/null}"
-    # 标准 dxvk 发布包布局(dxvk-x.y/x64| x32/): 解压后出现在 windows/
-    # 或 windows/dxvk-*/ 下 → 映射到 system32/syswow64; Mobox 定制
-    # tar(system32 布局)无 x64/x32 目录, 本段自动跳过(零影响)
-    for _r in "${_w}" "${_w}"/dxvk-*; do
-        [ -d "${_r}" ] || continue
-        if [ -d "${_r}/x64" ] || [ -d "${_r}/x32" ]; then
-            mkdir -p "${_w}/system32" "${_w}/syswow64" 2>/dev/null
-            glr_run_bionic cp -f "${_r}/x64/"*.dll "${_w}/system32/" 2>/dev/null
-            glr_run_bionic cp -f "${_r}/x32/"*.dll "${_w}/syswow64/" 2>/dev/null
-            break
-        fi
-    done
     return 0
 }
 
@@ -1482,26 +1430,26 @@ glr_dxvk_install() {  # 解压 dxvk tar → drive_c/windows + 布局自适应
 glr_repack_selfheal() {
     [ -f "${WINEPREFIX}/system.reg" ] || return 0
     local _p _u _s
-    local _mm="${WINEPREFIX}/moboxmeta"
+    local _mm="${WINEPREFIX}/anwindmeta"   # fix24 [M1]: moboxmeta → anwindmeta
     mkdir -p "${_mm}" 2>/dev/null
-    # marlett 字体(先于字体修复块 —— 同一标记门控, 同一次启动都应用)
-    if [ ! -f "${_mm}/fonts-fix-applied" ] \
-       && _p="$(glr_asset_file marlett.ttf)"; then
-        mkdir -p "${WINEPREFIX}/drive_c/windows/Fonts" 2>/dev/null
-        glr_run_bionic cp -f "${_p}" \
-            "${WINEPREFIX}/drive_c/windows/Fonts/" 2>/dev/null
-    fi
-    # 字体修复(startonwine 标记名兼容; 位置: 前缀根→bak 找回)
-    if [ ! -f "${_mm}/fonts-fix-applied" ] \
-       && _p="$(glr_asset_file fix-fonts.tar.xz)"; then
-        echo " [F4] 应用字体修复: ${_p} → drive_c/windows"
-        # drive_c/windows 可能尚未存在(wineboot 只建到 drive_c)
-        mkdir -p "${WINEPREFIX}/drive_c/windows" 2>/dev/null
-        glr_run_bionic tar -xf "${_p}" \
-            -C "${WINEPREFIX}/drive_c/windows" 2>> "${GLR_LOGBOOT:-/dev/null}"
+    # marlett 字体 + 字体修复(startonwine 标记名/门控原样: 同一标记门控,
+    # 同一次启动都应用, 应用后写标记不再重复)
+    if [ ! -f "${_mm}/fonts-fix-applied" ]; then
+        if _p="$(glr_asset_file marlett.ttf)"; then
+            mkdir -p "${WINEPREFIX}/drive_c/windows/Fonts" 2>/dev/null
+            glr_run_bionic cp -f "${_p}" \
+                "${WINEPREFIX}/drive_c/windows/Fonts/" 2>/dev/null
+        fi
+        if _p="$(glr_asset_file fix-fonts.tar.xz)"; then
+            echo " [F5] 应用字体修复: ${_p} → drive_c/windows"
+            # drive_c/windows 可能尚未存在(wineboot 只建到 drive_c)
+            mkdir -p "${WINEPREFIX}/drive_c/windows" 2>/dev/null
+            glr_run_bionic tar -xf "${_p}" \
+                -C "${WINEPREFIX}/drive_c/windows" 2>> "${GLR_LOGBOOT:-/dev/null}"
+        fi
         : > "${_mm}/fonts-fix-applied" 2>/dev/null
     fi
-    # 服务修复注册表(startonwine 标记名兼容; 无同名冲突不嗅探)
+    # 服务修复注册表(startonwine 标记名兼容; 应用后 wineserver -k 同款)
     if [ ! -f "${_mm}/services-fix-applied" ] \
        && _p="$(glr_asset_file fix-services.reg)"; then
         glr_reg_import "${_p}"
@@ -1509,12 +1457,12 @@ glr_repack_selfheal() {
             && "${GLR_LD}" "${GLR_BOX64}" "${GLR_WINE_BASE}/bin/wineserver" -k >/dev/null 2>&1
         : > "${_mm}/services-fix-applied" 2>/dev/null
     fi
-    # 主注册表(user.reg/system.reg: Mobox DllOverrides/DXVK 原生加载等;
-    # 嗅探保证只导 regedit 资产, wine 活体注册表不自我导入)
+    # 主注册表(startonwine 原样直导: opt/prefix/user.reg → system.reg,
+    # 不嗅探 —— 资产在固定目录, 一次记账防重复导入)
     if [ ! -f "${_mm}/.anwind-repk-regs-applied" ]; then
         _u=""; _s=""
-        _p="$(glr_reg_asset user.reg)"   && _u="${_p}"
-        _p="$(glr_reg_asset system.reg)"  && _s="${_p}"
+        _p="$(glr_asset_file user.reg)"   && _u="${_p}"
+        _p="$(glr_asset_file system.reg)" && _s="${_p}"
         if [ -n "${_u}" ] || [ -n "${_s}" ]; then
             [ -n "${_u}" ] && glr_reg_import "${_u}"
             [ -n "${_s}" ] && glr_reg_import "${_s}"
@@ -1523,7 +1471,7 @@ glr_repack_selfheal() {
             : > "${_mm}/.anwind-repk-regs-applied" 2>/dev/null
         fi
     fi
-    # DXVK(virgl 模式跳过 —— wined3d 与 DXVK 二选一, Mobox 同款)
+    # DXVK(virgl 模式跳过 —— wined3d 与 DXVK 二选一, startonwine 同款)
     if [ ! -f "${_mm}/.anwind-dxvk-applied" ] \
        && [ ! -e "${GLIBC_PREFIX}/opt/virgl/virgl-enabled" ]; then
         glr_dxvk_install && : > "${_mm}/.anwind-dxvk-applied" 2>/dev/null
@@ -1585,8 +1533,8 @@ glr_cmd_fixprefix() {
 glr_cmd_install() {
     glr_env_full
     glr_setup_log
-    # fix23 [F4]: 资产统一走 glr_asset_*(前缀根→prefix.bak.* 找回),
-    # 不再硬编码 opt/prefix 单一路径
+    # fix24 [F5]: 资产直读固定目录 opt/prefix(startonwine 原样,
+    # 不再做前缀根/prefix.bak.* 多位置搜索)
     local GLR_7ZA="$(command -v 7z 2>/dev/null || command -v 7za 2>/dev/null)"
     local _bx="${GLR_BOX64}" _wine="${GLR_WINE_BIN}" _reg _p _f _d3d _mesa
     local _step_log="${GLR_LOGBOOT}"
@@ -1624,7 +1572,7 @@ glr_cmd_install() {
     done
 
     # drive_c / directx 资产 (fix23 [S1]: 7z 是 bionic 二进制, 包一层;
-    # [F4] 资产位置: 前缀根 → prefix.bak.* 自动找回)
+    # fix24 [F5]: opt/prefix 直读, startonwine 原样)
     _f="$(glr_asset_file drive_c.7z)"
     if [ -n "${GLR_7ZA}" ] && [ -n "${_f}" ]; then
         echo "# 安装 repack drive_c 资产 (${_f})"
@@ -1640,7 +1588,7 @@ glr_cmd_install() {
         echo "# 跳过 directx.7z (资产或 7z 缺失)"
     fi
 
-    # 开始菜单快捷方式 (fix23 [S1]: cp 包 bionic 层; [F4] 位置查找)
+    # 开始菜单快捷方式 (fix23 [S1]: cp 包 bionic 层; fix24 [F5]: opt/prefix 直读)
     _f="$(glr_asset_dir start)"
     if [ -n "${_f}" ] && [ -d "${WINEPREFIX}/drive_c/ProgramData/Microsoft/Windows/Start Menu" ]; then
         echo "# 安装开始菜单快捷方式"
@@ -1660,14 +1608,16 @@ glr_cmd_install() {
         df -H 2>/dev/null | grep -o '/storage/....-....' | head -1 ) 2>/dev/null)"
     [ -n "$_sto" ] && ln -sfn "$_sto" "${GLR_DOSDEVICES}/f:" 2>/dev/null
 
-    # 注册表调整 + 字体 (fix23 [F4/S1]: 多位置查找 + 嗅探; bionic 层)
+    # 注册表调整 + 字体 (fix24 [F5]: startonwine 原样直读 opt/prefix,
+    # 不嗅探; 顺序= startonwine: marlett → user.reg → system.reg →
+    # fix-services.reg → fix-fonts.tar.xz; bionic 层)
     _f="$(glr_asset_file marlett.ttf)"
     if [ -n "${_f}" ]; then
         mkdir -p "${WINEPREFIX}/drive_c/windows/Fonts"
         glr_run_bionic cp -f "${_f}" "${WINEPREFIX}/drive_c/windows/Fonts/" 2>/dev/null
     fi
     for _reg in user.reg system.reg fix-services.reg; do
-        _f="$(glr_reg_asset "${_reg}")"
+        _f="$(glr_asset_file "${_reg}")"
         if [ -n "${_f}" ]; then
             echo "# 导入注册表 ${_reg} (${_f})"
             "${GLR_LD}" "${_bx}" "${_wine}" regedit "${_f}" >> "${_step_log}" 2>&1
@@ -1695,13 +1645,12 @@ glr_cmd_install() {
                     "$_f" >> "${_step_log}" 2>&1
             fi
         else
-            # fix23 [F4]: DXVK 走共享 helper —— opt/dxvk1/ 优先,
-            # opt/prefix/ 兜底(用户 repack 的 dxvk-2.3.1.tar.gz 可能
-            # 放在任一处); x64/x32 布局自动映射 system32/syswow64
+            # fix24 [F5]: DXVK 走共享 helper —— 唯一来源 opt/dxvk1/,
+            # 直接 tar 解压(startonwine 原样, 无布局映射)
             if glr_dxvk_install; then
                 "${GLR_LD}" "${_bx}" "${GLR_WINE_BASE}/bin/wineserver" -k >/dev/null 2>&1
             else
-                echo "# 跳过 DXVK (opt/dxvk1/ 与 opt/prefix/ 无资产)"
+                echo "# 跳过 DXVK (opt/dxvk1/ 无 dxvk-*.tar.gz)"
             fi
             _mesa="$(glr_asset_dir mesa)"
             _f=""
@@ -1718,15 +1667,15 @@ glr_cmd_install() {
 
     "${GLR_LD}" "${_bx}" "${GLR_WINE_BASE}/bin/wineserver" -k >/dev/null 2>&1
     echo "disable" > "${WINEPREFIX}/.update-timestamp"
-    mkdir -p "${WINEPREFIX}/moboxmeta"
-    touch "${WINEPREFIX}/moboxmeta/services-fix-applied" "${WINEPREFIX}/moboxmeta/fonts-fix-applied"
+    mkdir -p "${WINEPREFIX}/anwindmeta"   # fix24 [M1]: moboxmeta → anwindmeta
+    touch "${WINEPREFIX}/anwindmeta/services-fix-applied" "${WINEPREFIX}/anwindmeta/fonts-fix-applied"
     # fix23 [F4]: 标记同步 —— install 路径已导入过注册表/DXVK,
     # 游戏启动时的自愈路径不再重复应用(无 dxvk 资产时不设标记,
     # 资产后续就位时自愈仍会补装)
-    : > "${WINEPREFIX}/moboxmeta/.anwind-repk-regs-applied" 2>/dev/null
+    : > "${WINEPREFIX}/anwindmeta/.anwind-repk-regs-applied" 2>/dev/null
     if [ -e "${GLIBC_PREFIX}/opt/virgl/virgl-enabled" ] \
        || glr_dxvk_tarball >/dev/null; then
-        : > "${WINEPREFIX}/moboxmeta/.anwind-dxvk-applied" 2>/dev/null
+        : > "${WINEPREFIX}/anwindmeta/.anwind-dxvk-applied" 2>/dev/null
     fi
     _glr_message "游戏前缀构建完成! 详细日志: ${_step_log}"
 }
@@ -1741,7 +1690,7 @@ glr_audio_drv_fix() {
     [ -n "${GLR_WINE_BIN:-}" ] || return 0
     [ "${GLR_WINE_BIN}" = "(未找到)" ] && return 0
     [ -n "${GLR_BOX64:-}" ] && [ -f "${GLR_BOX64}" ] || return 0
-    local _m="${WINEPREFIX}/moboxmeta/.anwind-audio-drv-fixed"
+    local _m="${WINEPREFIX}/anwindmeta/.anwind-audio-drv-fixed"   # fix24 [M1]
     [ -f "${_m}" ] && return 0
     local _cur=""
     _cur="$("${GLR_LD}" "${GLR_BOX64}" "${GLR_WINE_BIN}" reg query \
@@ -1779,7 +1728,7 @@ glr_cmd_fixaudio() {
     GLR_BOX64="${GLIBC_PREFIX}/bin/box64"
     [ -f "${GLR_BOX64}" ] || GLR_BOX64=$(command -v box64 2>/dev/null)
     WINEPREFIX="${WINEPREFIX:-${GLIBC_PREFIX}/opt/prefix}"
-    rm -f "${WINEPREFIX}/moboxmeta/.anwind-audio-drv-fixed" 2>/dev/null
+    rm -f "${WINEPREFIX}/anwindmeta/.anwind-audio-drv-fixed" 2>/dev/null   # fix24 [M1]
     glr_ensure_audio_libs
     # 3) 服务端拉起 + 端口就绪 + 音量归一(fix21 [V1])
     glr_start_pulse
@@ -2052,7 +2001,7 @@ if [ "${GLR_WINE}" = "1" ]; then
     #   这份持久化配置清掉, 保证游戏直接在 X 屏幕上全屏启动。
     if [ -n "${GLR_DESKTOP_GIVEN}" ] && [ "${GLR_VD:-0}" != "1" ] \
        && [ -f "${WINEPREFIX}/system.reg" ]; then
-        _vd_marker="${WINEPREFIX}/moboxmeta/.anwind-vd-clean"
+        _vd_marker="${WINEPREFIX}/anwindmeta/.anwind-vd-clean"   # fix24 [M1]
         if [ ! -f "${_vd_marker}" ]; then
             "${GLR_LD}" "${GLR_BOX64}" "${GLR_WINE_BIN}" reg delete \
                 "HKCU\\Software\\Wine\\Explorer" /v Desktop /f >/dev/null 2>&1

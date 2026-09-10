@@ -221,7 +221,15 @@ object TermuxBootstrapInstaller {
     //   已建前缀首启自动补齐）；[P1] anwind-x11 会话级 pulseaudio 一次
     //   启动（TCP 4713，游戏零开销复用，免手工 pulseaudio --start）；
     //   [S1] tar/cp/7z/date/ls|head 全部 bionic 安全化。
-    private const val EXTRAS_REVISION = 30
+    // rev31 = fix24：glibc-runner v3.11-anwind1——repack 资产直读
+    //   startonwine 固定目录 + anwindmeta：[F5] 字体解压(fix-fonts.tar.xz/
+    //   marlett.ttf)、注册表导入(user.reg → system.reg → fix-services.reg，
+    //   经 wine regedit 原样导入、不再嗅探文件头)、DXVK(opt/dxvk1/ 唯一
+    //   来源直接 tar 解压，移除 x64/x32 布局映射)全部按 startonwine v2.6
+    //   原样直读 /data/data/com.anwind/files/usr/glibc/opt/prefix(不再做
+    //   前缀根/prefix.bak.* 多位置搜索)；[M1] 前缀幂等标记目录
+    //   moboxmeta → anwindmeta。
+    private const val EXTRAS_REVISION = 31
 
     /** 安装状态（Compose 界面订阅渲染）。 */
     sealed class InstallState {
