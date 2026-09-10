@@ -16,6 +16,20 @@ import java.nio.ByteOrder
  * v2.22.5 fix16 —— 协议解析全面修正 + OOM 闪退根治。
  * v2.22.5 fix17 —— 自适应从"一次性"升级为"持续维持"，并扩展到跟随窗口会话。
  * v2.22.6 fix18 —— 协议偏移权威校正（4 处致命错位）+ -d 会话"窗口撑满屏幕"策略。
+ * v2.22.6 fix19 —— 策略反转：贴合（X 屏贴游戏客户区+显示层拉伸）成为
+ *               默认；撑满（resize 游戏窗口）降级为 -F/--fitwin 可选。
+ *
+ * fix19 修正的问题（用户实测 fix18 后：左/上黑边已消，但下/右仍黑，
+ * 必须手动把分辨率改成和游戏一样才撑满）：
+ *   撑满策略把游戏窗口 resize 到整个 X 屏幕后，老游戏（DirectDraw
+ *   固定分辨率）"接受"了新窗口尺寸但仍在原分辨率区域（如 868x652）
+ *   绘制 —— X 层检查"窗口==屏幕"判定已铺满（假稳定），贴合回退永远
+ *   不触发，右/下残留未绘制黑区。X 协议层面无法感知窗口内容是否真被
+ *   画满，因此撑满对老游戏不可靠 —— 仅保留为可选（现代游戏跟随
+ *   WM_SIZE 重绘，原生分辨率渲染比 Upscale 清晰）。默认改用贴合：
+ *   平移窗口到 (0,0) + X 屏幕缩成游戏客户区尺寸 + 显示层拉伸铺满，
+ *   对任意窗口化游戏均无黑边（用户实测验证过此路径：手动把分辨率
+ *   设成和游戏一样时能撑满 = 贴合的静态版本）。
  *
  * fix18 修正的问题（用户实测日志：root=0x0 ≠ 回调缓存 1024x768；
  * 未发现可铺满的游戏窗口——连续 10 秒；-d 1024x768 游戏窗口只有
@@ -89,16 +103,25 @@ import java.nio.ByteOrder
  *   1. 读 _NET_FRAME_EXTENTS（wine 把自己的 NC 边框尺寸写在窗口属性上：
  *      [left,right,top,bottom]；无此属性则不平移、按整窗适配）；
  *   2. 把游戏窗口【平移】到 (-left, -top) —— 标题栏/边框推出屏幕外，
- *      客户区恰好覆盖整个 X 屏幕。只平移不 resize，不触发游戏
- *      WM_SIZE/D3D 重建，无"拉扯战斗"；
+ *      客户区恰好覆盖 X 屏幕原点。只平移不 resize（默认贴合），不触发
+ *      游戏 WM_SIZE/D3D 重建，无"拉扯战斗"；
  *   3. 经 X11ResolutionLink.applyFit 把 X 屏幕尺寸设为客户区尺寸
  *      (w-left-right, h-top-bottom) —— 游戏客户区 = X 屏幕，
- *      显示层再拉伸铺满 Android 窗口，四边黑边彻底消失；
+ *      显示层再拉伸铺满 Android 窗口，四边黑边彻底消失（fix19：
+ *      -d/-native 全部会话默认此策略）；
  *   4. 之后每轮巡检【维持】该状态：wine 重新居中 → 重新平移；X 屏幕
  *      被外部改动 → 重新 applyFit。
  *
- * 启用范围：固定分辨率与跟随窗口会话均启用；已对齐铺满（真全屏游戏、
- * GLR_VD 虚拟桌面）零动作；桌面环境存在时跳过。
+ * 撑满（可选，-F/--fitwin 握手标记 → X11ResolutionLink.windowStretch）：
+ *   moveResizeWindow 把游戏窗口客户区一次到位地撑到整个 X 屏幕，
+ *   游戏/DXVK 收到 WM_SIZE 后按目标分辨率重建渲染缓冲 —— 仅对能跟随
+ *   WM_SIZE 重绘的现代游戏有效；连续 MAX_FIT_FIGHTS 轮窗口尺寸被游戏
+ *   改回（对抗）则退回贴合。GLR_VD 虚拟桌面（-v）的会话里 VD 窗口
+ *   本身就是屏幕尺寸，落在稳定态零动作。
+ *
+ * 启用范围：固定分辨率与跟随窗口会话均启用（fix19 起策略统一为贴合，
+ * 撑满需 -F 显式请求）；已对齐铺满（真全屏游戏、GLR_VD 虚拟桌面）零
+ * 动作；桌面环境存在时跳过。
  *
  * 协议实现说明：仅需 core protocol（Setup/QueryTree/GetWindowAttributes/
  * GetGeometry/InternAtom/GetProperty/MoveWindow），无扩展依赖。wine 无
@@ -109,7 +132,7 @@ object X11FitClient {
     private const val PREFIX = "/data/data/com.anwind/files/usr"
     private const val POLL_MS = 800L
 
-    /** fix18：-d 会话中游戏连续抗拒外部 resize 的轮数上限（超过则退回贴合策略） */
+    /** fix18/fix19：撑满模式下游戏连续抗拒外部 resize 的轮数上限（超过则退回贴合策略） */
     private const val MAX_FIT_FIGHTS = 4
 
     /** fix16：任何协议变长读取的上限（本客户端的回复都很小，超过即为 desync/异常值） */
@@ -178,7 +201,7 @@ object X11FitClient {
     // ============================================================
     private fun loop() {
         var conn: XConn? = null
-        // fix18：-d 会话中连续 resize 未生效的轮数（游戏自己改回尺寸）
+        // fix18/fix19：撑满模式下连续 resize 未生效的轮数（游戏自己改回尺寸）
         var fitFights = 0
 
         while (running) {
@@ -233,12 +256,15 @@ object X11FitClient {
                     sleep(POLL_MS); continue
                 }
 
-                if (X11ResolutionLink.exactFromRunner && fitFights < MAX_FIT_FIGHTS) {
-                    // fix18 撑满策略（-d 握手/手动固定分辨率的会话）：
-                    // X 屏幕就是用户指定的目标分辨率（如 -d1024x768）→ 把
-                    // 游戏窗口主动撑到整个 X 屏幕（客户区 = sw×sh），游戏
-                    // 收到 WM_SIZE/DXVK 重建交换链后即以真实分辨率渲染，
-                    // 四周黑边消失且分辨率不再是 868x652 这类被截断值。
+                if (X11ResolutionLink.windowStretch && fitFights < MAX_FIT_FIGHTS) {
+                    // 撑满策略（fix19 起可选：glibc-runner -F/--fitwin，握手值
+                    // 携带 "fitwin" 标记）：把游戏窗口主动撑到整个 X 屏幕
+                    // （客户区 = sw×sh），能跟随 WM_SIZE 重绘的现代游戏收到
+                    // WM_SIZE/DXVK 重建交换链后即以真实分辨率渲染，比贴合
+                    // 的 Upscale 清晰。老游戏（DirectDraw 固定分辨率）接受
+                    // resize 后仍在原分辨率区域绘制（X 层假稳定、右/下黑
+                    // 区）—— 因此本策略不再默认（fix18 默认时用户实测
+                    // -d1024x768 只画 868x652）。
                     // 若游戏连续 MAX_FIT_FIGHTS 轮自己改回尺寸（对抗），
                     // fitFights 达上限后自动退回下方贴合策略。
                     c.moveResizeWindow(game.id, -L, -T, sw + L + R, sh + T + B)
@@ -248,8 +274,10 @@ object X11FitClient {
                         (if (fitFights > 0) "（第 $fitFights 轮）" else ""))
                     sleep(1200)
                 } else {
-                    // fix17 贴合策略（跟随窗口会话 / 撑满对抗退回）：
-                    // 平移客户区到 (0,0)，X 屏幕贴成客户区尺寸，显示层拉伸铺满。
+                    // 贴合策略（fix19 起默认，-d / native / 撑满对抗退回）：
+                    // 平移客户区到 (0,0)，X 屏幕贴成客户区尺寸，显示层拉伸
+                    // 铺满 —— 对任意窗口化游戏（含固定分辨率老游戏）可靠无
+                    // 黑边，不与游戏抢尺寸（零 WM_SIZE、零拉扯战斗）。
                     // 需要维持：wine 重新居中 → 重新平移；X 屏幕被外部改动
                     // （握手重放/手动应用/游戏切模式）→ 重新 applyFit。
                     if (!aligned) c.moveWindow(game.id, -L, -T)

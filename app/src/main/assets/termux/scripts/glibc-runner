@@ -50,13 +50,28 @@
 #       Android 显示层怎么拉伸都去不掉。改为游戏直接全屏启动 ——
 #       X 屏幕 = -d 指定分辨率(经握手生效), wine 全屏窗口铺满 X 屏幕,
 #       D3D 后备缓冲拉伸呈现, 无黑边 (Winlator 同语义)。
-#       如需旧虚拟桌面行为: GLR_VD=1 glibc-runner -d1280x720 game.exe
+#       虚拟桌面: -v/--vd 选项或 GLR_VD=1 前缀启用 (fix19 [R4], 轩宇剑4
+#       类老 DDraw 游戏必须运行在虚拟桌面内才不报错)
+#
+# v3.6 (AnWind fix19 —— 拉伸铺满策略反转 + 虚拟桌面选项):
+#  [R4] -v[WxH], --vd[=WxH], --virtual-desktop[=WxH]: wine 虚拟桌面
+#       (explorer /desktop=shell,WxH)。轩宇剑4 等游戏离开虚拟桌面会
+#       报错/黑屏, 必须运行在虚拟桌面内; VD 尺寸=握手分辨率 →
+#       VD 窗口恰好铺满 X 屏幕, 无黑边。GLR_VD=1 环境变量仍有效。
+#  [R5] -F, --fitwin: 撑满模式（把游戏窗口 resize 到整个 X 屏幕，
+#       现代游戏跟随 WM_SIZE 重绘 → 原生分辨率渲染）。默认不用：老
+#       游戏接受 resize 后仍在原分辨率区域绘制（X 层假稳定 → 右/下
+#       黑区, 用户实测 fix18 后仍须手动匹配分辨率才撑满）。
+#  [R6] -d 默认改为"贴合拉伸"（fix19 App 侧策略反转）：X 屏幕由
+#       X11FitClient 自适应缩成游戏客户区尺寸 + 显示层拉伸铺满 ——
+#       任意窗口化游戏（含固定分辨率老游戏）无黑边，不再依赖游戏
+#       自己全屏。握手文件携带 "fitwin" 标记（-F）选择撑满模式。
 # ============================================================
 
 APP_PREFIX="${GLR_APP_PREFIX:-/data/data/com.anwind/files/usr}"
 GLIBC_PREFIX="${APP_PREFIX}/glibc"
 GLR_LD=${GLIBC_PREFIX}/lib/ld-linux-aarch64.so.1
-GLR_VERSION="3.5-anwind6"
+GLR_VERSION="3.6-anwind1"
 
 # [R1] 分辨率握手协议文件 (AnWind X11 窗口监听此文件)
 GLR_RES_FILE="${APP_PREFIX}/tmp/.anwind-x11-res"
@@ -106,12 +121,19 @@ show_warning() {
 
 usage() {
     cat <<'USAGE'
-glibc-runner v3.3-anwind4 —— glibc 启动器 + wine 快捷启动 (startonwine 合并版)
+glibc-runner v3.6-anwind1 —— glibc 启动器 + wine 快捷启动 (startonwine 合并版)
 
 【wine 快捷启动】glibc-runner [选项] <游戏.exe | wine子命令>
- -d[WxH], --desktop[=WxH]  X 屏幕 = 指定分辨率 + 游戏全屏拉伸铺满无黑边;
-                           -d 不加分辨率 = 全屏 (默认 1280x720);
-                           旧虚拟桌面行为: GLR_VD=1 前缀启用
+ -d[WxH], --desktop[=WxH]  X 屏幕 = 指定分辨率; 窗口化游戏自动贴合
+                           拉伸铺满无黑边（X 屏随游戏窗口自适应）;
+                           -d 不加分辨率 = 全屏 (默认 1280x720)
+ -v[WxH], --vd[=WxH]      启用 wine 虚拟桌面 (explorer /desktop);
+                           轩宇剑4类游戏必须运行在虚拟桌面内才不报错;
+                           不加分辨率默认 1280x720; 需指定尺寸时紧贴:
+                           -v1024x768 或 -d1024x768 -v
+ -F, --fitwin             撑满模式: 把游戏窗口 resize 到 X 屏幕尺寸
+                           (现代游戏按 -d 分辨率原生渲染, 比拉伸清晰;
+                           老游戏建议不加, 用默认贴合拉伸)
  -g, --opengl              以 OpenGL3 渲染驱动启动 (--rendering-driver opengl3)
  -x, --dx11                给游戏追加 -dx11 参数
  -u, --unity               Unity 单线程渲染 (-force-gfx-direct)
@@ -169,6 +191,7 @@ GLR_NO_LINKER=0; GLR_TEG=0; GLR_DEBUG=0
 GLR_WINE=0; GLR_SHOWLOG=0; GLR_FORCE=0; GLR_ADMIN=0; GLR_SERVER_DIRECT=0
 GLR_OPT_DESKTOP=""; GLR_OPT_WINE=""; GLR_ENV_WINE="${GLR_WINE_BIN:-}"
 GLR_DESKTOP_GIVEN=0   # [R1] 是否显式传了 -d (与 -dWxH 区分全屏场景)
+GLR_FITWIN=0          # fix19 [R5]: -F/--fitwin 撑满模式（握手值带 fitwin 标记）
 GLR_CMD_DRIVES=0; GLR_DRIVES_ARG=""; GLR_OPT_ADDDRIVE=""; GLR_OPT_RMDRIVE=""
 GLR_CMD_KILL=0; GLR_CMD_INIT=0; GLR_CMD_INSTALL=0; GLR_CMD_FIXPREFIX=0; GLR_CMD_FIXDRIVES=0
 GLR_CMD_WINECFG=0; GLR_CMD_REGEDIT=0; GLR_CMD_TASKMGR=0
@@ -176,8 +199,8 @@ use_opengl=0; dx_dx11=0; unity_mode=0; glr_wow64flag=0; startib=0; f5taskmgr=0
 wine_args=(); additional_args=(); resolution=(); GLR_TASKSET=()
 
 # ---- 参数解析 (+ = 不重排, 位置参数后的内容原样透传) ----
-if ! GLR_PARSED=$(getopt -o "+d::a:hwub5gxnistcfD::" \
-      --long "desktop::,args:,help,wow64,unity,ib,f5taskmgr,opengl,dx11,no-linker,info,shell,configure,findlib,teg,strace::,debug,drives::,adddrive:,rmdrive:,kill,wine:,init,fix-prefix,fix-drives,install-prefix,force,winecfg,regedit,taskmgr,version" \
+if ! GLR_PARSED=$(getopt -o "+d::a:hwub5gxnistcfv::FD::" \
+      --long "desktop::,vd::,virtual-desktop::,fitwin,args:,help,wow64,unity,ib,f5taskmgr,opengl,dx11,no-linker,info,shell,configure,findlib,teg,strace::,debug,drives::,adddrive:,rmdrive:,kill,wine:,init,fix-prefix,fix-drives,install-prefix,force,winecfg,regedit,taskmgr,version" \
       -n "glibc-runner" -- "$@" 2>&1); then
     echo "$GLR_PARSED" >&2
     usage
@@ -203,7 +226,7 @@ while :; do
         -d|--desktop)
             GLR_WINE=1
             GLR_DESKTOP_GIVEN=1
-            # v3.1 [W9]: 单独 -d = 全屏 (不开虚拟桌面); -dWxH = 虚拟桌面
+            # v3.1 [W9]: 单独 -d = 全屏 (不开虚拟桌面); -dWxH = 指定分辨率
             if [ -n "${2:-}" ]; then
                 if [[ "$2" =~ ^[0-9]+x[0-9]+$ ]]; then
                     GLR_OPT_DESKTOP="$2"
@@ -212,6 +235,27 @@ while :; do
                 fi
             fi
             shift ;;
+        -v|--vd|--virtual-desktop)
+            # fix19 [R4]: wine 虚拟桌面 —— 轩宇剑4 类 DDraw 游戏离开
+            # 虚拟桌面会报错/黑屏, 必须运行在 explorer /desktop 内。
+            # -vWxH / --vd=WxH 指定尺寸(视同 -d); 裸 -v 默认 1280x720。
+            # 环境变量 GLR_VD=1 仍有效（同效）。
+            GLR_WINE=1
+            GLR_VD=1
+            if [ -n "${2:-}" ]; then
+                if [[ "$2" =~ ^[0-9]+x[0-9]+$ ]]; then
+                    GLR_OPT_DESKTOP="$2"
+                    GLR_DESKTOP_GIVEN=1
+                else
+                    show_error "分辨率格式错误: '$2' (应为 1280x720 形式且紧贴选项: -v1280x720; -v 不带分辨率默认 1280x720)"
+                fi
+            fi
+            shift ;;
+        -F|--fitwin)
+            # fix19 [R5]: 撑满模式（把游戏窗口 resize 到 X 屏幕，现代
+            # 游戏原生分辨率渲染）。老游戏不加 → 默认贴合拉伸。
+            GLR_FITWIN=1
+            GLR_WINE=1 ;;
         -a|--args) wine_args+=("$2"); shift ;;
         -g|--opengl) use_opengl=1; GLR_WINE=1 ;;
         -x|--dx11) dx_dx11=1; GLR_WINE=1 ;;
@@ -883,15 +927,17 @@ if [ "${GLR_WINE}" = "1" ]; then
     [ "${use_opengl}" = "1" ] && additional_args+=("--rendering-driver" "opengl3")
     [ "${dx_dx11}"  = "1" ]   && additional_args+=("-dx11")
 
-    # 虚拟桌面: [v3.3 R2 变更] -dWxH 默认不再开 explorer /desktop 虚拟桌面 ——
-    #   虚拟桌面会把游戏窗口居中在蓝底桌面上 (游戏分辨率≠桌面分辨率时),
-    #   用户看到的是 wine 桌面壁纸+任务栏而不是纯游戏画面。
-    #   改为游戏直接全屏启动:
-    #   X 屏幕 = -d 指定分辨率 (握手文件已生效), wine 全屏窗口铺满 X 屏幕,
-    #   游戏全屏时经 RandR 自动切换 X 分辨率, 画面拉伸呈现, 无黑边
-    #   (Winlator 同语义)。
-    #   如需旧虚拟桌面行为: GLR_VD=1 glibc-runner -d1280x720 game.exe
-    if [ -n "${GLR_OPT_DESKTOP}" ] && [ "${GLR_VD:-0}" = "1" ]; then
+    # 虚拟桌面: [v3.3 R2 变更] -dWxH 默认不开 explorer /desktop（画面直出）。
+    #   fix19 [R4]: -v/--vd 显式启用 —— 轩宇剑4 类老 DDraw 游戏离开虚拟
+    #   桌面会报错/黑屏, 必须运行在 explorer /desktop 内。VD 尺寸 =
+    #   -d/-v 指定分辨率（默认 1280x720），与握手分辨率一致 → VD 窗口
+    #   恰好铺满 X 屏幕, 无黑边（X11FitClient 看到它 rootMatch 零动作）。
+    #   （GLR_VD=1 环境变量仍有效，-v 是它的命令行等价物）
+    if [ "${GLR_VD:-0}" = "1" ]; then
+        if [ -z "${GLR_OPT_DESKTOP}" ]; then
+            GLR_OPT_DESKTOP="1280x720"   # 裸 -v / 裸 -d+GLR_VD 时 VD 默认尺寸
+            GLR_DESKTOP_GIVEN=1           # 确保 res 握手写入 → X 屏幕 == VD 尺寸
+        fi
         resolution=(explorer "/desktop=shell,${GLR_OPT_DESKTOP}")
     fi
 
@@ -923,28 +969,33 @@ if [ "${GLR_WINE}" = "1" ]; then
     echo " box64   : ${GLR_BOX64}"
     echo " prefix  : ${WINEPREFIX}"
     echo " display : ${DISPLAY:-?}"
-    echo " desktop : ${GLR_OPT_DESKTOP:-全屏}"
+    echo " desktop : ${GLR_OPT_DESKTOP:-全屏}$([ "${GLR_VD:-0}" = "1" ] && echo " (wine虚拟桌面)")$([ "${GLR_FITWIN}" = "1" ] && echo " (撑满)")"
     echo " 日志    : ${GLR_LOG:-(仅终端)}"
     echo " 命令    : box64 wine ${wine_args[*]} ${resolution[*]} $* ${additional_args[*]}"
     if [ -n "${GLR_DESKTOP_GIVEN}" ]; then
-        echo " 提示    : 窗口化游戏会居中带黑边 —— 点 X11 窗口控制条「游戏全屏」(Alt+Enter)"
-        echo "           或游戏内设全屏+分辨率 ${GLR_OPT_DESKTOP:-1280x720}, 画面即铺满无黑边"
+        echo " 提示    : 窗口化游戏自动贴合拉伸铺满 (X 屏随游戏窗口自适应, 无黑边)"
+        echo "           游戏报错/闪退 (轩宇剑4类)? 加 -v 启用 wine 虚拟桌面"
+        echo "           现代游戏想按 ${GLR_OPT_DESKTOP:-1280x720} 原生渲染可加 -F (窗口撑满)"
     fi
 
-    # [R1] 分辨率握手: 把目标分辨率告知 AnWind X11 窗口。
-    #   -dWxH        → 写 "WxH"  (X 屏幕 = 指定分辨率, 游戏全屏拉伸铺满)
-    #   -d (全屏)    → 写 "1280x720" (全屏默认桌面分辨率; X 屏幕足够大,
-    #                  游戏全屏渲染不再缩成一小块)
-    #   不带 -d      → 写 "native" (跟随窗口, 桌面/文件管理器场景)
+    # [R1/R6] 分辨率握手: 把目标分辨率告知 AnWind X11 窗口。
+    #   -dWxH        → 写 "WxH"        (X 屏 = 指定分辨率; fix19 起窗口化
+    #                                  游戏自动贴合: X 屏随游戏客户区自适应
+    #                                  + 显示层拉伸铺满, 无黑边)
+    #   -dWxH -F     → 写 "WxH fitwin" (撑满: App 把游戏窗口 resize 到 X
+    #                                  屏幕, 现代游戏原生分辨率渲染)
+    #   -d (全屏)    → 写 "1280x720"   (全屏默认桌面分辨率)
+    #   -v (虚拟桌面)→ 写 VD 尺寸      (与 explorer /desktop 尺寸一致,
+    #                                  VD 窗口铺满 X 屏幕)
+    #   不带 -d      → 写 "native"    (跟随窗口, 桌面/文件管理器场景)
     # AnWind 端 FileObserver 实时应用; anwind-x11 启动桌面会话时也会
-    # 写 "native" 复位。
+    # 写 "native" 复位。旧版 App 解析带标记值时 regex 照样提取 WxH,
+    # 行为不变（向后兼容）。
     if [ -n "${GLR_DESKTOP_GIVEN}" ] && [ "${GLR_DESKTOP_GIVEN}" = "1" ]; then
         mkdir -p "${APP_PREFIX}/tmp" 2>/dev/null
-        if [ -n "${GLR_OPT_DESKTOP}" ]; then
-            printf '%s\n' "${GLR_OPT_DESKTOP}" > "${GLR_RES_FILE}" 2>/dev/null
-        else
-            printf '%s\n' "1280x720" > "${GLR_RES_FILE}" 2>/dev/null
-        fi
+        _res_val="${GLR_OPT_DESKTOP:-1280x720}"
+        [ "${GLR_FITWIN}" = "1" ] && _res_val="${_res_val} fitwin"
+        printf '%s\n' "${_res_val}" > "${GLR_RES_FILE}" 2>/dev/null
         echo " res-file: ${GLR_RES_FILE} -> $(cat "${GLR_RES_FILE}" 2>/dev/null)"
     elif [ "${GLR_ADMIN}" != "1" ]; then
         mkdir -p "${APP_PREFIX}/tmp" 2>/dev/null

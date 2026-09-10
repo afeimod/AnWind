@@ -191,7 +191,11 @@ object TermuxBootstrapInstaller {
     // 桌面"。今后凡改动 assets/termux/scripts/ 下任何脚本，必须同步升
     // revision！
     // rev25（v2.22.5 fix14）：提示文案更新（游戏全屏 Alt+Enter 引导）
-    private const val EXTRAS_REVISION = 25
+    // rev26（v2.22.6 fix19）：glibc-runner v3.6-anwind1 —— [R4] -v/--vd
+    //   wine 虚拟桌面选项（轩辕剑4 类游戏必需）；[R5] -F/--fitwin 撑满
+    //   标记（握手值 "WxH fitwin"）；[R6] -d 默认贴合拉伸（App 侧
+    //   X11FitClient 策略反转配套）。存量设备随迁移拿到新脚本。
+    private const val EXTRAS_REVISION = 26
 
     /** 安装状态（Compose 界面订阅渲染）。 */
     sealed class InstallState {

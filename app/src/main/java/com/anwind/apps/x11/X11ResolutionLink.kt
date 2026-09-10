@@ -13,6 +13,7 @@ import java.io.File
 
 /**
  * v2.22.3 fix10：glibc-runner → X11 窗口 的"分辨率握手"桥。
+ * v2.22.6 fix19 —— 新增 windowStretch 撑满请求标记（-F/--fitwin）。
  *
  * 背景（用户问题 1）：X 屏幕默认"跟随窗口"（native），X 屏幕尺寸 =
  * Android 浮动窗口的像素尺寸 —— 游戏全屏渲染出来只有窗口那么小
@@ -24,13 +25,21 @@ import java.io.File
  *   `$PREFIX/tmp/.anwind-x11-res`：
  *     · `-d1280x720`            → 文件内容 "1280x720"
  *     · `-d`（全屏）            → 文件内容 "1280x720"（全屏默认桌面分辨率）
+ *     · `-d… -F/--fitwin`       → 文件内容 "1280x720 fitwin"
+ *       （请求撑满：游戏窗口被 resize 到 X 屏幕，现代游戏原生分辨率渲染）
  *     · 不带 -d（窗口模式）      → 文件内容 "native"（跟随窗口）
  *   anwind-x11（桌面会话启动）同样写 "native"，回到跟随窗口。
+ *   fix19 起 -d 默认为"贴合拉伸"：游戏窗口只需平移到 (0,0)，X 屏幕
+ *   由 X11FitClient 自适应缩成游戏客户区尺寸，显示层拉伸铺满 ——
+ *   任意窗口化游戏（含 DirectDraw 固定分辨率老游戏）均无黑边。
+ *   fix19 新增 -v/--vd（wine 虚拟桌面）：轩剑类游戏必须运行在
+ *   explorer /desktop 虚拟桌面内才不报错 —— VD 窗口尺寸=握手分辨率，
+ *   恰好铺满 X 屏幕，X11FitClient 零动作。
  * - 本桥用 FileObserver 监听该文件，解析后写入 X11 偏好
  *   （displayResolutionMode=exact/native + displayResolutionExact），
  *   再对活跃的 LorieView regenerate+requestLayout —— X server 收到
  *   sendWindowChange 后把 RandR 屏幕调成目标分辨率，wine 的虚拟桌面
- *   /全屏游戏即以真实分辨率渲染，Android 侧按比例缩放显示（信箱）。
+ *   /全屏游戏即以真实分辨率渲染，Android 侧拉伸铺满显示。
  *
  * 优先级：glibc-runner 写入的值即时生效；用户仍可在 X11 窗口控制条
  * 手动切"跟随窗口/固定分辨率"（下次 glibc-runner -d 会再次接管）。
@@ -41,14 +50,23 @@ object X11ResolutionLink {
 
     /**
      * fix18：当前 exact 分辨率是否来自 -d 握手/用户手动固定（而非 applyFit
-     * 贴合产生）。X11FitClient 据此选择策略：
-     *   true  → 撑满策略：把游戏窗口主动撑到整个 X 屏幕（游戏以 -d
-     *           指定的真实分辨率渲染，如 -d1024x768 不再被 868x652 截断）；
-     *   false → 贴合策略：平移窗口 + X 屏幕贴窗口尺寸（跟随窗口会话，
-     *           避免拖动窗口时反复触发游戏重建交换链）。
-     * applyFit 自身不置位 —— 贴合产生的 exact 不升级为撑满。
+     * 贴合产生）。fix19 起仅作会话来源记录（控制条显示/日志），不再决定
+     * 铺满策略 —— 策略选择见 windowStretch。
      */
     @Volatile var exactFromRunner: Boolean = false
+
+    /**
+     * fix19：是否请求"撑满"（把游戏窗口主动 resize 到整个 X 屏幕）。
+     * 默认 false —— 默认策略是"贴合"：X 屏幕缩成游戏客户区尺寸，
+     * 显示层拉伸铺满（对任意窗口化游戏可靠无黑边）。
+     * 撑满仅对"能跟随 WM_SIZE 重绘的现代游戏"有意义（原生分辨率渲染，
+     * 比 Upscale 清晰）；老游戏（DirectDraw 固定分辨率）接受 resize 后
+     * 仍在原分辨率区域绘制 → X 层看到"窗口==屏幕"假稳定、右/下黑边
+     * （用户实测：轩剑类 -d1024x768 只画 868x652）。
+     * 终端侧 glibc-runner -F/--fitwin 时握手值携带 "fitwin" 标记 → true；
+     * native 值 → false。applyFit 不改动（贴合不升级为撑满）。
+     */
+    @Volatile var windowStretch: Boolean = false
 
     /** $PREFIX/tmp 目录（与终端侧约定，App 自身数据目录，无需存储权限） */
     private const val PREFIX = "/data/data/com.anwind/files/usr"
@@ -122,9 +140,13 @@ object X11ResolutionLink {
     /**
      * 应用一个分辨率值："WxH" → exact；"native" → 跟随窗口；
      * "fullscreen" → 全屏默认 1280x720。
+     * fix19：值可携带 "fitwin" 标记（如 "1024x768 fitwin"，glibc-runner
+     * -F/--fitwin 产生）→ 同步置位 windowStretch；其余情况归 false。
+     * 旧版 App 解析带标记值：regex 照样提取 WxH，行为不变（向后兼容）。
      */
     fun apply(valueRaw: String) {
         val value = valueRaw.trim().lowercase()
+        val wantStretch = value.contains("fitwin")
         val (mode, exact, fromGame) = when {
             value == "native" -> Triple("native", "", false)
             value == "fullscreen" -> Triple("exact", DEFAULT_RES, true)
@@ -145,6 +167,8 @@ object X11ResolutionLink {
         // 置于 prefs 判空之前：即便 LorieView 偏好尚未就绪，-d 握手语义也
         // 先行登记，待偏好就绪重放 apply() 时保持一致。
         exactFromRunner = mode == "exact"
+        // fix19：撑满请求（-F/--fitwin）仅对 exact 会话有意义；native 归 false。
+        windowStretch = mode == "exact" && wantStretch
 
         val prefs = LoriePreferences.prefs ?: return
         prefs.displayResolutionMode.put(mode)
@@ -161,7 +185,9 @@ object X11ResolutionLink {
         if (mode == "exact") prefs.displayResolutionExact.put(exact)
 
         _state.value = ResolutionState(mode, exact, fromGame)
-        Log.i(TAG, "X 屏幕分辨率 → $mode ${if (mode == "exact") exact else ""}（来自 ${if (fromGame) "glibc-runner" else "桌面会话"}）")
+        Log.i(TAG, "X 屏幕分辨率 → $mode ${if (mode == "exact") exact else ""}" +
+            (if (windowStretch) "（撑满模式）" else "（贴合拉伸）") +
+            "（来自 ${if (fromGame) "glibc-runner" else "桌面会话"}）")
 
         // v2.22.4 fix11c：游戏握手即时反馈 —— 用户在终端执行 glibc-runner -d
         // 后能立刻看到 X11 是否接收到分辨率（之前握手失败只有黑边一个症状，
@@ -217,7 +243,9 @@ object X11ResolutionLink {
         // 避免 -d 会话因一次贴合永久降级。
         X11FitClient.screenW = w
         X11FitClient.screenH = h
-        Log.i(TAG, "X 屏幕分辨率 → exact ${w}x${h}（游戏窗口自适应）")
+        // fix19：不修改 windowStretch —— 贴合产生的 exact 维持当前策略，
+        // -d/-F 会话因一次贴合永久降级/升级都不会发生。
+        Log.i(TAG, "X 屏幕分辨率 → exact ${w}x${h}（游戏窗口自适应贴合）")
         mainHandler.post {
             activeView?.let { v ->
                 try {
