@@ -58,6 +58,17 @@
 # rev13 自愈：`pkg install termux-x11-nightly` 会用官方客户端脚本覆盖
 #   bin/termux-x11（官方脚本经前缀重写后引用的类名并不存在，启动即
 #   崩）。启动前按标记检测，被覆盖即从 etc/anwind/x11 主副本恢复。
+#
+# rev22（fix23 [P1]）：pulseaudio 会话级一次启动 —— X 服务就位后自动
+#   拉起 pulse（TCP 127.0.0.1:4713，--exit-idle-time=-1 常驻）：端口
+#   已通则直接复用（游戏零开销）；运行中但未开 TCP 的旧实例先请下场
+#   再重启（否则 wine 连不上）；并导出 PULSE_SERVER=127.0.0.1 供全会
+#   话使用。用户不再需要每次手工:
+#     pulseaudio --start --exit-idle-time=-1 \
+#       --load="module-native-protocol-tcp auth-ip-acl=127.0.0.1
+#       auth-anonymous=1"
+#   glibc-runner 侧的 glr_start_pulse 保留为兑底（会话中途 pulse 被
+#   杀时补拉）。doctor 新增音频服务体检项。
 # ============================================================
 
 PREFIX=/data/data/com.anwind/files/usr
@@ -239,6 +250,17 @@ if [ "${1:-}" = "doctor" ] || [ "${1:-}" = "--doctor" ]; then
         fi
     done
     echo
+    echo "  [2/4 追加] 音频服务 pulseaudio（游戏声音; fix23 会话级启动）"
+    if command -v pulseaudio >/dev/null 2>&1; then
+        if bash -c '(exec 3<>/dev/tcp/127.0.0.1/4713) 2>/dev/null'; then
+            _ok "pulseaudio 服务端就绪 (127.0.0.1:4713, TCP)"
+        else
+            _bad "pulseaudio 已安装但未运行/未开 TCP → 重跑 anwind-x11 自动拉起；或 glibc-runner --fix-audio"
+        fi
+    else
+        _none "pulseaudio 未安装 → pkg install pulseaudio"
+    fi
+    echo
     echo "[3/4] logcat 近期 X11 相关记录（上次失败的线索）"
     _lc="$(logcat -d -t 500 2>/dev/null | grep -iE 'lorie|CmdEntryPoint|anwindx11|Xwayland' | tail -n 12)"
     if [ -n "$_lc" ]; then
@@ -268,7 +290,7 @@ if [ $# -gt 0 ]; then
 fi
 
 # ---- 启动日志：从第一行写起，任何失败都能 cat 回传定位 ----
-echo "==== anwind-x11 启动 $(date '+%Y-%m-%d %H:%M:%S') rev21 显示号 $DISP ====" >"$X11_LOG"
+echo "==== anwind-x11 启动 $(date '+%Y-%m-%d %H:%M:%S') rev22 显示号 $DISP ====" >"$X11_LOG"
 note() { echo "$1"; echo "[anwind-x11] $1" >>"$X11_LOG"; }
 die() {
     echo "anwind-x11: $1" >&2
@@ -353,6 +375,49 @@ if ! x11_running; then
 fi
 echo "X11 服务已启动（显示号 $DISP），AnWind 桌面窗口将自动弹出并连接……"
 echo "[anwind-x11] X11 服务进程已就位（显示号 $DISP）" >>"$X11_LOG"
+
+# ---- fix23 [P1]: pulseaudio 会话级一次启动(TCP 127.0.0.1:4713) ----
+# 语义与 glibc-runner glr_start_pulse 一致(端口已通→复用; 运行中未
+# 开 TCP→重启; 不在→拉起后等就绪)，但在 X 会话启动时执行一次 ——
+# 之后每次游戏(glibc-runner)启动时端口已通，直接零开销复用，不再
+# 每次重新拉起。pulseaudio 从 $PREFIX/bin 经 PATH 解析执行，
+# /proc/self/exe 与编译期路径同源，不触发 "cannot self execute"。
+pa_port_up() {
+    bash -c '(exec 3<>/dev/tcp/127.0.0.1/4713) 2>/dev/null'
+}
+anwind_pulse_start() {
+    command -v pulseaudio >/dev/null 2>&1 || {
+        note "未安装 pulseaudio (pkg install pulseaudio)，游戏将无声音"
+        return 0
+    }
+    if pa_port_up; then
+        note "pulseaudio 已在运行 (TCP 127.0.0.1:4713)，直接复用"
+        export PULSE_SERVER="127.0.0.1"
+        return 0
+    fi
+    # 运行中但未开 TCP 的旧实例(裸配拉起/手工启动): 先请下场，
+    # 否则 wine 客户端连不上 4713 → 无声
+    if pulseaudio --check >/dev/null 2>&1; then
+        pulseaudio -k >/dev/null 2>&1
+        sleep 1
+    fi
+    pulseaudio --start \
+        --load="module-native-protocol-tcp auth-ip-acl=127.0.0.1 auth-anonymous=1" \
+        --exit-idle-time=-1 >/dev/null 2>&1
+    _n=0
+    while [ "$_n" -lt 8 ]; do
+        pa_port_up && break
+        sleep 1
+        _n=$((_n + 1))
+    done
+    if pa_port_up; then
+        note "pulseaudio 已启动 (TCP 127.0.0.1:4713; 本次会话一次，游戏零开销复用)"
+    else
+        note "警告: pulseaudio 拉起后 4713 未就绪；游戏启动时 glibc-runner 会再兑底"
+    fi
+    export PULSE_SERVER="127.0.0.1"
+}
+anwind_pulse_start
 
 # ---- 会话依赖预检（rev19）：先离线自愈，仍失败才给修复命令并暂停 ----
 # ---- 自动启动会话（X 服务与 X11 窗口不受影响，修复后重跑即可）    ----

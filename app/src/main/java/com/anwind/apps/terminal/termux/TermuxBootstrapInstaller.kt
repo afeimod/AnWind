@@ -212,7 +212,16 @@ object TermuxBootstrapInstaller {
     //   /data/data/com.anwind/files/usr（DRIVE_Z 可改，旧 z:→/ 自动迁移）；
     //   [B3] CWD 盘符映射守卫；[K1] -z/--zink mesa zink 渲染（Adreno/
     //   Turnip，缺件自动补装 mesa-glibc + vulkan 组件）。
-    private const val EXTRAS_REVISION = 29
+    // rev30 = fix23：glibc-runner v3.10-anwind1 + anwind-x11 rev22——
+    //   [K3] zink 全链检测（libGL.so.1 由 libglvnd-glibc 独立提供！旧
+    //   [K1] 只验 dri/zink_dri.so → 游戏 dlopen libGL.so.1 失败；现五件
+    //   齐检 + 四包补装 + --fix-zink 链路诊断 + __GLX_VENDOR_LIBRARY_NAME
+    //   条件导出）；[F4] 前缀构建自动应用 repack 资产（fix-fonts.tar.xz/
+    //   user.reg/system.reg/dxvk-*.tar.gz → drive_c/windows，标记幂等，
+    //   已建前缀首启自动补齐）；[P1] anwind-x11 会话级 pulseaudio 一次
+    //   启动（TCP 4713，游戏零开销复用，免手工 pulseaudio --start）；
+    //   [S1] tar/cp/7z/date/ls|head 全部 bionic 安全化。
+    private const val EXTRAS_REVISION = 30
 
     /** 安装状态（Compose 界面订阅渲染）。 */
     sealed class InstallState {
