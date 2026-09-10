@@ -207,12 +207,30 @@
 #  [M1] 前缀幂等标记目录 moboxmeta → anwindmeta(构建前缀/自愈/盘符
 #       迁移/音频/虚拟桌面清理等标记全部改存 ${WINEPREFIX}/anwindmeta/;
 #       旧 moboxmeta 目录不再读写, 升级后各修复项首启重新应用一次)
+#
+# v3.12 (AnWind fix25 —— -f 注册表窗口模式, wine10/proton 虚拟桌面):
+#  [R7] 新增 -f[WxH]/--force-desktop[=WxH] (startwine v3.2 同款 -f
+#       语义, 裸 -f 默认 800x600): wine10 / proton 版 wine 及以上,
+#       wine 命令行直传 explorer /desktop=shell,WxH 开不出虚拟桌面
+#       窗口 (-d/-v 方式失效), 改由注册表实现 —— 启动前经 wine reg
+#       add 写入
+#         HKCU\Software\Wine\Explorer          Desktop = "Default"
+#         HKCU\Software\Wine\Explorer\Desktops Default = "WxH"
+#       (即 winecfg "模拟虚拟桌面" 写入的两个键, wine explorer 启动
+#       时读取); reg add 经 wineserver 持久化, 活体 wine 会话下也
+#       安全 (startwine 直改 user.reg 须等 wineserver 退出, 此处不
+#       需要)。-f 覆盖 -v (同一目标, 手段不同); 握手分辨率 = -f 尺
+#       寸 → 桌面窗口恰好铺满 X 屏幕。下次不带 -f 的 wine 启动自动
+#       删除这两个键恢复全屏 (startwine "总是应用或关闭"语义, 经
+#       anwindmeta/.anwind-vd-on 记账, 不给普通启动加开销)。
+#       兼容性重映射: 短选项 -f 由 --findlib 让给 --force-desktop,
+#       --findlib 保留长选项 (glibc 原生模式缺库检查)。
 # ============================================================
 
 APP_PREFIX="${GLR_APP_PREFIX:-/data/data/com.anwind/files/usr}"
 GLIBC_PREFIX="${APP_PREFIX}/glibc"
 GLR_LD=${GLIBC_PREFIX}/lib/ld-linux-aarch64.so.1
-GLR_VERSION="3.11-anwind1"
+GLR_VERSION="3.12-anwind1"
 
 # [R1] 分辨率握手协议文件 (AnWind X11 窗口监听此文件)
 GLR_RES_FILE="${APP_PREFIX}/tmp/.anwind-x11-res"
@@ -436,7 +454,7 @@ glr_zink_setup() {
 
 usage() {
     cat <<'USAGE'
-glibc-runner v3.10-anwind1 —— glibc 启动器 + wine 快捷启动 (startonwine 合并版)
+glibc-runner v3.12-anwind1 —— glibc 启动器 + wine 快捷启动 (startonwine 合并版)
 
 【wine 快捷启动】glibc-runner [选项] <游戏.exe | wine子命令>
  -d[WxH], --desktop[=WxH]  X 屏幕 = 指定分辨率; 窗口化游戏自动贴合
@@ -446,6 +464,15 @@ glibc-runner v3.10-anwind1 —— glibc 启动器 + wine 快捷启动 (startonwi
                            轩宇剑4类游戏必须运行在虚拟桌面内才不报错;
                            不加分辨率默认 1280x720; 需指定尺寸时紧贴:
                            -v1024x768 或 -d1024x768 -v
+ -f[WxH], --force-desktop[=WxH]
+                          注册表窗口模式 (针对 wine10 和 proton 版 wine
+                          及以上): 新版 wine 上 explorer /desktop 直传
+                          参数开不出桌面窗口, 本选项改写注册表
+                          (HKCU\Software\Wine\Explorer + Desktops, 即
+                          winecfg "模拟虚拟桌面") 实现窗口化; 不加分
+                          辨率默认 800x600, 需指定时紧贴: -f1280x720;
+                          下次不带 -f 启动自动恢复全屏; 与 -v 同时给出
+                          时按 -f 执行 (GLR_FORCE_VD=1 同效)
  -F, --fitwin             撑满模式: 把游戏窗口 resize 到 X 屏幕尺寸
                            (现代游戏按 -d 分辨率原生渲染, 比拉伸清晰;
                            老游戏建议不加, 用默认贴合拉伸)
@@ -482,7 +509,8 @@ glibc-runner v3.10-anwind1 —— glibc 启动器 + wine 快捷启动 (startonwi
 
 【glibc 原生模式】(传入 Linux/box64 二进制时自动走此模式)
  -c/--configure            patchelf 配置二进制 (rpath+interpreter)
- -f/--findlib              检查二进制缺失的动态库
+ --findlib                检查二进制缺失的动态库 (原短选项 -f 已让给
+                           注册表窗口模式 --force-desktop, 本功能保留长选项)
  -n/--no-linker            不经由 ld.so 直接启动
  -s/--shell                进入 glibc bash (或执行其命令)
  -i/--info                 打印环境信息 (含 wine/前缀/盘符)
@@ -493,6 +521,7 @@ glibc-runner v3.10-anwind1 —— glibc 启动器 + wine 快捷启动 (startonwi
 示例:
  glibc-runner -d /sdcard/game/game.exe            # 全屏启动游戏 (不加分辨率)
  glibc-runner -d1280x720 /sdcard/game/game.exe    # 虚拟桌面 1280x720 启动
+ glibc-runner -f1280x720 /sdcard/game/game.exe    # 注册表窗口模式 (wine10/proton)
  glibc-runner -g /sdcard/game/game.exe            # OpenGL3 驱动启动
  glibc-runner taskmgr                             # 直接启动 wine 程序
  glibc-runner --drives                            # 列出盘符
@@ -506,6 +535,8 @@ glibc-runner v3.10-anwind1 —— glibc 启动器 + wine 快捷启动 (startonwi
  * 盘符指向: z:=/data/data/com.anwind/files/usr (DRIVE_Z 可改, =/ 恢复
    wine 标准根文件系统); d:/e: 可用 DRIVE_D/DRIVE_E 自定义
  * -d 分辨率会实时同步给 AnWind X11 窗口 (游戏按真实分辨率渲染)
+ * wine10/proton 版 wine 虚拟桌面开不出窗口: 加 -f 启动 (注册表方式;
+   explorer /desktop 直传参数在新版 wine 上失效, 详见上方 -f 说明)
  * 声音: pulse 服务端/glibc 音频库自动拉起补装; 无声先跑 --fix-audio
  * 音量偏小: GLR_AUDIO_VOLUME=50~300 (默认 100; 150=软件增益 1.5 倍,
    过大有削顶/底噪, 逐档试听; 亦检查 Android 媒体音量与游戏内音量)
@@ -528,6 +559,7 @@ GLR_WINE=0; GLR_SHOWLOG=0; GLR_FORCE=0; GLR_ADMIN=0; GLR_SERVER_DIRECT=0
 GLR_OPT_DESKTOP=""; GLR_OPT_WINE=""; GLR_ENV_WINE="${GLR_WINE_BIN:-}"
 GLR_DESKTOP_GIVEN=0   # [R1] 是否显式传了 -d (与 -dWxH 区分全屏场景)
 GLR_FITWIN=0          # fix19 [R5]: -F/--fitwin 撑满模式（握手值带 fitwin 标记）
+GLR_FORCE_VD="${GLR_FORCE_VD:-0}"  # fix25 [R7]: -f/--force-desktop 注册表窗口模式 (GLR_FORCE_VD=1 环境变量同效)
 GLR_CMD_DRIVES=0; GLR_DRIVES_ARG=""; GLR_OPT_ADDDRIVE=""; GLR_OPT_RMDRIVE=""
 GLR_CMD_KILL=0; GLR_CMD_INIT=0; GLR_CMD_INSTALL=0; GLR_CMD_FIXPREFIX=0; GLR_CMD_FIXDRIVES=0
 GLR_CMD_WINECFG=0; GLR_CMD_REGEDIT=0; GLR_CMD_TASKMGR=0; GLR_CMD_FIXAUDIO=0; GLR_CMD_FIXZINK=0
@@ -539,8 +571,8 @@ use_opengl=0; dx_dx11=0; unity_mode=0; glr_wow64flag=0; startib=0; f5taskmgr=0
 wine_args=(); additional_args=(); resolution=(); GLR_TASKSET=()
 
 # ---- 参数解析 (+ = 不重排, 位置参数后的内容原样透传) ----
-if ! GLR_PARSED=$(getopt -o "+d::a:hwub5gzxnistcfv::FD::" \
-      --long "desktop::,vd::,virtual-desktop::,fitwin,args:,help,wow64,unity,ib,f5taskmgr,opengl,dx11,zink,no-linker,info,shell,configure,findlib,teg,strace::,debug,drives::,adddrive:,rmdrive:,kill,wine:,init,fix-prefix,fix-drives,fix-audio,fix-zink,install-prefix,force,winecfg,regedit,taskmgr,version" \
+if ! GLR_PARSED=$(getopt -o "+d::a:hwub5gzxnistcv::FD::f::" \
+      --long "desktop::,vd::,virtual-desktop::,force-desktop::,fitwin,args:,help,wow64,unity,ib,f5taskmgr,opengl,dx11,zink,no-linker,info,shell,configure,findlib,teg,strace::,debug,drives::,adddrive:,rmdrive:,kill,wine:,init,fix-prefix,fix-drives,fix-audio,fix-zink,install-prefix,force,winecfg,regedit,taskmgr,version" \
       -n "glibc-runner" -- "$@" 2>&1); then
     echo "$GLR_PARSED" >&2
     usage
@@ -554,7 +586,24 @@ while :; do
         -i|--info) GLR_MODE_INFO=1 ;;
         -s|--shell) GLR_MODE_SHELL=1 ;;
         -c|--configure) GLR_MODE_CONF=1 ;;
-        -f|--findlib) GLR_MODE_FINDLIB=1 ;;
+        -f|--force-desktop)
+            # fix25 [R7]: 注册表窗口模式 (startwine v3.2 -f 同款语义)。
+            # wine10/proton 版 wine 及以上, explorer /desktop 直传参数
+            # 开不出桌面窗口, 改写注册表 HKCU\Software\Wine\Explorer
+            # + Desktops 实现虚拟桌面。裸 -f 默认 800x600 (启动路径里
+            # 兼默认), -fWxH 指定尺寸(紧贴)。
+            GLR_FORCE_VD=1
+            GLR_WINE=1
+            if [ -n "${2:-}" ]; then
+                if [[ "$2" =~ ^[0-9]+x[0-9]+$ ]]; then
+                    GLR_OPT_DESKTOP="$2"
+                    GLR_DESKTOP_GIVEN=1
+                else
+                    show_error "分辨率格式错误: '$2' (应为 1280x720 形式且紧贴选项: -f1280x720; -f 不带分辨率默认 800x600)"
+                fi
+            fi
+            shift ;;
+        --findlib) GLR_MODE_FINDLIB=1 ;;   # fix25: 短选项 -f 让给 --force-desktop, 保留长选项
         -t|--teg) GLR_TEG=1 ;;
         -n|--no-linker) GLR_NO_LINKER=1 ;;
         -D|--strace)
@@ -1901,6 +1950,21 @@ if [ "${GLR_WINE}" = "1" ]; then
         resolution=(explorer "/desktop=shell,${GLR_OPT_DESKTOP}")
     fi
 
+    # fix25 [R7]: -f/--force-desktop 注册表窗口模式 —— explorer /desktop
+    #   直传参数在 wine10/proton 版 wine 及以上开不出桌面窗口 (-d/-v
+    #   方式失效), 改由注册表实现 (启动前 [R7] reg add 块落地), 绝不
+    #   传 explorer 参数; 裸 -f 默认 800x600 (startwine 同款)。
+    if [ "${GLR_FORCE_VD:-0}" = "1" ]; then
+        if [ "${GLR_VD:-0}" = "1" ]; then
+            _glr_warn "-f 与 -v 同时指定: 按 -f 注册表窗口模式执行 (explorer 直传参数在 wine10/proton 上开不出窗口)"
+        fi
+        if [ -z "${GLR_OPT_DESKTOP}" ]; then
+            GLR_OPT_DESKTOP="800x600"     # 裸 -f 默认尺寸 (startwine 同款)
+            GLR_DESKTOP_GIVEN=1           # 确保 res 握手写入 → X 屏幕 == 桌面尺寸
+        fi
+        resolution=()                     # 注册表方式: 不传 explorer /desktop
+    fi
+
     # 调试通道 (--debug; 用户已手工设置则尊重)
     if [ "${GLR_SHOWLOG}" = "1" ]; then
         [ -z "${BOX64_LOG:-}" ] && export BOX64_LOG=1
@@ -1932,7 +1996,7 @@ if [ "${GLR_WINE}" = "1" ]; then
     echo " box64   : ${GLR_BOX64}"
     echo " prefix  : ${WINEPREFIX}"
     echo " display : ${DISPLAY:-?}"
-    echo " desktop : ${GLR_OPT_DESKTOP:-全屏}$([ "${GLR_VD:-0}" = "1" ] && echo " (wine虚拟桌面)")$([ "${GLR_FITWIN}" = "1" ] && echo " (撑满)")"
+    echo " desktop : ${GLR_OPT_DESKTOP:-全屏}$([ "${GLR_FORCE_VD:-0}" = "1" ] && echo " (注册表窗口模式)")$([ "${GLR_VD:-0}" = "1" ] && echo " (wine虚拟桌面)")$([ "${GLR_FITWIN}" = "1" ] && echo " (撑满)")"
     echo " 日志    : ${GLR_LOG:-(仅终端)}"
     if [ "${GLR_PULSE_READY:-0}" = "1" ]; then
         echo " audio   : pulse 就绪 (127.0.0.1:4713)${GLR_AUDIO_VOL_APPLIED:+ · sink音量 ${GLR_AUDIO_VOL_APPLIED}%}"
@@ -1946,6 +2010,7 @@ if [ "${GLR_WINE}" = "1" ]; then
     if [ -n "${GLR_DESKTOP_GIVEN}" ]; then
         echo " 提示    : 窗口化游戏自动贴合拉伸铺满 (X 屏随游戏窗口自适应, 无黑边)"
         echo "           游戏报错/闪退 (轩宇剑4类)? 加 -v 启用 wine 虚拟桌面"
+        echo "           wine10/proton 开不出桌面窗口? 加 -f (注册表窗口模式)"
         echo "           现代游戏想按 ${GLR_OPT_DESKTOP:-1280x720} 原生渲染可加 -F (窗口撑满)"
     fi
 
@@ -1958,6 +2023,8 @@ if [ "${GLR_WINE}" = "1" ]; then
     #   -d (全屏)    → 写 "1280x720"   (全屏默认桌面分辨率)
     #   -v (虚拟桌面)→ 写 VD 尺寸      (与 explorer /desktop 尺寸一致,
     #                                  VD 窗口铺满 X 屏幕)
+    #   -f (注册表窗口)→ 写 WxH        (与注册表 Desktops\\Default 尺寸
+    #                                  一致, 虚拟桌面窗口铺满 X 屏幕)
     #   不带 -d      → 写 "native"    (跟随窗口, 桌面/文件管理器场景)
     # AnWind 端 FileObserver 实时应用; anwind-x11 启动桌面会话时也会
     # 写 "native" 复位。旧版 App 解析带标记值时 regex 照样提取 WxH,
@@ -1997,9 +2064,11 @@ if [ "${GLR_WINE}" = "1" ]; then
     # [R3] 纯净游戏画面 (v3.4 fix13): 部分前缀 (Mobox 迁移/winecfg 手动
     #   勾选"模拟虚拟桌面") 会在注册表持久化虚拟桌面 —— 即使 [R2] 不再
     #   传 explorer /desktop 参数, 所有程序仍被关进 wine 桌面 (蓝色壁纸+
-    #   任务栏), 游戏窗口居中缩水。-d 启动游戏且未启用 GLR_VD 时, 先把
-    #   这份持久化配置清掉, 保证游戏直接在 X 屏幕上全屏启动。
+    #   任务栏), 游戏窗口居中缩水。-d 启动游戏且未启用 GLR_VD/GLR_FORCE_VD
+    #   时, 先把这份持久化配置清掉, 保证游戏直接在 X 屏幕上全屏启动。
+    #   (fix25: -f 注册表窗口模式时要写入这两个键, 本块必须让路)
     if [ -n "${GLR_DESKTOP_GIVEN}" ] && [ "${GLR_VD:-0}" != "1" ] \
+       && [ "${GLR_FORCE_VD:-0}" != "1" ] \
        && [ -f "${WINEPREFIX}/system.reg" ]; then
         _vd_marker="${WINEPREFIX}/anwindmeta/.anwind-vd-clean"   # fix24 [M1]
         if [ ! -f "${_vd_marker}" ]; then
@@ -2011,6 +2080,39 @@ if [ "${GLR_WINE}" = "1" ]; then
             touch "${_vd_marker}" 2>/dev/null
             echo " [R3] 已清除前缀内持久化虚拟桌面配置 (纯游戏画面)"
         fi
+    fi
+
+    # fix25 [R7]: -f 注册表窗口模式落地 (startwine v3.2 同款目标, 注册
+    #   表手段)。在 [R3] 之后执行: [R3] 先清旧配置, [R7] 再写入本窗口
+    #   模式所需的两键, 顺序保证不被旧逻辑清掉。wine10/proton 版 wine
+    #   及以上, 命令行直传 explorer /desktop=shell,WxH 开不出桌面窗口,
+    #   改写 (即 winecfg "模拟虚拟桌面" 同款):
+    #     HKCU\Software\Wine\Explorer          Desktop = "Default"
+    #     HKCU\Software\Wine\Explorer\Desktops Default = "WxH"
+    #   经 wine reg add 写入 (走 wineserver 持久化, 活体 wine 会话下
+    #   安全; startwine 直改 user.reg 需先等 wineserver 退出, 本环境
+    #   盘活会话多, 用 reg add 更稳)。下次不带 -f 的 wine 启动若检测
+    #   到上次留下的配置则自动删除恢复全屏 (startwine "总是应用或关
+    #   闭"语义; 经 anwindmeta/.anwind-vd-on 记账只跑一次, 不给普通
+    #   启动加开销)。
+    if [ "${GLR_FORCE_VD:-0}" = "1" ] && [ -f "${WINEPREFIX}/system.reg" ]; then
+        "${GLR_LD}" "${GLR_BOX64}" "${GLR_WINE_BIN}" reg add \
+            "HKCU\\Software\\Wine\\Explorer" /v Desktop /d Default /f >/dev/null 2>&1
+        "${GLR_LD}" "${GLR_BOX64}" "${GLR_WINE_BIN}" reg add \
+            "HKCU\\Software\\Wine\\Explorer\\Desktops" /v Default /d "${GLR_OPT_DESKTOP}" /f >/dev/null 2>&1
+        mkdir -p "${WINEPREFIX}/anwindmeta" 2>/dev/null
+        rm -f "${WINEPREFIX}/anwindmeta/.anwind-vd-clean" 2>/dev/null
+        touch "${WINEPREFIX}/anwindmeta/.anwind-vd-on" 2>/dev/null
+        echo " [R7] 注册表窗口模式: Explorer\\Desktops\\Default = ${GLR_OPT_DESKTOP} (wine10/proton 窗口化; 不带 -f 启动自动恢复全屏)"
+    elif [ "${GLR_FORCE_VD:-0}" != "1" ] \
+         && [ -f "${WINEPREFIX}/anwindmeta/.anwind-vd-on" ] \
+         && [ -f "${WINEPREFIX}/system.reg" ]; then
+        "${GLR_LD}" "${GLR_BOX64}" "${GLR_WINE_BIN}" reg delete \
+            "HKCU\\Software\\Wine\\Explorer" /v Desktop /f >/dev/null 2>&1
+        "${GLR_LD}" "${GLR_BOX64}" "${GLR_WINE_BIN}" reg delete \
+            "HKCU\\Software\\Wine\\Explorer\\Desktops" /f >/dev/null 2>&1
+        rm -f "${WINEPREFIX}/anwindmeta/.anwind-vd-on" 2>/dev/null
+        echo " [R7] 已清除上次 -f 的注册表窗口配置 (恢复全屏)"
     fi
 
     # fix20 [A5]: Mobox 迁移前缀 Drivers=alsa 钉死自愈(记账只跑一次)

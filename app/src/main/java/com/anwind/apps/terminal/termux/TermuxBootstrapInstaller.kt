@@ -229,7 +229,16 @@ object TermuxBootstrapInstaller {
     //   原样直读 /data/data/com.anwind/files/usr/glibc/opt/prefix(不再做
     //   前缀根/prefix.bak.* 多位置搜索)；[M1] 前缀幂等标记目录
     //   moboxmeta → anwindmeta。
-    private const val EXTRAS_REVISION = 31
+    // rev32 = fix25：glibc-runner v3.12-anwind1——[R7] 新增 -f[WxH]/
+    //   --force-desktop[=WxH] 注册表窗口模式（startwine v3.2 同款 -f）：
+    //   wine10/proton 版 wine 及以上直传 explorer /desktop 参数开不出
+    //   桌面窗口，启动前经 wine reg add 写 HKCU\Software\Wine\Explorer
+    //   Desktop="Default" + Explorer\Desktops Default="WxH"（winecfg
+    //   "模拟虚拟桌面"同款两键）实现窗口化；裸 -f 默认 800x600；握手
+    //   分辨率=-f 尺寸（桌面窗口铺满 X 屏幕）；下次不带 -f 启动自动删
+    //   键恢复全屏（anwindmeta/.anwind-vd-on 记账）；-f 覆盖 -v；短选
+    //   项 -f 由 --findlib 让给 --force-desktop（--findlib 保留长选项）。
+    private const val EXTRAS_REVISION = 32
 
     /** 安装状态（Compose 界面订阅渲染）。 */
     sealed class InstallState {
