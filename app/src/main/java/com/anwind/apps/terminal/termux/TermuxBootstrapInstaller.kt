@@ -201,7 +201,10 @@ object TermuxBootstrapInstaller {
     //   客户端库自动补装（libpulse-glibc/alsa-lib-glibc/grep-glibc/
     //   sed-glibc）；[A5] HKCU Drivers=alsa 钉死自愈；[A6] bionic 工具
     //   安全化（sed/pgrep/taskset/date/head）。
-    private const val EXTRAS_REVISION = 27
+    // rev28 = fix21：声音偏小/“被压住”——[V1] pulse sink 音量归一（默认
+    //   100%，GLR_AUDIO_VOLUME=50~300 可调）；[V2] --fix-audio 诊断增强
+    //   （sink 状态/静音/音量 + 活动流）；[V3] 启动横幅显示生效音量。
+    private const val EXTRAS_REVISION = 28
 
     /** 安装状态（Compose 界面订阅渲染）。 */
     sealed class InstallState {

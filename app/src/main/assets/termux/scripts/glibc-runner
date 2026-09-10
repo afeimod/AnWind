@@ -92,12 +92,27 @@
 #       可用也会被该注册表值屏蔽。
 #  [A6] bionic 工具安全化: -f/--findlib 的 sed 管线改纯 bash;
 #       pgrep/taskset 探测移入 bionic 子壳; date/head 走安全包装。
+#
+# v3.8 (AnWind fix21 —— 声音偏小/"被压住"音量归一化):
+#  [V1] pulse sink 音量归一化。服务端就绪后自动 pactl 解除静音 +
+#       set-sink-volume 归一(默认 100%)。Android 上 sles sink 默认
+#       音量可能 <100%, flat-volumes 下 wine 流注册音量亦会拉低总
+#       音量 → 声音"能出但被压住"。GLR_AUDIO_VOLUME=50~300 可调
+#       (>100 为软件增益, 会放大底噪/削顶, 逐档试听)。
+#  [V2] --fix-audio 诊断增强: 输出 sink 名称/状态/静音/音量与活动
+#       流(sink-inputs), 音量异常一眼可辨; pactl 统一走 bionic
+#       隔离子壳(glr_pactl, PULSE_SERVER=127.0.0.1)。
+#  [V3] 启动横幅 audio 行显示生效音量。
+#  [V4] 音量设置在 sink 未就绪(服务端刚拉起)时重试 3 次。
+#  [V5] 修复 fix20 遗留: glr_port_up 的 "exec 3>&- 3<&- 2>/dev/null"
+#       把脚本 stderr 永久吞进 /dev/null → 端口就绪后的所有警告
+#       (含音量警告)静默丢失; 已删除该行(fd3 随子壳自动关闭)。
 # ============================================================
 
 APP_PREFIX="${GLR_APP_PREFIX:-/data/data/com.anwind/files/usr}"
 GLIBC_PREFIX="${APP_PREFIX}/glibc"
 GLR_LD=${GLIBC_PREFIX}/lib/ld-linux-aarch64.so.1
-GLR_VERSION="3.7-anwind1"
+GLR_VERSION="3.8-anwind1"
 
 # [R1] 分辨率握手协议文件 (AnWind X11 窗口监听此文件)
 GLR_RES_FILE="${APP_PREFIX}/tmp/.anwind-x11-res"
@@ -147,7 +162,7 @@ show_warning() {
 
 usage() {
     cat <<'USAGE'
-glibc-runner v3.7-anwind1 —— glibc 启动器 + wine 快捷启动 (startonwine 合并版)
+glibc-runner v3.8-anwind1 —— glibc 启动器 + wine 快捷启动 (startonwine 合并版)
 
 【wine 快捷启动】glibc-runner [选项] <游戏.exe | wine子命令>
  -d[WxH], --desktop[=WxH]  X 屏幕 = 指定分辨率; 窗口化游戏自动贴合
@@ -182,7 +197,8 @@ glibc-runner v3.7-anwind1 —— glibc 启动器 + wine 快捷启动 (startonwin
  --fix-drives              补齐标准盘符 z: c: d: e: (DRIVE_D/DRIVE_E=路径 自定义)
  --winecfg / --regedit / --taskmgr   快捷打开对应工具
  --fix-audio                一键修复/诊断 wine 声音 (pulse 服务端 +
-                            glibc 音频库 + 注册表驱动自愈 + 诊断输出)
+                            glibc 音频库 + 注册表驱动自愈 + 音量归一 +
+                            诊断输出)
 
 【glibc 原生模式】(传入 Linux/box64 二进制时自动走此模式)
  -c/--configure            patchelf 配置二进制 (rpath+interpreter)
@@ -210,6 +226,8 @@ glibc-runner v3.7-anwind1 —— glibc 启动器 + wine 快捷启动 (startonwin
  * 盘符指向: z:=/ (根文件系统); d:/e: 可用 DRIVE_D/DRIVE_E 自定义
  * -d 分辨率会实时同步给 AnWind X11 窗口 (游戏按真实分辨率渲染)
  * 声音: pulse 服务端/glibc 音频库自动拉起补装; 无声先跑 --fix-audio
+ * 音量偏小: GLR_AUDIO_VOLUME=50~300 (默认 100; 150=软件增益 1.5 倍,
+   过大有削顶/底噪, 逐档试听; 亦检查 Android 媒体音量与游戏内音量)
  * 勿手工在容器内跑 pulseaudio (路径自检会失败), 交由本脚本处理
  * 完全跳过音频初始化: 环境变量 GLR_NO_AUDIO_SETUP=1
  * 前缀异常 (闪退报 32-bit/registry 无效): glibc-runner --fix-prefix
@@ -227,6 +245,7 @@ GLR_CMD_DRIVES=0; GLR_DRIVES_ARG=""; GLR_OPT_ADDDRIVE=""; GLR_OPT_RMDRIVE=""
 GLR_CMD_KILL=0; GLR_CMD_INIT=0; GLR_CMD_INSTALL=0; GLR_CMD_FIXPREFIX=0; GLR_CMD_FIXDRIVES=0
 GLR_CMD_WINECFG=0; GLR_CMD_REGEDIT=0; GLR_CMD_TASKMGR=0; GLR_CMD_FIXAUDIO=0
 GLR_PULSE_READY=0   # fix20 [A1]: 127.0.0.1:4713 就绪标记(启动横幅用)
+GLR_AUDIO_VOL_APPLIED=""  # fix21 [V1]: 已生效的 sink 音量(横幅/诊断用)
 use_opengl=0; dx_dx11=0; unity_mode=0; glr_wow64flag=0; startib=0; f5taskmgr=0
 wine_args=(); additional_args=(); resolution=(); GLR_TASKSET=()
 
@@ -521,9 +540,13 @@ glr_first_line() {
 glr_port_up() {
     local _host="${1:-127.0.0.1}" _port="${2:-4713}"
     ( exec 3<>"/dev/tcp/${_host}/${_port}" ) 2>/dev/null || return 1
-    exec 3>&- 3<&- 2>/dev/null
     return 0
 }
+# fix21 [V5]: 旧版此处有一行 "exec 3>&- 3<&- 2>/dev/null" —— 无命令的
+# exec 带重定向会把整个脚本的 stderr 永久指向 /dev/null: 端口探测
+# 成功后(fix20 环境下每次启动都会)后续全部 _glr_warn 警告被静默吞
+# 掉(音量未生效/任务绑定失败/握手警告等), bash -x 调试也断流。
+# fd 3 只在子壳内打开、随子壳退出自动关闭, 无需也无法在主壳关闭;
 
 # ---- fix20 [A1]: pulseaudio 服务端(bionic)启动加固 ----
 # 责任链: 端口已在听→复用; 运行中但没开 TCP→重启; 不在→拉起; 拉起后
@@ -573,6 +596,40 @@ glr_start_pulse() {
     done
     _glr_warn "pulseaudio 已拉起但 127.0.0.1:4713 未就绪; 手工诊断: ${_pa} --start --load='module-native-protocol-tcp auth-ip-acl=127.0.0.1 auth-anonymous=1' --exit-idle-time=-1"
     return 1
+}
+
+# ---- fix21 [V2]: bionic 隔离子壳内连 TCP 服务端执行 pactl ----
+# (pactl 是 bionic 二进制, 不能吃 glibc LD 环境; PULSE_SERVER 指向
+#  本机 TCP 4713 —— 与 wine 侧客户端同一服务端)
+glr_pactl() {
+    local _pactl="${APP_PREFIX}/bin/pactl"
+    [ -x "${_pactl}" ] || return 127
+    ( export LD_LIBRARY_PATH="${APP_PREFIX}/lib"; unset LD_PRELOAD
+      export PULSE_SERVER="127.0.0.1"
+      "${_pactl}" "$@" ) 2>/dev/null
+}
+
+# ---- fix21 [V1]: sink 音量归一化(默认 100%, GLR_AUDIO_VOLUME=50~300) ----
+# 现象: 声音能出但明显偏小("像被什么压住")。Android 上 pulse 默认
+# sink(sles 输出)音量可能低于 100%; flat-volumes 下 wine 流注册
+# 音量也会拉低总音量; 亦可能残留静音。服务端就绪后统一归一。
+glr_pulse_volume() {
+    [ "${GLR_NO_AUDIO_SETUP:-0}" = "1" ] && return 0
+    [ "${GLR_PULSE_READY:-0}" = "1" ] || return 0
+    local _vol="${GLR_AUDIO_VOLUME:-100}"
+    case "${_vol}" in ''|*[!0-9]*) _vol=100 ;; esac
+    [ "${_vol}" -ge 50 ] && [ "${_vol}" -le 300 ] || _vol=100
+    local _i
+    for _i in 1 2 3; do   # [V4] sink 未就绪(服务端刚拉起)时稍候重试
+        glr_pactl set-sink-mute @DEFAULT_SINK@ 0 >/dev/null 2>&1
+        if glr_pactl set-sink-volume @DEFAULT_SINK@ "${_vol}%" >/dev/null 2>&1; then
+            GLR_AUDIO_VOL_APPLIED="${_vol}"
+            return 0
+        fi
+        sleep 1
+    done
+    _glr_warn "pulse 音量设置未生效(sink 未就绪?); 手工: pactl set-sink-volume @DEFAULT_SINK@ 100%"
+    return 0
 }
 
 # ---- fix20 [A2]: glibc 侧音频客户端库补装(box64 包装库用) ----
@@ -650,6 +707,7 @@ glr_env_full() {
     # glr_env_core 切到 glibc/lib → bionic linker 拒载 → 服务端静默失败。
     glr_ensure_audio_libs
     glr_start_pulse
+    glr_pulse_volume   # fix21 [V1]: sink 音量归一(默认100%, GLR_AUDIO_VOLUME 可调)
     export PULSE_SERVER="${PULSE_SERVER:-127.0.0.1}"
     # box64 动态翻译稳定性预设 (mwine 同款; 环境变量已设则尊重用户)
     export BOX64_DYNAREC_BIGBLOCK="${BOX64_DYNAREC_BIGBLOCK:-0}"
@@ -1083,8 +1141,9 @@ glr_cmd_fixaudio() {
     WINEPREFIX="${WINEPREFIX:-${GLIBC_PREFIX}/opt/prefix}"
     rm -f "${WINEPREFIX}/moboxmeta/.anwind-audio-drv-fixed" 2>/dev/null
     glr_ensure_audio_libs
-    # 3) 服务端拉起 + 端口就绪
+    # 3) 服务端拉起 + 端口就绪 + 音量归一(fix21 [V1])
     glr_start_pulse
+    glr_pulse_volume
     export PULSE_SERVER="${PULSE_SERVER:-127.0.0.1}"
     # 4) 诊断输出
     echo
@@ -1105,7 +1164,23 @@ glr_cmd_fixaudio() {
         echo " [FAIL] 127.0.0.1:4713 未监听 → 手工: ${APP_PREFIX}/bin/pulseaudio --start --load='module-native-protocol-tcp auth-ip-acl=127.0.0.1 auth-anonymous=1' --exit-idle-time=-1"
     fi
     if [ -x "${APP_PREFIX}/bin/pactl" ]; then
-        glr_bionic env PULSE_SERVER=127.0.0.1 "${APP_PREFIX}/bin/pactl" info 2>/dev/null | head -n 4
+        echo
+        echo "== pulse 服务器信息 =="
+        glr_pactl info 2>/dev/null | head -n 4
+        echo
+        echo "== sink 音量状态 (fix21 归一后) =="
+        glr_pactl list sinks 2>/dev/null | while IFS= read -r _ln; do
+            _key="${_ln#"${_ln%%[![:space:]]*}"}"   # 去前导空白
+            case "${_key}" in
+                Name:*|State:*|Mute:*|Volume:*) printf '%.120s\n' "${_key}" ;;
+            esac
+        done
+        echo
+        echo "== 活动音频流 (游戏运行时才显示; 流音量低=流恢复表/游戏侧问题) =="
+        glr_pactl list short sink-inputs 2>/dev/null
+        echo
+        echo "音量偏小调节: GLR_AUDIO_VOLUME=150 glibc-runner 游戏.exe (50~300)"
+        echo "             另检查 Android 媒体音量(播放中按音量+) 与游戏内音量设置"
     fi
     # 5) 注册表驱动自愈(需 wine; 切到 glibc 环境再跑)
     if [ -n "${GLR_WINE_BIN}" ] && [ -n "${GLR_BOX64}" ] && [ -f "${GLR_BOX64}" ]; then
@@ -1232,7 +1307,7 @@ if [ "${GLR_WINE}" = "1" ]; then
     echo " desktop : ${GLR_OPT_DESKTOP:-全屏}$([ "${GLR_VD:-0}" = "1" ] && echo " (wine虚拟桌面)")$([ "${GLR_FITWIN}" = "1" ] && echo " (撑满)")"
     echo " 日志    : ${GLR_LOG:-(仅终端)}"
     if [ "${GLR_PULSE_READY:-0}" = "1" ]; then
-        echo " audio   : pulse 就绪 (127.0.0.1:4713)"
+        echo " audio   : pulse 就绪 (127.0.0.1:4713)${GLR_AUDIO_VOL_APPLIED:+ · sink音量 ${GLR_AUDIO_VOL_APPLIED}%}"
     else
         echo " audio   : pulse 未就绪 (无声; 修复: glibc-runner --fix-audio)"
     fi
