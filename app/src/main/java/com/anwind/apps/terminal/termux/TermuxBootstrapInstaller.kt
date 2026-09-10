@@ -230,15 +230,27 @@ object TermuxBootstrapInstaller {
     //   前缀根/prefix.bak.* 多位置搜索)；[M1] 前缀幂等标记目录
     //   moboxmeta → anwindmeta。
     // rev32 = fix25：glibc-runner v3.12-anwind1——[R7] 新增 -f[WxH]/
-    //   --force-desktop[=WxH] 注册表窗口模式（startwine v3.2 同款 -f）：
-    //   wine10/proton 版 wine 及以上直传 explorer /desktop 参数开不出
-    //   桌面窗口，启动前经 wine reg add 写 HKCU\Software\Wine\Explorer
-    //   Desktop="Default" + Explorer\Desktops Default="WxH"（winecfg
-    //   "模拟虚拟桌面"同款两键）实现窗口化；裸 -f 默认 800x600；握手
-    //   分辨率=-f 尺寸（桌面窗口铺满 X 屏幕）；下次不带 -f 启动自动删
-    //   键恢复全屏（anwindmeta/.anwind-vd-on 记账）；-f 覆盖 -v；短选
-    //   项 -f 由 --findlib 让给 --force-desktop（--findlib 保留长选项）。
-    private const val EXTRAS_REVISION = 32
+    //   --force-desktop[=WxH]（startwine v3.2 同款 -f）。
+    // rev33 = fix25 修订（v3.12-anwind2）：-f 语义按用户反馈纠正为
+    //   startwine -f 原样两个动作——① explorer /desktop=shell,WxH 直
+    //   传参数开窗口显示（-d 不传 explorer 参数无法开窗口）；② 每次
+    //   启动前 wine reg delete 清除 HKCU\Software\Wine\Explorer 的
+    //   Desktop 值与 Explorer\Desktops 键（Mobox 迁移/winecfg 勾选/
+    //   repack user.reg 资产持久化的 wine 背景桌面 → 蓝底+任务栏包住
+    //   游戏、与 explorer 桌面叠成双窗口），每次 -f 都执行不做记账。
+    //   anwind1 曾实现为"reg add 开桌面、不传 explorer 参数"，与语义
+    //   相反，已纠正；旧版遗留注册表键与 .anwind-vd-on 记账自动清除。
+    //   裸 -f 默认 800x600；握手分辨率=-f 尺寸；短选项 -f 由 --findlib
+    //   让给 --force-desktop（--findlib 保留长选项）。
+    // rev34 = fix25 定稿（v3.12-anwind3）：用户实测截图确认 explorer
+    //   直传参数与注册表方式创建的是同一个蓝底 wine 桌面窗口（截图一
+    //   -f 蓝底仍在；截图二 -d 画面直出无桌面）——anwind3 把 -f 改为
+    //   与 -d [R2] 完全同款画面直出：resolution 置空不传任何 explorer
+    //   /desktop 参数，游戏窗口直接渲染在项目 X11 桌面窗口；保留每次
+    //   -f 启动前 reg delete 清注册表桌面（-d [R3] 同款手段、"强制"
+    //   不记账）；握手分辨率=-f 尺寸。旧版遗留注册表键与
+    //   .anwind-vd-on 记账在 -f/非 -f 启动时均自动清除。
+    private const val EXTRAS_REVISION = 34
 
     /** 安装状态（Compose 界面订阅渲染）。 */
     sealed class InstallState {
