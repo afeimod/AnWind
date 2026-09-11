@@ -246,6 +246,23 @@
 #           --x11-diag 诊断命令 (extras 修订/握手文件/user.reg
 #           Explorer 残留/logcat X11 日志, 纯读取不启 wine),
 #           后续问题凭输出定位, 不再盲修。
+#       (5) proton 收缩级联根治 (anwind7, 用户深采样 logcat 铁证:
+#           wine-9.2 的 -d/-f 都能铺满, proton 的 -d/-f 都右/下
+#           黑边): proton 游戏自带全屏管理器, X 屏 (root) 每变化
+#           一次它就把自己的窗口重设为新 root 的 ~96% (1280x720
+#           → 窗口 1232x693, 恰 ×0.9625); 旧 App 侧贴合策略见
+#           "窗口≠X 屏"就把 X 屏缩到窗口尺寸 → fit 缩屏 → proton
+#           缩窗 → fit 再缩屏 级联 2-3 轮 (1232x693→1186x667→
+#           1129x634), 画面越缩越小四周黑边; wine-9.2 对 root
+#           变化无此反应, 贴合一次即收敛 —— 即差异根源。
+#           App 侧 fix28 (X11FitClient 决策环, 握手协议零变化):
+#           ① 稳定门 (窗口尺寸连续两轮一致才允许动 root); ② 缩屏
+#           预算 (每次握手 applyFit 至多 2 次, 级联结构性不可能);
+#           ③ 对抗窗+钉满 (贴合后 4s 内窗口再缩水 = proton 对抗,
+#           反手把窗口撑回覆盖整个 root, root 不动); ④ 对抗上限
+#           (钉满 4 轮仍被改回 → 放手, 绝不缩屏); ⑤ 缩屏下限
+#           (不低于握手面积 50%)。脚本侧同步: --x11-diag logcat
+#           采样加深至 -t 20000 (旧 -t 240 抓不到完整决策链)。
 #       修订史: anwind1 实现"reg add 开注册表桌面"; anwind2 改
 #       "explorer /desktop=shell,WxH 直传参数" —— 两者是同一个
 #       wine 桌面窗口的两种入口, 都带蓝底背景 (用户实测截图确认),
@@ -261,7 +278,7 @@
 APP_PREFIX="${GLR_APP_PREFIX:-/data/data/com.anwind/files/usr}"
 GLIBC_PREFIX="${APP_PREFIX}/glibc"
 GLR_LD=${GLIBC_PREFIX}/lib/ld-linux-aarch64.so.1
-GLR_VERSION="3.12-anwind6"
+GLR_VERSION="3.12-anwind7"
 
 # [R1] 分辨率握手协议文件 (AnWind X11 窗口监听此文件)
 GLR_RES_FILE="${APP_PREFIX}/tmp/.anwind-x11-res"
@@ -485,7 +502,7 @@ glr_zink_setup() {
 
 usage() {
     cat <<'USAGE'
-glibc-runner v3.12-anwind6 —— glibc 启动器 + wine 快捷启动 (startonwine 合并版)
+glibc-runner v3.12-anwind7 —— glibc 启动器 + wine 快捷启动 (startonwine 合并版)
 
 【wine 快捷启动】glibc-runner [选项] <游戏.exe | wine子命令>
  -d[WxH], --desktop[=WxH]  X 屏幕 = 指定分辨率; 窗口化游戏自动贴合
@@ -905,10 +922,10 @@ if [ "${GLR_MODE_DIAG}" = "1" ]; then
     else
         echo "    (user.reg 不存在 — 前缀未初始化)"
     fi
-    echo "[4] App 侧 X11 日志 (最近 240 行中的匹配项):"
+    echo "[4] App 侧 X11 日志 (最近 20000 行中的匹配项, 覆盖完整决策链):"
     if command -v logcat >/dev/null 2>&1; then
-        logcat -d -t 240 2>/dev/null | grep -E "X11ResolutionLink|X11FitClient|LorieView|X11Surface" | tail -60 | sed 's/^/       /'
-        echo "       (logcat 采样完毕)"
+        logcat -d -t 20000 2>/dev/null | grep -E "X11ResolutionLink|X11FitClient|LorieView|X11Surface" | tail -120 | sed 's/^/       /'
+        echo "       (logcat 采样完毕; 深采样 -t 20000, 覆盖最近完整决策链)"
     else
         echo "       (本环境无 logcat 命令)"
     fi
@@ -2109,7 +2126,7 @@ if [ "${GLR_WINE}" = "1" ]; then
     fi
     echo " 命令    : box64 wine ${wine_args[*]} ${resolution[*]} $* ${additional_args[*]}"
     if [ -n "${GLR_DESKTOP_GIVEN}" ]; then
-        echo " 提示    : 窗口化游戏自动贴合拉伸铺满 (X 屏随游戏窗口自适应, 无黑边)"
+        echo " 提示    : 窗口化游戏自动贴合/钉满铺满 (X 屏最多调整一次, 防级联)"
         echo "           游戏报错/闪退 (轩宇剑4类)? 加 -v 启用 wine 虚拟桌面"
         echo "           wine 蓝色背景桌面? 加 -f (强制窗口直出+每次清注册表桌面, 铺满同 -d)"
         echo "           现代游戏想按 ${GLR_OPT_DESKTOP:-1280x720} 原生渲染可加 -F (窗口撑满)"

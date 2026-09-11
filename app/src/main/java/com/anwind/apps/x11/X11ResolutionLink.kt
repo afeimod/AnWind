@@ -147,9 +147,15 @@ object X11ResolutionLink {
     fun apply(valueRaw: String) {
         val value = valueRaw.trim().lowercase()
         val wantStretch = value.contains("fitwin")
+        // fix28：解析出的握手宽高（native 为 0 = 未知，供缩屏下限跳过）
+        var hsW = 0; var hsH = 0
         val (mode, exact, fromGame) = when {
             value == "native" -> Triple("native", "", false)
-            value == "fullscreen" -> Triple("exact", DEFAULT_RES, true)
+            value == "fullscreen" -> {
+                // DEFAULT_RES = "1280x720"；握手登记用宽高与之保持一致
+                hsW = 1280; hsH = 720
+                Triple("exact", DEFAULT_RES, true)
+            }
             else -> {
                 val m = Regex("(\\d{2,5})\\s*x\\s*(\\d{2,5})").find(value)
                     ?: run { Log.w(TAG, "无法解析分辨率: '$valueRaw'"); return }
@@ -159,6 +165,7 @@ object X11ResolutionLink {
                     Log.w(TAG, "分辨率越界: ${w}x${h}")
                     return
                 }
+                hsW = w; hsH = h
                 Triple("exact", "${w}x${h}", true)
             }
         }
@@ -169,6 +176,11 @@ object X11ResolutionLink {
         exactFromRunner = mode == "exact"
         // fix19：撑满请求（-F/--fitwin）仅对 exact 会话有意义；native 归 false。
         windowStretch = mode == "exact" && wantStretch
+        // fix28：新握手 = 新自适应会话 —— X11FitClient 的贴合缩屏预算/
+        // 对抗计数全部清零，并以握手分辨率作为缩屏下限基准。
+        // glibc-runner -d/-f 每次启动都重写握手文件 → 每局游戏都拿到
+        // 全新预算；不修改 applyFit（贴合应用本身不重置，防自环）。
+        X11FitClient.resetSession(hsW, hsH)
 
         val prefs = LoriePreferences.prefs ?: return
         prefs.displayResolutionMode.put(mode)
@@ -231,6 +243,9 @@ object X11ResolutionLink {
      * 客户区尺寸（不发 Toast、不写握手文件，避免游戏窗口/启动器切换时
      * 提示刷屏）。stretch 保持开启，显示层把"游戏客户区=X 屏幕"拉伸铺满
      * Android 窗口，四边黑边消失。
+     * fix28：本函数不再被无条件调用 —— X11FitClient 决策环加稳定门/
+     * 缩屏预算/对抗钉满（详见 X11FitClient fix28 注释），proton 会话的
+     * "缩屏→游戏再缩窗"收缩级联被结构性禁止。
      */
     fun applyFit(w: Int, h: Int) {
         if (w < 160 || h < 120 || w > 7680 || h > 4320) return

@@ -273,7 +273,19 @@ object TermuxBootstrapInstaller {
     //   （与 -f [R7] 同款）；② 新增 --x11-diag 诊断命令（extras 修订/
     //   握手文件/user.reg Explorer 残留/logcat X11 日志，纯读取不启
     //   wine），后续问题凭输出精确定位、不再盲修。
-    private const val EXTRAS_REVISION = 37
+    // rev38 = fix28 级联根治（v3.12-anwind7）：用户深采样 logcat 铁证 ——
+    //   wine-9.2 的 -d/-f 都能铺满、proton 的 -d/-f 都右/下黑边。根因：
+    //   proton 游戏自带全屏管理器，X 屏每变化一次就把窗口重设为新 root
+    //   的 ~96%（1280x720→窗口 1232x693，恰 ×0.9625），旧贴合策略见
+    //   "窗口≠X 屏"就缩 X 屏 → 缩屏/缩窗互相驱动级联 2-3 轮（1232x693
+    //   →1186x667→1129x634）画面越缩越小；wine-9.2 无此反应故两模式
+    //   均好。App 侧 fix28（X11FitClient 决策环，握手协议零变化）：稳定
+    //   门（窗口尺寸连续两轮一致才动 root）+ 缩屏预算（每次握手 applyFit
+    //   ≤2 次）+ 对抗窗钉满（贴合后 4s 内窗口再缩水 → 窗口撑回覆盖整
+    //   个 root，root 不动）+ 对抗上限（钉满 4 轮仍被改回 → 放手）+
+    //   缩屏下限（≥握手面积 50%）。脚本侧同步：--x11-diag logcat 采样
+    //   加深至 -t 20000（旧 -t 240 抓不到完整决策链）。
+    private const val EXTRAS_REVISION = 38
 
     /** 安装状态（Compose 界面订阅渲染）。 */
     sealed class InstallState {

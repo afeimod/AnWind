@@ -12,6 +12,42 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
 /**
+ * v2.23.0 fix28（配套 glibc-runner v3.12-anwind7 / extras rev38）——
+ *               根治 proton 会话"收缩级联"（用户实测：wine-9.2 的 -d/-f
+ *               都能铺满，proton 的 -d/-f 都右/下黑边 —— 差异根因）。
+ *
+ * fix28 定位的问题（2026-09-11 用户深采样 logcat 铁证，-d 与 -f 各一份）：
+ *   proton 游戏自带"全屏管理器"：X 屏（root）每变化一次，它就把自己的
+ *   窗口重设为"新 root 的 ~96%"（1280x720 root → 窗口 1232x693，恰为
+ *   ×0.9625；root 缩到 1232x693 后窗口又变 1186x667 —— 同一比例）。
+ *   旧贴合策略见"窗口≠X 屏"就把 X 屏缩到窗口尺寸（applyFit），于是：
+ *   fit 缩屏 → proton 缩窗 → fit 再缩屏 → …… 级联 2-3 轮
+ *   （1232x693 → 1186x667 → 1129x634），画面越缩越小、四周黑边。
+ *   wine-9.2 对 root 变化无此反应（窗口不动），贴合一次即收敛 ——
+ *   这就是"wine-9.2 两种模式都好、proton 两种模式都坏"的根源。
+ *   显示层拉伸只能把"整张 X 屏"铺满 Android 窗口，root 内部黑边
+ *   （窗口小于 root 的四周露黑）必须靠本客户端在 X 层解决。
+ *
+ * fix28 新决策策略（只动本文件决策环；握手协议 / -d / -f / -F 语义零变化）：
+ *   1.【稳定门】窗口尺寸必须连续两轮观测一致（≈1.6s）才允许动 X 屏 ——
+ *      绝不追着正在变化的窗口缩放 root（级联的引爆点）；
+ *   2.【缩屏预算】每次握手（resetSession，glibc-runner 重写握手文件 /
+ *      用户手动切分辨率时清零）applyFit 至多 2 次（开窗器→游戏两段式
+ *      窗口刚好用完）—— 级联在预算层面不可能超过 2 轮；
+ *   3.【对抗窗 + 钉满】applyFit 后 4s 内窗口再度缩水 = proton 对抗，
+ *      立即"钉满"：把游戏窗口撑回覆盖整个 X 屏（moveResizeWindow，
+ *      root 不动），游戏/DXVK 收 WM_SIZE 后按屏幕分辨率重绘 → 铺满；
+ *      稳定但预算耗尽/窗口越界（异常小窗）时同样钉满兜底；
+ *   4.【对抗上限 + 放手】钉满连续 4 次仍被改回 → 完全放手（连对齐也
+ *      不动，仅节流日志），保持握手分辨率，绝不缩屏；新握手重置；
+ *   5.【缩屏下限】贴合缩屏不得低于握手面积 50%（防异常小窗劫持 root；
+ *      握手未知/跟随窗口会话跳过下限检查，行为同旧版）；
+ *   6. 老游戏（DirectDraw 固定分辨率）路径不变：窗口稳定 + 预算内 →
+ *      一次贴合缩屏 → 收敛（与 wine-9.2 实测有效路径一致）。
+ *   （09-09 旧包 FATAL X11FitClient connectValidated 崩溃复核：现行代码
+ *   主循环已整体 catch(Throwable)、connectValidated 逐 socket try/catch
+ *   且协议解析全部判界，rev36+ 结构下不可复现，不再改动。）
+ *
  * v2.22.5 fix15 —— X11 游戏窗口自适应铺满（根治"窗口化游戏四周黑边"）。
  * v2.22.5 fix16 —— 协议解析全面修正 + OOM 闪退根治。
  * v2.22.5 fix17 —— 自适应从"一次性"升级为"持续维持"，并扩展到跟随窗口会话。
@@ -135,6 +171,19 @@ object X11FitClient {
     /** fix18/fix19：撑满模式下游戏连续抗拒外部 resize 的轮数上限（超过则退回贴合策略） */
     private const val MAX_FIT_FIGHTS = 4
 
+    /** fix28：每次握手（resetSession）允许的 applyFit 根调整次数上限
+     *  （开窗器→游戏两段式窗口各一次；收缩级联在预算层面不可能超过 2 轮） */
+    private const val MAX_ROOT_ADJUSTS = 2
+
+    /** fix28：applyFit 之后多少 ms 内窗口再度缩水视为"游戏对抗"（→ 钉满） */
+    private const val FIGHT_WINDOW_MS = 4000L
+
+    /** fix28：对抗放弃后的巡检间隔（完全放手，仅节流日志） */
+    private const val GIVEUP_POLL_MS = 5000L
+
+    /** fix28：贴合缩屏下限 —— 客户区面积 < 握手面积/MIN_FIT_AREA_DEN 时不允许缩 root */
+    private const val MIN_FIT_AREA_DEN = 2
+
     /** fix16：任何协议变长读取的上限（本客户端的回复都很小，超过即为 desync/异常值） */
     private const val MAX_BLOCK = 512 * 1024
 
@@ -145,6 +194,36 @@ object X11FitClient {
     /** 当前 X 屏幕尺寸（"已铺满则跳过"判断；回调/applyFit/连接 fallback 三方同步） */
     @Volatile var screenW: Int = 0
     @Volatile var screenH: Int = 0
+
+    // ---- fix28 决策状态（仅 fit 线程读写；resetSession 可跨线程重置） ----
+    /** 握手分辨率（X11ResolutionLink.apply 登记；0=未知/跟随窗口 → 缩屏下限跳过） */
+    @Volatile private var handshakeW = 0
+    @Volatile private var handshakeH = 0
+    /** 上一轮观测（稳定门：同窗口同尺寸连续两轮才允许动 root） */
+    @Volatile private var lastWinId = 0L
+    @Volatile private var lastW = 0
+    @Volatile private var lastH = 0
+    /** 本次握手已用的 applyFit 次数（≤ MAX_ROOT_ADJUSTS） */
+    @Volatile private var rootAdjusts = 0
+    /** 连续"钉满"被游戏改回的次数（≤ MAX_FIT_FIGHTS） */
+    @Volatile private var pinFights = 0
+    /** 上次 applyFit 时刻（对抗窗判定用，elapsedRealtime） */
+    @Volatile private var lastFitAt = 0L
+    /** 对抗放弃标记（放手后完全不动，直到 resetSession/铺满态复位） */
+    @Volatile private var gaveUp = false
+
+    /**
+     * fix28：自适应会话重置 —— 新握手（glibc-runner 重写 .anwind-x11-res /
+     * 用户手动切分辨率）或 fit 线程重启时调用：预算/对抗计数全部清零，
+     * 重新自适应。握手未知（native/跟随窗口）传 0 → 缩屏下限自动跳过。
+     */
+    @Synchronized
+    fun resetSession(hsW: Int, hsH: Int) {
+        handshakeW = hsW; handshakeH = hsH
+        lastWinId = 0L; lastW = 0; lastH = 0
+        rootAdjusts = 0; pinFights = 0; lastFitAt = 0L; gaveUp = false
+        Log.i(TAG, "自适应会话重置（握手 ${if (hsW > 0) "${hsW}x${hsH}" else "未知/跟随窗口"}）")
+    }
 
     @Volatile private var running = false
     private var thread: Thread? = null
@@ -201,8 +280,6 @@ object X11FitClient {
     // ============================================================
     private fun loop() {
         var conn: XConn? = null
-        // fix18/fix19：撑满模式下连续 resize 未生效的轮数（游戏自己改回尺寸）
-        var fitFights = 0
 
         while (running) {
             try {
@@ -223,6 +300,9 @@ object X11FitClient {
 
                 val game = findGameWindow(c, sw, sh)
                 if (game == null) {
+                    // fix28：游戏窗口消失 → 稳定门观测作废（下一个新窗口从
+                    // 第一轮观测重新起算，防止"同尺寸新窗口"被误判为稳定）
+                    lastWinId = 0L; lastW = 0; lastH = 0
                     logT("nogame", "未发现可铺满的游戏窗口（等待中）")
                     sleep(POLL_MS); continue
                 }
@@ -251,43 +331,109 @@ object X11FitClient {
                 // 这一支 —— 零动作，不与 wine 抢权。
                 val aligned = game.x == -L && game.y == -T
                 val rootMatch = clientW == sw && clientH == sh
+                // fix28 稳定门：同窗口同尺寸连续两轮（≈1.6s）才视为"已稳定"
+                val stable = game.id == lastWinId && game.w == lastW && game.h == lastH
+
                 if (aligned && rootMatch) {
-                    fitFights = 0
+                    pinFights = 0
+                    gaveUp = false
+                    lastWinId = game.id; lastW = game.w; lastH = game.h
                     sleep(POLL_MS); continue
                 }
 
-                if (X11ResolutionLink.windowStretch && fitFights < MAX_FIT_FIGHTS) {
-                    // 撑满策略（fix19 起可选：glibc-runner -F/--fitwin，握手值
-                    // 携带 "fitwin" 标记）：把游戏窗口主动撑到整个 X 屏幕
-                    // （客户区 = sw×sh），能跟随 WM_SIZE 重绘的现代游戏收到
-                    // WM_SIZE/DXVK 重建交换链后即以真实分辨率渲染，比贴合
-                    // 的 Upscale 清晰。老游戏（DirectDraw 固定分辨率）接受
-                    // resize 后仍在原分辨率区域绘制（X 层假稳定、右/下黑
-                    // 区）—— 因此本策略不再默认（fix18 默认时用户实测
-                    // -d1024x768 只画 868x652）。
-                    // 若游戏连续 MAX_FIT_FIGHTS 轮自己改回尺寸（对抗），
-                    // fitFights 达上限后自动退回下方贴合策略。
-                    c.moveResizeWindow(game.id, -L, -T, sw + L + R, sh + T + B)
-                    if (!rootMatch) fitFights++
-                    Log.i(TAG, "自适应(撑满): 窗口 ${game.w}x${game.h}@(${game.x},${game.y}) " +
-                        "边框[$L,$R,$T,$B] → 客户区撑到 X 屏幕 ${sw}x${sh}" +
-                        (if (fitFights > 0) "（第 $fitFights 轮）" else ""))
-                    sleep(1200)
-                } else {
-                    // 贴合策略（fix19 起默认，-d / native / 撑满对抗退回）：
-                    // 平移客户区到 (0,0)，X 屏幕贴成客户区尺寸，显示层拉伸
-                    // 铺满 —— 对任意窗口化游戏（含固定分辨率老游戏）可靠无
-                    // 黑边，不与游戏抢尺寸（零 WM_SIZE、零拉扯战斗）。
-                    // 需要维持：wine 重新居中 → 重新平移；X 屏幕被外部改动
-                    // （握手重放/手动应用/游戏切模式）→ 重新 applyFit。
-                    if (!aligned) c.moveWindow(game.id, -L, -T)
-                    if (!rootMatch) X11ResolutionLink.applyFit(clientW, clientH)
-                    Log.i(TAG, "自适应(贴合): 窗口 ${game.w}x${game.h}@(${game.x},${game.y}) " +
-                        "边框[$L,$R,$T,$B] " +
-                        (if (!aligned) "→ 平移客户区至(0,0) " else "") +
-                        (if (!rootMatch) "→ X屏幕=${clientW}x${clientH}" else ""))
-                    sleep(if (!rootMatch) 1200 else POLL_MS)
+                // fix28 对抗放弃态：完全放手（连对齐也不动，避免继续打架），
+                // 仅节流提示。恢复途径：游戏内全屏（Alt+Enter）/ -F 重启 /
+                // 新握手（resetSession）/ 关闭重开会话。
+                if (gaveUp) {
+                    logT("giveup", "游戏持续对抗外部调整，自适应已放手" +
+                        "（X 屏保持 ${sw}x${sh}；新握手或重启会话可重置）")
+                    lastWinId = game.id; lastW = game.w; lastH = game.h
+                    sleep(GIVEUP_POLL_MS); continue
                 }
+
+                // 对齐（只平移不改尺寸，零 WM_SIZE 风险）：把 NC 边框推出屏幕外，
+                // 客户区左上角对齐 X 屏幕原点。
+                if (!aligned) c.moveWindow(game.id, -L, -T)
+
+                if (!rootMatch) {
+                    val shrink = clientW < sw || clientH < sh
+                    val areaOk = !shrink || handshakeW <= 0 || handshakeH <= 0 ||
+                        clientW.toLong() * clientH * MIN_FIT_AREA_DEN >=
+                        handshakeW.toLong() * handshakeH
+                    val now = android.os.SystemClock.elapsedRealtime()
+                    val inFightWindow = lastFitAt > 0 && now - lastFitAt < FIGHT_WINDOW_MS
+
+                    if (X11ResolutionLink.windowStretch) {
+                        // 撑满策略（-F/--fitwin 显式请求，语义同 fix18）：把游戏
+                        // 窗口客户区一次到位撑到整个 X 屏幕（root 不动），现代
+                        // 游戏收到 WM_SIZE/DXVK 重建交换链后按屏幕分辨率原生
+                        // 渲染（比贴合的 Upscale 清晰）。fix28：连续
+                        // MAX_FIT_FIGHTS 轮被游戏改回 → 放手（旧版此处会跌入
+                        // 贴合缩屏 —— proton 对抗下正是收缩级联的入口）。
+                        if (pinFights < MAX_FIT_FIGHTS) {
+                            c.moveResizeWindow(game.id, -L, -T, sw + L + R, sh + T + B)
+                            pinFights++
+                            Log.i(TAG, "自适应(撑满): 窗口 ${game.w}x${game.h}@(${game.x},${game.y}) " +
+                                "边框[$L,$R,$T,$B] → 客户区撑到 X 屏幕 ${sw}x${sh}" +
+                                " [对抗 $pinFights/$MAX_FIT_FIGHTS]")
+                            sleep(1200)
+                        } else {
+                            gaveUp = true
+                            Log.w(TAG, "自适应放弃(撑满): 窗口持续被游戏改回，" +
+                                "保持 X 屏幕 ${sw}x${sh} 不再调整（新握手或重启会话可重置）")
+                            sleep(GIVEUP_POLL_MS)
+                        }
+                    } else if (stable && rootAdjusts < MAX_ROOT_ADJUSTS && areaOk) {
+                        // 贴合策略（fix19 起默认；fix28 起须过稳定门+预算+下限）：
+                        // 平移已在上方完成，X 屏幕贴成客户区尺寸，显示层拉伸
+                        // 铺满 —— 老游戏（DirectDraw 固定分辨率）唯一可靠路径，
+                        // wine-9.2 实测一次即收敛。
+                        X11ResolutionLink.applyFit(clientW, clientH)
+                        rootAdjusts++
+                        lastFitAt = now
+                        Log.i(TAG, "自适应(贴合): 窗口 ${game.w}x${game.h}@(${game.x},${game.y}) " +
+                            "边框[$L,$R,$T,$B] → X屏幕=${clientW}x${clientH}" +
+                            " [预算 ${MAX_ROOT_ADJUSTS - rootAdjusts}/${MAX_ROOT_ADJUSTS}]")
+                        sleep(1200)
+                    } else if (inFightWindow && pinFights < MAX_FIT_FIGHTS) {
+                        // fix28 钉满（对抗响应）：贴合后 proton 的全屏管理器立刻
+                        // 把窗口缩回 ~96%（对 root 变化的反应）—— 绝不追着缩
+                        // root，反手把窗口撑回覆盖整个 X 屏（root 不动），游戏
+                        // /DXVK 收 WM_SIZE 后按屏幕分辨率重绘 → 铺满。
+                        c.moveResizeWindow(game.id, -L, -T, sw + L + R, sh + T + B)
+                        pinFights++
+                        Log.i(TAG, "自适应(钉满): 窗口 ${game.w}x${game.h}@(${game.x},${game.y}) " +
+                            "贴合后被改回 → 窗口撑到 X 屏幕 ${sw}x${sh}（root 不动）" +
+                            " [对抗 $pinFights/$MAX_FIT_FIGHTS]")
+                        sleep(1200)
+                    } else if (stable && pinFights < MAX_FIT_FIGHTS) {
+                        // fix28 钉满（兜底）：窗口稳定但不匹配（缩屏预算耗尽/
+                        // 面积下限拦截），X 屏保持不动，窗口撑到 X 屏。
+                        c.moveResizeWindow(game.id, -L, -T, sw + L + R, sh + T + B)
+                        pinFights++
+                        Log.i(TAG, "自适应(钉满): 窗口 ${game.w}x${game.h} 稳定但不匹配 " +
+                            "X 屏幕 ${sw}x${sh}（调整 ${rootAdjusts}/${MAX_ROOT_ADJUSTS}" +
+                            "${if (areaOk) "" else " ·面积下限"}）→ 窗口撑到 X 屏幕" +
+                            " [对抗 $pinFights/$MAX_FIT_FIGHTS]")
+                        sleep(1200)
+                    } else {
+                        // fix28 放手：稳定窗口钉满 4 轮仍被改回，或窗口持续变化
+                        // 且无可用动作 —— 保持握手分辨率，完全不再调整。
+                        gaveUp = true
+                        Log.w(TAG, "自适应放弃: 窗口 ${game.w}x${game.h} 持续不匹配 X 屏幕 " +
+                            "${sw}x${sh}（贴合 ${rootAdjusts}/${MAX_ROOT_ADJUSTS} ·" +
+                            " 钉满对抗 ${pinFights}/${MAX_FIT_FIGHTS}）—— 保持握手分辨率" +
+                            "（新握手或重启会话可重置）")
+                        sleep(GIVEUP_POLL_MS)
+                    }
+                } else {
+                    // rootMatch 但未对齐：上方 moveWindow 已处理，等待生效。
+                    sleep(POLL_MS)
+                }
+
+                // fix28：记录本轮观测（稳定门基准）。记录的是"动作前"读到的
+                // 窗口几何 —— 下一轮读到的若与之相同，即连续两轮一致。
+                lastWinId = game.id; lastW = game.w; lastH = game.h
             } catch (e: Throwable) {
                 // fix16：捕获 Throwable —— 任何 Error（如 OOM）都不再杀死进程，
                 // 退化为关闭连接 + 退避重试。
