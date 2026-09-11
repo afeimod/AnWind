@@ -264,7 +264,16 @@ object TermuxBootstrapInstaller {
     //   拉伸铺满整个桌面窗口——与用户实测有效的 -d 填满效果逐位一致，
     //   对任意窗口化游戏（含 DirectDraw 固定分辨率老游戏）可靠无黑边；
     //   "撑满"降回 -F/--fitwin 显式可选（现代游戏 -f -F 叠加）。
-    private const val EXTRAS_REVISION = 36
+    // rev37 = fix27 状态加固（v3.12-anwind6）：用户实测反馈 rev36 上 -d
+    //   也出现黑块 —— rev35→36 对 -d 零代码差异（脚本/App 侧均未动 -d
+    //   路径），定性为前缀内残留状态：anwind1 时代 -f 曾 reg add 注册表
+    //   虚拟桌面，被 wine 持久化进 user.reg，而 [R3] 对 -d 的清理是一次
+    //   性（.anwind-vd-clean 标记早已盖章），残留永不清理 → 游戏被关进
+    //   缩水 wine 桌面、四周黑块。anwind6：① [R3] 升级为每次启动前清理
+    //   （与 -f [R7] 同款）；② 新增 --x11-diag 诊断命令（extras 修订/
+    //   握手文件/user.reg Explorer 残留/logcat X11 日志，纯读取不启
+    //   wine），后续问题凭输出精确定位、不再盲修。
+    private const val EXTRAS_REVISION = 37
 
     /** 安装状态（Compose 界面订阅渲染）。 */
     sealed class InstallState {

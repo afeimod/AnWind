@@ -235,6 +235,17 @@
 #           固定分辨率老游戏) 可靠无黑边, 与用户实测有效的 -d 填满
 #           效果逐位一致; "撑满" 降回 -F/--fitwin 显式可选 (仅对能
 #           跟随 WM_SIZE 重绘的现代游戏有意义), 需要时 -f -F 叠加。
+#       (4) 设备残留状态加固 + 诊断 (anwind6, 用户实测 rev36 "-d 也
+#           黑块"): rev35→36 对 -d 零代码差异 (脚本/App 侧均未动
+#           -d 路径), 黑块定性为前缀内残留注册表状态 —— anwind1
+#           时代 -f 曾 reg add 注册表虚拟桌面, 被 wine 持久化进
+#           user.reg; 而 [R3] 对 -d 的清理是一次性 (标记盖章后永
+#           不再清), 残留把游戏关进缩水 wine 桌面 → 四周黑块。
+#           anwind6 两动作: ① [R3] 升级为每次启动前清理 (与 -f
+#           [R7] 同款, reg delete 对直出会话零风险); ② 新增
+#           --x11-diag 诊断命令 (extras 修订/握手文件/user.reg
+#           Explorer 残留/logcat X11 日志, 纯读取不启 wine),
+#           后续问题凭输出定位, 不再盲修。
 #       修订史: anwind1 实现"reg add 开注册表桌面"; anwind2 改
 #       "explorer /desktop=shell,WxH 直传参数" —— 两者是同一个
 #       wine 桌面窗口的两种入口, 都带蓝底背景 (用户实测截图确认),
@@ -250,7 +261,7 @@
 APP_PREFIX="${GLR_APP_PREFIX:-/data/data/com.anwind/files/usr}"
 GLIBC_PREFIX="${APP_PREFIX}/glibc"
 GLR_LD=${GLIBC_PREFIX}/lib/ld-linux-aarch64.so.1
-GLR_VERSION="3.12-anwind5"
+GLR_VERSION="3.12-anwind6"
 
 # [R1] 分辨率握手协议文件 (AnWind X11 窗口监听此文件)
 GLR_RES_FILE="${APP_PREFIX}/tmp/.anwind-x11-res"
@@ -474,7 +485,7 @@ glr_zink_setup() {
 
 usage() {
     cat <<'USAGE'
-glibc-runner v3.12-anwind5 —— glibc 启动器 + wine 快捷启动 (startonwine 合并版)
+glibc-runner v3.12-anwind6 —— glibc 启动器 + wine 快捷启动 (startonwine 合并版)
 
 【wine 快捷启动】glibc-runner [选项] <游戏.exe | wine子命令>
  -d[WxH], --desktop[=WxH]  X 屏幕 = 指定分辨率; 窗口化游戏自动贴合
@@ -540,6 +551,9 @@ glibc-runner v3.12-anwind5 —— glibc 启动器 + wine 快捷启动 (startonwi
  -n/--no-linker            不经由 ld.so 直接启动
  -s/--shell                进入 glibc bash (或执行其命令)
  -i/--info                 打印环境信息 (含 wine/前缀/盘符)
+ --x11-diag                X11 黑块排障体检: extras 修订/握手文件/
+                           user.reg Explorer 残留/logcat X11 日志
+                           (纯读取, 不启 wine; 输出发给开发者)
  -t/--teg                  启用 libtermux-exec.so 预加载
  -D/--strace [0-4]         strace 调试 (v3.0 前的 -d)
      --version             显示版本
@@ -582,6 +596,7 @@ USAGE
 
 # ---- 状态变量 ----
 GLR_MODE_INFO=0; GLR_MODE_SHELL=0; GLR_MODE_CONF=0; GLR_MODE_FINDLIB=0
+GLR_MODE_DIAG=0   # anwind6: --x11-diag 黑块排障体检
 GLR_NO_LINKER=0; GLR_TEG=0; GLR_DEBUG=0
 GLR_WINE=0; GLR_SHOWLOG=0; GLR_FORCE=0; GLR_ADMIN=0; GLR_SERVER_DIRECT=0
 GLR_OPT_DESKTOP=""; GLR_OPT_WINE=""; GLR_ENV_WINE="${GLR_WINE_BIN:-}"
@@ -600,7 +615,7 @@ wine_args=(); additional_args=(); resolution=(); GLR_TASKSET=()
 
 # ---- 参数解析 (+ = 不重排, 位置参数后的内容原样透传) ----
 if ! GLR_PARSED=$(getopt -o "+d::a:hwub5gzxnistcv::FD::f::" \
-      --long "desktop::,vd::,virtual-desktop::,force-desktop::,fitwin,args:,help,wow64,unity,ib,f5taskmgr,opengl,dx11,zink,no-linker,info,shell,configure,findlib,teg,strace::,debug,drives::,adddrive:,rmdrive:,kill,wine:,init,fix-prefix,fix-drives,fix-audio,fix-zink,install-prefix,force,winecfg,regedit,taskmgr,version" \
+      --long "desktop::,vd::,virtual-desktop::,force-desktop::,fitwin,args:,help,wow64,unity,ib,f5taskmgr,opengl,dx11,zink,no-linker,info,shell,configure,findlib,x11-diag,teg,strace::,debug,drives::,adddrive:,rmdrive:,kill,wine:,init,fix-prefix,fix-drives,fix-audio,fix-zink,install-prefix,force,winecfg,regedit,taskmgr,version" \
       -n "glibc-runner" -- "$@" 2>&1); then
     echo "$GLR_PARSED" >&2
     usage
@@ -612,6 +627,7 @@ while :; do
     case "$1" in
         -h|--help) usage; exit 0 ;;
         -i|--info) GLR_MODE_INFO=1 ;;
+        --x11-diag) GLR_MODE_DIAG=1 ;;   # anwind6: 握手/注册表/日志体检
         -s|--shell) GLR_MODE_SHELL=1 ;;
         -c|--configure) GLR_MODE_CONF=1 ;;
         -f|--force-desktop)
@@ -717,7 +733,8 @@ done
 # ---- 无任何参数 → 帮助 ----
 if [ "$#" -eq 0 ] && [ "${GLR_WINE}" = "0" ] && [ "${GLR_ADMIN}" = "0" ] \
    && [ "${GLR_MODE_INFO}" = "0" ] && [ "${GLR_MODE_SHELL}" = "0" ] \
-   && [ "${GLR_MODE_CONF}" = "0" ] && [ "${GLR_MODE_FINDLIB}" = "0" ]; then
+   && [ "${GLR_MODE_CONF}" = "0" ] && [ "${GLR_MODE_FINDLIB}" = "0" ] \
+   && [ "${GLR_MODE_DIAG}" = "0" ]; then
     usage
     exit 0
 fi
@@ -857,6 +874,45 @@ if [ "${GLR_MODE_FINDLIB}" = "1" ]; then
     else
         _glr_message "${GLR_MISS} library/libraries missing"
     fi
+    exit 0
+fi
+
+# ---- --x11-diag: X11 握手/注册表/日志体检 (anwind6; 纯读取, 不启 wine) ----
+# 黑块/填不满排障: 一次性输出脚本侧与 App 侧全链路状态 —— extras 修订
+# (确认脚本代际), 握手文件内容与写入时间 (确认 -d/-f 分辨率到达),
+# user.reg 的 Wine\\Explorer 残留 (持久化虚拟桌面 = 缩水+黑块高危源),
+# 以及 logcat 里 X11ResolutionLink/X11FitClient 的应用轨迹 (确认 App
+# 是否收到并执行握手/贴合)。把完整输出发给开发者即可精确定位。
+if [ "${GLR_MODE_DIAG}" = "1" ]; then
+    _diag_wpfx="${WINEPREFIX:-${GLIBC_PREFIX}/opt/prefix}"
+    echo "== glibc-runner X11 诊断 (${GLR_VERSION}) =="
+    echo "[1] extras 修订 : $(cat "${APP_PREFIX}/var/lib/anwind/install-revision" 2>/dev/null || echo '未知(文件缺失)')"
+    echo "[2] 握手文件    : ${GLR_RES_FILE}"
+    if [ -f "${GLR_RES_FILE}" ]; then
+        echo "    内容        : $(cat "${GLR_RES_FILE}" 2>/dev/null)  (mtime: $(date -r "${GLR_RES_FILE}" '+%m-%d %H:%M:%S' 2>/dev/null || echo '?'))"
+    else
+        echo "    (不存在 — 本代脚本从未写入过握手)"
+    fi
+    echo "[3] wine 前缀   : ${_diag_wpfx}"
+    if [ -f "${_diag_wpfx}/user.reg" ]; then
+        if grep -Fq 'Software\\\\Wine\\\\Explorer' "${_diag_wpfx}/user.reg" 2>/dev/null; then
+            echo "    !! user.reg 残留 Wine\\Explorer 持久化 (虚拟桌面/桌面键):"
+            grep -F -A6 'Software\\\\Wine\\\\Explorer' "${_diag_wpfx}/user.reg" 2>/dev/null | sed 's/^/       /'
+            echo "    → 黑块/缩水高危残留; 重跑一次 -d/-f 即自动清除 [R3]/[R7]"
+        else
+            echo "    user.reg 无 Wine\\Explorer 残留 (干净)"
+        fi
+    else
+        echo "    (user.reg 不存在 — 前缀未初始化)"
+    fi
+    echo "[4] App 侧 X11 日志 (最近 240 行中的匹配项):"
+    if command -v logcat >/dev/null 2>&1; then
+        logcat -d -t 240 2>/dev/null | grep -E "X11ResolutionLink|X11FitClient|LorieView|X11Surface" | tail -60 | sed 's/^/       /'
+        echo "       (logcat 采样完毕)"
+    else
+        echo "       (本环境无 logcat 命令)"
+    fi
+    echo "== 诊断结束: 请把以上全部输出发给开发者 =="
     exit 0
 fi
 
@@ -2109,25 +2165,25 @@ if [ "${GLR_WINE}" = "1" ]; then
     # 已应用过(标记在)则零动作。
     glr_repack_selfheal
 
-    # [R3] 纯净游戏画面 (v3.4 fix13): 部分前缀 (Mobox 迁移/winecfg 手动
-    #   勾选"模拟虚拟桌面") 会在注册表持久化虚拟桌面 —— 即使 [R2] 不再
-    #   传 explorer /desktop 参数, 所有程序仍被关进 wine 桌面 (蓝色壁纸+
-    #   任务栏), 游戏窗口居中缩水。-d 启动游戏且未启用 GLR_VD/GLR_FORCE_VD
-    #   时, 先把这份持久化配置清掉, 保证游戏直接在 X 屏幕上全屏启动。
-    #   (fix25: -f 自带每次注册表清理 [R7], 本块让路避免重复)
+    # [R3] 纯净游戏画面 (v3.4 fix13; anwind6 改为每次清理): 部分前缀
+    #   (Mobox 迁移/winecfg 手动勾选"模拟虚拟桌面"/anwind1 时代 -f 的
+    #   reg add 实验残留) 会在注册表持久化虚拟桌面 —— 即使 [R2] 不再
+    #   传 explorer /desktop 参数, 所有程序仍被关进 wine 桌面 (壁纸+
+    #   任务栏), 游戏窗口居中缩水、四周黑块。旧版一次性记账
+    #   (.anwind-vd-clean 标记) 盖章后永不再清 —— 而 anwind1/2 时代的
+    #   -f 实验 (reg add 开桌面) 会把键重新写回, 残留从此无门可除
+    #   (用户 rev36 实测 "-d 也黑块" 的定性根因: rev35→36 对 -d 零
+    #   代码差异, 只能是残留状态)。anwind6 起 -d 与 -f [R7] 同款,
+    #   每次启动前都清 (reg delete 对直出会话零风险; -v/-f 各有专属
+    #   块, 本块仅 -d 直出抵达)。
     if [ -n "${GLR_DESKTOP_GIVEN}" ] && [ "${GLR_VD:-0}" != "1" ] \
        && [ "${GLR_FORCE_VD:-0}" != "1" ] \
        && [ -f "${WINEPREFIX}/system.reg" ]; then
-        _vd_marker="${WINEPREFIX}/anwindmeta/.anwind-vd-clean"   # fix24 [M1]
-        if [ ! -f "${_vd_marker}" ]; then
-            "${GLR_LD}" "${GLR_BOX64}" "${GLR_WINE_BIN}" reg delete \
-                "HKCU\\Software\\Wine\\Explorer" /v Desktop /f >/dev/null 2>&1
-            "${GLR_LD}" "${GLR_BOX64}" "${GLR_WINE_BIN}" reg delete \
-                "HKCU\\Software\\Wine\\Explorer\\Desktops" /f >/dev/null 2>&1
-            mkdir -p "$(dirname "${_vd_marker}")" 2>/dev/null
-            touch "${_vd_marker}" 2>/dev/null
-            echo " [R3] 已清除前缀内持久化虚拟桌面配置 (纯游戏画面)"
-        fi
+        "${GLR_LD}" "${GLR_BOX64}" "${GLR_WINE_BIN}" reg delete \
+            "HKCU\\Software\\Wine\\Explorer" /v Desktop /f >/dev/null 2>&1
+        "${GLR_LD}" "${GLR_BOX64}" "${GLR_WINE_BIN}" reg delete \
+            "HKCU\\Software\\Wine\\Explorer\\Desktops" /f >/dev/null 2>&1
+        echo " [R3] 已清除前缀内持久化虚拟桌面配置 (纯游戏画面, 每次清理)"
     fi
 
     # fix25 [R7] (v3.12-anwind3 修订): -f 去 wine 蓝色背景桌面 =
