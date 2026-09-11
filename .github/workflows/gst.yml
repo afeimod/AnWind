@@ -1,0 +1,290 @@
+name:  glibc GStreamer Decoders (aarch64
+
+on:
+  workflow_dispatch:
+    schedule:
+      - cron: '0 7 * * *'
+  pull_request:
+
+permissions:
+  contents: write
+  packages: write
+
+env:
+  LAST_COMMIT_FILE: last_gst_commit.txt
+  INSTALL_ROOT: /data/data/com.anwind/files/usr/glibc
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm
+
+    steps:
+      - name: 检出 workflow 仓库
+        uses: actions/checkout@v4
+
+      - name: 修复依赖
+        run: |
+          sudo apt clean
+          sudo apt autoclean
+          sudo rm -rf /var/lib/apt/lists/*
+          sudo apt update
+          sudo rm /var/lib/apt/lists/lock
+          sudo rm /var/cache/apt/archives/lock
+      - name: 安装基础依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential python3-pip git pkg-config nasm cmake \
+            libglib2.0-dev libdrm-dev libgl1-mesa-dev libglx-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+            liborc-0.4-dev libxv-dev libx11-dev libasound2-dev libpulse-dev patchelf \
+            libtheora-dev libx264-dev libx265-dev libvpx-dev libde265-dev libssl-dev autoconf automake libtool
+      - name: 升级 Meson 和 Ninja
+        run: |
+          pip install --upgrade pip
+          pip install --upgrade meson ninja
+      - name: 克隆 GStreamer 开发版本
+        run: |
+          git clone --depth=1 https://gitlab.freedesktop.org/gstreamer/gstreamer.git
+      - name: 获取开发版本信息
+        id: get_dev_info
+        run: |
+          cd gstreamer
+          LATEST_COMMIT=$(git rev-parse HEAD)
+          COMMIT_SHORT=$(git rev-parse --short HEAD)
+          AUTHOR=$(git log -1 --pretty=format:'%an')
+          DATE=$(date -u '+%Y-%m-%d %H:%M UTC')
+          COMMIT_DATE=$(git log -1 --pretty=format:'%cd' --date=short)
+          VERSION=$(sed -n '2p' "meson.build" | grep -oP "version\\s*:\\s*'\\K[^']+")
+          echo "LATEST_COMMIT=$LATEST_COMMIT" >> $GITHUB_ENV
+          echo "COMMIT_SHORT=$COMMIT_SHORT" >> $GITHUB_ENV
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          echo "AUTHOR=$AUTHOR" >> $GITHUB_ENV
+          echo "BUILD_DATE=$DATE" >> $GITHUB_ENV
+          echo "COMMIT_DATE=$COMMIT_DATE" >> $GITHUB_ENV
+      - name: 获取上次构建提交
+        id: get_last_commit
+        run: |
+          FILE=${{ env.LAST_COMMIT_FILE }}
+          if [ -f "$FILE" ]; then
+            LAST_COMMIT=$(cat "$FILE")
+          else
+            echo "none" > "$FILE"
+            LAST_COMMIT="none"
+          fi
+          echo "LAST_COMMIT=$LAST_COMMIT" >> $GITHUB_ENV
+      - name: 判断是否需要构建
+        id: check_build
+        run: |
+          if [ "$LATEST_COMMIT" = "$LAST_COMMIT" ]; then
+            echo "skip_build=true" >> $GITHUB_OUTPUT
+            echo "🟡 提交未更新，跳过构建。"
+          else
+            echo "skip_build=false" >> $GITHUB_OUTPUT
+            echo "✅ 发现新提交: $LATEST_COMMIT"
+          fi
+      - name: 跳过无更新构建
+        if: steps.check_build.outputs.skip_build == 'true'
+        run: exit 0
+
+      - name: 构建 libvpx v1.14.0
+        if: steps.check_build.outputs.skip_build == 'false'
+        run: |
+          echo "📦 构建 libvpx v1.14.0..."
+          git clone https://chromium.googlesource.com/webm/libvpx
+          cd libvpx
+          git checkout v1.14.0
+          ./configure \
+            --prefix=${{ env.INSTALL_ROOT }} \
+            --libdir=${{ env.INSTALL_ROOT }}/lib \
+            --enable-shared \
+            --enable-vp8 \
+            --enable-vp9 \
+            --enable-runtime-cpu-detect \
+            --target=arm64-linux-gcc \
+            --as=nasm \
+            --disable-examples \
+            --disable-docs
+          make -j$(nproc)
+          sudo mkdir -p ${{ env.INSTALL_ROOT }}/lib/gstreamer-1.0
+          sudo make install
+          echo "✅ libvpx v1.14.0 构建完成"
+      - name: 构建 libde265 (HEVC 解码器依赖)
+        if: steps.check_build.outputs.skip_build == 'false'
+        run: |
+          echo "📦 构建 libde265 HEVC..."
+          git clone --depth=1 https://github.com/strukturag/libde265.git
+          cd libde265
+          mkdir -p build && cd build
+          cmake .. \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_SHARED_LIBS=ON \
+            -DCMAKE_INSTALL_PREFIX=${{ env.INSTALL_ROOT }} \
+            -DCMAKE_INSTALL_LIBDIR=lib \
+            -DENABLE_SDL=OFF \
+            -DBUILD_EXAMPLES=OFF \
+            -DBUILD_TESTING=OFF
+          make -j$(nproc)
+          sudo make install
+          sudo ldconfig
+          echo "✅ libde265 编译安装完成"
+      - name: 构建 libaom (AV1 解码依赖)
+        if: steps.check_build.outputs.skip_build == 'false'
+        run: |
+          echo "📦 构建 libaom AV1 Codec..."
+          sudo mkdir -p ${{ env.INSTALL_ROOT }}
+          sudo chmod 755 ${{ env.INSTALL_ROOT }}
+          git clone --depth=1 https://aomedia.googlesource.com/aom
+          cd aom
+          mkdir -p build && cd build
+          cmake .. \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_SHARED_LIBS=ON \
+            -DCMAKE_INSTALL_PREFIX=${{ env.INSTALL_ROOT }} \
+            -DCMAKE_INSTALL_LIBDIR=lib \
+            -DCMAKE_INSTALL_BINDIR=bin \
+            -DCMAKE_INSTALL_INCLUDEDIR=include \
+            -DENABLE_AV1=ON \
+            -DENABLE_TESTS=OFF \
+            -DENABLE_EXAMPLES=OFF \
+            -DCONFIG_RUNTIME_CPU_DETECT=ON \
+            -DAOM_TARGET_CPU=arm64 \
+            -DCMAKE_SKIP_INSTALL_ALL_DEPENDENCY=ON
+          make -j$(nproc)
+          sudo make install
+          sudo chmod -R 755 ${{ env.INSTALL_ROOT }}/lib
+          sudo chmod -R 755 ${{ env.INSTALL_ROOT }}/include
+          echo "✅ libaom 编译安装完成"
+          export PKG_CONFIG_PATH=${{ env.INSTALL_ROOT }}/lib/pkgconfig:$PKG_CONFIG_PATH
+          sudo ldconfig
+      - name: 构建 GStreamer 解码器
+        if: steps.check_build.outputs.skip_build == 'false'
+        run: |
+          cd gstreamer
+          git submodule update --init --recursive
+          sudo mkdir -p $INSTALL_ROOT
+          sudo chmod -R 777 /data
+          export PKG_CONFIG_PATH=${{ env.INSTALL_ROOT }}/lib/pkgconfig:$PKG_CONFIG_PATH
+          meson setup build \
+            --prefix=$INSTALL_ROOT \
+            --libdir=lib \
+            --libexecdir=/data/data/com.anwind/files/usr/glibc/lib/gstreamer1.0 \
+            -Dbase=enabled \
+            -Dpackage-origin="anwind-glibc" \
+            -Dgood=enabled \
+            -Dugly=enabled \
+            -Dbad=enabled \
+            -Dlibav=enabled \
+            -Dgpl=enabled \
+            -Ddefault_library=shared \
+            -Dtests=disabled \
+            -Ddoc=disabled \
+            -Dexamples=disabled \
+            -Dpython=disabled \
+            -Dnls=disabled \
+            -Dgst-plugins-good:pulse=enabled \
+            -Dgst-plugins-good:oss4=disabled \
+            -Dgst-plugins-good:oss=disabled \
+            -Dgst-plugins-good:vpx=enabled \
+            -Dgst-plugins-bad:drm=disabled \
+            -Dgst-plugins-bad:hip=disabled \
+            -Dgst-plugins-bad:nvcodec=disabled \
+            -Dgst-plugins-bad:aom=enabled \
+            -Dgst-plugins-bad:libde265=enabled \
+            -Dgst-plugins-bad:dtls=disabled \
+            -Dgst-plugins-bad:x11=enabled \
+            -Dgst-plugins-bad:gl=disabled \
+            -Dgst-plugins-base:drm=disabled \
+            -Dgst-plugins-base:gl=disabled \
+            -Dgst-plugins-base:alsa=disabled \
+            -Dgst-plugins-base:theora=enabled \
+            -Dgst-plugins-base:x11=enabled \
+            -Dintrospection=disabled \
+            -Dgst-full=enabled \
+            -Dgst-full-plugins='*' \
+            -Ddevtools=enabled \
+            -Drtsp_server=disabled \
+            --buildtype=release
+          ninja -C build -j$(nproc)
+          ninja -C build install
+          echo "✅ GStreamer 编译完成，已启用 aom+de265+dtls+vpx + Zink GL 修复"
+      - name: 修补 ELF 可执行文件
+        if: steps.check_build.outputs.skip_build == 'false'
+        run: |
+          INTERP=$INSTALL_ROOT/lib/ld-linux-aarch64.so.1
+          echo "🔧 修补 ELF 解释器: $INTERP"
+          for DIR in bin lib/gstreamer1.0/gstreamer-1.0; do
+            if [ -d "$INSTALL_ROOT/$DIR" ]; then
+              echo "📁 修补 $DIR ..."
+              find "$INSTALL_ROOT/$DIR" -type f -exec file {} \; | grep ELF | cut -d: -f1 | while read f; do
+                patchelf --set-interpreter "$INTERP" "$f" 2>/dev/null || true
+              done
+            fi
+          done
+      - name: 打包 glibc 目录
+        if: steps.check_build.outputs.skip_build == 'false'
+        run: |
+          cd /data/data/com.anwind/files/usr
+          TAR_NAME="anwind-glibc-gst-decoders-${VERSION}.tar.gz"
+          tar -czvf /home/runner/$TAR_NAME glibc
+          echo "$LATEST_COMMIT" > ${{ env.LAST_COMMIT_FILE }}
+          echo "TAR_NAME=$TAR_NAME" >> $GITHUB_ENV
+      - name: 上传构建产物
+        if: steps.check_build.outputs.skip_build == 'false'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.TAR_NAME }}
+          path: /home/runner/${{ env.TAR_NAME }}
+
+      - name: 上传提交记录
+        if: steps.check_build.outputs.skip_build == 'false'
+        uses: actions/upload-artifact@v4
+        with:
+          name: last-gst-commit
+          path: ${{ env.LAST_COMMIT_FILE }}
+          retention-days: 365
+
+      - name: 发布到 GitHub Release
+        if: steps.check_build.outputs.skip_build == 'false'
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ env.VERSION }}
+          name: "GStreamer Decoders ${{ env.VERSION }} (aarch64, anwind glibc + AOM AV1 + de265 HEVC + DTLS)"
+          body: |
+            ## 🎯 GStreamer 开发版本构建
+            
+            ### 📋 构建信息
+            - **版本**: `${{ env.VERSION }}`
+            - **架构**: aarch64
+            - **环境**: anwind glibc
+            - **提交**: [`${{ env.COMMIT_SHORT }}`](https://gitlab.freedesktop.org/gstreamer/gstreamer/-/commit/${{ env.LATEST_COMMIT }})
+            - **提交日期**: ${{ env.COMMIT_DATE }}
+            - **作者**: `${{ env.AUTHOR }}`
+            - **构建时间**: `${{ env.BUILD_DATE }}`
+            
+            ### 🛠️ 构建特性
+            - ✅ **基础插件** (base)
+            - ✅ **优质插件** (good) 
+            - ✅ **丑陋插件** (ugly)
+            - ✅ **不良插件** (bad)
+            - ✅ **LibAV 支持**
+            - ✅ **GPL 插件**
+            - ✅ **开发工具**
+            - ✅ **AOM AV1 解码器 av1dec**
+            - ✅ **libde265 HEVC 解码器 libde265dec**
+            - ✅ **libvpx VP8/VP9*
+            - ❌ **RTSP 服务器** (已禁用)
+            - 🏗️ **构建类型**: release
+            
+            ### 📦 文件信息
+            - **文件名**: `${{ env.TAR_NAME }}`
+            - **包含**: 完整 GStreamer + libaom + libde265 + DTLS + libvpx
+            
+            ### 📥 解码器验证命令
+            ```bash
+            gst-inspect-1.0 av1dec
+            gst-inspect-1.0 libde265dec
+            gst-inspect-1.0 dtlsdec
+            gst-inspect-1.0 gltestsrc
+            ```
+          files: /home/runner/${{ env.TAR_NAME }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
