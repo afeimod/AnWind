@@ -62,18 +62,9 @@ import androidx.preference.PreferenceFragmentCompat;
 import androidx.preference.PreferenceScreen;
 import androidx.preference.SeekBarPreference;
 
-import com.termux.x11.controller.InputControllerActivity;
-import com.termux.x11.controller.container.Container;
-import com.termux.x11.controller.container.Shortcut;
-import com.termux.x11.controller.contentdialog.ContentDialog;
-import com.termux.x11.controller.core.Callback;
-import com.termux.x11.controller.core.DownloadProgressDialog;
-import com.termux.x11.controller.inputcontrols.ControlsProfile;
-import com.termux.x11.controller.inputcontrols.InputControlsManager;
-import com.termux.x11.controller.widget.InputControlsView;
-import com.termux.x11.controller.widget.TouchpadView;
-import com.termux.x11.controller.winhandler.ProcessInfo;
-import com.termux.x11.controller.winhandler.WinHandler;
+import com.winlator.cmod.core.Callback;
+import com.winlator.cmod.winhandler.ProcessInfo;
+import com.winlator.cmod.winhandler.WinHandler;
 import com.termux.x11.utils.KeyInterceptor;
 import com.termux.x11.utils.SamsungDexUtils;
 import com.termux.x11.utils.TermuxX11ExtraKeys;
@@ -96,21 +87,12 @@ public class LoriePreferences extends AppCompatActivity implements PreferenceFra
 
     public static int OPEN_FILE_REQUEST_CODE = 102;
     static final String SHOW_IME_WITH_HARD_KEYBOARD = "show_ime_with_hard_keyboard";
-    protected LorieView xServer;
     protected int orientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT;
 
-    //input controller
-    protected InputControlsManager inputControlsManager;
-    protected InputControlsView inputControlsView;
-    protected TouchpadView touchpadView;
-    protected Runnable editInputControlsCallback;
-    protected Shortcut shortcut;
-    protected DownloadProgressDialog preloaderDialog;
+    // AnWind v2.23：Winlator 残留输入层字段已清除（inputcontrols/touchpad/
+    // Container/Shortcut 等改由 :winlator 模块 com.winlator.cmod 提供，
+    // 经 WinlatorSession 使用；此处仅保留 openFileCallback 与 WinHandler）。
     protected Callback<Uri> openFileCallback;
-    protected float globalCursorSpeed = 1.0f;
-    protected ControlsProfile profile;
-    protected String controlsProfile;
-    protected Container container;
     public static boolean mLorieViewConnected = false;
 
     public List<ProcessInfo> getTermuxProcessorInfo(String tag) {
@@ -478,8 +460,7 @@ public class LoriePreferences extends AppCompatActivity implements PreferenceFra
                 setVisible("stop_desktop", true);
                 setEnabled("open_keyboard", true);
                 setVisible("open_keyboard", true);
-                setEnabled("select_controller", true);
-                setVisible("select_controller", true);
+                setVisible("select_controller", false);
                 setVisible("open_progress_manager", true);
                 setVisible("open_progress_manager", true);
             } else {
@@ -489,7 +470,6 @@ public class LoriePreferences extends AppCompatActivity implements PreferenceFra
                 setVisible("stop_desktop", false);
                 setEnabled("open_keyboard", false);
                 setVisible("open_keyboard", false);
-                setEnabled("select_controller", false);
                 setVisible("select_controller", false);
                 setVisible("open_progress_manager", false);
                 setVisible("open_progress_manager", false);
@@ -543,9 +523,6 @@ public class LoriePreferences extends AppCompatActivity implements PreferenceFra
                         loriePreferences.termuxActivityListener.openSoftwareKeyboard();
                     }
                 }, 500);
-            }
-            if (p.getKey().contentEquals("select_controller")) {
-                loriePreferences.showInputControlsDialog();
             }
             if (p.getKey().contentEquals("open_progress_manager")) {
                 loriePreferences.termuxActivityListener.showProcessManager();
@@ -1136,11 +1113,6 @@ public class LoriePreferences extends AppCompatActivity implements PreferenceFra
         }
     }
 
-    //inout control
-    public InputControlsView getInputControlsView() {
-        return inputControlsView;
-    }
-
     protected WinHandler winHandler;
 
     public WinHandler getWinHandler() {
@@ -1149,109 +1121,6 @@ public class LoriePreferences extends AppCompatActivity implements PreferenceFra
 
     public void setOpenFileCallback(Callback<Uri> openFileCallback) {
         this.openFileCallback = openFileCallback;
-    }
-
-    public String getControlsProfile() {
-        return controlsProfile;
-    }
-
-    public Shortcut getShortcut() {
-        return shortcut;
-    }
-
-    public DownloadProgressDialog getPreloaderDialog() {
-        return preloaderDialog;
-    }
-
-    public void showInputControlsDialog() {
-        final ContentDialog dialog = new ContentDialog(MainActivity.getInstance(), R.layout.input_controls_dialog);
-        dialog.setTitle(R.string.input_controls);
-        dialog.setIcon(R.drawable.icon_input_controls);
-
-        final Spinner sProfile = dialog.findViewById(R.id.SProfile);
-        Runnable loadProfileSpinner = () -> {
-            ArrayList<ControlsProfile> profiles = inputControlsManager.getProfiles();
-            ArrayList<String> profileItems = new ArrayList<>();
-            int selectedPosition = 0;
-            profileItems.add("-- " + getString(R.string.disabled) + " --");
-            for (int i = 0; i < profiles.size(); i++) {
-                ControlsProfile profile = profiles.get(i);
-                if (profile == inputControlsView.getProfile()) selectedPosition = i + 1;
-                profileItems.add(profile.getName());
-            }
-
-            sProfile.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, profileItems));
-            sProfile.setSelection(selectedPosition);
-        };
-        loadProfileSpinner.run();
-
-        final CheckBox cbLockCursor = dialog.findViewById(R.id.CBLockCursor);
-        cbLockCursor.setChecked(xServer.cursorLocker.isEnabled());
-
-        final CheckBox cbEnableTouchScreen = dialog.findViewById(R.id.CBTouchScreen);
-
-        final CheckBox cbShowTouchscreenControls = dialog.findViewById(R.id.CBShowTouchscreenControls);
-        cbShowTouchscreenControls.setChecked(inputControlsView.isShowTouchscreenControls());
-
-        dialog.findViewById(R.id.BTSettings).setOnClickListener((v) -> {
-            int position = sProfile.getSelectedItemPosition();
-            Intent intent = new Intent(this, InputControllerActivity.class);
-            intent.putExtra("edit_input_controls", true);
-            intent.putExtra("selected_profile_id", position > 0 ? inputControlsManager.getProfiles().get(position - 1).id : 0);
-            editInputControlsCallback = () -> {
-                hideInputControls();
-                inputControlsManager.loadProfiles(true);
-                loadProfileSpinner.run();
-            };
-            startActivityForResult(intent, InputControllerActivity.EDIT_INPUT_CONTROLS_REQUEST_CODE);
-        });
-
-        dialog.setOnConfirmCallback(() -> {
-            if (termuxActivityListener == null) {
-                return;
-            }
-            xServer.cursorLocker.setEnabled(cbLockCursor.isChecked() ? true : false);
-            inputControlsView.setShowTouchscreenControls(cbShowTouchscreenControls.isChecked());
-            int position = sProfile.getSelectedItemPosition();
-            if (position > 0) {
-                if (cbEnableTouchScreen.isChecked()) {
-                    touchpadView.setTouchMode(TouchpadView.TouchMode.TOUCH_SCREEN);
-                } else {
-                    touchpadView.setTouchMode(TouchpadView.TouchMode.TRACK_PAD);
-                }
-                showInputControls(inputControlsManager.getProfiles().get(position - 1));
-            } else {
-                hideInputControls();
-            }
-        });
-
-        dialog.show();
-    }
-
-    protected void showInputControls(ControlsProfile controlsProfile) {
-        inputControlsView.setVisibility(View.VISIBLE);
-        inputControlsView.requestFocus();
-        inputControlsView.setProfile(controlsProfile);
-
-        if (profile != null) {
-            touchpadView.setSensitivity(profile.getCursorSpeed() * globalCursorSpeed);
-        }
-        touchpadView.setVisibility(View.VISIBLE);
-
-        inputControlsView.invalidate();
-        if (termuxActivityListener != null) {
-            termuxActivityListener.onX11PreferenceSwitchChange(false);
-        }
-    }
-
-    public void hideInputControls() {
-        inputControlsView.setShowTouchscreenControls(true);
-        inputControlsView.setVisibility(View.GONE);
-        inputControlsView.setProfile(null);
-
-        touchpadView.setVisibility(View.GONE);
-
-        inputControlsView.invalidate();
     }
 
     public void prepareToExit() {

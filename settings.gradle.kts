@@ -26,3 +26,6 @@ include(":app")
 // 及其框架隐藏 API 编译桩（compileOnly）
 include(":termux-x11-stub")
 include(":termux-x11")
+// v2.23：Winlator Cmod 7.1.4x 引擎模块（容器/Wine/Box64/SysVSHM/ALSA），
+// 显示端不使用其自带 XServer —— 由 :app 的 X11WindowController（lorie）承担
+include(":winlator")

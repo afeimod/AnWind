@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Winlator Cmod 引擎模块（AnWind 集成版）：纯引擎库，无组件声明。
+     显示端 / 进程保活等由宿主 :app 提供（X11WindowController / X11KeepAliveService）。 -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" />

@@ -23,6 +23,11 @@ AnWind 是一个用 **Kotlin + Jetpack Compose** 编写的 Android 桌面启动�
 - **9+1 个内置应用** — 浏览器、文件资源管理器、设置、记事本、计算器、系统信息、图片查看器、时钟、终端（真实 Termux + 简易终端并存）
 - **可作为默认 Launcher** — 在 Manifest 中注册了 `HOME` category，可选择设为系统桌面
 - **持久化存储** — 使用 Room 数据库保存快捷方式/书签/历史记录，DataStore 保存偏好设置
+- **Winlator 容器（v2.23 新增）** — 完整集成 [Winlator Cmod 7.1.4x](https://github.com/Pipetto-crypto/winlator)
+  引擎（bionic Wine 9 + Box64/FEXCore）：桌面内创建容器（全套 Winlator 设置：
+  图形驱动/DXVK/Windows 组件/盘符/环境变量/CPU 亲和/Box64 预设…），一键运行
+  exe 游戏，**画面显示在 AnWind 自带的 X11 浮动窗口**（替代 Winlator 自带
+  XServer 显示栈），支持 exe 桌面快捷方式。详见 [docs/WINLATOR.md](docs/WINLATOR.md)
 
 ### 设为默认 Launcher（可选）
 

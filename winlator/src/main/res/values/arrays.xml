@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 与 Winlator Cmod 原版 values/arrays.xml 对齐（本模块引用的子集） -->
+    <string-array name="wine_entries">
+        <item>proton-9.0-x86_64</item>
+        <item>proton-9.0-arm64ec</item>
+    </string-array>
+    <string-array name="fexcore_preset_entries">
+        <item>Fastest</item>
+        <item>Fast</item>
+        <item>Slow</item>
+        <item>Slowest</item>
+    </string-array>
+    <string-array name="x87mode_preset_entries">
+        <item>Fast</item>
+        <item>Slow</item>
+    </string-array>
+    <string-array name="multiblock_values">
+        <item>Enabled</item>
+        <item>Disabled</item>
+    </string-array>
+    <string-array name="fexcore_version_entries">
+        <item>2505</item>
+        <item>2507</item>
+    </string-array>
+    <string-array name="emulator_entries">
+        <item>FEXCore</item>
+        <item>Box64</item>
+    </string-array>
+</resources>

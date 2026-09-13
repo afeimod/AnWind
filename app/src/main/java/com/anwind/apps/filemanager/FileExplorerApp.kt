@@ -131,6 +131,8 @@ private fun FileExplorerContent(scope: WindowContentScope) {
     // v2.19 云音乐选择模式：image = 背景图片；dir = 本地扫描目录（选定当前所在文件夹）
     val imagePick = pickMode == "image"
     val dirPick = pickMode == "dir"
+    // v2.23 Winlator 容器：exe 选择模式（回传 .exe/.msi/.bat/.lnk 给容器页）
+    val exePick = pickMode == "exe"
     if (wallpaperVideoOnlyPick) {
         // v2.18 桌面视频壁纸：直达 Movies → DCIM → Download → 内部存储根
         LaunchedEffect(Unit) {
@@ -181,6 +183,13 @@ private fun FileExplorerContent(scope: WindowContentScope) {
         LaunchedEffect(Unit) {
             val pics = File(storageRoot, "Pictures")
             currentRealDir = if (pics.exists() && pics.isDirectory) pics else storageRoot
+            isThisPcHome = false
+        }
+    } else if (exePick) {
+        // v2.23 Winlator exe 选择：直达 Download（不存在则内部存储根）
+        LaunchedEffect(Unit) {
+            val dl = File(storageRoot, "Download")
+            currentRealDir = if (dl.exists() && dl.isDirectory) dl else storageRoot
             isThisPcHome = false
         }
     } else if (dirPick) {
@@ -466,7 +475,7 @@ private fun FileExplorerContent(scope: WindowContentScope) {
 
         // ===== v2.14 壁纸选择模式横幅（v2.17：兼容锁屏壁纸/锁屏视频壁纸；
         //       v2.19：新增云音乐 image/dir 选择模式） =====
-        if (wallpaperPick || lockWallpaperPick || lockWallpaperVideoPick || textPick || mediaPick || imagePick || dirPick) {
+        if (wallpaperPick || lockWallpaperPick || lockWallpaperVideoPick || textPick || mediaPick || imagePick || dirPick || exePick) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -484,6 +493,7 @@ private fun FileExplorerContent(scope: WindowContentScope) {
                         textPick -> Icons.Default.Description
                         imagePick -> Icons.Default.Image
                         dirPick -> Icons.Default.FolderOpen
+                        exePick -> Icons.Default.SportsEsports
                         else -> Icons.Default.PlayCircle
                     }, null,
                     tint = theme.accentColor,
@@ -499,6 +509,7 @@ private fun FileExplorerContent(scope: WindowContentScope) {
                         textPick -> "点击任意文本文件，在记事本中打开"
                         imagePick -> "点击任意图片文件，选为播放器自定义背景"
                         dirPick -> "浏览到目标文件夹后，点右侧「选定此目录」回传给云音乐"
+                        exePick -> "点击任意 exe/msi/bat 文件，作为 Winlator 容器游戏目标"
                         else -> "点击音频或视频文件进行播放"
                     },
                     color = if (theme.isDark) Color.White else Color.Black,
@@ -612,6 +623,9 @@ private fun FileExplorerContent(scope: WindowContentScope) {
                         } else if (mediaPick) {
                             if (isMediaExtension(file.extension)) pickAndClose(file)
                             else Toast.makeText(context, "请选择音频或视频文件", Toast.LENGTH_SHORT).show()
+                        } else if (exePick) {
+                            if (isExeExtension(file.extension)) pickAndClose(file)
+                            else Toast.makeText(context, "请选择 exe/msi/bat/lnk 文件", Toast.LENGTH_SHORT).show()
                         } else openRealFile(context, file)
                     }
                 } else {
@@ -636,6 +650,9 @@ private fun FileExplorerContent(scope: WindowContentScope) {
                         } else if (mediaPick) {
                             if (isMediaExtension(file.extension)) pickAndClose(file)
                             else Toast.makeText(context, "请选择音频或视频文件", Toast.LENGTH_SHORT).show()
+                        } else if (exePick) {
+                            if (isExeExtension(file.extension)) pickAndClose(file)
+                            else Toast.makeText(context, "请选择 exe/msi/bat/lnk 文件", Toast.LENGTH_SHORT).show()
                         } else openRealFile(context, file)
                     }
                 }
@@ -1107,6 +1124,10 @@ private fun isImageExtension(ext: String): Boolean =
 /** 视频文件扩展名（v2.17：锁屏视频壁纸选择模式过滤用） */
 private fun isVideoExtension(ext: String): Boolean =
     ext.lowercase() in setOf("mp4", "mkv", "avi", "mov", "webm", "3gp", "m4v", "ts")
+
+/** 可执行文件扩展名（v2.23：Winlator 容器 exe 选择模式过滤用） */
+fun isExeExtension(ext: String): Boolean =
+    ext.lowercase() in setOf("exe", "msi", "bat", "lnk")
 
 /** 文本文件扩展名（v2.14.10：记事本「打开」选择模式过滤用） */
 private fun isTextExtension(ext: String): Boolean = ext.lowercase() in setOf(

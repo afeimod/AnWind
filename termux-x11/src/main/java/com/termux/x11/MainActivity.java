@@ -65,13 +65,7 @@ import androidx.annotation.NonNull;
 import androidx.core.math.MathUtils;
 import androidx.viewpager.widget.ViewPager;
 
-import com.termux.x11.controller.container.Container;
-import com.termux.x11.controller.container.Shortcut;
-import com.termux.x11.controller.inputcontrols.InputControlsManager;
-import com.termux.x11.controller.widget.InputControlsView;
-import com.termux.x11.controller.widget.TouchpadView;
-import com.termux.x11.controller.winhandler.TaskManagerDialog;
-import com.termux.x11.controller.winhandler.WinHandler;
+import com.winlator.cmod.winhandler.WinHandler;
 import com.termux.x11.input.InputEventSender;
 import com.termux.x11.input.InputStub;
 import com.termux.x11.input.TouchInputHandler;
@@ -81,7 +75,6 @@ import com.termux.x11.utils.SamsungDexUtils;
 import com.termux.x11.utils.TermuxX11ExtraKeys;
 import com.termux.x11.utils.X11ToolbarViewPager;
 
-import java.io.File;
 import java.util.Map;
 import java.util.concurrent.Executors;
 
@@ -166,16 +159,9 @@ public class MainActivity extends LoriePreferences {
 
     @Override
     public boolean dispatchTouchEvent(MotionEvent ev) {
-        // AnWind（v2.22.3 fix10）：虚拟手柄触摸路由 —— 原本本 fork 的
-        // MainActivity 从未把触摸事件交给 InputControlsView（Winlator
-        // 上游在 dispatchTouchEvent 里路由），导致全屏模式下点了屏幕上
-        // 的手柄按钮也没反应。手柄层可见且有 profile 时优先进入手柄层，
-        // 未命中的按钮区域回落到 touchpad（触控板鼠标）。
-        if (inputControlsView != null
-            && inputControlsView.getVisibility() == View.VISIBLE
-            && inputControlsView.getProfile() != null
-            && inputControlsView.handleTouchEvent(ev))
-            return true;
+        // AnWind v2.23：Winlator 残留手柄层（InputControlsView）已随
+        // 旧 controller 包整体移除 —— 触摸直接交给宿主默认路由
+        // （X11 输入由 LorieView/TouchInputHandler 与桌面虚拟手柄承担）。
         return super.dispatchTouchEvent(ev);
     }
 
@@ -330,36 +316,13 @@ public class MainActivity extends LoriePreferences {
     }
 
     private void setupInputController() {
-        xServer = getLorieView();
-        globalCursorSpeed = 1.0f;
-        touchpadView = new TouchpadView(this, xServer);
-        touchpadView.setSensitivity(globalCursorSpeed);
-        touchpadView.setVisibility(View.GONE);
-//        touchpadView.setBackground(getDrawable(R.drawable.touchpad_background));
-        frm.addView(touchpadView);
-
-        inputControlsView = new InputControlsView(this);
-        SharedPreferences preferences = PreferenceManager.getDefaultSharedPreferences(getBaseContext());
-        inputControlsView.setOverlayOpacity(preferences.getFloat("overlay_opacity", InputControlsView.DEFAULT_OVERLAY_OPACITY));
-        inputControlsView.setTouchpadView(touchpadView);
-        inputControlsView.setXServer(xServer);
-        inputControlsView.setVisibility(View.GONE);
-        frm.addView(inputControlsView);
-        inputControlsManager = new InputControlsManager(this);
-
-        // AnWind（v2.22.3 fix10）：接入 X11InputHub —— 与浮动窗口共享
-        // 同一个 WinHandler（UDP 7947 单实例，避免两处抢占端口互相踢）。
-        // 全屏 Activity 退出不再 stop()，手柄链路随 app 进程存活。
+        // AnWind v2.23：Winlator 残留输入初始化（touchpad/InputControlsView/
+        // Container/Shortcut）已随旧 controller 包整体移除。
+        // WinHandler 由 X11InputHub 单例提供（浮动窗口/全屏/Winlator 容器
+        // 会话共享 UDP 7947 通道），接到 LorieView 供外设事件消费。
         X11InputHub hub = X11InputHub.get(getApplicationContext());
         winHandler = hub.getWinHandler();
-        xServer.setWinHandler(winHandler);
-        hub.setActiveControlsView(inputControlsView);
-
-        String shortcutPath = getIntent().getStringExtra("shortcut_path");
-        container = new Container(0);
-        if (shortcutPath != null && !shortcutPath.isEmpty())
-            shortcut = new Shortcut(container, new File(shortcutPath));
-
+        getLorieView().setWinHandler(winHandler);
     }
 
     //Register the needed events to handle stylus as left, middle and right click
@@ -1037,7 +1000,10 @@ public class MainActivity extends LoriePreferences {
     }
 
     public void showProcessManagerDialog() {
-        (new TaskManagerDialog(this)).show();
+        // AnWind v2.23：Winlator 残留 TaskManagerDialog 已移除
+        //（Winlator 容器的进程管理改由 WinlatorSession 提供）。
+        android.widget.Toast.makeText(this,
+            "进程管理已迁移至 Winlator 容器", android.widget.Toast.LENGTH_SHORT).show();
     }
 
     //whether view include (x,y)

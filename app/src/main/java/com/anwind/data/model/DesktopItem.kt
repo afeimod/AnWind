@@ -3,9 +3,9 @@ package com.anwind.data.model
 import com.anwind.core.window.LaunchMode
 
 /**
- * 桌面项类型：内置应用 / 自定义快捷方式
+ * 桌面项类型：内置应用 / 自定义快捷方式 / Winlator 容器游戏（v2.23）
  */
-enum class DesktopItemType { BUILTIN_APP, SHORTCUT_URL, SHORTCUT_FILE, SHORTCUT_APP }
+enum class DesktopItemType { BUILTIN_APP, SHORTCUT_URL, SHORTCUT_FILE, SHORTCUT_APP, SHORTCUT_WINLATOR }
 
 /**
  * 桌面图标数据：可来自内置 AppRegistry，也可来自用户自定义快捷方式。

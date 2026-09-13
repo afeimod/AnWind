@@ -112,6 +112,7 @@ fun DesktopIconGrid(
                     1 -> DesktopItemType.SHORTCUT_URL
                     2 -> DesktopItemType.SHORTCUT_FILE
                     3 -> DesktopItemType.SHORTCUT_APP
+                    4 -> DesktopItemType.SHORTCUT_WINLATOR
                     else -> DesktopItemType.SHORTCUT_URL
                 },
                 target = entity.target,
@@ -227,6 +228,25 @@ fun launchDesktopItem(item: DesktopItem, wm: WindowManager) {
                     initialWidth = a.defaultWidth.value.toInt(),
                     initialHeight = a.defaultHeight.value.toInt()
                 )
+            }
+        }
+        DesktopItemType.SHORTCUT_WINLATOR -> {
+            // v2.23：Winlator 容器游戏快捷方式 —— 直接启动容器 exe，
+            // 画面显示在 AnWind 的 X11 浮动窗口（经会话宿主自动开窗）。
+            val context = com.anwind.AnWindApp.get()
+            val containerId = item.target.toIntOrNull()
+            val exePath = try {
+                org.json.JSONObject(item.launchArgs).optString("exe")
+            } catch (_: Exception) { "" }
+            val container = containerId?.let {
+                com.anwind.apps.winlator.WinlatorController.containerById(it)
+            }
+            if (container != null && !exePath.isNullOrEmpty()) {
+                com.anwind.apps.winlator.WinlatorController.runExe(context, container, exePath)
+            } else {
+                android.widget.Toast.makeText(
+                    context, "容器或 exe 路径无效", android.widget.Toast.LENGTH_SHORT
+                ).show()
             }
         }
     }

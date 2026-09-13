@@ -337,6 +337,18 @@ dependencies {
     implementation(project(":termux-x11"))
 
     // ============================================================
+    // v2.23：Winlator Cmod 7.1.4x 引擎模块（重新集成）
+    // ============================================================
+    // 容器数据模型（Container/ContainerManager/Shortcut）+ bionic Wine
+    // 引擎（ImageFs/BionicProgramLauncher）+ SysVSHM/ALSA/PulseAudio 服务
+    // + WinHandler（XInput 手柄通道）。原版的 XServer/GLRenderer 显示栈
+    // 不移植 —— exe 的 DISPLAY 经 :winlator 的 X11DisplayComponent 桥到
+    // AnWind 自带 X server（lorie），画面渲染进 X11 浮动窗口（LorieView）。
+    // 引擎大资产（imagefs.txz / proton-9.0-*.txz）由 CI 从
+    // Pipetto-crypto/winlator 拉取 LFS 后补进 :winlator 的 assets。
+    implementation(project(":winlator"))
+
+    // ============================================================
     // v2.22.2 fix9.7：补 :app 对 androidx.appcompat / androidx.preference 的
     // 编译期依赖（CI 实证 ：app:compileReleaseKotlin 失败）
     // ============================================================

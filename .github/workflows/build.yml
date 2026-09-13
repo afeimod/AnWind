@@ -85,6 +85,36 @@ jobs:
           echo "=== Installed NDK versions ==="
           ls "$ANDROID_HOME/ndk"
 
+      # ============ 4.5 拉取 Winlator 引擎大资产（v2.23 集成） ============
+      # :winlator 模块运行需要 imagefs.txz（bionic Wine + Box64 根文件系统）
+      # 与 proton-9.0-*.txz（Wine 本体）。这三个 LFS 大文件不进本仓库，
+      # 构建期从 Winlator Cmod 官方仓库（Pipetto-crypto/winlator）匿名拉取。
+      - name: 📦 Fetch Winlator engine assets (imagefs / proton LFS)
+        run: |
+          WINLATOR_REF="https://github.com/Pipetto-crypto/winlator.git"
+          DEST="winlator/src/main/assets"
+          mkdir -p "$DEST"
+          git clone --depth 1 "$WINLATOR_REF" /tmp/winlator-upstream
+          cd /tmp/winlator-upstream
+          git lfs install --skip-repo
+          # 只拉取所需的大文件（LFS 指针 → 真实内容）
+          git lfs pull --include "app/src/main/assets/imagefs.txz,app/src/main/assets/proton-9.0-x86_64.txz,app/src/main/assets/proton-9.0-arm64ec.txz" || \
+          git lfs fetch --all --include "app/src/main/assets/imagefs.txz,app/src/main/assets/proton-9.0-x86_64.txz,app/src/main/assets/proton-9.0-arm64ec.txz"
+          cd /
+          for f in imagefs.txz proton-9.0-x86_64.txz proton-9.0-arm64ec.txz; do
+            SRC="/tmp/winlator-upstream/app/src/main/assets/$f"
+            if [ -f "$SRC" ] && [ "$(stat -c%s "$SRC")" -gt 1000000 ]; then
+              cp "$SRC" "$DEST/$f"
+              echo "✓ $f ($(du -h "$DEST/$f" | cut -f1))"
+            else
+              echo "✗ $f 拉取失败或仍是 LFS 指针"
+              exit 1
+            fi
+          done
+          rm -rf /tmp/winlator-upstream
+          echo "=== 引擎资产就绪 ==="
+          ls -lh "$DEST" | grep -E "imagefs|proton-9.0"
+
       # ============ 5. 检查 gradle-wrapper.jar 是否存在 ============
       # 如果不存在，自动生成 wrapper（首次推送仓库时常见情况）
       - name: 🔧 Ensure gradle-wrapper.jar exists

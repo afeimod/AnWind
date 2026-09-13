@@ -55,6 +55,9 @@ android {
 }
 
 dependencies {
+    // v2.23：WinHandler/ProcessInfo 类型来自 :winlator 模块
+    //（Winlator Cmod 引擎，重新集成后统一由该模块提供）
+    implementation(project(":winlator"))
     implementation("org.jetbrains.kotlin:kotlin-stdlib-jdk8:1.9.25")
     implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:2.7.0")
     implementation("androidx.lifecycle:lifecycle-livedata-ktx:2.6.1")

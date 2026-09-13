@@ -39,5 +39,8 @@ object AppBootstrap {
         AppRegistry.register(MediaPlayerApp)
         AppRegistry.register(MusicPlayerApp)
         AppRegistry.register(MinesweeperApp)
+        // v2.23：Winlator 容器（Pipetto-crypto/winlator cmod 7.1.4x 引擎集成，
+        // exe 运行显示在 AnWind 自带 X11 浮动窗口）
+        AppRegistry.register(com.anwind.apps.winlator.WinlatorApp)
     }
 }

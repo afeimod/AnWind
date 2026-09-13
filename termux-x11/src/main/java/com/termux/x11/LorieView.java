@@ -51,12 +51,12 @@ import android.view.inputmethod.TextSnapshot;
 import androidx.annotation.Keep;
 import androidx.annotation.NonNull;
 
-import com.termux.x11.controller.core.CursorLocker;
-import com.termux.x11.controller.winhandler.WinHandler;
-import com.termux.x11.controller.xserver.InputDeviceManager;
-import com.termux.x11.controller.xserver.Keyboard;
-import com.termux.x11.controller.xserver.Pointer;
-import com.termux.x11.controller.xserver.XKeycode;
+import com.termux.x11.xserver.CursorLocker;
+import com.winlator.cmod.winhandler.WinHandler;
+import com.termux.x11.xserver.InputDeviceManager;
+import com.termux.x11.xserver.Keyboard;
+import com.termux.x11.xserver.Pointer;
+import com.termux.x11.xserver.XKeycode;
 import com.termux.x11.input.InputStub;
 import com.termux.x11.input.TouchInputHandler;
 
