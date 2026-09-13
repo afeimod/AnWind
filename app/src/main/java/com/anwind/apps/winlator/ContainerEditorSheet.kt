@@ -1,5 +1,6 @@
 package com.anwind.apps.winlator
 
+import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -44,6 +45,7 @@ import org.json.JSONObject
 @Composable
 fun ContainerEditorSheet(container: Container?, onDismiss: () -> Unit) {
     val theme = LocalWinTheme.current
+    val context = androidx.compose.ui.platform.LocalContext.current
 
     // ================= 表单状态（新建时取 Winlator 默认值） =================
     var name by remember { mutableStateOf(container?.getName() ?: "") }
@@ -129,7 +131,18 @@ fun ContainerEditorSheet(container: Container?, onDismiss: () -> Unit) {
                 } catch (_: Exception) {}
 
                 if (container == null) {
-                    WinlatorController.createContainer(data) { onDismiss() }
+                    // v2.25：创建失败（回调参数为 null）时 Toast 提示，不再静默关闭 ——
+                    // 典型原因：APK 缺少 <wine版本>_container_pattern.tzst 容器模板
+                    WinlatorController.createContainer(data) { created ->
+                        if (created == null) {
+                            Toast.makeText(
+                                context,
+                                "容器创建失败：APK 缺少容器模板（wineprefix pattern），请用最新构建",
+                                Toast.LENGTH_LONG
+                            ).show()
+                        }
+                        onDismiss()
+                    }
                 } else {
                     try {
                         container.setName(data.optString("name", container.getName()))

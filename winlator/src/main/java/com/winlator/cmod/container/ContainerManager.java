@@ -61,27 +61,28 @@ public class ContainerManager {
         containers.clear();
         maxContainerId = 0;
 
-        try {
-            File[] files = homeDir.listFiles();
-            if (files != null) {
-                for (File file : files) {
-                    if (file.isDirectory()) {
-                        if (file.getName().startsWith(ImageFs.USER + "-")) {
-                            Container container = new Container(
-                                    Integer.parseInt(file.getName().replace(ImageFs.USER + "-", "")), this
-                            );
+        File[] files = homeDir.listFiles();
+        if (files == null) return;
 
-                            container.setRootDir(new File(homeDir, ImageFs.USER + "-" + container.id));
-                            JSONObject data = new JSONObject(FileUtils.readString(container.getConfigFile()));
-                            container.loadData(data);
-                            containers.add(container);
-                            maxContainerId = Math.max(maxContainerId, container.id);
-                        }
-                    }
-                }
+        // v2.25 加固：逐容器容错 —— 此前整个循环包在一个 try 里，
+        // 任何一个容器目录的 .container 配置损坏/非数字目录名（如
+        // xuser-backup）都会抛异常中止循环，后续容器全部丢失，
+        // 且可能让整个列表显示为空。
+        for (File file : files) {
+            if (!file.isDirectory()) continue;
+            String name = file.getName();
+            if (!name.startsWith(ImageFs.USER + "-")) continue;
+            try {
+                int id = Integer.parseInt(name.substring(ImageFs.USER.length() + 1));
+                Container container = new Container(id, this);
+                container.setRootDir(new File(homeDir, ImageFs.USER + "-" + container.id));
+                JSONObject data = new JSONObject(FileUtils.readString(container.getConfigFile()));
+                container.loadData(data);
+                containers.add(container);
+                maxContainerId = Math.max(maxContainerId, container.id);
+            } catch (NumberFormatException | JSONException | NullPointerException e) {
+                Log.e("ContainerManager", "跳过无法解析的容器目录: " + name, e);
             }
-        } catch (JSONException | NullPointerException e) {
-            Log.e("ContainerManager", "Error loading containers", e);
         }
     }
 
@@ -99,25 +100,43 @@ public class ContainerManager {
     }
 
     public void createContainerAsync(final JSONObject data, ContentsManager contentsManager, Callback<Container> callback) {
-        final Handler handler = new Handler();
+        // v2.25 加固：createContainer 内部任何异常（如资产缺失/JSON 问题）
+        // 都不能让 executor 线程死亡 —— 否则回调永不触发，UI 无任何提示。
+        // 统一捕获异常并把 null 结果回传给 UI（UI 负责提示失败）。
+        // Handler 显式绑定主 Looper，不再依赖调用线程。
+        final Handler handler = new Handler(Looper.getMainLooper());
         Executors.newSingleThreadExecutor().execute(() -> {
-            final Container container = createContainer(data, contentsManager);
-            handler.post(() -> callback.call(container));
+            Container container = null;
+            try {
+                container = createContainer(data, contentsManager);
+            } catch (Exception e) {
+                Log.e("ContainerManager", "createContainer failed", e);
+            }
+            final Container result = container;
+            handler.post(() -> callback.call(result));
         });
     }
 
     public void duplicateContainerAsync(Container container, Runnable callback) {
-        final Handler handler = new Handler();
+        final Handler handler = new Handler(Looper.getMainLooper());
         Executors.newSingleThreadExecutor().execute(() -> {
-            duplicateContainer(container);
+            try {
+                duplicateContainer(container);
+            } catch (Exception e) {
+                Log.e("ContainerManager", "duplicateContainer failed", e);
+            }
             handler.post(callback);
         });
     }
 
     public void removeContainerAsync(Container container, Runnable callback) {
-        final Handler handler = new Handler();
+        final Handler handler = new Handler(Looper.getMainLooper());
         Executors.newSingleThreadExecutor().execute(() -> {
-            removeContainer(container);
+            try {
+                removeContainer(container);
+            } catch (Exception e) {
+                Log.e("ContainerManager", "removeContainer failed", e);
+            }
             handler.post(callback);
         });
     }
@@ -137,6 +156,11 @@ public class ContainerManager {
             container.setWineVersion(data.getString("wineVersion"));
 
             if (!extractContainerPatternFile(container, container.getWineVersion(), contentsManager, containerDir, null)) {
+                // v2.25：模板解压失败（如 APK 缺少 <wine版本>_container_pattern.tzst）
+                // 时明确记日志 —— 此前静默删目录返回 null，UI 无任何提示
+                Log.e("ContainerManager", "容器模板解压失败（wineVersion=" + container.getWineVersion()
+                    + "）：APK assets 缺少 " + container.getWineVersion() + "_container_pattern.tzst 且 "
+                    + "wine 安装目录下无 prefixPack.txz");
                 FileUtils.delete(containerDir);
                 return null;
             }

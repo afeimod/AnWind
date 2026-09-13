@@ -122,7 +122,11 @@ public class WineInfo implements Parcelable {
 
         if (identifier.equals(MAIN_WINE_VERSION.identifier())) return new WineInfo(MAIN_WINE_VERSION.type, MAIN_WINE_VERSION.version, MAIN_WINE_VERSION.arch, imageFs.getRootDir().getPath() + "/opt/" + MAIN_WINE_VERSION.identifier());
 
-        ContentProfile wineProfile = contentsManager.getProfileByEntryName(identifier);
+        // v2.25 修复：contentsManager 可能为 null（:app 建容器路径
+        // createContainerAsync(data, null, ...) 未传 ContentsManager），
+        // 此前对 "proton-9.0-arm64ec" 等非主版本会直接 NPE，
+        // 导致建容器时 executor 线程崩溃、回调永不触发。
+        ContentProfile wineProfile = contentsManager != null ? contentsManager.getProfileByEntryName(identifier) : null;
 
         if (wineProfile != null && wineProfile.type == ContentProfile.ContentType.CONTENT_TYPE_WINE ) {
             identifier = identifier.substring(0, identifier.length() - 2).toLowerCase();
