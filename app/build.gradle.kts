@@ -182,10 +182,17 @@ android {
         }
     }
 
-    // bootstrap 归档（assets/termux/*.zip）保持不压缩：
-    // 避免二次压缩浪费构建时间，安装期拷贝更快
+    // 归档类资产保持不压缩（v2.22.5 CI OOM 修复）：
+    // 1) bootstrap（assets/termux/*.zip）本身已压缩，二次 deflate 浪费时间；
+    // 2) CI 的 "Fetch Winlator engine assets" 步骤会把 imagefs.txz /
+    //    proton-9.0-*.txz（各数百 MB，xz 已压满）下载进 :winlator assets，
+    //    合并后 :app:compressReleaseAssets 用 zipflinger 把整个文件读进
+    //    堆内做 deflate —— 2G 堆直接 OutOfMemoryError（run #163 实证，
+    //    栈顶 Compressor.deflate / BytesSource.build）。txz/tzst/xz/zst
+    //    加入 noCompress 后 zipflinger 原样打包，不再进 deflate，
+    //    内存、时间双省，APK 体积也不变（这些格式压不动）。
     androidResources {
-        noCompress += listOf("zip")
+        noCompress += listOf("zip", "txz", "tzst", "xz", "zst", "tgz", "gz")
     }
 
     // ============================================================
