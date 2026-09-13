@@ -87,21 +87,33 @@ jobs:
 
       # ============ 4.5 拉取 Winlator 引擎大资产（v2.23 集成） ============
       # :winlator 模块运行需要 imagefs.txz（bionic Wine + Box64 根文件系统）
-      # 与 proton-9.0-*.txz（Wine 本体）。这三个 LFS 大文件不进本仓库，
-      # 构建期从 Winlator Cmod 官方仓库（Pipetto-crypto/winlator）匿名拉取。
+      # 与 proton-9.0-*.txz（Wine 本体）。这些大文件不进本仓库：
+      # imagefs.txz 构建期从 afeimod/linbox 的 winlator-rootfs release 下载；
+      # proton-9.0-*.txz 仍从 Winlator Cmod 官方仓库（Pipetto-crypto/winlator）匿名 LFS 拉取。
       - name: 📦 Fetch Winlator engine assets (imagefs / proton LFS)
         run: |
-          WINLATOR_REF="https://github.com/Pipetto-crypto/winlator.git"
           DEST="winlator/src/main/assets"
           mkdir -p "$DEST"
+
+          # imagefs.txz：从 afeimod/linbox 的 winlator-rootfs release 直接下载
+          curl -fL --retry 3 -o "$DEST/imagefs.txz" \
+            "https://github.com/afeimod/linbox/releases/download/winlator-rootfs/imagefs.txz"
+          if [ ! -f "$DEST/imagefs.txz" ] || [ "$(stat -c%s "$DEST/imagefs.txz")" -lt 1000000 ]; then
+            echo "✗ imagefs.txz 下载失败"
+            exit 1
+          fi
+          echo "✓ imagefs.txz ($(du -h "$DEST/imagefs.txz" | cut -f1))"
+
+          # proton-9.0-*.txz：仍从 Winlator Cmod 官方仓库 LFS 拉取
+          WINLATOR_REF="https://github.com/Pipetto-crypto/winlator.git"
           git clone --depth 1 "$WINLATOR_REF" /tmp/winlator-upstream
           cd /tmp/winlator-upstream
           git lfs install --skip-repo
           # 只拉取所需的大文件（LFS 指针 → 真实内容）
-          git lfs pull --include "app/src/main/assets/imagefs.txz,app/src/main/assets/proton-9.0-x86_64.txz,app/src/main/assets/proton-9.0-arm64ec.txz" || \
-          git lfs fetch --all --include "app/src/main/assets/imagefs.txz,app/src/main/assets/proton-9.0-x86_64.txz,app/src/main/assets/proton-9.0-arm64ec.txz"
+          git lfs pull --include "app/src/main/assets/proton-9.0-x86_64.txz,app/src/main/assets/proton-9.0-arm64ec.txz" || \
+          git lfs fetch --all --include "app/src/main/assets/proton-9.0-x86_64.txz,app/src/main/assets/proton-9.0-arm64ec.txz"
           cd /
-          for f in imagefs.txz proton-9.0-x86_64.txz proton-9.0-arm64ec.txz; do
+          for f in proton-9.0-x86_64.txz proton-9.0-arm64ec.txz; do
             SRC="/tmp/winlator-upstream/app/src/main/assets/$f"
             if [ -f "$SRC" ] && [ "$(stat -c%s "$SRC")" -gt 1000000 ]; then
               cp "$SRC" "$DEST/$f"
