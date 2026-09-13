@@ -85,45 +85,40 @@ jobs:
           echo "=== Installed NDK versions ==="
           ls "$ANDROID_HOME/ndk"
 
-      # ============ 4.5 拉取 Winlator 引擎大资产（v2.23 集成） ============
+      # ============ 4.5 拉取 Winlator 引擎大资产（v2.24 集成） ============
       # :winlator 模块运行需要 imagefs.txz（bionic Wine + Box64 根文件系统）
-      # 与 proton-9.0-*.txz（Wine 本体）。这些大文件不进本仓库：
-      # imagefs.txz 构建期从 afeimod/linbox 的 winlator-rootfs release 下载；
-      # proton-9.0-*.txz 仍从 Winlator Cmod 官方仓库（Pipetto-crypto/winlator）匿名 LFS 拉取。
-      - name: 📦 Fetch Winlator engine assets (imagefs / proton LFS)
+      # 与 proton-9.0-*.txz（Wine 本体）。这些大文件不进本仓库，
+      # 构建期统一从 afeimod/AnWind 的 winlator-rootfs release 下载。
+      - name: 📦 Fetch Winlator engine assets (imagefs / proton)
         run: |
           DEST="winlator/src/main/assets"
           mkdir -p "$DEST"
+          RELEASE_BASE="https://github.com/afeimod/AnWind/releases/download/winlator-rootfs"
 
-          # imagefs.txz：从 afeimod/linbox 的 winlator-rootfs release 直接下载
-          curl -fL --retry 3 -o "$DEST/imagefs.txz" \
-            "https://github.com/afeimod/linbox/releases/download/winlator-rootfs/imagefs.txz"
+          # imagefs.txz
+          curl -fL --retry 3 -o "$DEST/imagefs.txz" "$RELEASE_BASE/imagefs.txz"
           if [ ! -f "$DEST/imagefs.txz" ] || [ "$(stat -c%s "$DEST/imagefs.txz")" -lt 1000000 ]; then
             echo "✗ imagefs.txz 下载失败"
             exit 1
           fi
           echo "✓ imagefs.txz ($(du -h "$DEST/imagefs.txz" | cut -f1))"
 
-          # proton-9.0-*.txz：仍从 Winlator Cmod 官方仓库 LFS 拉取
-          WINLATOR_REF="https://github.com/Pipetto-crypto/winlator.git"
-          git clone --depth 1 "$WINLATOR_REF" /tmp/winlator-upstream
-          cd /tmp/winlator-upstream
-          git lfs install --skip-repo
-          # 只拉取所需的大文件（LFS 指针 → 真实内容）
-          git lfs pull --include "app/src/main/assets/proton-9.0-x86_64.txz,app/src/main/assets/proton-9.0-arm64ec.txz" || \
-          git lfs fetch --all --include "app/src/main/assets/proton-9.0-x86_64.txz,app/src/main/assets/proton-9.0-arm64ec.txz"
-          cd /
-          for f in proton-9.0-x86_64.txz proton-9.0-arm64ec.txz; do
-            SRC="/tmp/winlator-upstream/app/src/main/assets/$f"
-            if [ -f "$SRC" ] && [ "$(stat -c%s "$SRC")" -gt 1000000 ]; then
-              cp "$SRC" "$DEST/$f"
-              echo "✓ $f ($(du -h "$DEST/$f" | cut -f1))"
-            else
-              echo "✗ $f 拉取失败或仍是 LFS 指针"
-              exit 1
-            fi
-          done
-          rm -rf /tmp/winlator-upstream
+          # proton-9.0-x86_64.txz
+          curl -fL --retry 3 -o "$DEST/proton-9.0-x86_64.txz" "$RELEASE_BASE/proton-9.0-x86_64.txz"
+          if [ ! -f "$DEST/proton-9.0-x86_64.txz" ] || [ "$(stat -c%s "$DEST/proton-9.0-x86_64.txz")" -lt 1000000 ]; then
+            echo "✗ proton-9.0-x86_64.txz 下载失败"
+            exit 1
+          fi
+          echo "✓ proton-9.0-x86_64.txz ($(du -h "$DEST/proton-9.0-x86_64.txz" | cut -f1))"
+
+          # proton-9.0-arm64ec.txz
+          curl -fL --retry 3 -o "$DEST/proton-9.0-arm64ec.txz" "$RELEASE_BASE/proton-9.0-arm64ec.txz"
+          if [ ! -f "$DEST/proton-9.0-arm64ec.txz" ] || [ "$(stat -c%s "$DEST/proton-9.0-arm64ec.txz")" -lt 1000000 ]; then
+            echo "✗ proton-9.0-arm64ec.txz 下载失败"
+            exit 1
+          fi
+          echo "✓ proton-9.0-arm64ec.txz ($(du -h "$DEST/proton-9.0-arm64ec.txz" | cut -f1))"
+
           echo "=== 引擎资产就绪 ==="
           ls -lh "$DEST" | grep -E "imagefs|proton-9.0"
 

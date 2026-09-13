@@ -13,8 +13,8 @@ plugins {
 // 新增的部分：
 //   - x11/X11DisplayComponent —— wine DISPLAY → lorie X server 桥
 //   - session/WinlatorSession   —— 容器会话编排（替代 XServerDisplayActivity）
-// 引擎大资产（imagefs.txz 等 3 个 LFS 文件）不进 git，构建期由
-// .github/workflows/build.yml 从 Pipetto-crypto/winlator 拉取补齐。
+// 引擎大资产（imagefs.txz + proton-9.0-*.txz）不进 git，构建期由
+// .github/workflows/build.yml 从 afeimod/AnWind winlator-rootfs release 下载。
 // ============================================================
 
 android {
