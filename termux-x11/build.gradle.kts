@@ -81,7 +81,9 @@ dependencies {
     implementation("com.google.android.material:material:1.9.0")
     implementation("androidx.constraintlayout:constraintlayout:2.1.4")
     // Wine 容器备份功能（TarCompressorUtils）使用，与参考实现一致
-    implementation("com.github.luben:zstd-jni:1.5.2-3")
+    // v2.24 修复：与 :winlator 同步改用 @aar（内含 Android bionic 原生库）；
+    // 若仍用纯 jar，会与 :winlator 的 @aar 产生重复类冲突（dex merge 失败）
+    implementation("com.github.luben:zstd-jni:1.5.2-3@aar")
     implementation("org.tukaani:xz:1.7")
     implementation("org.apache.commons:commons-compress:1.20")
     // 框架隐藏 API 编译桩（运行期由真实框架提供）

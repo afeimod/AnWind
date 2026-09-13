@@ -65,7 +65,21 @@ android {
 
 dependencies {
     // 压缩包解压（imagefs.txz = XZ；容器/组件包 = ZSTD），与原版一致
-    api("com.github.luben:zstd-jni:1.5.2-3")
+    // ============================================================
+    // v2.24 修复（运行时闪退）：zstd-jni 必须用 @aar 打包
+    // ============================================================
+    // 现象：首次启动解压 pulseaudio.tzst 时闪退：
+    //   UnsatisfiedLinkError: dlopen failed: library
+    //   "libzstd-jni-1.5.2-3.so" not found
+    //   Unsupported OS/arch, cannot find /linux/aarch64/libzstd-jni-1.5.2-3.so
+    // 根因：纯 jar 的原生库是桌面 glibc 版（jar 内资源 /linux/aarch64/…）：
+    //   1) AGP 不会把依赖 jar 的资源文件打进 APK → getResourceAsStream 找不到；
+    //   2) 即使打进去，glibc 版 .so 在 Android(bionic) 上也无法 dlopen；
+    //   3) System.loadLibrary("zstd-jni-1.5.2-3") 在 APK lib/<abi>/ 里无库可加载。
+    // 修复：改用 @aar（官方 Android 原生包，NDK r19 编译、minSdk 16，
+    //   含 arm64-v8a/armeabi-v7a/x86/x86_64 的 libzstd-jni-1.5.2-3.so，
+    //   文件名与 loadLibrary 查找名完全一致），随 APK lib/<abi>/ 打包。
+    api("com.github.luben:zstd-jni:1.5.2-3@aar")
     implementation("org.tukaani:xz:1.7")
     implementation("org.apache.commons:commons-compress:1.20")
     // WinHandler/外部手柄的偏好读取

@@ -356,6 +356,17 @@ dependencies {
     implementation(project(":winlator"))
 
     // ============================================================
+    // v2.24 修复（运行时闪退）：zstd-jni 用 @aar 直连打包
+    // ============================================================
+    // :winlator 解压 pulseaudio.tzst / box64-*.tzst 等资产依赖
+    // libzstd-jni-1.5.2-3.so（Android bionic 版）。纯 jar 版只有桌面
+    // glibc .so（jar 内资源），APK lib/<abi>/ 里无库 → 首次启动解压
+    // 引擎资产时 UnsatisfiedLinkError 闪退。此处与 :winlator/:termux-x11
+    // 一起显式声明 @aar（同坐标去重，不产生重复类），双保险确保 AAR 的
+    // jni/<abi>/libzstd-jni-1.5.2-3.so 一定打进 APK lib/<abi>/。
+    implementation("com.github.luben:zstd-jni:1.5.2-3@aar")
+
+    // ============================================================
     // v2.22.2 fix9.7：补 :app 对 androidx.appcompat / androidx.preference 的
     // 编译期依赖（CI 实证 ：app:compileReleaseKotlin 失败）
     // ============================================================
