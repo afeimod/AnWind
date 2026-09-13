@@ -22,7 +22,11 @@ android {
     compileSdk = 34
 
     defaultConfig {
-        minSdk = 24  // 与宿主 :app 对齐（原版 26；低版本设备运行 wine 可能受限）
+        // v2.23 修复：恢复上游 minSdk 26 —— 模块 native 层（alsa_client.c 等）
+        // 使用 AAudio API（API 26 引入），clang 可用性检查在 minSdk<26 时直接报
+        // "unavailable: introduced in Android 26"。宿主 :app 仍保持 minSdk 24，
+        // 由 app 的 AndroidManifest tools:overrideLibrary（逗号分隔）放行合并。
+        minSdk = 26
 
         buildConfigField("String", "VERSION_NAME", "\"7.1.4x-cmod-anwind\"")
 
@@ -50,12 +54,12 @@ android {
     lint {
         abortOnError = false
     }
-}
 
-externalNativeBuild {
-    cmake {
-        path = file("src/main/cpp/CMakeLists.txt")
-        version = "3.22.1"
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
     }
 }
 

@@ -29,6 +29,7 @@ import android.widget.Toast;
 
 import androidx.appcompat.app.AppCompatActivity;
 
+import com.winlator.cmod.R;
 
 import java.lang.ref.WeakReference;
 import java.util.ArrayList;

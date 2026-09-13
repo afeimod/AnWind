@@ -8,6 +8,8 @@ import android.view.KeyEvent;
 import android.view.MotionEvent;
 
 import androidx.annotation.Nullable;
+
+import com.winlator.cmod.PreferenceKeys;
 import androidx.preference.PreferenceManager;
 
 
@@ -43,6 +45,9 @@ public class ExternalController {
     public final GamepadState state = new GamepadState();
     private android.content.Context activity;
 
+    // v2.23 修复：ControlElement（原版 UI 组件）已剔除，此处用同名常量替代。
+    // 取值与 Winlator Cmod 上游 ControlElement.STICK_DEAD_ZONE 一致（0.15f）。
+    private static final float STICK_DEAD_ZONE = 0.15f;
     private float deadzoneLeft = 0.1f;      // Default deadzone (10%)
     private float deadzoneRight = 0.1f;     // Default deadzone (10%)
     private float sensitivityLeft = 1.0f;   // Default sensitivity (1x)
@@ -316,10 +321,10 @@ public class ExternalController {
             float axisX = getCenteredAxis(event, MotionEvent.AXIS_HAT_X, historyPos);
             float axisY = getCenteredAxis(event, MotionEvent.AXIS_HAT_Y, historyPos);
 
-            state.dpad[0] = axisY == -1.0f && Math.abs(state.thumbLY) < ControlElement.STICK_DEAD_ZONE;
-            state.dpad[1] = axisX == 1.0f && Math.abs(state.thumbLX) < ControlElement.STICK_DEAD_ZONE;
-            state.dpad[2] = axisY == 1.0f && Math.abs(state.thumbLY) < ControlElement.STICK_DEAD_ZONE;
-            state.dpad[3] = axisX == -1.0f && Math.abs(state.thumbLX) < ControlElement.STICK_DEAD_ZONE;
+            state.dpad[0] = axisY == -1.0f && Math.abs(state.thumbLY) < STICK_DEAD_ZONE;
+            state.dpad[1] = axisX == 1.0f && Math.abs(state.thumbLX) < STICK_DEAD_ZONE;
+            state.dpad[2] = axisY == 1.0f && Math.abs(state.thumbLY) < STICK_DEAD_ZONE;
+            state.dpad[3] = axisX == -1.0f && Math.abs(state.thumbLX) < STICK_DEAD_ZONE;
         }
     }
 
@@ -526,16 +531,16 @@ public class ExternalController {
 
         switch (keyCode) {
             case KeyEvent.KEYCODE_DPAD_UP:
-                state.dpad[0] = pressed && Math.abs(state.thumbLY) < ControlElement.STICK_DEAD_ZONE;
+                state.dpad[0] = pressed && Math.abs(state.thumbLY) < STICK_DEAD_ZONE;
                 return true;
             case KeyEvent.KEYCODE_DPAD_RIGHT:
-                state.dpad[1] = pressed && Math.abs(state.thumbLX) < ControlElement.STICK_DEAD_ZONE;
+                state.dpad[1] = pressed && Math.abs(state.thumbLX) < STICK_DEAD_ZONE;
                 return true;
             case KeyEvent.KEYCODE_DPAD_DOWN:
-                state.dpad[2] = pressed && Math.abs(state.thumbLY) < ControlElement.STICK_DEAD_ZONE;
+                state.dpad[2] = pressed && Math.abs(state.thumbLY) < STICK_DEAD_ZONE;
                 return true;
             case KeyEvent.KEYCODE_DPAD_LEFT:
-                state.dpad[3] = pressed && Math.abs(state.thumbLX) < ControlElement.STICK_DEAD_ZONE;
+                state.dpad[3] = pressed && Math.abs(state.thumbLX) < STICK_DEAD_ZONE;
                 return true;
         }
         return false;
@@ -566,16 +571,16 @@ public class ExternalController {
 //        // Handle D-pad directions with mappings
 //        switch (keyCode) {
 //            case KeyEvent.KEYCODE_DPAD_UP:
-//                state.dpad[0] = pressed && Math.abs(state.thumbLY) < ControlElement.STICK_DEAD_ZONE;
+//                state.dpad[0] = pressed && Math.abs(state.thumbLY) < STICK_DEAD_ZONE;
 //                return true;
 //            case KeyEvent.KEYCODE_DPAD_RIGHT:
-//                state.dpad[1] = pressed && Math.abs(state.thumbLX) < ControlElement.STICK_DEAD_ZONE;
+//                state.dpad[1] = pressed && Math.abs(state.thumbLX) < STICK_DEAD_ZONE;
 //                return true;
 //            case KeyEvent.KEYCODE_DPAD_DOWN:
-//                state.dpad[2] = pressed && Math.abs(state.thumbLY) < ControlElement.STICK_DEAD_ZONE;
+//                state.dpad[2] = pressed && Math.abs(state.thumbLY) < STICK_DEAD_ZONE;
 //                return true;
 //            case KeyEvent.KEYCODE_DPAD_LEFT:
-//                state.dpad[3] = pressed && Math.abs(state.thumbLX) < ControlElement.STICK_DEAD_ZONE;
+//                state.dpad[3] = pressed && Math.abs(state.thumbLX) < STICK_DEAD_ZONE;
 //                return true;
 //        }
 //        return false;

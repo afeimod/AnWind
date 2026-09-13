@@ -20,6 +20,7 @@ import com.winlator.cmod.core.GraphicsDriverConfigParser;
 import com.winlator.cmod.core.KeyValueSet;
 import com.winlator.cmod.core.ProcessHelper;
 import com.winlator.cmod.core.StringUtils;
+import com.winlator.cmod.core.TarCompressorUtils;
 import com.winlator.cmod.core.VKD3DConfig;
 import com.winlator.cmod.core.WineInfo;
 import com.winlator.cmod.core.WineRegistryEditor;

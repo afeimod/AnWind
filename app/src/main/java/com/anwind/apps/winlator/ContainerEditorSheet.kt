@@ -418,7 +418,7 @@ private fun SwitchChip(checked: Boolean, theme: com.anwind.core.theme.WinTheme, 
 
 @Composable
 private fun SmallTextField(
-    value: String, onValueChange: (String), fieldBg: Color, textColor: Color,
+    value: String, onValueChange: (String) -> Unit, fieldBg: Color, textColor: Color,
     placeholder: String, modifier: Modifier = Modifier, singleLine: Boolean = true
 ) {
     androidx.compose.material3.OutlinedTextField(

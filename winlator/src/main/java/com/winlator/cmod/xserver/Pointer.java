@@ -19,7 +19,6 @@ public class Pointer {
     public static final byte MAX_BUTTONS = 7;
     private final ArrayList<OnPointerMotionListener> onPointerMotionListeners = new ArrayList<>();
     private final Bitmask buttonMask = new Bitmask();
-    private final XServer xServer;
     private short x;
     private short y;
 
@@ -29,9 +28,12 @@ public class Pointer {
         default void onPointerMove(short x, short y) {}
     }
 
-    public Pointer(XServer xServer) {
-        this.xServer = xServer;
-    }
+    /**
+     * v2.23 修复：原构造函数依赖 XServer（内置 X 协议服务器，本集成已剔除
+     * 显示端改由 AnWind 的 lorie X server 承担），改为无参构造；
+     * 仅保留坐标/按键状态与监听器逻辑供 winhandler 等模块复用。
+     */
+    public Pointer() {}
 
     public void setX(int x) {
         this.x = (short)x;
@@ -50,11 +52,11 @@ public class Pointer {
     }
 
     public short getClampedX() {
-        return (short)Mathf.clamp(x, 0, xServer.screenInfo.width -1);
+        return (short)Mathf.clamp(x, 0, Short.MAX_VALUE);
     }
 
     public short getClampedY() {
-        return (short)Mathf.clamp(y, 0, xServer.screenInfo.height -1);
+        return (short)Mathf.clamp(y, 0, Short.MAX_VALUE);
     }
 
     public void setPosition(int x, int y) {

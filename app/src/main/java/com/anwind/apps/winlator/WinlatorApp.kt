@@ -159,7 +159,7 @@ fun WinlatorHomeScreen(scope: WindowContentScope) {
                 )
                 Spacer(Modifier.height(4.dp))
                 @Suppress("DEPRECATION")
-                androidx.compose.foundation.LinearProgressIndicator(
+                androidx.compose.material3.LinearProgressIndicator(
                     progress = uiState.installingPercent / 100f,
                     modifier = Modifier.fillMaxWidth().height(4.dp),
                     color = theme.accentColor

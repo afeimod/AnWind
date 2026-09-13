@@ -1,7 +1,5 @@
 package com.winlator.cmod.core;
 
-import android.app.Activity;
-
 import java.io.BufferedInputStream;
 import java.io.File;
 import java.io.FileOutputStream;
@@ -71,21 +69,21 @@ public abstract class HttpUtils {
         }
     }
 
-    public static void download(final Activity activity, final String url, final File destination, final Callback<Boolean> onDownloadComplete) {
-        final DownloadProgressDialog dialog = new DownloadProgressDialog(activity);
+    /**
+     * 后台下载文件到指定路径，完成后回调结果。
+     *
+     * v2.23 修复：原实现依赖 DownloadProgressDialog（原版 UI 层组件，本集成
+     * 已剔除 UI），改为无对话框的纯后台下载；取消逻辑保留 interruptRef 通道。
+     * 当前模块内没有调用方，保留 API 以兼容上游调用约定。
+     */
+    public static void download(final android.app.Activity activity, final String url, final File destination, final Callback<Boolean> onDownloadComplete) {
         final AtomicBoolean interruptRef = new AtomicBoolean();
-        dialog.show(() -> interruptRef.set(true));
         Executors.newSingleThreadExecutor().execute(() -> {
             downloadAsync(url, destination, interruptRef, (progress) -> {
-                activity.runOnUiThread(() -> {
-                    dialog.setProgress(progress);
-                });
+                activity.runOnUiThread(() -> { });
             }, (success) -> {
                 if (!success && destination.isFile()) destination.delete();
-                activity.runOnUiThread(() -> {
-                    dialog.close();
-                    onDownloadComplete.call(success);
-                });
+                activity.runOnUiThread(() -> onDownloadComplete.call(success));
             });
         });
     }

@@ -13,6 +13,9 @@ import org.json.JSONObject;
 import java.util.ArrayList;
 
 public class ExternalController {
+    // v2.23 修复：ControlElement（原版 UI 组件）未随本包移植，
+    // 以同名常量替代，取值与 Winlator Cmod 上游一致（0.15f）。
+    private static final float STICK_DEAD_ZONE = 0.15f;
     public static final byte IDX_BUTTON_A = 0;
     public static final byte IDX_BUTTON_B = 1;
     public static final byte IDX_BUTTON_X = 2;
@@ -128,10 +131,10 @@ public class ExternalController {
             float axisX = getCenteredAxis(event, MotionEvent.AXIS_HAT_X, historyPos);
             float axisY = getCenteredAxis(event, MotionEvent.AXIS_HAT_Y, historyPos);
 
-            state.dpad[0] = axisY == -1.0f && Math.abs(state.thumbLY) < ControlElement.STICK_DEAD_ZONE;
-            state.dpad[1] = axisX ==  1.0f && Math.abs(state.thumbLX) < ControlElement.STICK_DEAD_ZONE;
-            state.dpad[2] = axisY ==  1.0f && Math.abs(state.thumbLY) < ControlElement.STICK_DEAD_ZONE;
-            state.dpad[3] = axisX == -1.0f && Math.abs(state.thumbLX) < ControlElement.STICK_DEAD_ZONE;
+            state.dpad[0] = axisY == -1.0f && Math.abs(state.thumbLY) < STICK_DEAD_ZONE;
+            state.dpad[1] = axisX ==  1.0f && Math.abs(state.thumbLX) < STICK_DEAD_ZONE;
+            state.dpad[2] = axisY ==  1.0f && Math.abs(state.thumbLY) < STICK_DEAD_ZONE;
+            state.dpad[3] = axisX == -1.0f && Math.abs(state.thumbLX) < STICK_DEAD_ZONE;
         }
     }
 
@@ -162,16 +165,16 @@ public class ExternalController {
 
         switch (keyCode) {
             case KeyEvent.KEYCODE_DPAD_UP:
-                state.dpad[0] = pressed && Math.abs(state.thumbLY) < ControlElement.STICK_DEAD_ZONE;
+                state.dpad[0] = pressed && Math.abs(state.thumbLY) < STICK_DEAD_ZONE;
                 return true;
             case KeyEvent.KEYCODE_DPAD_RIGHT:
-                state.dpad[1] = pressed && Math.abs(state.thumbLX) < ControlElement.STICK_DEAD_ZONE;
+                state.dpad[1] = pressed && Math.abs(state.thumbLX) < STICK_DEAD_ZONE;
                 return true;
             case KeyEvent.KEYCODE_DPAD_DOWN:
-                state.dpad[2] = pressed && Math.abs(state.thumbLY) < ControlElement.STICK_DEAD_ZONE;
+                state.dpad[2] = pressed && Math.abs(state.thumbLY) < STICK_DEAD_ZONE;
                 return true;
             case KeyEvent.KEYCODE_DPAD_LEFT:
-                state.dpad[3] = pressed && Math.abs(state.thumbLX) < ControlElement.STICK_DEAD_ZONE;
+                state.dpad[3] = pressed && Math.abs(state.thumbLX) < STICK_DEAD_ZONE;
                 return true;
         }
         return false;
