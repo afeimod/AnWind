@@ -51,10 +51,22 @@ public class X11DisplayComponent extends EnvironmentComponent {
         // 1. 定位 AnWind X server（lorie）的 X11 socket
         String socketPath = X11SocketFinder.findSocket(context);
         if (socketPath == null) {
-            // 2. 未运行 → 经宿主回调拉起（app 侧复刻 anwind-x11 的
-            //    app_process 启动），并等待 socket 出现
+            // 2. 未运行 → 经宿主回调拉起（app_process 冷启动，内部轮询最长 8s）
             if (host != null && host.ensureX11Session()) {
                 socketPath = X11SocketFinder.findSocket(context);
+            }
+        }
+        // v12 加固：app_process 冷启动 + 广播时序波动下，宿主侧单轮轮询仍可能
+        // 赶不上 socket 就位 —— 这里再做一轮短轮询（2s）兜底，避免整个会话黑屏。
+        if (socketPath == null) {
+            for (int i = 0; i < 4; i++) {
+                try { Thread.sleep(500); }
+                catch (InterruptedException e) { break; }
+                socketPath = X11SocketFinder.findSocket(context);
+                if (socketPath != null) {
+                    android.util.Log.i("X11DisplayComponent", "X11 socket 延迟就位（第 " + (i + 1) + " 次重试）: " + socketPath);
+                    break;
+                }
             }
         }
 
@@ -63,7 +75,8 @@ public class X11DisplayComponent extends EnvironmentComponent {
         }
         else {
             android.util.Log.w("X11DisplayComponent",
-                "未发现 AnWind X11 socket —— wine 将无法连接 X server；" +
+                "未发现 AnWind X11 socket（已查 " + java.util.Arrays.toString(X11SocketFinder.candidateDirs(context)) +
+                "）—— wine 将无法连接 X server；" +
                 "请先在 AnWind 终端执行 anwind-x11 :1 或在 Winlator 容器页重新启动");
         }
 

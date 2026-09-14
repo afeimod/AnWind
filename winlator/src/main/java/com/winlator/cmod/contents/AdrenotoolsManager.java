@@ -138,20 +138,33 @@ public class AdrenotoolsManager {
         
     private boolean extractDriverFromResources(String adrenotoolsDriverId) {
         String src = "graphics_driver/adrenotools-" + adrenotoolsDriverId + ".tzst";
-        boolean hasExtracted;
 
         File dst = new File(adrenotoolsContentDir, adrenotoolsDriverId);
-        if (dst.exists())
-            return true;
+        if (dst.exists()) {
+            // v12 修复（"驱动总是失败"根因之一）：历史脏目录自愈 —— 此前
+            // dst.exists() 恒真（extractDriverFromResources 失败时 mkdirs
+            // 已建目录，仅当提取失败才 delete，若中途异常则残留空目录），
+            // 空/缺 meta.json 的目录会永远被当作已提取，getLibraryName
+            // 读不到 meta.json 静默返回 ""，驱动注入被跳过且无任何线索。
+            if (new File(dst, "meta.json").isFile()) return true;
+            Log.w("AdrenotoolsManager", "已存在的驱动目录缺 meta.json，清理后重提取: " + dst);
+            FileUtils.delete(dst);
+        }
 
+        boolean hasExtracted;
         dst.mkdirs();
         Log.d("AdrenotoolsManager", "Extracting " + src + " to " + dst.getAbsolutePath());
         hasExtracted = TarCompressorUtils.extract(TarCompressorUtils.Type.ZSTD, mContext, src, dst);
 
-        if (!hasExtracted)
-            dst.delete();
+        // v12：解压失败或资产缺 meta.json 时清理目录并返回 false，
+        // 不再留下假已安装的空目录
+        if (!hasExtracted || !new File(dst, "meta.json").isFile()) {
+            Log.w("AdrenotoolsManager", "驱动资产无效（解压失败或缺 meta.json）: " + src);
+            FileUtils.delete(dst);
+            return false;
+        }
 
-        return hasExtracted;
+        return true;
     }
     
     public String installDriver(Uri driverUri) {
@@ -196,12 +209,19 @@ public class AdrenotoolsManager {
     }
     
     public void setDriverById(EnvVars envVars, ImageFs imagefs, String adrenotoolsDriverId) {
-        if (extractDriverFromResources(adrenotoolsDriverId) || enumarateInstalledDrivers().contains(adrenotoolsDriverId)) {
+        // v12：结果日志（"驱动总是失败"排障）—— 成功注入打印路径与库名，
+        // 失败明确记录原因，不再静默回落系统驱动。
+        boolean extracted = extractDriverFromResources(adrenotoolsDriverId);
+        boolean installed = !extracted && enumarateInstalledDrivers().contains(adrenotoolsDriverId);
+        if (extracted || installed) {
             String driverPath = adrenotoolsContentDir.getAbsolutePath() + "/" + adrenotoolsDriverId + "/";
-            if (!getLibraryName(adrenotoolsDriverId).equals("")) {
+            String libraryName = getLibraryName(adrenotoolsDriverId);
+            if (!libraryName.equals("")) {
                 envVars.put("ADRENOTOOLS_DRIVER_PATH", driverPath);
                 envVars.put("ADRENOTOOLS_HOOKS_PATH", imagefs.getLibDir());
-                envVars.put("ADRENOTOOLS_DRIVER_NAME", getLibraryName(adrenotoolsDriverId));
+                envVars.put("ADRENOTOOLS_DRIVER_NAME", libraryName);
+                Log.i("AdrenotoolsManager", "Adreno 驱动已注入: id=" + adrenotoolsDriverId
+                    + " library=" + libraryName + " path=" + driverPath);
                 if (adrenotoolsDriverId.contains("v762") && GPUInformation.getVersion().contains("512.530")) {
                     Log.d("AdrenotoolsManager", "Patching v762 driver for stock v530");
                     FileUtils.writeToBinaryFile(driverPath + "notadreno_utils.so", 0x2680, 3);
@@ -210,6 +230,14 @@ public class AdrenotoolsManager {
                     FileUtils.writeToBinaryFile(driverPath + "notadreno_utils.so", 0x2680, 2);
                 }
             }
+            else {
+                Log.w("AdrenotoolsManager", "驱动 meta.json 缺 libraryName，无法注入: id="
+                    + adrenotoolsDriverId + "，回落系统驱动");
+            }
+        }
+        else {
+            Log.w("AdrenotoolsManager", "驱动未找到（内置资产缺失且未安装）: id="
+                + adrenotoolsDriverId + "，回落系统驱动");
         }
     }
  }

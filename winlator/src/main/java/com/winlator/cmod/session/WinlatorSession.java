@@ -672,8 +672,12 @@ public class WinlatorSession {
     private void ensureDriveForPath(String exePath) {
         if (exePath == null || exePath.isEmpty()) return;
         if (toDosPath(exePath) != null) return;
+        // v12：canonical 化（/sdcard/... → /storage/emulated/0/...），
+        // 否则软链路径开头判断失误，y: 永远绑不上
         File exe = new File(exePath);
-        String abs = exe.getAbsolutePath();
+        String abs;
+        try { abs = exe.getCanonicalPath(); }
+        catch (Exception e) { abs = exe.getAbsolutePath(); }
         if (abs.startsWith("/storage")) {
             File dosdevices = new File(container.getRootDir(), ".wine/dosdevices");
             dosdevices.mkdirs();
@@ -685,18 +689,48 @@ public class WinlatorSession {
 
     /** Android 路径 → 容器 DOS 路径（盘符最长前缀匹配；找不到返回 null）。 */
     public String toDosPath(String exePath) {
-        String abs = new File(exePath).getAbsolutePath();
+        if (exePath == null || exePath.isEmpty()) return null;
+        // v12 修复（exe 全部"未发现"的根因）：此前仅遍历容器 drives 配置字符串，
+        // ensureDriveForPath 刚绑定的 y:→/storage 不在其中 —— exe 位于
+        // /storage/emulated/0/... 时 exeDir 匹配失败 → 被拼成 Z:\storage\...
+        // （Z: 实际映射 imagefs 根，该路径不存在）→ winhandler 找不到 exe，
+        // wine 界面出现后弹"未发现"错误框，所有外部存储 exe 均无法启动。
+        // 现改为扫描 .wine/dosdevices 实际盘符链接（包含动态绑定的 y: 与标准
+        // c:/z:），并对目标与源路径同时 canonical 化（/sdcard 等软链路径也能匹配）。
+        File src = new File(exePath);
+        String abs;
+        try { abs = src.getCanonicalPath(); }
+        catch (Exception e) { abs = src.getAbsolutePath(); }
+        if (abs == null || abs.isEmpty()) return null;
+
         String bestDrive = null; String bestTarget = null; int bestLen = -1;
-        for (String[] drive : container.drivesIterator()) {
-            String target = new File(drive[1]).getAbsolutePath();
-            if (!target.endsWith("/")) target += "/";
-            if (abs.startsWith(target) && target.length() > bestLen) {
-                bestDrive = drive[0]; bestTarget = target; bestLen = target.length();
+        File[] links = new File(container.getRootDir(), ".wine/dosdevices").listFiles();
+        if (links != null) {
+            for (File link : links) {
+                String name = link.getName();
+                if (name.length() != 2 || name.charAt(1) != ':') continue;
+                String target;
+                try { target = link.getCanonicalPath(); }
+                catch (Exception e) { target = link.getAbsolutePath(); }
+                if (!target.endsWith("/")) target += "/";
+                if (abs.startsWith(target) && target.length() > bestLen) {
+                    bestDrive = name; bestTarget = target; bestLen = target.length();
+                }
             }
         }
-        if (bestDrive == null) return null;
+        // 兜底：dosdevices 不可读（异常容器）时回落 drives 配置串匹配
+        if (bestDrive == null) {
+            for (String[] drive : container.drivesIterator()) {
+                String target = new File(drive[1]).getAbsolutePath();
+                if (!target.endsWith("/")) target += "/";
+                if (abs.startsWith(target) && target.length() > bestLen) {
+                    bestDrive = drive[0]; bestTarget = target; bestLen = target.length();
+                }
+            }
+        }
+        if (bestDrive == null || bestTarget == null) return null;
         String rest = abs.substring(bestTarget.length()).replace('/', '\\');
-        return bestDrive.toUpperCase() + ":\\" + rest;
+        return Character.toUpperCase(bestDrive.charAt(0)) + ":\\" + rest;
     }
 
     private String getWineStartCommand(String exePath) {
@@ -708,7 +742,12 @@ public class WinlatorSession {
             String exeDir = FileUtils.getDirname(exePath);
             String filename = FileUtils.getName(exePath);
             String dosDir = toDosPath(exeDir);
-            if (dosDir == null) dosDir = "Z:" + exeDir.replace('/', '\\');
+            if (dosDir == null) {
+                // v12：toDosPath 修复后此分支仅剩 imagefs 外且非 /storage 的罕见
+                // 路径 —— 记录日志便于定位（此前静默拼 Z: 导致 wine"未发现"）
+                Log.w(TAG, "exe 目录无法映射容器盘符，回落 Z: 兜底: " + exeDir);
+                dosDir = "Z:" + exeDir.replace('/', '\\');
+            }
             args += "/dir " + StringUtils.escapeDOSPath(dosDir) + " \"" + filename + "\"";
         }
         else {
@@ -726,8 +765,10 @@ public class WinlatorSession {
     private String getDirectStartCommand(String exePath) {
         if (exePath == null || exePath.isEmpty()) return "\"winecfg\"";
         String dosPath = toDosPath(exePath);
-        if (dosPath == null)
+        if (dosPath == null) {
+            Log.w(TAG, "exe 无法映射容器盘符，回落 Z: 兜底: " + exePath);
             dosPath = "Z:" + new File(exePath).getAbsolutePath().replace('/', '\\');
+        }
         return "\"" + dosPath + "\"";
     }
 
