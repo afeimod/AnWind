@@ -149,11 +149,17 @@ fun ContainerEditorSheet(container: Container?, onDismiss: () -> Unit) {
                 }
                 // arm64ec 变体 dll 仅适用于 arm64ec wine（x86_64 wine 装了不可用）
                 val isArm64ec = wineVersion.contains("arm64ec")
+                // v11.1：versionSortKey 返回 List<Int>，不是 Comparable，不能直接给
+                // compareByDescending 用（CI 编译错 154/156 行）。改用逐段数值比较器。
                 dxvkVersions = (listOf(DefaultVersion.DXVK) +
                     dxAssets.filter { isArm64ec || !it.contains("arm64ec") } + dx)
-                    .distinct().sortedWith(compareByDescending<String> { versionSortKey(it) })
+                    .distinct().sortedWith(Comparator { a, b ->
+                        compareVersionKeys(versionSortKey(a), versionSortKey(b))
+                    })
                 vkd3dVersions = (listOf(DefaultVersion.VKD3D) + vkAssets + vk)
-                    .distinct().sortedWith(compareByDescending<String> { versionSortKey(it) })
+                    .distinct().sortedWith(Comparator { a, b ->
+                        compareVersionKeys(versionSortKey(a), versionSortKey(b))
+                    })
                 builtinDrivers = drvAssets.distinct()
                 installedDrivers = drv
                 // v11：旧容器脏版本自愈 —— 状态值不在（修复后的）版本列表中时
@@ -837,6 +843,22 @@ private fun versionSortKey(v: String): List<Int> =
     v.split('.', '-').map { seg ->
         seg.filter { it.isDigit() }.ifEmpty { "0" }.toIntOrNull() ?: 0
     }
+
+/**
+ * v11.1：List<Int> 不是 Comparable，不能直接喂给 compareByDescending
+ * （CI 编译错：Type mismatch: inferred type is List<Int> but Comparable<*>? was expected）。
+ * 逐段数值比较版本键，缺失段按 0 补齐：[2,12] vs [2,12,0] 视为相等。
+ * 返回负数表示 a 更旧，正数表示 a 更新，0 表示相等。
+ */
+private fun compareVersionKeys(a: List<Int>, b: List<Int>): Int {
+    val n = maxOf(a.size, b.size)
+    for (i in 0 until n) {
+        val x = a.getOrElse(i) { 0 }
+        val y = b.getOrElse(i) { 0 }
+        if (x != y) return x - y
+    }
+    return 0
+}
 
 /**
  * 盘符串解析（与 Container.drivesIterator 同源算法）：格式
