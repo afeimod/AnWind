@@ -247,6 +247,17 @@ public class WinlatorSession {
         WineUtils.createDosdevicesSymlinks(container);
         ensureDriveForPath(exePath);
 
+        // v13：解析 exe 的 DOS 路径（unix 侧回查验证 + 专用盘符绑定）。
+        // 背景：wine 侧报"File not found."的实际定位点是 winhandler 的
+        // ShellExecuteExA —— 它按 /dir 盘符目录解析裸文件名；此前 v12 虽把
+        // 映射算对了，但 dosdevices 里任何一个失效软链（如历史遗留的
+        // e:→com.winlator.cmod/storage 死链、y: 创建静默失败）都会让 wine
+        // 侧盘符解析落空。resolveExeDosPath 对每条候选映射做"unix 侧回查"，
+        // 并把 exe 目录直接绑成专用盘符，从结构上消灭这一失效类。
+        String[] exeDos = resolveExeDosPath(exePath);
+        if (exeDos != null)
+            Log.i(TAG, "exe DOS 映射: " + exeDos[0] + "（工作目录 " + exeDos[1] + "）");
+
         // ---- 7. RC 文件（Box64 per-app 配置） ----
         RCManager rcManager = new RCManager(context);
         rcManager.loadRCFiles();
@@ -296,8 +307,9 @@ public class WinlatorSession {
             Log.w(TAG, "winhandler.exe 缺失（容器模板不完整），回落 explorer 直启模式: " + winhandlerExe.getPath());
         String guestExecutable = "wine explorer /desktop=shell," + desktopResolution + " " +
             (hasWinHandler
-                ? "winhandler.exe " + getWineStartCommand(exePath)
-                : getDirectStartCommand(exePath));
+                ? "winhandler.exe " + getWineStartCommand(exePath, exeDos)
+                : getDirectStartCommand(exePath, exeDos));
+        Log.i(TAG, "guest 启动命令: " + guestExecutable);
 
         bionicLauncher = new BionicProgramLauncherComponent(contentsManager, null, null);
         bionicLauncher.setContainer(container);
@@ -733,22 +745,166 @@ public class WinlatorSession {
         return Character.toUpperCase(bestDrive.charAt(0)) + ":\\" + rest;
     }
 
-    private String getWineStartCommand(String exePath) {
+    // ==================================================================
+    // v13：exe DOS 路径解析（回查验证 + 专用盘符绑定）
+    // ==================================================================
+
+    /**
+     * 解析 exe 的 DOS 路径，返回 {完整DOS路径, 工作目录}；无法解析返回 null。
+     *
+     * 策略（逐级兜底，每一步都以"unix 侧真实存在"为准）：
+     * ① v12 的 dosdevices 扫描映射 → 回查验证（软链失效立即淘汰）；
+     * ② 把 exe 所在目录直接绑成专用盘符（x:/w:/v:/…，创建即验证），
+     *    得到 X:\&lt;文件名&gt; —— 不依赖任何既有盘符的正确性；
+     * ③ exe 位于 imagefs 内部 → Z:（Z: 固定映射 imagefs 根）；
+     * ④ 全部失败 → null（调用方保留旧行为并记日志）。
+     *
+     * 背景（v12 仍未根治"File not found."的原因）：映射计算正确 ≠ wine 侧
+     * 可用。dosdevices 中任何一条悬空软链（DEFAULT_DRIVES 里硬编码的
+     * com.winlator.cmod/storage 死链、y: 创建静默失败、/sdcard 与 /storage
+     * 规范化差异等）都会让 wine 侧 SetCurrentDirectory/路径查找落空，而
+     * Java 侧无从感知。本方法对所有候选映射强制回查，结构性杜绝。
+     */
+    private String[] resolveExeDosPath(String exePath) {
+        if (exePath == null || exePath.isEmpty()) return null;
+
+        // ① dosdevices 扫描 + 回查验证
+        String dos = toDosPath(exePath);
+        if (dos != null) {
+            String unixBack = verifyDriveMapping(dos);
+            if (unixBack != null && new File(unixBack).isFile()) {
+                Log.i(TAG, "exe DOS 映射（dosdevices 扫描，回查通过）: " + dos);
+                return new String[]{dos, parentDosDir(dos)};
+            }
+            Log.w(TAG, "dosdevices 扫描映射回查未通过（" + dos + " → " + unixBack
+                + "），改用专用盘符绑定");
+        }
+
+        // ② 专用盘符：直接把 exe 目录绑成盘符根
+        String exeDir = FileUtils.getDirname(exePath);
+        File dirFile = new File(exeDir);
+        String dirCanonical;
+        try { dirCanonical = dirFile.getCanonicalPath(); }
+        catch (Exception e) { dirCanonical = dirFile.getAbsolutePath(); }
+        String letter = bindExeDrive(dirCanonical);
+        if (letter != null) {
+            String name = FileUtils.getName(exePath);
+            String root = Character.toUpperCase(letter.charAt(0)) + ":\\.";
+            String dosFile = Character.toUpperCase(letter.charAt(0)) + ":\\" + name;
+            if (new File(dirCanonical, name).isFile()) {
+                return new String[]{dosFile, root};
+            }
+            Log.w(TAG, "专用盘符绑定后文件回查失败: " + dosFile);
+        }
+
+        // ③ imagefs 内部 → Z:（Z: 由 createDosdevicesSymlinks 固定指向 imagefs 根）
+        String abs;
+        try { abs = exe.getCanonicalPath(); }
+        catch (Exception e) { abs = exe.getAbsolutePath(); }
+        String imagefsRoot = ImageFs.find(context).getRootDir().getPath();
+        if (abs.startsWith(imagefsRoot) && exe.isFile()) {
+            String dosZ = "Z:" + abs.substring(imagefsRoot.length()).replace('/', '\\');
+            Log.w(TAG, "exe 回落 Z: 盘符: " + dosZ);
+            return new String[]{dosZ, parentDosDir(dosZ)};
+        }
+
+        Log.e(TAG, "exe 无法映射到任何容器盘符（dosdevices 扫描/专用绑定/Z: 均失败）: " + exePath);
+        return null;
+    }
+
+    /**
+     * 把目录绑成专用盘符：候选字母 x,w,v,u,t,s,r,q，跳过配置盘与 c:/z:，
+     * 候选位直接重建软链（FileUtils.symlink 内部先删旧链），创建后立即
+     * 验证可解析。成功返回盘符字母，失败返回 null。
+     */
+    private String bindExeDrive(String dirCanonical) {
+        if (dirCanonical == null || dirCanonical.isEmpty()) return null;
+        File dosdevices = new File(container.getRootDir(), ".wine/dosdevices");
+        if (!dosdevices.isDirectory()) dosdevices.mkdirs();
+
+        java.util.Set<String> configured = new java.util.HashSet<>();
+        configured.add("c"); configured.add("z");
+        for (String[] d : container.drivesIterator())
+            configured.add(d[0].toLowerCase(java.util.Locale.ENGLISH));
+
+        String[] candidates = {"x", "w", "v", "u", "t", "s", "r", "q"};
+        for (String letter : candidates) {
+            if (configured.contains(letter)) continue;
+            File link = new File(dosdevices, letter + ":");
+            FileUtils.symlink(dirCanonical, link.getPath());
+            if (link.exists()) {
+                Log.i(TAG, "exe 专用盘符绑定: " + letter.toUpperCase(java.util.Locale.ENGLISH)
+                    + ": → " + dirCanonical);
+                return letter;
+            }
+            Log.w(TAG, "专用盘符软链不可用（创建失败？）: " + link.getPath());
+        }
+        return null;
+    }
+
+    /**
+     * 回查验证：把 DOS 路径经 dosdevices 软链目标换算回 unix 路径。
+     * 返回换算出的 unix 绝对路径（调用方再判断存在性）；软链失效/无法
+     * 换算返回 null。这里只做换算与软链可解析性检查，不判 isFile ——
+     * 便于目录/文件两种场景复用。
+     */
+    private String verifyDriveMapping(String dosPath) {
+        if (dosPath == null || dosPath.length() < 3 || dosPath.charAt(1) != ':') return null;
+        File link = new File(container.getRootDir(),
+            ".wine/dosdevices/" + Character.toLowerCase(dosPath.charAt(0)) + ":");
+        if (!link.exists()) return null;
+        String target;
+        try { target = link.getCanonicalPath(); }
+        catch (Exception e) { return null; }
+        String rest = dosPath.substring(2).replace('\\', '/');
+        File unix = new File(target, rest);
+        try { return unix.getCanonicalPath(); }
+        catch (Exception e) { return unix.getAbsolutePath(); }
+    }
+
+    /** "X:\dir\file.exe" → "X:\dir"；根目录场景返回 "X:\."（避免悬尾反斜杠的引号陷阱）。 */
+    private static String parentDosDir(String dosFile) {
+        int cut = dosFile.lastIndexOf('\\');
+        if (cut <= 2) return dosFile.substring(0, 2) + "\\.";
+        return dosFile.substring(0, cut);
+    }
+
+    /**
+     * DOS 路径的启动命令引号包装：一律加引号。
+     * 与 ProcessHelper.splitCommand（保留引号字符）+ wine argv 往返 +
+     * winhandler CommandLineToArgvW 组合后，引号会被正确剥离（上游同构，
+     * 已做逐字符仿真验证）；路径含空格时也保持单一参数。
+     * 注意：不再使用 StringUtils.escapeDOSPath —— 其反斜杠翻倍与 "\\ "（反
+     * 斜杠+空格）shell 风格转义在 DOS 路径语境下是多余且危险的。
+     */
+    private static String dosQuote(String dosPath) {
+        if (dosPath == null || dosPath.isEmpty()) return "\"\"";
+        return "\"" + dosPath + "\"";
+    }
+
+    private String getWineStartCommand(String exePath, String[] exeDos) {
         String args = "";
         String execArgs = envVars.get("EXTRA_EXEC_ARGS");
         envVars.remove("EXTRA_EXEC_ARGS");
 
         if (exePath != null && !exePath.isEmpty()) {
-            String exeDir = FileUtils.getDirname(exePath);
-            String filename = FileUtils.getName(exePath);
-            String dosDir = toDosPath(exeDir);
-            if (dosDir == null) {
-                // v12：toDosPath 修复后此分支仅剩 imagefs 外且非 /storage 的罕见
-                // 路径 —— 记录日志便于定位（此前静默拼 Z: 导致 wine"未发现"）
-                Log.w(TAG, "exe 目录无法映射容器盘符，回落 Z: 兜底: " + exeDir);
-                dosDir = "Z:" + exeDir.replace('/', '\\');
+            if (exeDos != null) {
+                // v13 主路径：winhandler（反汇编确认契约）lpFile=首个非旗标参数、
+                // lpDirectory=/dir 值。传完整 DOS 路径后 wine 直接按绝对路径定位，
+                // 不再依赖"裸文件名 + 工作目录"的解析链，任一环节损坏都不再致命。
+                args += "/dir " + dosQuote(exeDos[1]) + " " + dosQuote(exeDos[0]);
             }
-            args += "/dir " + StringUtils.escapeDOSPath(dosDir) + " \"" + filename + "\"";
+            else {
+                // 兜底：沿用 v12 行为（目录映射 + 裸文件名）
+                String exeDir = FileUtils.getDirname(exePath);
+                String filename = FileUtils.getName(exePath);
+                String dosDir = toDosPath(exeDir);
+                if (dosDir == null) {
+                    Log.w(TAG, "exe 目录无法映射容器盘符，回落 Z: 兜底: " + exeDir);
+                    dosDir = "Z:" + exeDir.replace('/', '\\');
+                }
+                args += "/dir " + dosQuote(dosDir) + " " + dosQuote(filename);
+            }
         }
         else {
             args += "\"winecfg\"";
@@ -761,15 +917,17 @@ public class WinlatorSession {
      * v10：winhandler.exe 缺失时的兜底启动命令 —— 不经 winhandler，
      * 由 explorer 直接在虚拟桌面内启动目标 exe（游戏照常运行，仅缺少
      * winhandler 承担的 UDP 7947 窗口/进程信息与手柄通道）。
+     * v13：优先使用已回查验证的完整 DOS 路径。
      */
-    private String getDirectStartCommand(String exePath) {
+    private String getDirectStartCommand(String exePath, String[] exeDos) {
         if (exePath == null || exePath.isEmpty()) return "\"winecfg\"";
+        if (exeDos != null) return dosQuote(exeDos[0]);
         String dosPath = toDosPath(exePath);
         if (dosPath == null) {
             Log.w(TAG, "exe 无法映射容器盘符，回落 Z: 兜底: " + exePath);
             dosPath = "Z:" + new File(exePath).getAbsolutePath().replace('/', '\\');
         }
-        return "\"" + dosPath + "\"";
+        return dosQuote(dosPath);
     }
 
     // ==================================================================

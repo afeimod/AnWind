@@ -38,6 +38,8 @@ public class X11DisplayComponent extends EnvironmentComponent {
     private final X11DisplayHost host;
     private File symlinkPath;
     private File symlinkPathFallback;
+    /** v13：异步桥接线程停止标记（stop() 置位，防止会话结束后重复建桥）。 */
+    private volatile boolean bridgeStopped = false;
 
     public X11DisplayComponent(X11DisplayHost host) {
         this.host = host;
@@ -47,6 +49,7 @@ public class X11DisplayComponent extends EnvironmentComponent {
     public void start() {
         Context context = environment.getContext();
         ImageFs imageFs = environment.getImageFs();
+        bridgeStopped = false;
 
         // 1. 定位 AnWind X server（lorie）的 X11 socket
         String socketPath = X11SocketFinder.findSocket(context);
@@ -76,12 +79,38 @@ public class X11DisplayComponent extends EnvironmentComponent {
         else {
             android.util.Log.w("X11DisplayComponent",
                 "未发现 AnWind X11 socket（已查 " + java.util.Arrays.toString(X11SocketFinder.candidateDirs(context)) +
-                "）—— wine 将无法连接 X server；" +
+                "）—— 转入后台等待，socket 就位即建桥；" +
                 "请先在 AnWind 终端执行 anwind-x11 :1 或在 Winlator 容器页重新启动");
+            // v13：不再单次失败即放弃 —— wine 的 explorer/wineboot 连接 X 较晚
+            // （冷启动可 >10s），后台继续等待并建桥，首次启动黑屏/不显示的
+            // 竞态就此消除。wine 侧 DISPLAY=:0 不变，桥建成后新连接即生效。
+            startBridgeWaiter(context, imageFs);
         }
 
         // 3. 容器分辨率 → AnWind 分辨率握手（X 屏幕切换 + 显示层拉伸铺满）
         if (host != null) host.applyContainerResolution();
+    }
+
+    /** v13：后台等待 X11 socket 就位并建桥（最长约 15s；stop() 时退出）。 */
+    private void startBridgeWaiter(final Context context, final ImageFs imageFs) {
+        Thread waiter = new Thread(() -> {
+            for (int i = 0; i < 30; i++) {
+                if (bridgeStopped) return;
+                try { Thread.sleep(500); }
+                catch (InterruptedException e) { return; }
+                String socketPath = X11SocketFinder.findSocket(context);
+                if (socketPath != null) {
+                    if (bridgeStopped) return;
+                    android.util.Log.i("X11DisplayComponent",
+                        "X11 socket 后台就位（第 " + (i + 1) + " 轮等待），建立显示桥: " + socketPath);
+                    createSymlinks(imageFs, socketPath);
+                    return;
+                }
+            }
+            android.util.Log.w("X11DisplayComponent", "X11 socket 后台等待超时（约 15s），wine 本次无法显示画面");
+        }, "X11BridgeWaiter");
+        waiter.setDaemon(true);
+        waiter.start();
     }
 
     private void createSymlinks(ImageFs imageFs, String socketPath) {
@@ -121,6 +150,7 @@ public class X11DisplayComponent extends EnvironmentComponent {
 
     @Override
     public void stop() {
+        bridgeStopped = true;
         if (symlinkPath != null) symlinkPath.delete();
         if (symlinkPathFallback != null) symlinkPathFallback.delete();
         symlinkPath = null;
