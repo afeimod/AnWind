@@ -479,6 +479,11 @@ public class Container {
                     break;
                 case "ddrawrapper":
                     setDDrawWrapper(data.getString(key));
+                    // v2.25 fix: missing break fell through to "dxwrapperConfig" case;
+                    // when the key is absent (:app new containers default, saveData
+                    // skips empty string) data.getString() throws JSONException --
+                    // container creation failed / containers vanished after restart.
+                    break;
                 case "dxwrapperConfig" :
                     setDXWrapperConfig(data.getString(key));
                     break;

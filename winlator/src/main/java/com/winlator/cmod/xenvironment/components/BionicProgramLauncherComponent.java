@@ -324,6 +324,9 @@ public class BionicProgramLauncherComponent extends GuestProgramLauncherComponen
         String emulator = container.getEmulator();
         if (shortcut != null)
             emulator = shortcut.getExtra("emulator", container.getEmulator());
+        // v2.25 fix: emulator may be null (saved JSON without "emulator" key;
+        // JSONObject.put(name, null) removes the key). NPE in arm64ec branch.
+        if (emulator == null || emulator.isEmpty()) emulator = "box64";
 
         // Construct the command without Box64 to the Wine executable
         String command = "";

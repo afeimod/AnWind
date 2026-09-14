@@ -217,6 +217,13 @@ public class WinlatorSession {
         envVars.put("WINEPREFIX", imageFs2.wineprefix);
         envVars.put("WINEDEBUG", "-all");
 
+        // v2.25 修复：漏合并容器环境变量（上游 XServerDisplayActivity 在同位置
+        // 执行 envVars.putAll(container.getEnvVars())）。DEFAULT_ENV_VARS 里的
+        // ZINK_DESCRIPTORS/ZINK_DEBUG/mesa_glthread/TU_DEBUG=noconform,sysmem
+        // 等对 turnip+DXVK 渲染路径至关重要，缺失会导致部分游戏初始化异常。
+        envVars.putAll(container.getEnvVars());
+        if (!envVars.has("WINEESYNC")) envVars.put("WINEESYNC", "1");
+
         FileUtils.clear(imageFs2.getTmpDir());
 
         WinHandler winHandler = host != null ? host.getWinHandler() : null;
@@ -257,7 +264,19 @@ public class WinlatorSession {
         }
 
         // ---- 10. 组装 XEnvironment（显示端 = X11DisplayComponent） ----
-        String guestExecutable = "wine " + getWineStartCommand(exePath);
+        // v2.25 修复（exe 启动失败根因）：启动命令缺失两级前缀。上游完整命令为：
+        //   wine explorer /desktop=shell,<宽x高> winhandler.exe /dir <dos目录> "文件.exe"
+        // - explorer /desktop=shell：<宽x高> 建 wine 虚拟桌面（部分游戏必须，
+        //   参见 X11ResolutionLink fix19 注释）；
+        // - winhandler.exe：真正拉起目标 exe 的引擎自带的启动器（位于
+        //   container_pattern_common.tzst 的 drive_c/windows/ 下），同时承担
+        //   UDP 7947 窗口/进程信息回传（触摸→鼠标、手柄 XInput 通道的对端）。
+        // 此前直接 "wine /dir … " 会把 /dir 当作程序名去加载，wine 立即
+        // 报"cannot find '/dir'"退出 → 容器启动 exe 必败。
+        // screenSize=="native" 时虚拟桌面取 1280x720 兜底，由 X11FitClient 贴合。
+        String desktopResolution = container.getScreenSize();
+        if (desktopResolution == null || !desktopResolution.matches("\\d+x\\d+")) desktopResolution = "1280x720";
+        String guestExecutable = "wine explorer /desktop=shell," + desktopResolution + " winhandler.exe " + getWineStartCommand(exePath);
 
         bionicLauncher = new BionicProgramLauncherComponent(contentsManager, null, null);
         bionicLauncher.setContainer(container);

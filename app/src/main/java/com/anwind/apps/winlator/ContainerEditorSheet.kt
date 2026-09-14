@@ -137,7 +137,7 @@ fun ContainerEditorSheet(container: Container?, onDismiss: () -> Unit) {
                         if (created == null) {
                             Toast.makeText(
                                 context,
-                                "容器创建失败：APK 缺少容器模板（wineprefix pattern），请用最新构建",
+                                "容器创建失败：引擎缺少容器模板（wineprefix pattern）或配置异常，请更换最新 CI 构建并看 logcat",
                                 Toast.LENGTH_LONG
                             ).show()
                         }
