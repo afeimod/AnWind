@@ -15,7 +15,16 @@ public abstract class DXVKConfig {
 
     public static KeyValueSet parseConfig(Object config) {
         String data = config != null && !config.toString().isEmpty() ? config.toString() : DEFAULT_CONFIG;
-        return new KeyValueSet(data);
+        // v11 修复（容器启动失败 NumberFormatException: For input string: ""）：
+        // 旧版 UI 曾以 ';'-分隔或手输方式写入 dxwrapperConfig，脏数据里缺失
+        // version 键 → setupWineSystemFiles 拼出 "dxvk-"（空版本）→
+        // extractDXWrapperFiles → compareVersion(parseInt("")) 崩溃。
+        // 此处统一把 ';' 清洗为 KeyValueSet 的 ',' 分隔，并在 version 缺失时
+        // 兜底默认版本，保证调用方永远拿到可解析的版本号。
+        data = data.replace(';', ',');
+        KeyValueSet set = new KeyValueSet(data);
+        if (set.get("version").isEmpty()) set.put("version", DefaultVersion.DXVK);
+        return set;
     }
 
     public static void setEnvVars(Context context, KeyValueSet config, EnvVars envVars) {

@@ -86,6 +86,14 @@ public class KeyValueSet implements Iterable<String[]> {
     public Iterator<String[]> iterator() {
         final int[] start = {0};
         final int[] end = {data.indexOf(",")};
+        // v11 fix (root cause of container start failure NumberFormatException:
+        // For input string: ""): for a single key-value pair (no comma, e.g.
+        // "version=2.12.0" written by the UI) end starts at -1, so hasNext()
+        // evaluates 0 < -1 which is always false, the loop body never runs and
+        // get() returns "" for every key; downstream then builds "dxvk-" (empty
+        // version) and crashes on parseInt(""). Aligned with the -1->length
+        // handling already present inside next().
+        if (end[0] == -1) end[0] = data.length();
         final String[] item = new String[2];
         return new Iterator<String[]>() {
             @Override

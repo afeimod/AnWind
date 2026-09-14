@@ -3,7 +3,6 @@ package com.anwind.apps.winlator
 import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -105,6 +104,9 @@ fun ContainerEditorSheet(container: Container?, onDismiss: () -> Unit) {
     var dxvkVersions by remember { mutableStateOf(listOf(DefaultVersion.DXVK)) }
     var vkd3dVersions by remember { mutableStateOf(listOf(DefaultVersion.VKD3D)) }
     var installedDrivers by remember { mutableStateOf(listOf<String>()) }
+    // v11：APK 内置 Adreno 驱动（winlator assets graphics_driver/adrenotools-*.tzst，
+    // 选中后引擎侧 setDriverById → extractDriverFromResources 自动从资源安装挂载）
+    var builtinDrivers by remember { mutableStateOf(listOf<String>()) }
     // 选中的 DX 包装器版本（dxvk 用 version= 键；vkd3d 用 vkd3dVersion= 键
     // —— v10 修复：引擎侧 VKD3DConfig/setupWineSystemFiles 读 vkd3dVersion，
     // 此前写 version 键导致 vkd3d 版本永不生效）
@@ -128,9 +130,36 @@ fun ContainerEditorSheet(container: Container?, onDismiss: () -> Unit) {
                 val vk = cm.getProfiles(ContentProfile.ContentType.CONTENT_TYPE_VKD3D)
                     ?.map { it.verName }.orEmpty()
                 val drv = AdrenotoolsManager(context).enumarateInstalledDrivers().toList()
-                dxvkVersions = (listOf(DefaultVersion.DXVK) + dx).distinct()
-                vkd3dVersions = (listOf(DefaultVersion.VKD3D) + vk).distinct()
+                // v11：扫描 APK 内置版本资产（winlator 模块 assets，运行时合并可见）
+                // —— 此前列表仅有“默认 + 已安装内容包”，未装内容包时永远只有
+                // 一个版本可选（用户报障：dxvk/vkd3d/驱动“都是只有一个版本”）
+                val am = context.assets
+                val dxwrapperAssets = am.list("dxwrapper")?.toList().orEmpty()
+                val dxAssets = dxwrapperAssets.mapNotNull { n ->
+                    if (n.startsWith("dxvk-") && n.endsWith(".tzst"))
+                        n.removePrefix("dxvk-").removeSuffix(".tzst") else null
+                }
+                val vkAssets = dxwrapperAssets.mapNotNull { n ->
+                    if (n.startsWith("vkd3d-") && n.endsWith(".tzst"))
+                        n.removePrefix("vkd3d-").removeSuffix(".tzst") else null
+                }
+                val drvAssets = am.list("graphics_driver")?.toList().orEmpty().mapNotNull { n ->
+                    if (n.startsWith("adrenotools-") && n.endsWith(".tzst"))
+                        n.removePrefix("adrenotools-").removeSuffix(".tzst") else null
+                }
+                // arm64ec 变体 dll 仅适用于 arm64ec wine（x86_64 wine 装了不可用）
+                val isArm64ec = wineVersion.contains("arm64ec")
+                dxvkVersions = (listOf(DefaultVersion.DXVK) +
+                    dxAssets.filter { isArm64ec || !it.contains("arm64ec") } + dx)
+                    .distinct().sortedWith(compareByDescending<String> { versionSortKey(it) })
+                vkd3dVersions = (listOf(DefaultVersion.VKD3D) + vkAssets + vk)
+                    .distinct().sortedWith(compareByDescending<String> { versionSortKey(it) })
+                builtinDrivers = drvAssets.distinct()
                 installedDrivers = drv
+                // v11：旧容器脏版本自愈 —— 状态值不在（修复后的）版本列表中时
+                // 重置为默认，避免选中态悬空与旧脏值随保存回写
+                if (dxvkVersion !in dxvkVersions) dxvkVersion = DefaultVersion.DXVK
+                if (vkd3dVersion !in vkd3dVersions) vkd3dVersion = DefaultVersion.VKD3D
             } catch (_: Exception) {}
         }
     }
@@ -139,6 +168,9 @@ fun ContainerEditorSheet(container: Container?, onDismiss: () -> Unit) {
     var showDxvkPreset by remember { mutableStateOf(false) }
     var showMaxMemPreset by remember { mutableStateOf(false) }
     var showBlacklistPreset by remember { mutableStateOf(false) }
+    // v11：版本类选项统一点击弹列表选择（DXVK/VKD3D 版本、驱动版本）
+    var showVersionPicker by remember { mutableStateOf(false) }
+    var showDriverPicker by remember { mutableStateOf(false) }
     var dxvkConfigLabel by remember { mutableStateOf(if (dxwrapperConfig.isEmpty()) "默认" else "自定义") }
 
     val dark = theme.isDark
@@ -197,7 +229,9 @@ fun ContainerEditorSheet(container: Container?, onDismiss: () -> Unit) {
                     // "version"，vkd3d 用 "vkd3dVersion"+"vkd3dLevel"（引擎侧
                     // setupWineSystemFiles/VKD3DConfig 按这两个键读取）
                     if (dxwrapper == "dxvk" || dxwrapper == "vkd3d") {
-                        val base = dxwrapperConfig.ifEmpty {
+                        // v11：';' 脏格式预清洗（引擎侧 KeyValueSet 按 ',' 分隔，
+                        // 旧版 UI 曾以 ';' 分隔写入，不清洗净拼出不可解析配置）
+                        val base = dxwrapperConfig.replace(';', ',').ifEmpty {
                             if (dxwrapper == "dxvk") "version=${DefaultVersion.DXVK}"
                             else "vkd3dVersion=${DefaultVersion.VKD3D},vkd3dLevel=12_1"
                         }
@@ -309,26 +343,16 @@ fun ContainerEditorSheet(container: Container?, onDismiss: () -> Unit) {
                         "llvmpipe 为软件渲染",
                     color = subColor, fontSize = 9.sp, lineHeight = 12.sp
                 )
-                // v8：驱动版本选择（graphicsDriverConfig 的 version 键）——
-                // System = 系统驱动；其余为已安装的 Adreno 驱动包（turnip）
+                // v8/v11：驱动版本（graphicsDriverConfig 的 version 键）——
+                // 点击弹列表选择：System = 系统驱动；APK 内置版本选中后引擎
+                // 自动从资源安装挂载；其余为已安装的 Adreno 驱动包
                 FieldRow("驱动版本", labelColor, subColor) {
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(4.dp),
-                        modifier = Modifier.horizontalScroll(rememberScrollState())
-                    ) {
-                        listOf("System").forEach { d ->
-                            Chip(d, driverVersion == d, theme) { driverVersion = d }
-                        }
-                        installedDrivers.forEach { d ->
-                            Chip(d, driverVersion == d, theme) { driverVersion = d }
-                        }
+                    Chip(driverVersion.ifEmpty { "System" }, false, theme) {
+                        showDriverPicker = true
                     }
                 }
                 Text(
-                    if (installedDrivers.isEmpty())
-                        "仅内置系统驱动；安装 Adreno 驱动包后此处会出现可选版本（保存后对容器生效）"
-                    else
-                        "System = 系统驱动；其余为已安装的 Adreno 驱动包，启动容器时自动挂载",
+                    "System = 系统驱动；其余为 Adreno 驱动包（内置版本启动时自动安装挂载，已安装版本直接生效）",
                     color = subColor, fontSize = 9.sp, lineHeight = 12.sp
                 )
                 // v10：点击弹列表选择，替代手输文本框
@@ -363,23 +387,16 @@ fun ContainerEditorSheet(container: Container?, onDismiss: () -> Unit) {
                     }
                 }
                 if (dxwrapper == "dxvk" || dxwrapper == "vkd3d") {
-                    // v8：DXVK/VKD3D 版本选择（默认内置版本 + 内容管理器已安装版本）
+                    // v11：DXVK/VKD3D 版本点击弹列表选择（APK 内置 16 个 DXVK /
+                    // 4 个 VKD3D 版本 + 已安装内容包），替代单行横排 Chip
                     FieldRow(
                         if (dxwrapper == "dxvk") "DXVK 版本" else "VKD3D 版本",
                         labelColor, subColor
                     ) {
-                        val versions = if (dxwrapper == "dxvk") dxvkVersions else vkd3dVersions
-                        val selected = if (dxwrapper == "dxvk") dxvkVersion else vkd3dVersion
-                        Row(
-                            horizontalArrangement = Arrangement.spacedBy(4.dp),
-                            modifier = Modifier.horizontalScroll(rememberScrollState())
-                        ) {
-                            versions.forEach { v ->
-                                Chip(v, selected == v, theme) {
-                                    if (dxwrapper == "dxvk") dxvkVersion = v else vkd3dVersion = v
-                                }
-                            }
-                        }
+                        Chip(
+                            if (dxwrapper == "dxvk") dxvkVersion else vkd3dVersion,
+                            false, theme
+                        ) { showVersionPicker = true }
                     }
                     // v10：点击弹预设列表（帧率上限/异步着色/显存上限），
                     // 替代手输配置串；选中版本始终随预设一并写入
@@ -531,6 +548,39 @@ fun ContainerEditorSheet(container: Container?, onDismiss: () -> Unit) {
     }
 
     // ================= v10 预设选择对话框 =================
+    // v11：DXVK/VKD3D 版本选择（点击弹列表，替代手输/横排 Chip）
+    if (showVersionPicker) {
+        val versions = if (dxwrapper == "dxvk") dxvkVersions else vkd3dVersions
+        val currentVersion = if (dxwrapper == "dxvk") dxvkVersion else vkd3dVersion
+        PickerDialog(
+            title = if (dxwrapper == "dxvk")
+                "DXVK 版本（共 ${versions.size} 个）" else "VKD3D 版本（共 ${versions.size} 个）",
+            options = versions.map { it to it },
+            current = currentVersion,
+            onDismiss = { showVersionPicker = false }
+        ) { value ->
+            if (dxwrapper == "dxvk") dxvkVersion = value else vkd3dVersion = value
+            showVersionPicker = false
+        }
+    }
+    // v11：驱动版本选择（System + APK 内置 + 已安装 Adreno 驱动）
+    if (showDriverPicker) {
+        val options = mutableListOf<Pair<String, String>>()
+        options.add("System" to "System（系统内置驱动）")
+        builtinDrivers.forEach { options.add(it to "$it（APK 内置，选中后自动安装挂载）") }
+        installedDrivers.forEach {
+            if (!builtinDrivers.contains(it)) options.add(it to "$it（已安装）")
+        }
+        PickerDialog(
+            title = "驱动版本（Adreno/turnip）",
+            options = options,
+            current = driverVersion,
+            onDismiss = { showDriverPicker = false }
+        ) { value ->
+            driverVersion = value
+            showDriverPicker = false
+        }
+    }
     if (showDxvkPreset) {
         if (dxwrapper == "vkd3d") {
             PickerDialog(
@@ -778,6 +828,15 @@ private fun AddDriveRow(fieldBg: Color, labelColor: Color, subColor: Color, onAd
         }
     }
 }
+
+/**
+ * v11：版本字符串排序键 —— 按数字段降序展示版本列表（新版本在前）。
+ * "2.12-0" → [2,12,0]；"2.4-gplasync" → [2,4,0]；非数字段（如 async）按 0 处理。
+ */
+private fun versionSortKey(v: String): List<Int> =
+    v.split('.', '-').map { seg ->
+        seg.filter { it.isDigit() }.ifEmpty { "0" }.toIntOrNull() ?: 0
+    }
 
 /**
  * 盘符串解析（与 Container.drivesIterator 同源算法）：格式

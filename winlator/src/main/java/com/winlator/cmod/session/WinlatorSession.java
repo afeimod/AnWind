@@ -403,11 +403,18 @@ public class WinlatorSession {
         String dxwrapper = container.getDXWrapper();
         if (dxwrapper.equals("dxvk")) {
             dxwrapperConfig = DXVKConfig.parseConfig(container.getDXWrapperConfig());
-            dxwrapper = "dxvk-" + dxwrapperConfig.get("version");
+            // v11 双保险：parseConfig 已兜底 version，这里再校验一次 ——
+            // 此前脏数据拼出 "dxvk-"（空版本）→ extractDXWrapperFiles →
+            // compareVersion(parseInt("")) NumberFormatException，容器启动失败
+            String dxvkVer = dxwrapperConfig.get("version");
+            if (dxvkVer == null || dxvkVer.isEmpty()) dxvkVer = DefaultVersion.DXVK;
+            dxwrapper = "dxvk-" + dxvkVer;
         }
         else if (dxwrapper.equals("vkd3d")) {
             dxwrapperConfig = VKD3DConfig.parseConfig(container.getDXWrapperConfig());
-            dxwrapper = "vkd3d-" + dxwrapperConfig.get("vkd3dVersion");
+            String vkd3dVer = dxwrapperConfig.get("vkd3dVersion");
+            if (vkd3dVer == null || vkd3dVer.isEmpty()) vkd3dVer = DefaultVersion.VKD3D;
+            dxwrapper = "vkd3d-" + vkd3dVer;
         }
         else dxwrapperConfig = null;
 
@@ -477,7 +484,8 @@ public class WinlatorSession {
             if (profile != null) {
                 contentsManager.applyContent(profile);
             } else {
-                TarCompressorUtils.extract(TarCompressorUtils.Type.ZSTD, context, "dxwrapper/" + dxwrapper + ".tzst", windowsDir);
+                if (!TarCompressorUtils.extract(TarCompressorUtils.Type.ZSTD, context, "dxwrapper/" + dxwrapper + ".tzst", windowsDir))
+                    Log.w(TAG, "vkd3d 版本资产缺失: dxwrapper/" + dxwrapper + ".tzst（检查容器 dxwrapperConfig 的 vkd3dVersion）");
             }
         }
         else if (dxwrapper.contains("dxvk")) {
@@ -485,7 +493,8 @@ public class WinlatorSession {
             if (profile != null) {
                 contentsManager.applyContent(profile);
             } else {
-                TarCompressorUtils.extract(TarCompressorUtils.Type.ZSTD, context, "dxwrapper/" + dxwrapper + ".tzst", windowsDir);
+                if (!TarCompressorUtils.extract(TarCompressorUtils.Type.ZSTD, context, "dxwrapper/" + dxwrapper + ".tzst", windowsDir))
+                    Log.w(TAG, "dxvk 版本资产缺失: dxwrapper/" + dxwrapper + ".tzst（检查容器 dxwrapperConfig 的 version）");
                 if (compareVersion(StringUtils.parseNumber(dxwrapper), "2.4") < 0) {
                     TarCompressorUtils.extract(TarCompressorUtils.Type.ZSTD, context, "dxwrapper/d8vk-" + DefaultVersion.D8VK + ".tzst", windowsDir);
                 }
@@ -736,15 +745,30 @@ public class WinlatorSession {
     }
 
     private static int compareVersion(String varA, String varB) {
+        // v11 防御（容器启动失败 NumberFormatException: For input string: ""）：
+        // 版本串可能为空（脏数据 "dxvk-" 经 parseNumber 产出 ""）或含非数字段
+        // （gplasync 后缀版本经 parseNumber 产生尾随 '.' → split 出空段）。
+        // 此前直接 Integer.parseInt 抛异常终止整个容器启动流程，现逐段安全解析。
+        if (varA == null || varA.isEmpty()) varA = "0";
+        if (varB == null || varB.isEmpty()) varB = "0";
         final String[] levelsA = varA.split("\\.");
         final String[] levelsB = varB.split("\\.");
         int minLen = Math.min(levelsA.length, levelsB.length);
         int numA, numB;
         for (int i = 0; i < minLen; i++) {
-            numA = Integer.parseInt(levelsA[i]);
-            numB = Integer.parseInt(levelsB[i]);
+            numA = parseIntSafe(levelsA[i]);
+            numB = parseIntSafe(levelsB[i]);
             if (numA != numB) return numA - numB;
         }
         return levelsA.length - levelsB.length;
+    }
+
+    private static int parseIntSafe(String s) {
+        try {
+            return Integer.parseInt(s.trim());
+        }
+        catch (NumberFormatException e) {
+            return 0;
+        }
     }
 }
