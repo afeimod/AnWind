@@ -1,6 +1,7 @@
 package com.anwind.apps.winlator
 
 import android.content.Context
+import android.util.Log
 import android.widget.Toast
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -13,6 +14,7 @@ import com.anwind.data.model.DesktopItemType
 import com.termux.x11.X11InputHub
 import com.winlator.cmod.container.Container
 import com.winlator.cmod.container.ContainerManager
+import com.winlator.cmod.core.TarCompressorUtils
 import com.winlator.cmod.session.WinlatorSession
 import com.winlator.cmod.x11.X11SocketFinder
 import com.winlator.cmod.xenvironment.ImageFs
@@ -241,6 +243,24 @@ object X11SessionStarter {
         // XKB 键盘数据（X server 初始化必需；随 bootstrap 部署）
         val xkbDir = File("$prefix/etc/anwind/x11/xkb")
         val xkbShare = File("$prefix/share/X11/xkb")
+        // AnWind v7 修复：与终端脚本 anwind-x11 行为对齐 —— rules 目录缺失但
+        // xkb.tar.gz 存在时先解压（脚本 rev20 自带同样的自愈，此前本侧只会
+        // return false，导致“终端拉 X11正常、容器侧永远拉不起来”的不一致）。
+        if (!xkbDir.resolve("rules").isDirectory) {
+            val xkbTarball = File("$prefix/etc/anwind/x11/xkb.tar.gz")
+            if (xkbTarball.isFile) {
+                try {
+                    xkbDir.mkdirs()
+                    if (TarCompressorUtils.extractTarGz(xkbTarball, xkbDir)) {
+                        Log.i("X11SessionStarter", "XKB 数据自解压完成: ${xkbDir.path}")
+                    } else {
+                        Log.w("X11SessionStarter", "XKB 数据解压失败: ${xkbTarball.path}")
+                    }
+                } catch (t: Throwable) {
+                    Log.w("X11SessionStarter", "XKB 数据解压异常", t)
+                }
+            }
+        }
         val xkbRoot = when {
             xkbDir.resolve("rules").isDirectory -> xkbDir.path
             xkbShare.resolve("rules").isDirectory -> xkbShare.path

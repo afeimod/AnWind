@@ -291,6 +291,66 @@ public abstract class TarCompressorUtils {
     }
 
 
+
+    /**
+     * AnWind v7：解包 gzip 压缩的 tar（.tar.gz/.tgz）。
+     * XKB 键盘数据（etc/anwind/x11/xkb.tar.gz）是 gzip 格式，而 Type 枚举
+     * 只有 XZ/ZSTD —— 容器会话侧（X11SessionStarter.ensureRunning）此前无法
+     * 复用本工具做自愈解压。复用 commons-compress 的 TarArchiveInputStream
+     * （自动处理 GNU 长名与 PAX 头），GZIP 流由 java.util.zip 提供，无新增依赖。
+     * 语义与终端脚本 `tar -xzf <tarball> -C <dest>` 对齐：条目按原路径落位。
+     */
+    public static boolean extractTarGz(File source, File destination) {
+        return extractTarGz(source, destination, null);
+    }
+
+    public static boolean extractTarGz(File source, File destination, OnExtractFileListener onExtractFileListener) {
+        if (source == null || !source.isFile() || destination == null) return false;
+        try (InputStream inStream = new BufferedInputStream(new FileInputStream(source), StreamUtils.BUFFER_SIZE);
+             TarArchiveInputStream tar = new TarArchiveInputStream(new java.util.zip.GZIPInputStream(inStream, StreamUtils.BUFFER_SIZE))) {
+            destination.mkdirs();
+            TarArchiveEntry entry;
+            while ((entry = (TarArchiveEntry) tar.getNextEntry()) != null) {
+                if (!tar.canReadEntryData(entry)) continue;
+
+                String entryName = entry.getName();
+                File file = new File(destination, entryName);
+
+                // 防路径逃逸（归档条目含 "../" 时拒绝写出）
+                String canonical = file.getCanonicalPath();
+                String destCanonical = destination.getCanonicalPath();
+                if (!canonical.equals(destCanonical) && !canonical.startsWith(destCanonical + File.separator)) continue;
+
+                if (onExtractFileListener != null) {
+                    file = onExtractFileListener.onExtractFile(file, entry.getSize());
+                    if (file == null) continue;
+                }
+
+                if (entry.isDirectory()) {
+                    if (!file.isDirectory()) file.mkdirs();
+                }
+                else if (entry.isSymbolicLink()) {
+                    FileUtils.symlink(entry.getLinkName(), file.getAbsolutePath());
+                }
+                else {
+                    File parent = file.getParentFile();
+                    if (parent != null && !parent.isDirectory() && !parent.mkdirs()) continue;
+                    try (BufferedOutputStream outStream = new BufferedOutputStream(new FileOutputStream(file), StreamUtils.BUFFER_SIZE)) {
+                        if (!StreamUtils.copy(tar, outStream)) return false;
+                    }
+                }
+
+                FileUtils.chmod(file, entry.isDirectory() ? 0755 : 0644);
+                file.setLastModified(entry.getModTime().getTime());
+            }
+            return true;
+        }
+        catch (IOException e) {
+            Log.e("TarCompressorUtils", "Failed to extract tar.gz file", e);
+            return false;
+        }
+    }
+
 }
 
 

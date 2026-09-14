@@ -77,6 +77,16 @@ public class X11InputHub {
     public synchronized WinHandler getWinHandler() {
         if (winHandler == null) {
             WinHandler wh = new WinHandler();
+            // AnWind v7 修复（exe 启动即闪退）：无参构造后必须回绑上下文，
+            // 否则 WinHandler.preferences 恒为 null —— winhandler.exe 一发
+            // INIT 包就在 handleRequest 里 NPE（未捕获异常杀死整个 app 进程，
+            // 用户实测堆栈 WinHandler.handleRequest:407）。attachContext() 即
+            // 为此设计，此前从未被调用。用 ApplicationContext 避免泄漏。
+            try {
+                wh.attachContext(appContext);
+            } catch (Throwable t) {
+                Log.w(TAG, "WinHandler attachContext 失败（将走默认值）", t);
+            }
             winHandler = wh;
             Executors.newSingleThreadExecutor().execute(() -> {
                 try {

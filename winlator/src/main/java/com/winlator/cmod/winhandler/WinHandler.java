@@ -127,7 +127,8 @@ public class WinHandler {
 
     public void updateGyroData(float rawGyroX, float rawGyroY) {
         // Check if gyro is enabled before processing the data
-        if (!preferences.getBoolean("gyro_enabled", false)) {
+        // AnWind v7 修复：preferences 可能为 null（无宿主构造路径），先判空
+        if (preferences == null || !preferences.getBoolean("gyro_enabled", false)) {
             return; // Exit if the gyro is disabled
         }
 
@@ -399,37 +400,50 @@ public class WinHandler {
             case RequestCodes.INIT: {
                 initReceived = true;
 
-
-
-                if (activity != null)
+                // AnWind v7 修复（exe 启动即闪退的根因）：经 X11InputHub 单例路径
+                // 构造（无参构造）时 activity==null、preferences 字段保持 null，
+                // winhandler.exe 一发 INIT 包，preferences.getInt(...) 在此直接
+                // NPE（用户实测 WinHandler.java:407）。该异常发生在只捕获
+                // IOException 的 UDP 接收线程 —— 未捕获异常会杀死整个 app 进程。
+                // 现在改为：能取偏好则取，取不到全走默认值，绝不空引用。
+                if (preferences == null && activity != null)
                     preferences = PreferenceManager.getDefaultSharedPreferences(activity);
 
-                gyroTriggerButton = preferences.getInt("gyro_trigger_button", KeyEvent.KEYCODE_BUTTON_L1);
-                isToggleMode = preferences.getInt("gyro_mode", 0) == 1; // 1 is toggle mode, 0 is hold mode
+                if (preferences != null) {
+                    gyroTriggerButton = preferences.getInt("gyro_trigger_button", KeyEvent.KEYCODE_BUTTON_L1);
+                    isToggleMode = preferences.getInt("gyro_mode", 0) == 1; // 1 is toggle mode, 0 is hold mode
 
-
-                // Load and apply trigger mode and xinput toggle settings
-                triggerType = (byte) preferences.getInt("trigger_type", TRIGGER_IS_AXIS);
+                    // Load and apply trigger mode and xinput toggle settings
+                    triggerType = (byte) preferences.getInt("trigger_type", TRIGGER_IS_AXIS);
+                }
+                else {
+                    // AnWind v7 修复：无宿主上下文 → 与上方各 get* 的默认值逐一对应
+                    gyroTriggerButton = KeyEvent.KEYCODE_BUTTON_L1;
+                    isToggleMode = false;
+                    triggerType = (byte) TRIGGER_IS_AXIS;
+                }
 
                 refreshControllerMappings();
 
-                // Only set xinputDisabled if it hasn't been set explicitly by XServerDisplayActivity
-                if (!xinputDisabledInitialized) {
-                    xinputDisabled = preferences.getBoolean("xinput_toggle", false);
+                if (preferences != null) {
+                    // Only set xinputDisabled if it hasn't been set explicitly by XServerDisplayActivity
+                    if (!xinputDisabledInitialized) {
+                        xinputDisabled = preferences.getBoolean("xinput_toggle", false);
+                    }
+
+                    // Load the flag to use legacy input method
+                    useLegacyInputMethod = preferences.getBoolean("useLegacyInputMethod", false);
+
+                    // Load and apply gyro settings
+                    setGyroSensitivityX(preferences.getFloat("gyro_x_sensitivity", 1.0f));
+                    setGyroSensitivityY(preferences.getFloat("gyro_y_sensitivity", 1.0f));
+                    setSmoothingFactor(preferences.getFloat("gyro_smoothing", 0.9f));
+                    setInvertGyroX(preferences.getBoolean("invert_gyro_x", false));
+                    setInvertGyroY(preferences.getBoolean("invert_gyro_y", false));
+                    setGyroDeadzone(preferences.getFloat("gyro_deadzone", 0.05f));
+
+                    processGyroWithLeftTrigger = preferences.getBoolean("process_gyro_with_left_trigger", false);
                 }
-
-                // Load the flag to use legacy input method
-                useLegacyInputMethod = preferences.getBoolean("useLegacyInputMethod", false);
-
-                // Load and apply gyro settings
-                setGyroSensitivityX(preferences.getFloat("gyro_x_sensitivity", 1.0f));
-                setGyroSensitivityY(preferences.getFloat("gyro_y_sensitivity", 1.0f));
-                setSmoothingFactor(preferences.getFloat("gyro_smoothing", 0.9f));
-                setInvertGyroX(preferences.getBoolean("invert_gyro_x", false));
-                setInvertGyroY(preferences.getBoolean("invert_gyro_y", false));
-                setGyroDeadzone(preferences.getFloat("gyro_deadzone", 0.05f));
-
-                processGyroWithLeftTrigger = preferences.getBoolean("process_gyro_with_left_trigger", false);
 
                 synchronized (actions) {
                     actions.notify();
@@ -568,7 +582,16 @@ public class WinHandler {
                     synchronized (actions) {
                         receiveData.rewind();
                         byte requestCode = receiveData.get();
-                        handleRequest(requestCode, receivePacket.getPort());
+                        // AnWind v7 修复：handleRequest 内任何 RuntimeException 原先
+                        // 都会从本线程逃逸（try 只接 IOException）→ 默认未捕获异常
+                        // 处理器直接杀死整个 app 进程（用户实测闪退）。UDP 服务循环
+                        // 必须活过单次请求异常，只记录日志。
+                        try {
+                            handleRequest(requestCode, receivePacket.getPort());
+                        }
+                        catch (Throwable t) {
+                            Log.e("WinHandler", "handleRequest 异常（已忽略，服务继续）", t);
+                        }
                     }
                 }
             }
