@@ -277,7 +277,27 @@ public class WinlatorSession {
         // screenSize=="native" 时虚拟桌面取 1280x720 兜底，由 X11FitClient 贴合。
         String desktopResolution = container.getScreenSize();
         if (desktopResolution == null || !desktopResolution.matches("\\d+x\\d+")) desktopResolution = "1280x720";
-        String guestExecutable = "wine explorer /desktop=shell," + desktopResolution + " winhandler.exe " + getWineStartCommand(exePath);
+
+        // v10 修复：启动前自检 + 兜底 —— 此前 wine 本体或 winhandler.exe 缺失
+        // （引擎资产不完整/容器模板解压失败）时只会静默失败或桌面空壳，用户
+        // 看到"exe 启动失败"却无线索。现在：
+        // ① wine 二进制缺失 → 明确 ERROR 消息引导重装引擎资产；
+        // ② winhandler.exe 缺失 → 回落 explorer 直启模式（游戏照常运行，
+        //    仅牺牲 winhandler 的手柄/窗口管理通道）。
+        File wineBinCheck = new File(wineInfo.path, "bin/wine");
+        if (!wineBinCheck.isFile()) {
+            Log.e(TAG, "wine 二进制缺失: " + wineBinCheck.getPath());
+            setState(State.ERROR, "Wine 启动文件缺失（" + wineInfo.identifier() + "），请在引擎管理里重新安装引擎资产");
+            return;
+        }
+        File winhandlerExe = new File(rootPath, ImageFs.WINEPREFIX + "/drive_c/windows/winhandler.exe");
+        boolean hasWinHandler = winhandlerExe.isFile();
+        if (!hasWinHandler)
+            Log.w(TAG, "winhandler.exe 缺失（容器模板不完整），回落 explorer 直启模式: " + winhandlerExe.getPath());
+        String guestExecutable = "wine explorer /desktop=shell," + desktopResolution + " " +
+            (hasWinHandler
+                ? "winhandler.exe " + getWineStartCommand(exePath)
+                : getDirectStartCommand(exePath));
 
         bionicLauncher = new BionicProgramLauncherComponent(contentsManager, null, null);
         bionicLauncher.setContainer(container);
@@ -687,6 +707,19 @@ public class WinlatorSession {
         }
         if (!execArgs.isEmpty()) args += " " + execArgs;
         return args;
+    }
+
+    /**
+     * v10：winhandler.exe 缺失时的兜底启动命令 —— 不经 winhandler，
+     * 由 explorer 直接在虚拟桌面内启动目标 exe（游戏照常运行，仅缺少
+     * winhandler 承担的 UDP 7947 窗口/进程信息与手柄通道）。
+     */
+    private String getDirectStartCommand(String exePath) {
+        if (exePath == null || exePath.isEmpty()) return "\"winecfg\"";
+        String dosPath = toDosPath(exePath);
+        if (dosPath == null)
+            dosPath = "Z:" + new File(exePath).getAbsolutePath().replace('/', '\\');
+        return "\"" + dosPath + "\"";
     }
 
     // ==================================================================

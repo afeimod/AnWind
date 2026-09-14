@@ -23,6 +23,10 @@ public class EnvVars implements Iterable<String> {
         String[] parts = values.split(" ");
         for (String part : parts) {
             int index = part.indexOf("=");
+            // v10: skip malformed token (no "=" or empty key) so a
+            // bad user-typed container envVars string cannot crash
+            // the whole session startup (StringIndexOutOfBounds)
+            if (index <= 0) continue;
             String name = part.substring(0, index);
             String value = part.substring(index+1);
             data.put(name, value);

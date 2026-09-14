@@ -105,12 +105,18 @@ fun ContainerEditorSheet(container: Container?, onDismiss: () -> Unit) {
     var dxvkVersions by remember { mutableStateOf(listOf(DefaultVersion.DXVK)) }
     var vkd3dVersions by remember { mutableStateOf(listOf(DefaultVersion.VKD3D)) }
     var installedDrivers by remember { mutableStateOf(listOf<String>()) }
-    // 选中的 DX 包装器版本（dxwrapperConfig 的 version= 键；保存时回写）
+    // 选中的 DX 包装器版本（dxvk 用 version= 键；vkd3d 用 vkd3dVersion= 键
+    // —— v10 修复：引擎侧 VKD3DConfig/setupWineSystemFiles 读 vkd3dVersion，
+    // 此前写 version 键导致 vkd3d 版本永不生效）
     var dxvkVersion by remember {
         mutableStateOf(getConfigKey(dxwrapperConfig, "version", ',').ifEmpty { DefaultVersion.DXVK })
     }
     var vkd3dVersion by remember {
-        mutableStateOf(getConfigKey(dxwrapperConfig, "version", ',').ifEmpty { DefaultVersion.VKD3D })
+        mutableStateOf(
+            getConfigKey(dxwrapperConfig, "vkd3dVersion", ',')
+                .ifEmpty { getConfigKey(dxwrapperConfig, "version", ',') }
+                .ifEmpty { DefaultVersion.VKD3D }
+        )
     }
     LaunchedEffect(Unit) {
         withContext(Dispatchers.IO) {
@@ -128,6 +134,12 @@ fun ContainerEditorSheet(container: Container?, onDismiss: () -> Unit) {
             } catch (_: Exception) {}
         }
     }
+
+    // ---- v10：预设选择器（点击弹列表，替代手输文本框）----
+    var showDxvkPreset by remember { mutableStateOf(false) }
+    var showMaxMemPreset by remember { mutableStateOf(false) }
+    var showBlacklistPreset by remember { mutableStateOf(false) }
+    var dxvkConfigLabel by remember { mutableStateOf(if (dxwrapperConfig.isEmpty()) "默认" else "自定义") }
 
     val dark = theme.isDark
     val cardBg = if (dark) Color(0xFF1B222B) else Color.White
@@ -181,22 +193,29 @@ fun ContainerEditorSheet(container: Container?, onDismiss: () -> Unit) {
                     gc = setConfigKey(gc, "frameSync", driverFrameSync)
                     graphicsDriverConfig = gc
                     data.put("graphicsDriverConfig", gc)
-                    // v8：DXVK/VKD3D 版本选择回写（选中的版本覆写 version= 键）
+                    // v8：DXVK/VKD3D 版本选择回写；v10 修复键名——dxvk 用
+                    // "version"，vkd3d 用 "vkd3dVersion"+"vkd3dLevel"（引擎侧
+                    // setupWineSystemFiles/VKD3DConfig 按这两个键读取）
                     if (dxwrapper == "dxvk" || dxwrapper == "vkd3d") {
                         val base = dxwrapperConfig.ifEmpty {
-                            if (dxwrapper == "dxvk") "version=${DefaultVersion.DXVK}" else "version=${DefaultVersion.VKD3D}"
+                            if (dxwrapper == "dxvk") "version=${DefaultVersion.DXVK}"
+                            else "vkd3dVersion=${DefaultVersion.VKD3D},vkd3dLevel=12_1"
                         }
-                        dxwrapperConfig = setConfigKey(
-                            base, "version",
-                            if (dxwrapper == "dxvk") dxvkVersion else vkd3dVersion, ','
-                        )
+                        if (dxwrapper == "dxvk") {
+                            dxwrapperConfig = setConfigKey(base, "version", dxvkVersion, ',')
+                        } else {
+                            var cfg = setConfigKey(base, "vkd3dVersion", vkd3dVersion, ',')
+                            if (getConfigKey(cfg, "vkd3dLevel", ',').isEmpty())
+                                cfg = setConfigKey(cfg, "vkd3dLevel", "12_1", ',')
+                            dxwrapperConfig = cfg
+                        }
                     }
                     data.put("dxwrapper", dxwrapper)
                     if (dxwrapperConfig.isNotEmpty()) data.put("dxwrapperConfig", dxwrapperConfig)
                     data.put("ddrawrapper", ddrawrapper)
                     data.put("audioDriver", audioDriver)
                     data.put("wincomponents", wincomponents)
-                    data.put("drives", drives)
+                    data.put("drives", sanitizeDrives(drives))
                     data.put("envVars", envVarsText)
                     if (cpuList.isNotEmpty()) data.put("cpuList", cpuList)
                     data.put("box64Preset", box64Preset)
@@ -231,7 +250,7 @@ fun ContainerEditorSheet(container: Container?, onDismiss: () -> Unit) {
                         container.setDDrawWrapper(ddrawrapper)
                         container.setAudioDriver(audioDriver)
                         container.setWinComponents(wincomponents)
-                        container.setDrives(drives)
+                        container.setDrives(sanitizeDrives(drives))
                         container.setEnvVars(envVarsText)
                         container.setCPUList(cpuList)
                         container.setBox64Preset(box64Preset)
@@ -312,17 +331,22 @@ fun ContainerEditorSheet(container: Container?, onDismiss: () -> Unit) {
                         "System = 系统驱动；其余为已安装的 Adreno 驱动包，启动容器时自动挂载",
                     color = subColor, fontSize = 9.sp, lineHeight = 12.sp
                 )
+                // v10：点击弹列表选择，替代手输文本框
                 FieldRow("扩展黑名单", labelColor, subColor) {
-                    SmallTextField(
-                        driverBlacklist, { driverBlacklist = it },
-                        fieldBg, labelColor, "如 VK_KHR_external_memory_fd", Modifier.width(170.dp)
-                    )
+                    Chip(
+                        if (driverBlacklist.isEmpty()) "无（点击选择）"
+                        else if (driverBlacklist.length > 16) driverBlacklist.take(15) + "…"
+                        else driverBlacklist,
+                        false, theme
+                    ) { showBlacklistPreset = true }
                 }
+                // v10：点击弹列表选择，替代手输文本框
                 FieldRow("最大显存(MB)", labelColor, subColor) {
-                    SmallTextField(
-                        driverMaxMem, { driverMaxMem = it },
-                        fieldBg, labelColor, "留空不限", Modifier.width(120.dp)
-                    )
+                    Chip(
+                        if (driverMaxMem.isEmpty() || driverMaxMem == "0") "不限（点击选择）"
+                        else "${driverMaxMem} MB",
+                        false, theme
+                    ) { showMaxMemPreset = true }
                 }
                 FieldRow("帧同步", labelColor, subColor) {
                     Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -357,14 +381,10 @@ fun ContainerEditorSheet(container: Container?, onDismiss: () -> Unit) {
                             }
                         }
                     }
+                    // v10：点击弹预设列表（帧率上限/异步着色/显存上限），
+                    // 替代手输配置串；选中版本始终随预设一并写入
                     FieldRow("DXVK 配置", labelColor, subColor) {
-                        SmallTextField(
-                            dxwrapperConfig,
-                            { dxwrapperConfig = it },
-                            fieldBg, labelColor,
-                            "version=${DefaultVersion.DXVK},framerate=0,maxDeviceMemory=0,async=0,asyncCache=0",
-                            singleLine = false
-                        )
+                        Chip(dxvkConfigLabel, false, theme) { showDxvkPreset = true }
                     }
                 }
                 FieldRow("DDraw 包装器", labelColor, subColor) {
@@ -456,10 +476,17 @@ fun ContainerEditorSheet(container: Container?, onDismiss: () -> Unit) {
                     }
                 }
                 AddDriveRow(fieldBg, labelColor, subColor) { letter, path ->
-                    drives = if (drives.isBlank()) "$letter$path" else "$drives:$letter$path"
+                    // v10 修复（exe 启动失败元凶）：drives 协议为"段=盘符字母
+                    // +':'+路径，段间直接拼接、无分隔符"（Container.drivesIterator
+                    // 以"每个冒号前一字符"定位盘符）。此前插入 ':' 分隔符会把
+                    // 上一段路径截掉末位字符并产生幽灵盘符 → exe 的 DOS 路径
+                    // 错误 → wine 找不到 exe。另：同盘符重复添加时先移除旧项。
+                    val cleaned = rebuildDrives(drives, letter, null)
+                    drives = if (cleaned.isBlank()) "$letter:$path" else "${cleaned}${letter}:$path"
                 }
                 Text(
-                    "格式：盘符字母后跟路径，段间以 \":\" 分隔（与 Winlator drives 协议一致）。" +
+                    "格式：盘符字母直接拼接在上一段路径之后（如 D:/pathE:/path2），" +
+                        "段间无分隔符（与 Winlator drives 协议一致）。" +
                         "运行时自动补 c:/z: 标准盘符；exe 位于 /storage 时自动绑定 y: 盘。",
                     color = subColor, fontSize = 9.sp, lineHeight = 12.sp
                 )
@@ -502,6 +529,149 @@ fun ContainerEditorSheet(container: Container?, onDismiss: () -> Unit) {
             Spacer(Modifier.height(20.dp))
         }
     }
+
+    // ================= v10 预设选择对话框 =================
+    if (showDxvkPreset) {
+        if (dxwrapper == "vkd3d") {
+            PickerDialog(
+                title = "VKD3D 配置预设",
+                options = listOf(
+                    "vkd3dLevel=12_1" to "默认（特性等级 12_1）",
+                    "vkd3dLevel=12_0" to "特性等级 12_0（兼容老游戏）",
+                    "vkd3dLevel=12_2" to "特性等级 12_2（最高）"
+                ),
+                current = getConfigKey(dxwrapperConfig, "vkd3dLevel", ','),
+                onDismiss = { showDxvkPreset = false }
+            ) { value ->
+                var cfg = setConfigKey(
+                    dxwrapperConfig.ifEmpty { "vkd3dVersion=$vkd3dVersion" },
+                    "vkd3dVersion", vkd3dVersion, ','
+                )
+                cfg = setConfigKey(cfg, "vkd3dLevel", value.substringAfter('='), ',')
+                dxwrapperConfig = cfg
+                dxvkConfigLabel = value.substringAfter('=')
+                showDxvkPreset = false
+            }
+        } else {
+            // 帧率上限 / 异步着色 / 显存上限 —— 与 DXVKConfig.setEnvVars 消费键一致
+            PickerDialog(
+                title = "DXVK 配置预设（DXVK $dxvkVersion）",
+                options = listOf(
+                    "0|0|0|0" to "默认（不限帧，无异步）",
+                    "60|0|0|0" to "60 帧上限",
+                    "30|0|0|0" to "30 帧上限（省电/降热）",
+                    "120|0|0|0" to "120 帧上限（高刷屏）",
+                    "0|0|1|1" to "异步着色（async 补丁版专用，减少卡顿）",
+                    "0|4096|0|0" to "显存上限 4GB（老设备防杀后台）"
+                ),
+                current = listOf(
+                    getConfigKey(dxwrapperConfig, "framerate", ','),
+                    getConfigKey(dxwrapperConfig, "maxDeviceMemory", ','),
+                    getConfigKey(dxwrapperConfig, "async", ','),
+                    getConfigKey(dxwrapperConfig, "asyncCache", ',')
+                ).joinToString("|"),
+                onDismiss = { showDxvkPreset = false }
+            ) { value ->
+                val parts = value.split('|')
+                var cfg = setConfigKey(
+                    dxwrapperConfig.ifEmpty { "version=$dxvkVersion" },
+                    "version", dxvkVersion, ','
+                )
+                cfg = setConfigKey(cfg, "framerate", parts[0], ',')
+                cfg = setConfigKey(cfg, "maxDeviceMemory", parts[1], ',')
+                cfg = setConfigKey(cfg, "async", parts[2], ',')
+                cfg = setConfigKey(cfg, "asyncCache", parts[3], ',')
+                dxwrapperConfig = cfg
+                dxvkConfigLabel = when {
+                    parts[0] != "0" -> "帧率上限 ${parts[0]}"
+                    parts[2] == "1" -> "异步着色"
+                    parts[1] != "0" -> "显存上限 ${parts[1]}MB"
+                    else -> "默认"
+                }
+                showDxvkPreset = false
+            }
+        }
+    }
+    if (showMaxMemPreset) {
+        PickerDialog(
+            title = "最大显存(MB)",
+            options = listOf(
+                "0" to "不限",
+                "512" to "512 MB",
+                "1024" to "1024 MB",
+                "2048" to "2048 MB",
+                "4096" to "4096 MB",
+                "8192" to "8192 MB"
+            ),
+            current = driverMaxMem,
+            onDismiss = { showMaxMemPreset = false }
+        ) { value ->
+            driverMaxMem = value
+            showMaxMemPreset = false
+        }
+    }
+    if (showBlacklistPreset) {
+        PickerDialog(
+            title = "Vulkan 扩展黑名单",
+            options = listOf(
+                "" to "无（不屏蔽任何扩展）",
+                "VK_KHR_external_memory_fd" to "屏蔽 VK_KHR_external_memory_fd",
+                "VK_KHR_external_memory_fd,VK_EXT_external_memory_host" to
+                    "屏蔽 external_memory_fd + external_memory_host"
+            ),
+            current = driverBlacklist,
+            onDismiss = { showBlacklistPreset = false }
+        ) { value ->
+            driverBlacklist = value
+            showBlacklistPreset = false
+        }
+    }
+}
+
+/**
+ * v10：通用单选列表对话框（Compose 版"下拉选择"）——替代容器设置里
+ * 原先需要手动输入的配置项。选中项高亮，点击即应用并关闭。
+ */
+@Composable
+private fun PickerDialog(
+    title: String,
+    options: List<Pair<String, String>>,
+    current: String,
+    onDismiss: () -> Unit,
+    onSelect: (String) -> Unit
+) {
+    val theme = LocalWinTheme.current
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("关闭", fontSize = 11.sp) }
+        },
+        title = { Text(title, fontSize = 13.sp, fontWeight = FontWeight.Bold) },
+        text = {
+            Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                options.forEach { (value, label) ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onSelect(value) }
+                            .padding(vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            if (value == current) "● " else "○ ",
+                            color = if (value == current) theme.accentColor else Color.Gray,
+                            fontSize = 11.sp
+                        )
+                        Text(
+                            label,
+                            fontSize = 11.sp,
+                            fontWeight = if (value == current) FontWeight.Bold else FontWeight.Normal
+                        )
+                    }
+                }
+            }
+        }
+    )
 }
 
 // ================= 小组件 =================
@@ -629,11 +799,25 @@ internal fun parseDrives(drives: String): List<Pair<String, String>> {
 
 /** 重建盘符串：[removeLetter] 传 null 表示无移除（保留原样）。 */
 internal fun rebuildDrives(drives: String, removeLetter: String?, keep: String?): String {
+    // v10 修复：段=盘符字母+':'+路径，段间直接拼接（字母即分隔）——
+    // 不得插入额外 ':' 分隔符（会截断上一段路径末位并产生幽灵盘符），
+    // 也不得丢失字母后的 ':'（整串会变成零个盘符段）
     val kept = parseDrives(drives)
         .filter { removeLetter == null || it.first != removeLetter }
-        .joinToString(":") { "${it.first}${it.second}" }
+        .joinToString("") { "${it.first}:${it.second}" }
     return kept
 }
+
+/**
+ * v10：盘符串消毒 —— 丢弃路径不以 "/" 开头或盘符非单字母的畸形段
+ * （v8-v9 曾以 ':' 分隔导致段错位，此处对已损坏存量数据在保存时自愈）。
+ */
+internal fun sanitizeDrives(drives: String): String =
+    parseDrives(drives)
+        .filter { (letter, path) ->
+            letter.length == 1 && letter[0].isLetter() && path.startsWith("/")
+        }
+        .joinToString("") { "${it.first}:${it.second}" }
 
 /** 新容器默认盘符（与 Winlator Container.DEFAULT_DRIVES 语义一致，指向本应用包名）。 */
 private fun defaultDrives(): String {
