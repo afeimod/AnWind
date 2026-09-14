@@ -798,6 +798,9 @@ public class WinlatorSession {
         }
 
         // ③ imagefs 内部 → Z:（Z: 由 createDosdevicesSymlinks 固定指向 imagefs 根）
+        // v13.1 编译修复：此处沿用 ensureDriveForPath 的写法，先由 exePath
+        // 构造 File（此前引用了未声明的变量 exe，导致 CI 编译失败）。
+        File exe = new File(exePath);
         String abs;
         try { abs = exe.getCanonicalPath(); }
         catch (Exception e) { abs = exe.getAbsolutePath(); }
