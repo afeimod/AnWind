@@ -1,5 +1,6 @@
 package com.winlator.cmod.xconnector;
 
+import android.util.Log;
 import android.util.SparseArray;
 
 import androidx.annotation.Keep;
@@ -79,7 +80,15 @@ public class XConnectorEpoll implements Runnable {
 
     @Override
     public void run() {
-        while (running && doEpollIndefinitely(epollFd, serverFd, !multithreadedClients));
+        // AnWind v8 防护：epoll 主循环里的任何未捕获异常（含 native 回调
+        // 抛出的 UnsatisfiedLinkError 等）原先都会从线程逃逸直接杀死整个
+        // app 进程。服务线程必须活过单次事件异常。
+        try {
+            while (running && doEpollIndefinitely(epollFd, serverFd, !multithreadedClients));
+        }
+        catch (Throwable t) {
+            Log.e("XConnectorEpoll", "epoll 循环异常（服务退出但进程存活）", t);
+        }
         shutdown();
     }
 
@@ -90,8 +99,17 @@ public class XConnectorEpoll implements Runnable {
         if (multithreadedClients) {
             client.shutdownFd = createEventFd();
             client.pollThread = new Thread(() -> {
-                connectionHandler.handleNewConnection(client);
-                while (client.connected && waitForSocketRead(client.clientSocket.fd, client.shutdownFd));
+                // AnWind v8 防护：poll 线程同上，异常只掉连接不杀进程
+                // （用户实测：ALSA 通道 createSharedMemory UnsatisfiedLinkError
+                //  沿本线程逃逸杀死整个 app，游戏全部秒退）。
+                try {
+                    connectionHandler.handleNewConnection(client);
+                    while (client.connected && waitForSocketRead(client.clientSocket.fd, client.shutdownFd));
+                }
+                catch (Throwable t) {
+                    Log.e("XConnectorEpoll", "客户端 poll 线程异常（断开该连接）", t);
+                    client.connected = false;
+                }
             });
             client.pollThread.start();
         }
@@ -117,6 +135,13 @@ public class XConnectorEpoll implements Runnable {
             else requestHandler.handleRequest(client);
         }
         catch (IOException e) {
+            killConnection(client);
+        }
+        // AnWind v8 防护：handler 内的 RuntimeException/Error（如用户实测的
+        // createMemoryFd UnsatisfiedLinkError）原先沿线程逃逸杀死整个 app；
+        // 现在只断开该连接，进程与其余连接存活。
+        catch (Throwable t) {
+            Log.e("XConnectorEpoll", "连接处理异常（断开该连接，进程存活）", t);
             killConnection(client);
         }
     }

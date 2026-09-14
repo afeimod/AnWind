@@ -9,6 +9,7 @@ import com.winlator.cmod.box86_64.rc.RCFile;
 import com.winlator.cmod.box86_64.rc.RCManager;
 import com.winlator.cmod.container.Container;
 import com.winlator.cmod.container.ContainerManager;
+import com.winlator.cmod.contents.AdrenotoolsManager;
 import com.winlator.cmod.contents.ContentProfile;
 import com.winlator.cmod.contents.ContentsManager;
 import com.winlator.cmod.core.Callback;
@@ -603,6 +604,20 @@ public class WinlatorSession {
         // 扩展黑名单（原版 wrapper 驱动属性，保留透传）
         String blacklistedExtensions = graphicsDriverConfig.get("blacklistedExtensions");
         if (blacklistedExtensions != null) envVars.put("WRAPPER_EXTENSION_BLACKLIST", blacklistedExtensions);
+
+        // v8 修复：驱动版本（graphicsDriverConfig 的 version 字段）此前从未被
+        // 消费 —— 即使装了 Adreno 驱动包（turnip），容器也永远只用系统驱动。
+        // 上游 XServerDisplayActivity 在同位置调用 setDriverById 注入
+        // ADRENOTOOLS_* 环境变量挂载驱动；"System" = 系统驱动，不注入。
+        String driverVersion = graphicsDriverConfig.get("version");
+        if (driverVersion != null && !driverVersion.isEmpty() && !driverVersion.equals("System")) {
+            try {
+                new AdrenotoolsManager(context).setDriverById(envVars, imageFs, driverVersion);
+            }
+            catch (Throwable t) {
+                Log.w(TAG, "Adreno 驱动挂载失败（version=" + driverVersion + "），回落系统驱动", t);
+            }
+        }
 
         String maxDeviceMemory = graphicsDriverConfig.get("maxDeviceMemory");
         if (maxDeviceMemory != null && !maxDeviceMemory.isEmpty())

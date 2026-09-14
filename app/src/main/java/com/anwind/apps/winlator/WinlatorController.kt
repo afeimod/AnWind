@@ -69,7 +69,6 @@ object WinlatorController {
         if (appContext != null) return
         val ctx = context.applicationContext
         appContext = ctx
-        containerManager = ContainerManager(ctx)
 
         WinlatorSession.get().setStateListener { st, msg ->
             _state.value = _state.value.copy(state = st, message = msg)
@@ -81,14 +80,28 @@ object WinlatorController {
             val ready = imageFs.isValid() && imageFs.version >= ImageFsInstaller.LATEST_VERSION
             _state.value = _state.value.copy(imageFsReady = ready)
         }
+
+        // v8 修复：首次打开容器页列表为空（第二次才有）—— init 由首帧
+        // LaunchedEffect 触发，而首帧组合时 containers() 已被读取（当时
+        // manager 尚未就绪必得空列表），且 revision 无变化，
+        // remember(revision) 不会重算。现在：manager 构造移后台
+        // （loadContainers 同步扫目录，移后台也避免卡首帧），完成后主动
+        // bump 修订号驱动列表刷新。
+        scope.launch(Dispatchers.IO) {
+            containerManager = try { ContainerManager(ctx) } catch (_: Exception) { null }
+            refreshContainers()
+        }
     }
 
     // ---------------- 容器管理 ----------------
 
     fun containers(): List<Container> {
-        val ctx = appContext ?: return emptyList()
+        // v8：仅从后台预载完成的 manager 读取（manager 未就绪返回空，
+        // init 完成后的 revision bump 会触发 UI 重算）；不再主线程 fallback
+        // 构造 ContainerManager（同步目录扫描，卡首帧且与后台构造竞态）。
+        val manager = containerManager ?: return emptyList()
         return try {
-            containerManager?.containers ?: ContainerManager(ctx).containers
+            manager.containers
         } catch (e: Exception) {
             emptyList()
         }

@@ -3,6 +3,7 @@ package com.anwind.apps.winlator
 import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -19,8 +20,13 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.anwind.core.theme.LocalWinTheme
 import com.winlator.cmod.container.Container
+import com.winlator.cmod.contents.AdrenotoolsManager
+import com.winlator.cmod.contents.ContentProfile
+import com.winlator.cmod.contents.ContentsManager
 import com.winlator.cmod.core.DefaultVersion
 import com.winlator.cmod.core.GraphicsDriverConfigParser
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import org.json.JSONObject
 
 /**
@@ -69,6 +75,44 @@ fun ContainerEditorSheet(container: Container?, onDismiss: () -> Unit) {
     var startupSelection by remember { mutableStateOf(container?.getStartupSelection()?.toInt() ?: 1) }
     var showFPS by remember { mutableStateOf(container?.isShowFPS() ?: false) }
 
+    // ---- v8：驱动配置（graphicsDriverConfig）子字段（此前有状态无 UI）----
+    var driverVersion by remember {
+        mutableStateOf(getConfigKey(graphicsDriverConfig, "version").ifEmpty { "System" })
+    }
+    var driverBlacklist by remember { mutableStateOf(getConfigKey(graphicsDriverConfig, "blacklistedExtensions")) }
+    var driverMaxMem by remember { mutableStateOf(getConfigKey(graphicsDriverConfig, "maxDeviceMemory")) }
+    var driverFrameSync by remember {
+        mutableStateOf(if (getConfigKey(graphicsDriverConfig, "frameSync") == "1") "1" else "0")
+    }
+
+    // ---- v8：DXVK/VKD3D 版本与已安装 Adreno 驱动列表（后台加载）----
+    var dxvkVersions by remember { mutableStateOf(listOf(DefaultVersion.DXVK)) }
+    var vkd3dVersions by remember { mutableStateOf(listOf(DefaultVersion.VKD3D)) }
+    var installedDrivers by remember { mutableStateOf(listOf<String>()) }
+    // 选中的 DX 包装器版本（dxwrapperConfig 的 version= 键；保存时回写）
+    var dxvkVersion by remember {
+        mutableStateOf(getConfigKey(dxwrapperConfig, "version", ',').ifEmpty { DefaultVersion.DXVK })
+    }
+    var vkd3dVersion by remember {
+        mutableStateOf(getConfigKey(dxwrapperConfig, "version", ',').ifEmpty { DefaultVersion.VKD3D })
+    }
+    LaunchedEffect(Unit) {
+        withContext(Dispatchers.IO) {
+            try {
+                val cm = ContentsManager(context)
+                cm.syncContents()
+                val dx = cm.getProfiles(ContentProfile.ContentType.CONTENT_TYPE_DXVK)
+                    ?.map { it.verName }.orEmpty()
+                val vk = cm.getProfiles(ContentProfile.ContentType.CONTENT_TYPE_VKD3D)
+                    ?.map { it.verName }.orEmpty()
+                val drv = AdrenotoolsManager(context).enumarateInstalledDrivers().toList()
+                dxvkVersions = (listOf(DefaultVersion.DXVK) + dx).distinct()
+                vkd3dVersions = (listOf(DefaultVersion.VKD3D) + vk).distinct()
+                installedDrivers = drv
+            } catch (_: Exception) {}
+        }
+    }
+
     val dark = theme.isDark
     val cardBg = if (dark) Color(0xFF1B222B) else Color.White
     val labelColor = theme.windowTitleBarTextColor
@@ -86,6 +130,20 @@ fun ContainerEditorSheet(container: Container?, onDismiss: () -> Unit) {
     }
     fun winComponent(id: String): Boolean =
         wincomponents.split(',').firstOrNull { it.startsWith("$id=") }?.substringAfterLast('=') == "1"
+
+    // ---- v8：key=value 配置串读写（graphicsDriverConfig 用 ';' 分隔，
+    //      DXVK/VKD3D 配置用 ',' 分隔；与引擎侧解析器格式一致）----
+    fun setConfigKey(config: String, key: String, value: String, sep: Char = ';'): String {
+        val map = LinkedHashMap<String, String>()
+        config.split(sep).forEach { p ->
+            val kv = p.split('=', limit = 2)
+            if (kv.size == 2 && kv[0].isNotBlank()) map[kv[0]] = kv[1]
+        }
+        map[key] = value
+        return map.entries.joinToString(sep.toString()) { "${it.key}=${it.value}" }
+    }
+    fun getConfigKey(config: String, key: String, sep: Char = ';'): String =
+        config.split(sep).firstOrNull { it.startsWith("$key=") }?.substringAfter('=', "") ?: ""
 
     Column(
         modifier = Modifier
@@ -113,7 +171,24 @@ fun ContainerEditorSheet(container: Container?, onDismiss: () -> Unit) {
                     data.put("name", name.ifEmpty { "Container" })
                     data.put("screenSize", screenSize)
                     data.put("graphicsDriver", graphicsDriver)
-                    data.put("graphicsDriverConfig", graphicsDriverConfig)
+                    // v8：驱动配置由 UI 子字段回写（驱动版本/黑名单/最大显存/帧同步）
+                    var gc = graphicsDriverConfig
+                    gc = setConfigKey(gc, "version", driverVersion)
+                    gc = setConfigKey(gc, "blacklistedExtensions", driverBlacklist)
+                    gc = setConfigKey(gc, "maxDeviceMemory", driverMaxMem)
+                    gc = setConfigKey(gc, "frameSync", driverFrameSync)
+                    graphicsDriverConfig = gc
+                    data.put("graphicsDriverConfig", gc)
+                    // v8：DXVK/VKD3D 版本选择回写（选中的版本覆写 version= 键）
+                    if (dxwrapper == "dxvk" || dxwrapper == "vkd3d") {
+                        val base = dxwrapperConfig.ifEmpty {
+                            if (dxwrapper == "dxvk") "version=${DefaultVersion.DXVK}" else "version=${DefaultVersion.VKD3D}"
+                        }
+                        dxwrapperConfig = setConfigKey(
+                            base, "version",
+                            if (dxwrapper == "dxvk") dxvkVersion else vkd3dVersion, ','
+                        )
+                    }
                     data.put("dxwrapper", dxwrapper)
                     if (dxwrapperConfig.isNotEmpty()) data.put("dxwrapperConfig", dxwrapperConfig)
                     data.put("ddrawrapper", ddrawrapper)
@@ -213,6 +288,47 @@ fun ContainerEditorSheet(container: Container?, onDismiss: () -> Unit) {
                         "llvmpipe 为软件渲染",
                     color = subColor, fontSize = 9.sp, lineHeight = 12.sp
                 )
+                // v8：驱动版本选择（graphicsDriverConfig 的 version 键）——
+                // System = 系统驱动；其余为已安装的 Adreno 驱动包（turnip）
+                FieldRow("驱动版本", labelColor, subColor) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        modifier = Modifier.horizontalScroll(rememberScrollState())
+                    ) {
+                        listOf("System").forEach { d ->
+                            Chip(d, driverVersion == d, theme) { driverVersion = d }
+                        }
+                        installedDrivers.forEach { d ->
+                            Chip(d, driverVersion == d, theme) { driverVersion = d }
+                        }
+                    }
+                }
+                Text(
+                    if (installedDrivers.isEmpty())
+                        "仅内置系统驱动；安装 Adreno 驱动包后此处会出现可选版本（保存后对容器生效）"
+                    else
+                        "System = 系统驱动；其余为已安装的 Adreno 驱动包，启动容器时自动挂载",
+                    color = subColor, fontSize = 9.sp, lineHeight = 12.sp
+                )
+                FieldRow("扩展黑名单", labelColor, subColor) {
+                    SmallTextField(
+                        driverBlacklist, { driverBlacklist = it },
+                        fieldBg, labelColor, "如 VK_KHR_external_memory_fd", Modifier.width(170.dp)
+                    )
+                }
+                FieldRow("最大显存(MB)", labelColor, subColor) {
+                    SmallTextField(
+                        driverMaxMem, { driverMaxMem = it },
+                        fieldBg, labelColor, "留空不限", Modifier.width(120.dp)
+                    )
+                }
+                FieldRow("帧同步", labelColor, subColor) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        listOf("0" to "关", "1" to "开").forEach { (v, t) ->
+                            Chip(t, driverFrameSync == v, theme) { driverFrameSync = v }
+                        }
+                    }
+                }
                 FieldRow("DX 包装器", labelColor, subColor) {
                     Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                         listOf("dxvk", "vkd3d", "wined3d").forEach { d ->
@@ -221,6 +337,24 @@ fun ContainerEditorSheet(container: Container?, onDismiss: () -> Unit) {
                     }
                 }
                 if (dxwrapper == "dxvk" || dxwrapper == "vkd3d") {
+                    // v8：DXVK/VKD3D 版本选择（默认内置版本 + 内容管理器已安装版本）
+                    FieldRow(
+                        if (dxwrapper == "dxvk") "DXVK 版本" else "VKD3D 版本",
+                        labelColor, subColor
+                    ) {
+                        val versions = if (dxwrapper == "dxvk") dxvkVersions else vkd3dVersions
+                        val selected = if (dxwrapper == "dxvk") dxvkVersion else vkd3dVersion
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            modifier = Modifier.horizontalScroll(rememberScrollState())
+                        ) {
+                            versions.forEach { v ->
+                                Chip(v, selected == v, theme) {
+                                    if (dxwrapper == "dxvk") dxvkVersion = v else vkd3dVersion = v
+                                }
+                            }
+                        }
+                    }
                     FieldRow("DXVK 配置", labelColor, subColor) {
                         SmallTextField(
                             dxwrapperConfig,
