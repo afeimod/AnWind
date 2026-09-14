@@ -75,6 +75,22 @@ fun ContainerEditorSheet(container: Container?, onDismiss: () -> Unit) {
     var startupSelection by remember { mutableStateOf(container?.getStartupSelection()?.toInt() ?: 1) }
     var showFPS by remember { mutableStateOf(container?.isShowFPS() ?: false) }
 
+    // ---- v8：key=value 配置串读写（graphicsDriverConfig 用 ';' 分隔，
+    //      DXVK/VKD3D 配置用 ',' 分隔；与引擎侧解析器格式一致）----
+    // v9 修复：Kotlin 局部函数必须先声明后使用，此二者原声明位于下方使用点
+    // 之后，导致 CI 报 Unresolved reference: getConfigKey 及委托类型推断失败
+    fun setConfigKey(config: String, key: String, value: String, sep: Char = ';'): String {
+        val map = LinkedHashMap<String, String>()
+        config.split(sep).forEach { p ->
+            val kv = p.split('=', limit = 2)
+            if (kv.size == 2 && kv[0].isNotBlank()) map[kv[0]] = kv[1]
+        }
+        map[key] = value
+        return map.entries.joinToString(sep.toString()) { "${it.key}=${it.value}" }
+    }
+    fun getConfigKey(config: String, key: String, sep: Char = ';'): String =
+        config.split(sep).firstOrNull { it.startsWith("$key=") }?.substringAfter('=', "") ?: ""
+
     // ---- v8：驱动配置（graphicsDriverConfig）子字段（此前有状态无 UI）----
     var driverVersion by remember {
         mutableStateOf(getConfigKey(graphicsDriverConfig, "version").ifEmpty { "System" })
@@ -130,20 +146,6 @@ fun ContainerEditorSheet(container: Container?, onDismiss: () -> Unit) {
     }
     fun winComponent(id: String): Boolean =
         wincomponents.split(',').firstOrNull { it.startsWith("$id=") }?.substringAfterLast('=') == "1"
-
-    // ---- v8：key=value 配置串读写（graphicsDriverConfig 用 ';' 分隔，
-    //      DXVK/VKD3D 配置用 ',' 分隔；与引擎侧解析器格式一致）----
-    fun setConfigKey(config: String, key: String, value: String, sep: Char = ';'): String {
-        val map = LinkedHashMap<String, String>()
-        config.split(sep).forEach { p ->
-            val kv = p.split('=', limit = 2)
-            if (kv.size == 2 && kv[0].isNotBlank()) map[kv[0]] = kv[1]
-        }
-        map[key] = value
-        return map.entries.joinToString(sep.toString()) { "${it.key}=${it.value}" }
-    }
-    fun getConfigKey(config: String, key: String, sep: Char = ';'): String =
-        config.split(sep).firstOrNull { it.startsWith("$key=") }?.substringAfter('=', "") ?: ""
 
     Column(
         modifier = Modifier
