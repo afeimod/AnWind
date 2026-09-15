@@ -292,17 +292,46 @@ object X11SessionStarter {
             env["ANWIND_X11_NATIVE_DIR"] = nativeDir
             env["XKB_CONFIG_ROOT"] = xkbRoot
             env["XDG_RUNTIME_DIR"] = "$prefix/tmp"
+            // v14 修复（首次运行 exe X server 永不自启的根因）：libXlorie.so
+            // 以 TMPDIR 为基准创建 X socket（"%s/.X11-unix/X<display>"），
+            // TMPDIR 未设时依次探测 /tmp、/var/tmp、/data/local/tmp、
+            // /data/data/com.termux/files/usr/tmp —— app uid 全部不可写，
+            // native start() 直接失败 → 进程 System.exit(1) → socket 永远
+            // 不出现 → 8s 等待必超时 → 容器首启无显示（"未发现"/黑屏），
+            // 而终端手动 anwind-x11 能跑通是因为 termux shell 天然导出
+            // TMPDIR=$PREFIX/tmp。现与终端脚本完全对齐：显式导出 TMPDIR
+            // （目录兜底创建；前缀 tmp 不可写的异常 ROM 回落 app cacheDir，
+            // X11SocketFinder 已把 cacheDir 纳入候选目录）。
+            val x11TmpDir = File("$prefix/tmp").let {
+                try { it.mkdirs() } catch (_: Exception) {}
+                if (it.isDirectory && it.canWrite()) it
+                else context.cacheDir
+            }
+            env["TMPDIR"] = x11TmpDir.absolutePath
             env.remove("LD_LIBRARY_PATH")
             env.remove("LD_PRELOAD")
-            pb.start() // 分离进程：X server 随后自行广播
+            val process = pb.start() // 分离进程：X server 随后自行广播
 
-            // 等待 X socket 就位（app_process 冷启动较慢，与脚本一致最多 8s）
-            repeat(16) {
+            // 等待 X socket 就位（app_process 冷启动较慢，与脚本一致最多 8s；
+            // 找到即返回，不空转）
+            var up = X11SocketFinder.findSocket(context) != null
+            var waited = 0
+            while (!up && waited < 16) {
                 Thread.sleep(500)
-                if (X11SocketFinder.findSocket(context) != null) return true
+                waited++
+                up = X11SocketFinder.findSocket(context) != null
             }
-            false
+            if (!up) {
+                // v14 排障：8s 内 socket 未就位 —— 若进程已退出，打出退出码
+                // （此前失败完全静默，"窗口一直连接中"无从定位；仍存活则由
+                // X11DisplayComponent 后台等待兜底，属冷启动慢的正常场景）。
+                val exited = try { "exit=" + process.exitValue() } catch (_: IllegalThreadStateException) { "仍在运行" }
+                Log.w("X11SessionStarter", "X server 启动后 8s 内 socket 未就位（进程" + exited
+                    + "，TMPDIR=" + x11TmpDir.path + "）")
+            }
+            up
         } catch (e: Exception) {
+            Log.e("X11SessionStarter", "X server app_process 拉起失败", e)
             false
         }
     }

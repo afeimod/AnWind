@@ -42,10 +42,14 @@ public abstract class X11SocketFinder {
 
     public static String[] candidateDirs(Context context) {
         String prefix = "/data/data/" + context.getPackageName() + "/files/usr";
+        // v14：新增 app cacheDir 候选 —— X11SessionStarter 在 $PREFIX/tmp
+        // 不可写的异常 ROM 上会把 TMPDIR 回落为 cacheDir（libXlorie 以
+        // TMPDIR 为基准建 socket），这里必须能找回它。
         return new String[]{
             prefix + "/tmp/.X11-unix",
             "/tmp/.X11-unix",
-            System.getenv("TMPDIR") == null ? "" : (System.getenv("TMPDIR") + "/.X11-unix")
+            System.getenv("TMPDIR") == null ? "" : (System.getenv("TMPDIR") + "/.X11-unix"),
+            context.getCacheDir().getAbsolutePath() + "/.X11-unix"
         };
     }
 
