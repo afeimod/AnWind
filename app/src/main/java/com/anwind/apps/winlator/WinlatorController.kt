@@ -249,6 +249,25 @@ object X11SessionStarter {
     fun ensureRunning(context: Context): Boolean {
         if (X11SocketFinder.findSocket(context) != null) return true
 
+        // v14 修复（lorie 冷启动首败不重试）：app_process 首次拉起常因
+        // dexopt / 临时 IO 抖动失败（进程退出、socket 永不出现），此前
+        // 单次失败即放弃 → 容器首启永远无显示。现自动重试（共 3 次尝试，
+        // 每次前先复查 socket —— 另一次启动可能已把它带起来）。
+        var attempt = 0
+        while (attempt < 3) {
+            if (launchLorie(context)) return true
+            attempt++
+            if (attempt >= 3) break
+            Log.w("X11SessionStarter", "X server 第 $attempt 次拉起未就绪，重试…")
+            try { Thread.sleep(500) } catch (_: InterruptedException) { return false }
+            if (X11SocketFinder.findSocket(context) != null) return true
+        }
+        Log.e("X11SessionStarter", "X server 3 次拉起均未就绪（详情见上方日志）")
+        return false
+    }
+
+    /** 单次拉起 lorie（app_process + 宿主 APK CLASSPATH），返回 socket 是否就位。 */
+    private fun launchLorie(context: Context): Boolean {
         val prefix = X11SocketFinder.getPrefixPath(context)
         val apkPath = context.applicationInfo.sourceDir ?: return false
         val nativeDir = context.applicationInfo.nativeLibraryDir ?: ""
@@ -329,7 +348,7 @@ object X11SessionStarter {
                 Log.w("X11SessionStarter", "X server 启动后 8s 内 socket 未就位（进程" + exited
                     + "，TMPDIR=" + x11TmpDir.path + "）")
             }
-            up
+            return up
         } catch (e: Exception) {
             Log.e("X11SessionStarter", "X server app_process 拉起失败", e)
             false

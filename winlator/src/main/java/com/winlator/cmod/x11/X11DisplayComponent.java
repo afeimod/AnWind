@@ -38,6 +38,9 @@ public class X11DisplayComponent extends EnvironmentComponent {
     private final X11DisplayHost host;
     private File symlinkPath;
     private File symlinkPathFallback;
+    /** v14：X1 双桥（对齐终端实证的 DISPLAY=:1 直连路径；stop() 一并清理）。 */
+    private File symlinkPathX1;
+    private File symlinkPathFallbackX1;
     /** v13：异步桥接线程停止标记（stop() 置位，防止会话结束后重复建桥）。 */
     private volatile boolean bridgeStopped = false;
 
@@ -115,12 +118,20 @@ public class X11DisplayComponent extends EnvironmentComponent {
 
     private void createSymlinks(ImageFs imageFs, String socketPath) {
         // 主路径：TMPDIR（imagefs/usr/tmp）—— winlator libX11 的解析基准
+        // v14：X0 与 X1 双桥 —— wine 进程 DISPLAY=:0 时 libxcb（termux
+        // xtrans 补丁，已解包实证以 $TMPDIR 为基准）解析
+        // $TMPDIR/.X11-unix/X0；X1 则对齐用户终端实证的 `DISPLAY=:1`
+        // 直连路径。两个桥同指 lorie socket，双保险，行为与终端完全一致。
         File x11Dir = new File(imageFs.getTmpDir(), ".X11-unix");
         x11Dir.mkdirs();
         File target = new File(x11Dir, "X0");
         target.delete();
         linkOrCopy(socketPath, target);
         symlinkPath = target;
+        File targetX1 = new File(x11Dir, "X1");
+        targetX1.delete();
+        linkOrCopy(socketPath, targetX1);
+        symlinkPathX1 = targetX1;
 
         // 兜底路径：imagefs/tmp（不同 libX11 补丁的另一种解析基准）
         File fallbackDir = new File(imageFs.getRootDir(), "tmp/.X11-unix");
@@ -129,9 +140,14 @@ public class X11DisplayComponent extends EnvironmentComponent {
         fallbackTarget.delete();
         linkOrCopy(socketPath, fallbackTarget);
         symlinkPathFallback = fallbackTarget;
+        File fallbackTargetX1 = new File(fallbackDir, "X1");
+        fallbackTargetX1.delete();
+        linkOrCopy(socketPath, fallbackTargetX1);
+        symlinkPathFallbackX1 = fallbackTargetX1;
 
         android.util.Log.i("X11DisplayComponent",
-            "X11 显示桥已建立: " + target.getPath() + " → " + socketPath);
+            "X11 显示桥已建立: " + target.getPath() + " / " + targetX1.getPath()
+                + " → " + socketPath);
     }
 
     /** 建立 socket 链接；符号链接失败（个别 ROM 文件系统限制）时退化为拷贝 socket 节点。 */
@@ -153,7 +169,11 @@ public class X11DisplayComponent extends EnvironmentComponent {
         bridgeStopped = true;
         if (symlinkPath != null) symlinkPath.delete();
         if (symlinkPathFallback != null) symlinkPathFallback.delete();
+        if (symlinkPathX1 != null) symlinkPathX1.delete();
+        if (symlinkPathFallbackX1 != null) symlinkPathFallbackX1.delete();
         symlinkPath = null;
         symlinkPathFallback = null;
+        symlinkPathX1 = null;
+        symlinkPathFallbackX1 = null;
     }
 }

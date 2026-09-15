@@ -200,6 +200,18 @@ public class WinlatorSession {
         }
         ImageFs imageFs2 = ImageFs.find(context);
 
+        // ---- 1.5 v14 修复（首次启动 X11 无画面根因①）：前置同步确保
+        // lorie X server 就绪。此前"拉起 lorie"发生在 X11DisplayComponent
+        // .start()（组件启动阶段），而 wine（bionicLauncher）紧随其后启动
+        // —— lorie 经 app_process 冷启动耗时 10s+ 时，"显示桥"（imagefs
+        // TMPDIR 下的 X socket 符号链接）晚于 wine 的 libX11 首次连接建立，
+        // 连接失败不会重试 → X11 窗口永远停留在等待页提示文本。现在把
+        // "确保 X11 就绪"同步提前到 wine 编排之前（ensureX11Session 内部
+        // 轮询等待 socket 就位；未就位仅记日志不阻断，显示组件仍有后台
+        // 建桥兜底）。
+        if (host != null && !host.ensureX11Session())
+            Log.w(TAG, "X11 前置就绪失败（lorie 未在等待期内出现 socket），仍继续启动并依赖后台建桥");
+
         // ---- 2. 容器激活 + Wine 版本 ----
         ContainerManager containerManager = new ContainerManager(context);
         containerManager.activateContainer(container);
@@ -224,6 +236,15 @@ public class WinlatorSession {
         // 等对 turnip+DXVK 渲染路径至关重要，缺失会导致部分游戏初始化异常。
         envVars.putAll(container.getEnvVars());
         if (!envVars.has("WINEESYNC")) envVars.put("WINEESYNC", "1");
+
+        // v14 修复（X11 无画面根因② / 对齐终端实证启动方式）：wine 会话缺
+        // D-Bus session bus。用户在终端以 `env DISPLAY=:1 dbus-launch …`
+        // 实证可正常出画面，容器编排此前完全没有对应实现（全链 976 行无
+        // DISPLAY/dbus 注入点之外的 D-Bus 处理）。imagefs 内无 dbus-daemon
+        // （已解包实证），termux 前缀里有 —— 这里探测并拉起/复用一个
+        // session bus，把 DBUS_SESSION_BUS_ADDRESS + XDG_RUNTIME_DIR 注入
+        // wine 环境；termux 侧未装 dbus 时跳过（不阻断启动）。
+        ensureDbusSession();
 
         FileUtils.clear(imageFs2.getTmpDir());
 
@@ -614,6 +635,85 @@ public class WinlatorSession {
     }
 
     // ==================================================================
+    // v14：D-Bus session bus（对齐终端 `dbus-launch` 实证启动方式）
+    // ==================================================================
+
+    /**
+     * 确保 wine 会话有一个可用的 D-Bus session bus。
+     *
+     * 背景：终端侧经 termux 启动 wine 时 shell 环境天然带 dbus（用户实证
+     * `env DISPLAY=:1 dbus-launch …` 可出画面）；容器编排此前没有任何
+     * D-Bus 处理，wine 的 explorer/部分程序在无 session bus 时可能卡在
+     * 启动序列（用户现象：X11 只有等待页提示文本）。
+     *
+     * 实现（不依赖 imagefs——已解包实证 imagefs 无 dbus 组件）：
+     *  - 探测 termux 前缀 $PREFIX/bin/dbus-daemon；缺失 → 打日志跳过；
+     *  - bus 地址固定 unix:path=$PREFIX/tmp/anwind-wine-bus；socket 已在
+     *    → 复用（幂等，多次启动容器不会堆叠 daemon）；
+     *  - 否则 --fork 启动（--nopidfile 免去 pidfile 权限问题），等 socket
+     *    出现；失败只记日志不阻断 wine 启动；
+     *  - 成功后注入 DBUS_SESSION_BUS_ADDRESS + XDG_RUNTIME_DIR。
+     */
+    private void ensureDbusSession() {
+        try {
+            String prefix = "/data/data/" + context.getPackageName() + "/files/usr";
+            File dbusDaemon = new File(prefix, "bin/dbus-daemon");
+            if (!dbusDaemon.isFile()) {
+                Log.i(TAG, "termux 前缀无 dbus-daemon（" + dbusDaemon.getPath()
+                    + "），跳过 D-Bus session bus 注入");
+                return;
+            }
+            File runtimeDir = new File(prefix, "tmp");
+            if (!runtimeDir.isDirectory()) runtimeDir.mkdirs();
+            File busSocket = new File(runtimeDir, "anwind-wine-bus");
+            String busAddress = "unix:path=" + busSocket.getPath();
+
+            if (!busSocket.exists()) {
+                ProcessBuilder pb = new ProcessBuilder(
+                    dbusDaemon.getAbsolutePath(),
+                    "--session", "--fork", "--nopidfile",
+                    "--address=" + busAddress);
+                java.util.Map<String, String> env = pb.environment();
+                env.put("LD_LIBRARY_PATH", prefix + "/lib");
+                env.put("XDG_RUNTIME_DIR", runtimeDir.getPath());
+                env.put("TMPDIR", runtimeDir.getPath());
+                env.put("HOME", prefix + "/home");
+                pb.redirectErrorStream(true);
+                Process proc = pb.start();
+                // 读空输出流避免管道阻塞（dbus-daemon 启动信息量很小）
+                try (java.io.InputStream in = proc.getInputStream()) {
+                    byte[] buf = new byte[512];
+                    while (in.read(buf) != -1) { /* drain */ }
+                }
+                int exit = -1;
+                try { exit = proc.waitFor(); }
+                catch (InterruptedException ie) { Thread.currentThread().interrupt(); }
+                // 等 socket 就位（--fork 后 daemon 由子进程持有，父进程退出码 0）
+                int waited = 0;
+                while (!busSocket.exists() && waited < 20) {
+                    Thread.sleep(100);
+                    waited++;
+                }
+                if (exit != 0 || !busSocket.exists()) {
+                    Log.w(TAG, "dbus-daemon 启动未成功（exit=" + exit
+                        + "，socket=" + busSocket.exists() + "），继续无 D-Bus 启动");
+                    return;
+                }
+                Log.i(TAG, "D-Bus session bus 已启动: " + busAddress);
+            }
+            else {
+                Log.i(TAG, "D-Bus session bus 复用已有 socket: " + busAddress);
+            }
+
+            envVars.put("DBUS_SESSION_BUS_ADDRESS", busAddress);
+            envVars.put("XDG_RUNTIME_DIR", runtimeDir.getPath());
+        }
+        catch (Throwable t) {
+            Log.w(TAG, "ensureDbusSession 失败（不阻断容器启动）", t);
+        }
+    }
+
+    // ==================================================================
     // 图形驱动环境（lorie 适配：turnip + DXVK 主路径）
     // ==================================================================
 
@@ -634,10 +734,46 @@ public class WinlatorSession {
         // lorie 无 DRI3：强制 Mesa WSI 软件呈现路径（MIT-SHM / XPutImage 拷贝）
         envVars.put("MESA_VK_WSI_DEBUG", "sw");
 
+        // v14 修复（“所有驱动都无法正常使用”根因，APK 资产解包实证）：
+        // 此前 wrapper.tzst / extra_libs.tzst 只在 firstTimeBoot 解压 ——
+        // 已有容器（appVersion 非空）复用/升级时永不落位，造成：
+        //  ① extra_libs.tzst 的 freedreno_icd.aarch64.json + libvulkan_freedreno.so
+        //     （mesa turnip Vulkan ICD 本体）缺失 → 下方 VK_ICD_FILENAMES 指向
+        //     不存在的文件 → Vulkan loader 零 ICD 零物理设备 → DXVK/VKD3D
+        //     初始化全挂 → 所有 D3D 游戏/检测软件（含茶壶）无法启动；
+        //  ② imagefs.txz 内置的 wrapper_icd.aarch64.json 是 library_path
+        //     硬编码 "/data/data/com.winlator.cmod/..." 的坏文件（本包名为
+        //     com.anwind），且 libvulkan_wrapper.so 不随 imagefs 分发 ——
+        //     只有 wrapper.tzst（正常相对路径版本）能落位修复；
+        //  ③ GALLIUM_DRIVER=zink 依赖 Vulkan → 无 ICD 时 GL 路径同挂。
+        // 现改为“按落位结果幂等补齐”（仅 stat 检查，首次启动行为不变）：
+        ImageFs imageFs = ImageFs.find(context);
+        File rootDir = imageFs.getRootDir();
+        File freedrenoIcd = new File(imageFs.getShareDir(), "vulkan/icd.d/freedreno_icd.aarch64.json");
+        File freedrenoLib = new File(imageFs.getLibDir(), "libvulkan_freedreno.so");
+        boolean needExtraLibs = !(freedrenoIcd.isFile() && freedrenoLib.isFile());
+        boolean needWrapper = !new File(imageFs.getLibDir(), "libvulkan_wrapper.so").isFile();
+        if (firstTimeBoot || needExtraLibs || needWrapper) {
+            TarCompressorUtils.extract(TarCompressorUtils.Type.ZSTD, context, "graphics_driver/wrapper.tzst", rootDir);
+            if (needExtraLibs)
+                TarCompressorUtils.extract(TarCompressorUtils.Type.ZSTD, context, "graphics_driver/extra_libs.tzst", rootDir);
+            Log.i(TAG, "图形驱动运行时落位: wrapper=" + (needWrapper ? "补齐" : "已有")
+                + " extra_libs=" + (needExtraLibs ? "补齐" : "已有")
+                + " freedreno_icd=" + (freedrenoIcd.isFile() ? "就绪" : "缺失"));
+        }
+
         // Vulkan ICD：容器图形驱动 = turnip（Adreno GPU 直连）时用 freedreno ICD；
         // 其它（wrapper/virgl 依赖 Winlator 自带 X server 的路径在 lorie 下不可用）也回落 freedreno。
-        ImageFs imageFs = ImageFs.find(context);
-        envVars.put("VK_ICD_FILENAMES", imageFs.getShareDir() + "/vulkan/icd.d/freedreno_icd.aarch64.json");
+        // v14 加固：仅在 ICD 文件真实落位后设置 —— 文件不存在时绝不指空路径
+        // （Vulkan loader 会因无效 VK_ICD_FILENAMES 拿不到任何 ICD），此时
+        // 交给 loader 扫描默认路径（XDG_DATA_DIRS=imagefs/usr/share）兑底。
+        if (freedrenoIcd.isFile()) {
+            envVars.put("VK_ICD_FILENAMES", freedrenoIcd.getPath());
+        }
+        else {
+            Log.w(TAG, "freedreno ICD 仍未落位（" + freedrenoIcd.getPath()
+                + "），不设 VK_ICD_FILENAMES，由 loader 扫描默认路径");
+        }
         // （wrapper_icd 依赖 Winlator 自带 X server 的呈现路径，lorie 下统一回落 turnip）
         envVars.put("GALLIUM_DRIVER", "zink");
         envVars.put("LIBGL_KOPPER_DISABLE", "true");
@@ -668,12 +804,8 @@ public class WinlatorSession {
         if (frameSync != null && !frameSync.isEmpty())
             envVars.put("WRAPPER_FRAME_SYNC", frameSync);
 
-        // 首次启动重铺 wrapper/extra_libs（与原版一致，保持 imagefs 完整性）
-        if (firstTimeBoot) {
-            File rootDir = imageFs.getRootDir();
-            TarCompressorUtils.extract(TarCompressorUtils.Type.ZSTD, context, "graphics_driver/wrapper.tzst", rootDir);
-            TarCompressorUtils.extract(TarCompressorUtils.Type.ZSTD, context, "graphics_driver/extra_libs.tzst", rootDir);
-        }
+        // （v14：wrapper/extra_libs 已改在本方法开头按落位结果幂等补齐，
+        //   不再依赖 firstTimeBoot —— 见上方注释）
     }
 
     // ==================================================================
