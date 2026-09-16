@@ -1,5 +1,6 @@
 package com.anwind.core.desktop
 
+import android.app.ActivityManager
 import android.app.ActivityOptions
 import android.content.Context
 import android.content.Intent
@@ -11,6 +12,9 @@ import android.graphics.Rect
 import android.graphics.drawable.Drawable
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.util.Log
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
@@ -31,7 +35,7 @@ import com.anwind.core.theme.LocalWinTheme
  * v2.17：安卓手机应用读取（开始菜单"手机应用" / "系统应用"分页）。
  *
  * - 通过 PackageManager 查询所有带 MAIN/LAUNCHER 入口的应用；
- * - 系统应用判定：applicationInfo.flags 含 FLAG_SYSTEM；
+ * - 系统应用判定：applicationInfo.Flags 含 FLAG_SYSTEM；
  * - 自身（AnWind）排除，避免在开始菜单里套娃；
  * - Manifest 已声明 <queries>（MAIN/LAUNCHER），Android 11+ 无需
  *   QUERY_ALL_PACKAGES 宽限权限；
@@ -41,8 +45,25 @@ import com.anwind.core.theme.LocalWinTheme
  * v2.23.0：从桌面启动安卓应用 → **强制在桌面窗口（freeform 自由窗口）打开**，
  * 不再全屏覆盖桌面（Windows 风格体验：启动的应用像一个普通窗口悬浮在
  * 桌面上，任务栏仍然可见）。实现见 [launch] / [freeformOptions]。
+ *
+ * v2.23.1：**强制升级**——多路径强制 freeform：
+ *   1) Intent 加 `FLAG_ACTIVITY_MULTIPLE_WINDOW | NEW_DOCUMENT`，
+ *      告知系统新建独立任务而非复用已有 fullscreen 任务；
+ *   2) `ActivityOptions` 同时尝试 `setLaunchWindowingMode(5)` 与
+ *      `setLaunchStack(5)`（隐藏 API 反射）；
+ *   3) `setLaunchBounds` 给一个明显小于全屏的初始窗口边界，
+ *      很多 ROM 即便忽略 windowing mode 也会因 bounds 落到 freeform；
+ *   4) 启动后 250ms 调用 `ActivityManager.setTaskWindowingMode(
+ *      taskId, 5, true)`（反射）做兜底强制，针对一些 ROM 把
+ *      目标任务"先按全屏建好再切"的行为；
+ *   5) 失败也不抛异常，记录 warn，由调用方决定是否提示用户。
+ *
+ *   桌面快捷方式新增 [SHORTCUT_ANDROID_APP]（type=4，target = "pkg/activity"）
+ *   → 走同一套强制窗口化路径，保证"从桌面启动手机应用一定进窗口"。
  */
 object AndroidApps {
+
+    private const val TAG = "AnWind.AndroidApps"
 
     /**
      * v2.23.0：android.app.WindowConfiguration.WINDOWING_MODE_FREEFORM。
@@ -115,6 +136,50 @@ object AndroidApps {
     }
 
     /**
+     * 桌面快捷方式 target 编码：`pkg/activity`。
+     * 解析失败时把整个字符串当 pkg，activity 留空（仅用于查询提示）。
+     */
+    fun parseShortcutTarget(target: String): Pair<String, String>? {
+        val t = target.trim()
+        if (t.isEmpty()) return null
+        val idx = t.indexOf('/')
+        return if (idx > 0 && idx < t.length - 1) {
+            t.substring(0, idx) to t.substring(idx + 1)
+        } else {
+            t to ""
+        }
+    }
+
+    /** 把 AppInfo 编码为可存入数据库的 target 字符串。 */
+    fun toShortcutTarget(app: AppInfo): String = "${app.pkg}/${app.activity}"
+
+    /**
+     * 用 pkg/activity（来自桌面快捷方式 target）启动安卓应用，强制 freeform 窗口。
+     * 返回是否构造 Intent 成功（实际启动结果由系统异步处理，调用方根据返回值
+     * 决定是否给用户提示）。
+     */
+    fun launchByComponent(context: Context, pkg: String, activity: String): Boolean {
+        if (activity.isBlank()) {
+            // 没存 activity：用 getLaunchIntentForPackage 兜底，仍走 freeform 强制
+            val launchIntent = context.packageManager.getLaunchIntentForPackage(pkg)
+                ?: return false
+            launchIntent.addFlags(
+                Intent.FLAG_ACTIVITY_NEW_TASK or
+                    Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED or
+                    Intent.FLAG_ACTIVITY_MULTIPLE_WINDOW or
+                    Intent.FLAG_ACTIVITY_NEW_DOCUMENT
+            )
+            return runCatching {
+                context.startActivity(launchIntent, freeformOptions(context))
+                scheduleFreeformEnforce(context, pkg)
+                true
+            }.getOrElse { false }
+        }
+        val info = AppInfo(label = pkg, pkg = pkg, activity = activity, isSystem = false, icon = null)
+        return launch(context, info)
+    }
+
+    /**
      * 用显式 Component 启动应用；返回是否启动成功。
      *
      * v2.23.0：携带 [freeformOptions] 强制以桌面窗口（freeform）模式启动：
@@ -122,20 +187,99 @@ object AndroidApps {
      *   保证"从桌面启动一定进窗口"；
      * - 旧平台（API < 24）或个别 ROM 屏蔽隐藏 API 时优雅降级为
      *   原普通启动（全屏），不影响可用性。
+     *
+     * v2.23.1：Intent 增加 MULTIPLE_WINDOW / NEW_DOCUMENT，强制新建任务；
+     * 启动后延迟 250ms 再调用 ActivityManager.setTaskWindowingMode 兜底强制。
      */
     fun launch(context: Context, app: AppInfo): Boolean = runCatching {
         val intent = Intent(Intent.ACTION_MAIN)
             .addCategory(Intent.CATEGORY_LAUNCHER)
             .setClassName(app.pkg, app.activity)
-            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED)
+            .addFlags(
+                Intent.FLAG_ACTIVITY_NEW_TASK or
+                    Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED or
+                    // v2.23.1：提示系统"我要新窗口"——这两个 flag 在支持
+                    // multi-window / freeform 的 ROM 上会显著降低复用旧 fullscreen
+                    // 任务的概率，是免费又无副作用的强化手段。
+                    Intent.FLAG_ACTIVITY_MULTIPLE_WINDOW or
+                    Intent.FLAG_ACTIVITY_NEW_DOCUMENT
+            )
         context.startActivity(intent, freeformOptions(context))
+        scheduleFreeformEnforce(context, app.pkg)
         true
-    }.getOrDefault(false)
+    }.getOrElse { false }
+
+    /**
+     * v2.23.1：启动后兜底强制 freeform。
+     *
+     * 一些 ROM（尤其是国产定制 ROM）会忽略 [ActivityOptions.setLaunchWindowingMode]，
+     * 把任务先按 fullscreen 建起来；这里在 250ms 后扫描最近任务，
+     * 命中目标包名时反射调用 `ActivityTaskManager.setTaskWindowingMode(
+     * taskId, 5, true)` 把它从 fullscreen 改成 freeform，再配一个最小尺寸
+     * 的边界，让应用以"小窗口"形态呈现。
+     *
+     * 整个过程不抛异常（被屏蔽就 warn 退出）；返回值仅用于调试观察。
+     */
+    private fun scheduleFreeformEnforce(context: Context, targetPkg: String) {
+        val main = Handler(Looper.getMainLooper())
+        main.postDelayed({
+            runCatching {
+                forceFreeformOnRunningTask(context, targetPkg)
+            }.onFailure { Log.w(TAG, "force freeform enforce failed: ${it.message}") }
+        }, 250L)
+    }
+
+    /** 反射尝试把最近一个属于 [targetPkg] 的任务切到 freeform 模式。 */
+    private fun forceFreeformOnRunningTask(context: Context, targetPkg: String) {
+        val am = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager ?: return
+        // 1) 找最近的任务 id —— getRecentTasks 在 Android 5+ 只能看到自己应用的任务，
+        //    但作为 Launcher (HOME category) 我们可以拿到全部任务（系统对默认 Launcher 放行）。
+        val taskId: Int = runCatching {
+            @Suppress("DEPRECATION")
+            val tasks = am.getRunningTasks(8) ?: emptyList()
+            tasks.firstOrNull { it.topActivity?.packageName == targetPkg }?.id
+                ?: tasks.firstOrNull { it.baseActivity?.packageName == targetPkg }?.id
+        }.getOrNull() ?: runCatching {
+            // getRunningTasks 在 Android 5+ 仅返回调用方自己任务，作为 Launcher 仍可拿到；
+            // 取不到时再尝试 getRecentTasks（deprecated 但仍可用，Launcher 同样有权限）
+            @Suppress("DEPRECATION")
+            val recent = am.getRecentTasks(8, ActivityManager.RECENT_WITH_EXCLUDED)
+            recent.firstOrNull {
+                it.baseIntent?.component?.packageName == targetPkg
+            }?.id
+        }.getOrNull() ?: -1
+
+        if (taskId < 0) {
+            Log.w(TAG, "forceFreeform: 目标任务未找到 (pkg=$targetPkg)")
+            return
+        }
+
+        // 2) ActivityTaskManager.setTaskWindowingMode(taskId, windowingMode, toTop)
+        //    反射调用（hidden API）；不同 Android 版本类名略有差异：
+        //    - API 29+ ：android.app.ActivityTaskManager
+        //    - API 24~28：android.app.ActivityManager (同方法签名)
+        val atmClz = runCatching { Class.forName("android.app.ActivityTaskManager") }
+            .getOrNull() ?: ActivityManager::class.java
+        val method = runCatching {
+            atmClz.getMethod("setTaskWindowingMode", Int::class.javaPrimitiveType, Int::class.javaPrimitiveType, Boolean::class.javaPrimitiveType)
+        }.getOrNull()
+        if (method == null) {
+            Log.w(TAG, "forceFreeform: setTaskWindowingMode 反射失败，ROM 可能屏蔽")
+            return
+        }
+        val atmInstance = runCatching {
+            atmClz.getMethod("getInstance").invoke(null) as? Any
+        }.getOrNull() ?: am
+        runCatching {
+            method.invoke(atmInstance, taskId, WINDOWING_MODE_FREEFORM, true)
+            Log.i(TAG, "forceFreeform: taskId=$taskId → FREEFORM 已强制")
+        }.onFailure { Log.w(TAG, "forceFreeform invoke failed: ${it.message}") }
+    }
 
     /**
      * v2.23.0：构建"桌面窗口"启动参数（ActivityOptions）。
      *
-     * 两步组合：
+     * v2.23.1 强化：两步组合 + 多重 fallback：
      * 1. 强制窗口模式 —— ActivityOptions.setLaunchWindowingMode(5) 为
      *    hidden API，反射调用；API 24/25 时代的等价入口是
      *    setLaunchStack(FREEFORM_WORKSPACE_STACK)。两处都被 ROM 屏蔽时

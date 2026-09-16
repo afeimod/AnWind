@@ -4,8 +4,18 @@ import com.anwind.core.window.LaunchMode
 
 /**
  * 桌面项类型：内置应用 / 自定义快捷方式
+ *
+ * v2.23.1：新增 [SHORTCUT_ANDROID_APP] —— 指向设备上安装的安卓手机应用，
+ * target 编码为 `pkg/activity`；启动时强制走 freeform 窗口化路径
+ * （详见 [com.anwind.core.desktop.AndroidApps.launchByComponent]）。
  */
-enum class DesktopItemType { BUILTIN_APP, SHORTCUT_URL, SHORTCUT_FILE, SHORTCUT_APP }
+enum class DesktopItemType {
+    BUILTIN_APP,
+    SHORTCUT_URL,
+    SHORTCUT_FILE,
+    SHORTCUT_APP,
+    SHORTCUT_ANDROID_APP
+}
 
 /**
  * 桌面图标数据：可来自内置 AppRegistry，也可来自用户自定义快捷方式。

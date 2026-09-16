@@ -400,6 +400,8 @@ fun DesktopContextMenu(
                                     DesktopItemType.SHORTCUT_URL -> 1
                                     DesktopItemType.SHORTCUT_FILE -> 2
                                     DesktopItemType.SHORTCUT_APP -> 3
+                                    // v2.23.1：手机应用桌面快捷方式
+                                    DesktopItemType.SHORTCUT_ANDROID_APP -> 4
                                     else -> 1
                                 },
                                 target = shortcut.target,
@@ -727,6 +729,7 @@ private fun ShortcutPropertiesDialog(
         DesktopItemType.SHORTCUT_URL -> "网址快捷方式"
         DesktopItemType.SHORTCUT_FILE -> "文件快捷方式"
         DesktopItemType.SHORTCUT_APP -> "应用快捷方式"
+        DesktopItemType.SHORTCUT_ANDROID_APP -> "手机应用快捷方式"
     }
     val appDef = com.anwind.core.window.AppRegistry.get(item.target)
 
