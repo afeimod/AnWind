@@ -150,13 +150,13 @@ object AndroidApps {
     private fun freeformOptions(context: Context): Bundle? = runCatching {
         val options = ActivityOptions.makeBasic()
 
-        // 1) 窗口模式：FREEFORM（隐藏 API 反射，setLaunchWindowingMode
-        //    失败时 recoverWith 自动降级 setLaunchStack，两级尝试）
-        runCatching {
+        // 1) 窗口模式：FREEFORM（隐藏 API 反射；setLaunchWindowingMode
+        //    失败时改用 API 24/25 时代的等价入口 setLaunchStack 再试）
+        try {
             ActivityOptions::class.java
                 .getMethod("setLaunchWindowingMode", Int::class.javaPrimitiveType)
                 .invoke(options, WINDOWING_MODE_FREEFORM)
-        }.recoverWith {
+        } catch (t: Throwable) {
             runCatching {
                 ActivityOptions::class.java
                     .getMethod("setLaunchStack", Int::class.javaPrimitiveType)
