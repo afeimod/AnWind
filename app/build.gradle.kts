@@ -169,24 +169,9 @@ android {
         // v2.23.2：手机应用强制 freeform 窗口化根修 —— 新增 FreeformCompat
         //（能力检测/ADB/Root 自动开启/决策弹窗），见 AndroidApps.kt 与
         // DesktopEnvironment.kt 的 v2.23.2 注释
-        // v2.23.3：开关写入时间跟踪 + 启动后验证 + 分原因弹窗
-        // v2.23.4：三处根因修复 —— ① Bundle 隐藏键名（android.activity.
-        // windowingMode，点号非冒号）+ 旧版 launchStackId 双键；② 特性
-        // 字符串改 android.software.freeform_window_management；③ 删除
-        // 对三方应用无效的任务回读验证，改为 Root dumpsys 验证 + 一次性
-        // 用户确认；补写 enable_non_resizable_multi_window；新增 Root 特性
-        // 注入（/system/etc/permissions）；弹窗永不阻断窗口化启动尝试
-        // v2.23.5：桌面窗口形态定稿 —— 初始边界改为桌面工作区计算（82% 宽
-        // ×72% 高、避开任务栏、级联错位），文案统一"桌面窗口"表述，
-        // 移除厂商小窗引导（用户明确要求桌面窗口而非系统小窗）
-        // v2.23.6：手机小窗根因修复 —— 方向感知桌面大窗口（竖屏应用开
-        // 9:16 高窗口，横屏开宽窗口）；force_resizable_activities 升级为
-        // 一等公民（ensureAvailable/warmup 任一设置缺失即写、REASON_PHONE_
-        // SHAPED 分流弹窗、手动 settings 命令、诊断显示）；Root 新增
-        // dumpsys 任务边界比对 + am stack resize 强制拉回桌面边界
         targetSdk = 28
-        versionCode = 53
-        versionName = "2.23.6"
+        versionCode = 50
+        versionName = "2.23.3"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {

@@ -1,23 +1,22 @@
 package com.anwind.core.desktop
 
-import android.app.Activity
+import android.app.ActivityManager
 import android.app.ActivityOptions
-import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
-import android.content.pm.ActivityInfo
 import android.content.pm.ApplicationInfo
 import android.content.pm.ResolveInfo
 import android.graphics.Bitmap
 import android.graphics.Canvas
+import android.graphics.Point
 import android.graphics.Rect
 import android.graphics.drawable.Drawable
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
-import android.view.View
-import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.atomic.AtomicInteger
+import android.view.WindowManager
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
@@ -32,7 +31,12 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.painter.BitmapPainter
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.sp
+import com.anwind.AnWindApp
 import com.anwind.core.theme.LocalWinTheme
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * v2.17：安卓手机应用读取（开始菜单"手机应用" / "系统应用"分页）。
@@ -49,88 +53,66 @@ import com.anwind.core.theme.LocalWinTheme
  * 不再全屏覆盖桌面（Windows 风格体验：启动的应用像一个普通窗口悬浮在
  * 桌面上，任务栏仍然可见）。实现见 [launch] / [freeformOptions]。
  *
- * v2.23.1~v2.23.3 演进（细节见 [FreeformCompat] 类注释）：
- * - v2.23.1 多路径强制（windowing mode / stack / bounds / setTaskWindowingMode）；
- * - v2.23.2 补"设备能力"前提（检测 + WRITE_SECURE_SETTINGS / Root 写开关）；
- * - v2.23.3 补"重启盲区"跟踪与启动后验证 —— 但验证通道（getRunningTasks 回读）
- *   实际对三方应用无效（AOSP 只放行系统 Recents），且 Bundle 隐藏键名写错，
- *   "终极兜底"从未生效。
+ * v2.23.1：**强制升级**——多路径强制 freeform：
+ *   1) Intent 加 `FLAG_ACTIVITY_NEW_DOCUMENT`（公开 API，新建独立
+ *      document 任务，避免复用其他入口创建的 fullscreen 旧任务；
+ *      后续同意图启动会复用这个 document 任务，不会重复建例）；
+ *   2) `ActivityOptions` 同时尝试 `setLaunchWindowingMode(5)` 与
+ *      `setLaunchStack(5)`（隐藏 API 反射）；
+ *   3) `setLaunchBounds` 给一个明显小于全屏的初始窗口边界，
+ *      很多 ROM 即便忽略 windowing mode 也会因 bounds 落到 freeform；
+ *   4) 启动后 250ms 调用 `ActivityManager.setTaskWindowingMode(
+ *      taskId, 5, true)`（反射）做兜底强制，针对一些 ROM 把
+ *      目标任务"先按全屏建好再切"的行为；
+ *   5) 失败也不抛异常，记录 warn，由调用方决定是否提示用户。
  *
- * v2.23.4：**三处根因修复后的最终形态**：
- * 1. [freeformOptions] 写入 AOSP 实测的**正确隐藏键**（点号
- *    "android.activity.windowingMode" + 旧版 "android.activity.launchStackId"），
- *    并先做隐藏 API 豁免再反射 setLaunchWindowingMode —— 窗口化请求
- *    从此真正可靠地送达 system_server（这也是 v2.23.2/3 "开关已开却仍全屏"
- *    的最可能根因）；
- * 2. **弹窗永不阻断启动**：能力可用（特性声明或开关=1）时一律先尝试窗口化
- *    启动，跟进弹窗在启动后按状态触发（无 Root → 一次性用户确认；
- *    Root → dumpsys 真实验证；开关刚写入 → 一次性重启提示）；
- * 3. 删除 v2.23.3 的任务回读验证（getRunningTasks/getRecentTasks 对三方
- *    应用只返回自己的任务，永远读不到目标应用 —— AOSP isGetTasksAllowed
- *    只放行系统 Recents 与 REAL_GET_TASKS 签名权限持有者）。
+ *   桌面快捷方式新增 [SHORTCUT_ANDROID_APP]（type=4，target = "pkg/activity"）
+ *   → 走同一套强制窗口化路径，保证"从桌面启动手机应用一定进窗口"。
  *
- * v2.23.5：**“桌面窗口”形态定稿**（用户明确要求：要的是像电脑程序窗口
- * 一样摆在桌面上的“桌面窗口”，不是手机系统那种小尺寸“小窗”）：
- * - [freeformOptions] 的初始边界改为**桌面工作区计算**：屏幕可见区域
- *   去掉底部任务栏，窗口取工作区 82% 宽 × 72% 高，水平居中、纵向居中
- *   略偏上，四周留出可见的桌面边距，任务栏永不被窗口盖住；
- * - **级联错位**：连续打开的窗口按 Windows 经典阶梯摆放；
- * - 桌面层每次重组把最新任务栏高度发布到 [updateTaskbarReserve]
- *   （DesktopEnvironment 的 SideEffect），未发布时按 56dp 保守估计。
+ * v2.23.2：**根修——补齐"设备能力"前提，见 [FreeformCompat]**。
+ *   v2.23.0/1 的全部启动参数技巧（windowing mode / stack / bounds /
+ *   setTaskWindowingMode）都有一个共同前提：设备本身支持 freeform。
+ *   多数 ROM 出厂未开启该能力，system_server 会直接丢弃
+ *   WINDOWING_MODE_FREEFORM 请求 → 应用照常全屏盖住桌面（即
+ *   "启动手机应用会调用出桌面"的根因）。
+ *   本版启动前先经 [FreeformCompat.ensureAvailable] 保能力：
+ *   - 已授予 WRITE_SECURE_SETTINGS（ADB/Shizuku 一次性授权）→ 自动
+ *     写开 enable_freeform_support 开关，WMS 热加载，立即可用；
+ *   - Root 设备 → 进程启动时后台已静默写开（[FreeformCompat.warmup]）；
+ *   - 仍不可用 → 不再静默退化全屏，而是弹窗告知开启方式，由用户
+ *     选择"仍以全屏启动"或"取消"（[FreeformCompat.pendingLaunch] +
+ *     DesktopEnvironment 的 FreeformDecisionDialog）。
+ *   同时强化 [freeformOptions]：反射被屏蔽时直接往 Bundle 写入
+ *   KEY_LAUNCH_WINDOWING_MODE（与 setLaunchWindowingMode 落盘的键
+ *   完全一致）；[scheduleFreeformEnforce] 由单次 250ms 改为
+ *   300/800/1600ms 三轮重试。
  *
- * v2.23.6：**“仍是手机小窗”根因修复 —— 方向感知窗口 + force_resizable**：
- * 用户实测窗口化已生效但窗口是手机比例小窗。AOSP 实锤：手机应用多声明
- * resizeableActivity=false/固定方向，系统未开 force_resizable_activities
- * 时会将其信箱化成手机比例小窗（见 [FreeformCompat] 类注释）。本版：
- * - [freeformOptions] 按目标应用锁定的方向给出**同比例的桌面大窗口**：
- *   竖屏应用 → 高 82% 工作区、宽 9:16 的"高窗口"（桌面尺寸却匹配应用
- *   自身布局，即使未开 force_resizable 也不会被信箱化成小窗）；
- *   横屏应用 → 宽 82% 屏宽、高 9:16 的"宽窗口"；未指定 → 82%×72%；
- * - [fallBackToHints] 新增 [FreeformCompat.REASON_PHONE_SHAPED] 分流：
- *   自由窗口可用但 force_resizable=0 时一次性引导开启（开启+重启后
- *   应用填满桌面大窗口）；
- * - Root 设备启动后比对 dumpsys 真实边界，被 ROM 压小的窗口用
- *   am stack resize 强制拉回桌面边界（[enforceDesktopBoundsViaRoot]）。
+ * v2.23.3：**桌面窗口（电脑窗口）形态**，三个关键修改：
+ *   1. [desktopWindowBounds]：启动边界从"72%×76% 通用居中矩形"升级为
+ *      桌面级大窗口 —— 基于真实屏幕尺寸（含系统栏），宽约 92%、
+ *      高度填满工作区（顶部避开状态栏、底部预留 AnWind 任务栏），
+ *      并带 Windows 风格层叠偏移（连续开窗依次错开）。窄高手机比例
+ *      的旧边界即使被采纳，看起来也像"手机小窗"，这是用户反馈
+ *      "不是电脑窗口那种"的直接原因之一；
+ *   2. 配合 [FreeformCompat] v2.23.3 无条件写入 force_resizable_activities
+ *      （global+secure 双表），未适配多窗口的手机应用不再被厂商系统
+ *      钉死在自带小窗（矩阵缩放、固定手机比例）；
+ *   3. 新增授权建议：freeform 可用但 WRITE_SECURE_SETTINGS 未授予时，
+ *      首次启动手机应用后提示一次 ADB 授权（会话级，不阻塞启动）。
  */
 object AndroidApps {
 
     private const val TAG = "AnWind.AndroidApps"
 
-    // ============================================================
-    // v2.23.5：桌面窗口几何（任务栏避让 + 级联摆放）
-    // ============================================================
+    // v2.23.2：WINDOWING_MODE_FREEFORM(=5) 与隐藏 Bundle 键统一收敛到
+    // FreeformCompat，供本对象与能力检测/弹窗共用（原局部常量已删除）
 
-    /**
-     * 桌面任务栏高度（px），由桌面层每次重组经 [updateTaskbarReserve] 发布。
-     *
-     * freeform 窗口是**系统级窗口**，会浮在包括 AnWind 在内的一切应用之上
-     * —— 想让任务栏始终可见（“桌面窗口”的核心观感），窗口边界必须主动
-     * 避开任务栏区域。桌面层未发布前（或发布失效）按 56dp 保守估计。
-     */
+    /** v2.23.3：桌面窗口层叠序号（Windows 风格：连续开窗依次右下错开） */
+    private val cascadeIndex = AtomicInteger(0)
+
+    /** v2.23.3：授权建议弹窗是否已展示过（仅会话级，重启 AnWind 后可再见） */
     @Volatile
-    private var taskbarReservePx: Int = -1
-
-    /** 桌面层发布最新任务栏高度（px）；<=0 视为“恢复默认估计” */
-    fun updateTaskbarReserve(px: Int) {
-        taskbarReservePx = px
-    }
-
-    /**
-     * 级联计数器：连续打开的窗口按 28dp 阶梯右下错位（Windows 经典多窗口
-     * 摆放），第 5 个窗口后从头计数，避免无限漂移出屏。
-     */
-    private val cascade = AtomicInteger(0)
-
-    /**
-     * v2.23.6：最近一次经 [freeformOptions] 请求的桌面窗口边界。
-     * Root 设备启动后用它与 dumpsys 读到的真实边界比对，若 ROM 把窗口
-     * 压成手机尺寸小窗，则用 am stack resize 强制拉回。
-     */
-    @Volatile
-    private var lastRequestedBounds: Rect? = null
-
-    /** v2.23.6：目标应用方向查询缓存（pkg/activity → 1=竖屏 2=横屏 0=未指定/未知） */
-    private val orientationCache = ConcurrentHashMap<String, Int>()
+    private var setupHintShown = false
 
     /** 单个安卓应用条目 */
     data class AppInfo(
@@ -229,7 +211,7 @@ object AndroidApps {
         launchAndroidApp(context, app.pkg, app.activity, app.label)
 
     /**
-     * 决策弹窗里"仍以全屏启动"的入口 —— 跳过 freeform 与询问，
+     * v2.23.2：决策弹窗里"仍以全屏启动"的入口 —— 跳过 freeform 与询问，
      * 直接普通启动（用户已知情且明确选择全屏）。
      */
     fun launchFullscreen(context: Context, pkg: String, activity: String): Boolean {
@@ -256,7 +238,7 @@ object AndroidApps {
         return base.addFlags(
             Intent.FLAG_ACTIVITY_NEW_TASK or
                 Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED or
-                // 新建独立 document 任务（公开 API）—— 避开复用
+                // v2.23.1：新建独立 document 任务（公开 API）—— 避开复用
                 // 其他入口创建的 fullscreen 旧任务，让本次任务直接落入
                 // freeform 窗口模式；同意图后续启动复用该任务。
                 Intent.FLAG_ACTIVITY_NEW_DOCUMENT
@@ -266,318 +248,257 @@ object AndroidApps {
     /**
      * 手机应用启动主路径（开始菜单 / 桌面快捷方式共用入口）。
      *
-     * v2.23.4 状态机（核心原则：**弹窗永不阻断窗口化尝试**）：
-     * 1. [FreeformCompat.ensureAvailable] 保"开关打开"（已授权/Root 时自动写入）；
-     * 2. 不可用且未抑制询问 → REASON_NO_PERMISSION 弹窗（唯一的前置弹窗）；
-     * 3. 可用（特性声明 或 开关=1）→ **一律先窗口化启动**（系统不支持时
-     *    AOSP 会静默降级全屏，不抛异常，尝试零成本）；
-     * 4. 启动后 [postLaunchFollowUp] 跟进：Root → dumpsys 真实验证；
-     *    无 Root → 开关刚写入给一次性重启提示，否则一次性用户确认
-     *    （"是否已以窗口打开？"），确认失败转解决方案弹窗。
+     * v2.23.2 流程：
+     * 1. [FreeformCompat.ensureAvailable] 保"设备支持自由窗口"前提
+     *    （已授予 WRITE_SECURE_SETTINGS 时同步写开开关，毫秒级）；
+     * 2. 可用 → 带 [freeformOptions] 启动 + 启动后三轮 [scheduleFreeformEnforce]
+     *    兜底强制切窗；
+     * 3. 不可用且未抑制询问 → [FreeformCompat.requestDecision] 转弹窗，
+     *    由用户选择"仍以全屏启动 / 取消"（不再静默全屏）；
+     * 4. 不可用且用户已选"不再提示" → 直接全屏启动。
+     *
+     * v2.23.3 追加：步骤 1 的写入改为无条件（见 [FreeformCompat]），
+     * 步骤 2 的启动边界升级为桌面级大窗口（[desktopWindowBounds]），
+     * 启动成功后按需触发一次授权建议弹窗（见下方 ③）。
      */
     private fun launchAndroidApp(context: Context, pkg: String, activity: String, label: String): Boolean {
         val intent = buildLaunchIntent(context, pkg, activity) ?: return false
 
-        // ① 保能力：确保自由窗口开关处于打开状态（30s 缓存，快路径毫秒级）
-        if (!FreeformCompat.ensureAvailable(context)) {
+        // ① 保能力：确保设备支持自由窗口（30s 缓存，快路径毫秒级）
+        val freeformReady = FreeformCompat.ensureAvailable(context)
+
+        if (!freeformReady) {
             // 用户已选"不再提示" → 直接全屏兜底
-            if (FreeformCompat.suppressDecision) return launchPlain(context, intent)
+            if (FreeformCompat.suppressDecision) {
+                return runCatching {
+                    context.startActivity(intent)
+                    true
+                }.getOrElse { false }
+            }
             // 转入决策弹窗（返回 true 让开始菜单先收起，弹窗在桌面层显示）
-            FreeformCompat.requestDecision(pkg, activity, label, FreeformCompat.REASON_NO_PERMISSION)
+            FreeformCompat.requestDecision(pkg, activity, label)
             return true
         }
 
-        // ② 窗口化启动（v2.23.4：无论开关是刚写入还是历史开启，都先尝试 ——
-        //    个别 ROM 热加载开关，且尝试本身零成本）
-        val ok = runCatching {
-            context.startActivity(intent, freeformOptions(context, pkg, activity))
+        // ② 窗口化启动 + 多轮兜底强制
+        val launched = runCatching {
+            context.startActivity(intent, freeformOptions(context))
+            scheduleFreeformEnforce(context, pkg)
             true
         }.getOrElse { false }
-        if (!ok) return false
 
-        postLaunchFollowUp(context, pkg, activity, label)
-        return true
+        // ③ v2.23.3：freeform 已可用但设置无法自动写入（未授予 ADB 权限）
+        //    → 首次启动后建议一次授权（不阻塞本次启动；会话内不重复；
+        //      状态驱动，授权后永不弹 —— 修复旧版"只提示一次/再也不弹"）
+        if (launched &&
+            !FreeformCompat.hasSecureSettings(context) &&
+            !FreeformCompat.suppressSetupHint &&
+            !setupHintShown
+        ) {
+            setupHintShown = true
+            FreeformCompat.requestSetupHint(pkg, activity, label)
+        }
+        return launched
     }
-
-    /** 普通全屏启动（用户已知情选择全屏，或"不再提示"后的兜底） */
-    private fun launchPlain(context: Context, intent: Intent): Boolean =
-        runCatching {
-            context.startActivity(intent)
-            true
-        }.getOrElse { false }
 
     /**
-     * v2.23.4：启动后跟进（取代 v2.23.3 失效的"任务回读验证"）。
+     * v2.23.1 → v2.23.2：启动后兜底强制 freeform。
      *
-     * 在后台线程延迟 ~1.2 秒执行（等目标任务建好）：
-     * - **Root 设备**：[FreeformCompat.verifyFreeformViaRoot] 用 dumpsys 回读
-     *   目标任务真实 windowingMode —— freeform → 记录生效；全屏 → 按是否
-     *   本次开机写入分流（重启提示 / 解决方案 + 标记 ROM 忽略开关）；
-     * - **无 Root**：开关是本次开机写入 → 一次性重启提示；否则若本安装从未
-     *   确认过 → 一次性**用户确认**弹窗（无 Root 时唯一可靠的"验证"）。
+     * 一些 ROM（尤其是国产定制 ROM）会忽略 [ActivityOptions.setLaunchWindowingMode]，
+     * 把任务先按 fullscreen 建起来；这里在 300/800/1600ms 三轮扫描最近任务，
+     * 命中目标包名时反射调用 `ActivityTaskManager.setTaskWindowingMode(
+     * taskId, 5, true)` 把它从 fullscreen 改成 freeform，再配一个最小尺寸
+     * 的边界，让应用以"小窗口"形态呈现。多轮重试针对"任务先全屏建好、
+     * 再异步初始化完成"的时序：单次 250ms 扫描时机太早会扑空。
      *
-     * 弹窗全部在启动之后出现，只提供信息与后续选择，绝不阻断启动本身。
+     * 整个过程不抛异常（被屏蔽就 warn 退出）；返回值仅用于调试观察。
      */
-    private fun postLaunchFollowUp(context: Context, pkg: String, activity: String, label: String) {
-        if (FreeformCompat.suppressDecision) return
-        Thread {
-            runCatching {
-                Thread.sleep(1200L)
-                val ctx = context.applicationContext
-                // Root：dumpsys 真实验证
-                if (FreeformCompat.suAvailable()) {
-                    when (FreeformCompat.verifyFreeformViaRoot(pkg)) {
-                        true -> {
-                            FreeformCompat.noteVerified(ctx, true)
-                            // v2.23.6：ROM 把 freeform 窗口压成手机小窗时
-                            //（dumpsys 真实边界 < 请求的 80%），强制拉回桌面边界
-                            enforceDesktopBoundsViaRoot(pkg)
-                        }
-                        false -> {
-                            FreeformCompat.noteVerified(ctx, false)
-                            if (FreeformCompat.pendingLaunch.value == null) {
-                                val reason =
-                                    if (FreeformCompat.pendingRebootSinceOurWrite(ctx)) {
-                                        FreeformCompat.REASON_NEEDS_REBOOT
-                                    } else {
-                                        FreeformCompat.REASON_SOLUTIONS
-                                    }
-                                FreeformCompat.requestDecision(pkg, activity, label, reason)
-                            }
-                        }
-                        null -> fallBackToHints(ctx, pkg, activity, label)
-                    }
-                    return@runCatching
-                }
-                fallBackToHints(ctx, pkg, activity, label)
-            }.onFailure { Log.w(TAG, "postLaunchFollowUp failed: ${it.message}") }
-        }.apply { isDaemon = true }.start()
-    }
-
-    /** 无 Root / dumpsys 不可判定时的提示分流（每类至多一次，不唠叨） */
-    private fun fallBackToHints(context: Context, pkg: String, activity: String, label: String) {
-        if (FreeformCompat.suppressDecision) return
-        if (FreeformCompat.pendingLaunch.value != null) return
-        when {
-            // 开关是本次开机内写入的：系统还没读到，一次性重启提示
-            FreeformCompat.pendingRebootSinceOurWrite(context) ->
-                FreeformCompat.maybeShowRebootAdvice(context, pkg, activity, label)
-
-            // v2.23.6：窗口化已生效但「强制应用可调整大小」未开 ——
-            // 手机应用会被信箱化成手机比例小窗（用户实测现象），
-            // 一次性引导开启（开启 + 重启后应用填满桌面大窗口）
-            !FreeformCompat.isForceResizableOn(context) &&
-                !FreeformCompat.everVerifiedWorking(context) &&
-                !FreeformCompat.userConfirmAlreadyAsked(context) -> {
-                FreeformCompat.markUserConfirmAsked(context)
-                FreeformCompat.requestDecision(pkg, activity, label, FreeformCompat.REASON_PHONE_SHAPED)
-            }
-
-            // 本安装从未确认过效果：一次性用户确认（回答后不再问）
-            !FreeformCompat.everVerifiedWorking(context) &&
-                !FreeformCompat.userConfirmAlreadyAsked(context) -> {
-                FreeformCompat.markUserConfirmAsked(context)
-                FreeformCompat.requestDecision(pkg, activity, label, FreeformCompat.REASON_USER_CONFIRM)
-            }
-
-            // 其余（已确认过 / 已标记 ROM 忽略开关）：静默，不再打扰
+    private fun scheduleFreeformEnforce(context: Context, targetPkg: String) {
+        val main = Handler(Looper.getMainLooper())
+        longArrayOf(300L, 800L, 1600L).forEach { at ->
+            main.postDelayed({
+                runCatching {
+                    forceFreeformOnRunningTask(context, targetPkg)
+                }.onFailure { Log.w(TAG, "force freeform enforce failed: ${it.message}") }
+            }, at)
         }
     }
 
-    /**
-     * v2.23.6：目标应用是否锁定了竖屏/横屏（公开字段
-     * ActivityInfo.screenOrientation，查询无需权限）。绝大多数手机应用锁竖屏 ——
-     * 给这些应用开**同比例的桌面大窗口**（高窗口），既匹配应用自身布局，
-     * 又不会被系统信箱化成手机小窗 —— 即使 force_resizable_activities
-     * 未开，也能获得最佳桌面窗口观感。
-     *
-     * @return true=锁竖屏；false=锁横屏；null=未指定/查询失败
-     */
-    private fun lockedOrientation(context: Context, pkg: String, activity: String): Boolean? {
-        if (activity.isBlank()) return null
-        val key = "$pkg/$activity"
-        orientationCache[key]?.let { return it == 1 }
-        val result = runCatching {
-            when (context.packageManager
-                .getActivityInfo(ComponentName(pkg, activity), 0).screenOrientation) {
-                ActivityInfo.SCREEN_ORIENTATION_PORTRAIT,
-                ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT,
-                ActivityInfo.SCREEN_ORIENTATION_REVERSE_PORTRAIT,
-                ActivityInfo.SCREEN_ORIENTATION_USER_PORTRAIT -> true
+    /** 反射尝试把最近一个属于 [targetPkg] 的任务切到 freeform 模式。 */
+    private fun forceFreeformOnRunningTask(context: Context, targetPkg: String) {
+        val am = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager ?: return
+        // 1) 找最近的任务 id —— getRecentTasks 在 Android 5+ 只能看到自己应用的任务，
+        //    但作为 Launcher (HOME category) 我们可以拿到全部任务（系统对默认 Launcher 放行）。
+        val taskId: Int = runCatching {
+            @Suppress("DEPRECATION")
+            val tasks = am.getRunningTasks(8) ?: emptyList()
+            tasks.firstOrNull { it.topActivity?.packageName == targetPkg }?.id
+                ?: tasks.firstOrNull { it.baseActivity?.packageName == targetPkg }?.id
+        }.getOrNull() ?: runCatching {
+            // getRunningTasks 在 Android 5+ 仅返回调用方自己任务，作为 Launcher 仍可拿到；
+            // 取不到时再尝试 getRecentTasks（deprecated 但仍可用，Launcher 同样有权限）
+            @Suppress("DEPRECATION")
+            val recent = am.getRecentTasks(8, ActivityManager.RECENT_WITH_EXCLUDED)
+            recent.firstOrNull {
+                it.baseIntent?.component?.packageName == targetPkg
+            }?.id
+        }.getOrNull() ?: -1
 
-                ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE,
-                ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE,
-                ActivityInfo.SCREEN_ORIENTATION_REVERSE_LANDSCAPE,
-                ActivityInfo.SCREEN_ORIENTATION_USER_LANDSCAPE -> false
+        if (taskId < 0) {
+            Log.w(TAG, "forceFreeform: 目标任务未找到 (pkg=$targetPkg)")
+            return
+        }
 
-                else -> null
-            }
+        // 2) ActivityTaskManager.setTaskWindowingMode(taskId, windowingMode, toTop)
+        //    反射调用（hidden API）；不同 Android 版本类名略有差异：
+        //    - API 29+ ：android.app.ActivityTaskManager
+        //    - API 24~28：android.app.ActivityManager (同方法签名)
+        val atmClz = runCatching { Class.forName("android.app.ActivityTaskManager") }
+            .getOrNull() ?: ActivityManager::class.java
+        val method = runCatching {
+            atmClz.getMethod("setTaskWindowingMode", Int::class.javaPrimitiveType, Int::class.javaPrimitiveType, Boolean::class.javaPrimitiveType)
         }.getOrNull()
-        orientationCache[key] = when (result) { true -> 1; false -> 2; null -> 0 }
-        return result
-    }
-
-    /**
-     * v2.23.6，Root 专属兑底：比对任务真实边界（dumpsys）与请求的桌面窗口边界，
-     * 若 ROM 把 freeform 窗口压成手机比例小窗（小于请求的 80%），用
-     * am stack resize 强制拉回。后台线程调用，全失败路径静默（best effort）。
-     */
-    private fun enforceDesktopBoundsViaRoot(pkg: String) {
-        runCatching {
-            val requested = lastRequestedBounds ?: return
-            val task = FreeformCompat.findRootTaskInfo(pkg) ?: return
-            if (!task.freeform) return
-            val tb = task.bounds ?: return
-            val shrunk = tb.width() < requested.width() * 0.8f ||
-                tb.height() < requested.height() * 0.8f
-            if (!shrunk) return
-            val adjusted = FreeformCompat.resizeRootTask(task.id, requested)
-            Log.i(
-                TAG,
-                "Root 桌面边界校正（$pkg）：请求=${requested.toShortString()} " +
-                    "实际=${tb.toShortString()} ${if (adjusted) "已调整" else "失败（任务不可调/ROM 拒绝）"}"
-            )
+        if (method == null) {
+            Log.w(TAG, "forceFreeform: setTaskWindowingMode 反射失败，ROM 可能屏蔽")
+            return
         }
+        val atmInstance = runCatching {
+            atmClz.getMethod("getInstance").invoke(null) as? Any
+        }.getOrNull() ?: am
+        runCatching {
+            method.invoke(atmInstance, taskId, FreeformCompat.WINDOWING_MODE_FREEFORM, true)
+            Log.i(TAG, "forceFreeform: taskId=$taskId → FREEFORM 已强制")
+        }.onFailure { Log.w(TAG, "forceFreeform invoke failed: ${it.message}") }
     }
 
     /**
      * v2.23.0：构建"桌面窗口"启动参数（ActivityOptions）。
      *
-     * v2.23.5：**桌面窗口形态定稿** —— 用户要的是"像电脑程序窗口一样摆在
-     * 桌面上"，而不是手机 ROM 那种小尺寸居中的"小窗"：
-     * - 初始边界基于**桌面工作区**（屏幕可见区域去掉底部任务栏）计算：
-     *   宽 82% 屏宽、高 72% 工作区高，水平居中、纵向居中；四周留出
-     *   可见的桌面边距，任务栏永不被盖住 —— 一眼可辨"这是桌面上的
-     *   程序窗口"，与系统小窗（小尺寸、贴顶悬浮）明显区分；
-     * - 连续打开的窗口按 28dp 级联右下错位（Windows 经典多窗口摆放），
-     *   第 5 个窗口后从头计数；
-     * - 坐标系：优先用 Activity 内容视图的**可见 frame**（屏幕坐标系，
-     *   天然对齐状态栏/导航条的实际占位，无论是否边到边都准确），
-     *   拿不到时回退真实显示尺寸。
+     * v2.23.1 强化：两步组合 + 多重 fallback：
+     * 1. 强制窗口模式 —— ActivityOptions.setLaunchWindowingMode(5) 为
+     *    hidden API，反射调用；API 24/25 时代的等价入口是
+     *    setLaunchStack(FREEFORM_WORKSPACE_STACK)。两处都被 ROM 屏蔽时
+     *    仅退化为"设窗口边界"，再不行则全屏兜底（调用方拿到 null）。
+     * 2. 初始窗口边界 —— setLaunchBounds(Rect) 为公开 API（API 24+）。
      *
-     * v2.23.4 的送达链路保持不变（已对 AOSP 逐行核对）：
-     * 1. **隐藏 API 豁免**：先调 [FreeformCompat.exemptHiddenApis]
-     *    （VMRuntime.setHiddenApiExemptions，同 farmerbb/Taskbar 的做法），
-     *    解除 Android 9+ 对三方应用的反射限制；
-     * 2. **窗口模式反射三连**：setLaunchWindowingMode（API 28+）→
-     *    setLaunchStackId（API 24~27）→ setLaunchStack（极旧 ROM 兜底），
-     *    命中任意一个即可，值均为 5（FREEFORM）；
-     * 3. **双 Bundle 隐藏键兜底**：toBundle() 后直接 putInt 两个真实键
-     *    （"android.activity.windowingMode" API 28+ /
-     *    "android.activity.launchStackId" API 24~27）—— setLaunchWindowingMode
-     *    内部写的就是同一个键，反射被屏蔽时这里是等效主通道。
+     * v2.23.3：边界升级为**桌面级大窗口**（见 [desktopWindowBounds]）：
+     * 真实屏幕尺寸的 92% 宽 × 填满工作区高、预留任务栏、避开状态栏、
+     * Windows 风格层叠错开。此前的 72%×76% 通用居中矩形在竖屏设备上
+     * 是窄高手机比例，即使被系统采纳也像"手机小窗"；配合 FreeformCompat
+     * 无条件写入的 force_resizable_activities，窗口不再被厂商系统压缩回
+     * 固定手机比例。
      *
      * 返回 null 表示构建失败（极少见），调用方回退普通启动。
-     *
-     * v2.23.6：**方向感知尺寸** —— 按目标应用锁定的方向给同比例桌面大窗口
-     * （竖屏应用 → 高窗口：高 82% 工作区、宽 9:16；横屏应用 → 宽窗口：
-     * 宽 82% 屏宽、高 9:16；未指定 → 82% 宽 × 72% 高）。竖屏高窗口既匹配
-     * 手机应用自身布局，又不会被系统信箱化成手机小窗；
-     * force_resizable_activities 开启后应用直接填满这些窗口。
      */
-    private fun freeformOptions(context: Context, pkg: String, activity: String): Bundle? = runCatching {
-        // 1) 解除隐藏 API 限制（Android 9+；失败无碍，Bundle 键通道不依赖反射）
-        FreeformCompat.exemptHiddenApis()
-
+    private fun freeformOptions(context: Context): Bundle? = runCatching {
         val options = ActivityOptions.makeBasic()
-        val cls = ActivityOptions::class.java
-        val mode = FreeformCompat.WINDOWING_MODE_FREEFORM
 
-        // 2) 窗口模式：按版本找任一可用的隐藏方法
-        listOf("setLaunchWindowingMode", "setLaunchStackId", "setLaunchStack")
-            .asSequence()
-            .mapNotNull { name ->
-                runCatching {
-                    cls.getMethod(name, Int::class.javaPrimitiveType)
-                }.getOrNull()
-            }
-            .firstOrNull()
-            ?.invoke(options, mode)
-
-        // 3) 桌面窗口边界（v2.23.5 起）：屏幕可见区域去掉底部任务栏 = 桌面工作区，
-        //    尺寸按目标应用方向给出同比例桌面大窗口（见 3.3，v2.23.6）。
-        val dm = context.resources.displayMetrics
-        val density = dm.density.coerceAtLeast(1f)
-
-        // 3.1) 屏幕坐标系里的桌面可用区域：优先 Activity 内容视图的可见
-        //      frame（已扣除状态栏/导航条的真实占位），失败回退显示尺寸。
-        val frame = Rect()
-        (context as? Activity)?.window
-            ?.findViewById<View>(android.R.id.content)
-            ?.getWindowVisibleDisplayFrame(frame)
-        val screenLeft: Int
-        val screenTop: Int
-        val screenRight: Int
-        val screenBottom: Int
-        if (!frame.isEmpty()) {
-            screenLeft = frame.left; screenTop = frame.top
-            screenRight = frame.right; screenBottom = frame.bottom
-        } else {
-            screenLeft = 0; screenTop = 0
-            screenRight = dm.widthPixels; screenBottom = dm.heightPixels
-        }
-        val screenW = (screenRight - screenLeft).coerceAtLeast(1)
-        val screenH = (screenBottom - screenTop).coerceAtLeast(1)
-
-        // 3.2) 任务栏避让：桌面层发布的实时高度（未发布时 56dp 估计）+ 8dp 间隙
-        val taskbarPx = (if (taskbarReservePx > 0) taskbarReservePx
-            else (56 * density).toInt()) + (8 * density).toInt()
-        val workTop = screenTop
-        val workBottom = (screenBottom - taskbarPx).coerceAtLeast(screenTop + screenH / 2)
-        val workH = (workBottom - workTop).coerceAtLeast(1)
-
-        // 3.3) v2.23.6 桌面窗口尺寸（方向感知）：
-        //      - 竖屏锁定应用（绝大多数手机应用）→ 高窗口：高 82% 工作区，
-        //        宽 = 高 × 9/16 —— 桌面尺寸且匹配应用布局，不会被信箱化成
-        //        手机小窗（就像在电脑上开一个竖版应用窗口）；
-        //      - 横屏锁定应用（游戏等）→ 宽窗口：宽 82% 屏宽，高 = 宽 × 9/16；
-        //      - 未指定方向 → 通用桌面窗口（82% 宽 × 72% 高，同 v2.23.5）。
-        //        force_resizable_activities 开启后应用直接填满这些窗口。
-        val w: Int
-        val h: Int
-        when (lockedOrientation(context, pkg, activity)) {
-            true -> {
-                h = (workH * 0.82f).toInt()
-                    .coerceAtLeast(minOf(560, workH))
-                    .coerceAtMost(workH)
-                w = (h * 9f / 16f).toInt()
-                    .coerceAtLeast(minOf(400, screenW))
-                    .coerceAtMost((screenW * 0.92f).toInt().coerceAtLeast(minOf(400, screenW)))
-            }
-            false -> {
-                w = (screenW * 0.82f).toInt()
-                    .coerceAtLeast(minOf(420, screenW))
-                    .coerceAtMost(screenW)
-                h = (w * 9f / 16f).toInt()
-                    .coerceAtLeast(minOf(320, workH))
-                    .coerceAtMost((workH * 0.80f).toInt().coerceAtLeast(minOf(320, workH)))
-            }
-            null -> {
-                w = (screenW * 0.82f).toInt()
-                    .coerceAtLeast(minOf(420, screenW))
-                    .coerceAtMost(screenW)
-                h = (workH * 0.72f).toInt()
-                    .coerceAtLeast(minOf(560, workH))
-                    .coerceAtMost(workH)
+        // 1) 窗口模式：FREEFORM（隐藏 API 反射；setLaunchWindowingMode
+        //    失败时改用 API 24/25 时代的等价入口 setLaunchStack 再试）
+        try {
+            ActivityOptions::class.java
+                .getMethod("setLaunchWindowingMode", Int::class.javaPrimitiveType)
+                .invoke(options, FreeformCompat.WINDOWING_MODE_FREEFORM)
+        } catch (t: Throwable) {
+            runCatching {
+                ActivityOptions::class.java
+                    .getMethod("setLaunchStack", Int::class.javaPrimitiveType)
+                    .invoke(options, FreeformCompat.WINDOWING_MODE_FREEFORM)
             }
         }
 
-        // 3.4) 居中 + 级联错位（每窗右下移 28dp，5 级循环），整体钳回工作区内
-        val step = (28 * density).toInt()
-        val n = ((cascade.getAndIncrement() % 5) + 5) % 5
-        val left = (screenLeft + (screenW - w) / 2 + n * step)
-            .coerceIn(screenLeft, (screenLeft + screenW - w).coerceAtLeast(screenLeft))
-        val top = (workTop + (workH - h) / 2 + n * step)
-            .coerceIn(workTop, (workBottom - h).coerceAtLeast(workTop))
-        lastRequestedBounds = Rect(left, top, left + w, top + h)
-        options.setLaunchBounds(Rect(left, top, left + w, top + h))
+        // 2) v2.23.3：桌面级启动边界（替换旧 72%×76% 居中矩形）
+        val bounds = desktopWindowBounds(context)
+        Log.i(TAG, "桌面窗口边界：$bounds")
+        options.setLaunchBounds(bounds)
 
         val bundle = options.toBundle() ?: return@runCatching null
-        // 4) 双键兜底（AOSP 实测字面值；各版本只读自己认识的键，多余键被忽略）
-        bundle.putInt(FreeformCompat.KEY_LAUNCH_WINDOWING_MODE, mode)
-        bundle.putInt(FreeformCompat.KEY_LAUNCH_STACK_ID, mode)
+        // 3) v2.23.2 终极兜底：直接写入隐藏 Bundle 键 ——
+        //    setLaunchWindowingMode 内部写的就是这个键，无条件 putInt：
+        //    反射成功时是幂等覆盖；反射被 ROM 屏蔽时这里成为唯一生效通道，
+        //    与 FreeformCompat 的能力保障配合完成"强制窗口化"
+        bundle.putInt(
+            FreeformCompat.KEY_LAUNCH_WINDOWING_MODE,
+            FreeformCompat.WINDOWING_MODE_FREEFORM
+        )
         bundle
     }.getOrNull()
+
+    /**
+     * v2.23.3：计算"电脑窗口"级别的启动边界。
+     *
+     * 设计目标（对标 Windows 桌面应用窗口的观感）：
+     * - **大**：宽约 92%，高度填满工作区（顶部安全边距 → 底部任务栏上缘），
+     *   与"手机小窗"（约 40% 高、固定手机比例、悬浮在角落）拉开肉眼差距；
+     * - **避开状态栏**：顶部边距 ≥ 14dp，否则窗口被状态栏覆盖无法拖动
+     *   （framework 实测过的坑：坐标被状态栏遮盖 → 不可拖拽）；
+     * - **预留任务栏**：系统 freeform 窗口浮在本应用桌面上层，不预留会
+     *   盖住 AnWind 任务栏；高度读取用户设置（36..80dp），未设置时
+     *   取 50dp 安全值（宁可有缝隙也不覆盖任务栏）；
+     * - **层叠错开**：连续开窗依次右下偏移（5 级循环），像 Windows 桌面
+     *   连续开多个程序窗口的效果；
+     * - **横竖屏自适应**：基于真实屏幕尺寸（含系统栏），跟随当前旋转。
+     */
+    private fun desktopWindowBounds(context: Context): Rect {
+        val app = context.applicationContext
+        val dm = app.resources.displayMetrics
+        val density = dm.density
+
+        // 1) 真实屏幕尺寸（含系统栏；freeform 边界使用显示坐标系）
+        var sw = dm.widthPixels
+        var sh = dm.heightPixels
+        val wm = app.getSystemService(Context.WINDOW_SERVICE) as? WindowManager
+        if (Build.VERSION.SDK_INT >= 30) {
+            runCatching {
+                val b = wm?.maximumWindowMetrics?.bounds
+                if (b != null && !b.isEmpty && b.width() > 0 && b.height() > 0) {
+                    sw = b.width()
+                    sh = b.height()
+                }
+            }
+        } else {
+            runCatching {
+                val p = Point()
+                @Suppress("DEPRECATION")
+                wm?.defaultDisplay?.getRealSize(p)
+                if (p.x > 0 && p.y > 0) {
+                    sw = p.x
+                    sh = p.y
+                }
+            }
+        }
+
+        // 2) 任务栏预留（用户设置 36..80dp，否则主题默认 44~48dp，取 50dp 安全值）
+        val taskbarPx = (readTaskbarHeightDp(app) * density).toInt() + (6 * density).toInt()
+
+        // 3) 边距：顶部避开状态栏；左右对称留出桌面边缘
+        val topPx = maxOf((14 * density).toInt(), (sh * 0.03f).toInt())
+        val sidePx = maxOf((10 * density).toInt(), (sw * 0.04f).toInt())
+
+        // 4) 窗口本体：92% 宽 × 工作区全高（顶部边距 → 任务栏上缘）
+        val width = (sw * 0.92f).toInt().coerceAtLeast(sw / 3)
+        val height = (sh - taskbarPx - topPx).coerceAtLeast(sh / 3)
+
+        // 5) Windows 风格层叠偏移（连续开窗依次右下错开，5 级循环，收尾回到起点）
+        val step = (18 * density).toInt()
+        val idx = cascadeIndex.getAndIncrement() % 5
+        val maxLeft = (sw - width - (4 * density).toInt()).coerceAtLeast(0)
+        val maxTop = (sh - taskbarPx - height).coerceAtLeast(0)
+        val left = (sidePx + idx * step).coerceAtMost(maxLeft)
+        val top = (topPx + (idx * step) / 2).coerceAtMost(maxTop)
+        return Rect(left, top, left + width, top + height)
+    }
+
+    /**
+     * 读取任务栏高度设置（用户自定义 36..80dp；未设置 = 跟随主题 44~48dp）。
+     * DataStore 同步读（带 250ms 超时，启动点击时调用一次，实测毫秒级）；
+     * 任何异常/超时回退 50dp（宁可用缝隙换任务栏可见）。
+     */
+    private fun readTaskbarHeightDp(app: Context): Float = runCatching {
+        val store = (app as? AnWindApp)?.settingsStore ?: return@runCatching 50f
+        val pref = runBlocking { withTimeoutOrNull(250L) { store.taskbarHeight.first() } } ?: 0f
+        if (pref in 36f..80f) pref else 50f
+    }.getOrDefault(50f)
 }
 
 /**
