@@ -564,12 +564,15 @@ object FreeformCompat {
             val field = runCatching {
                 info.javaClass.getField("windowingMode")
             }.getOrNull() ?: runCatching {
-                // 部分 ROM 上 getDeclaredField 需要沿父类找
+                // 部分 ROM 上 getDeclaredField 需要沿父类找。
+                // 注意：c 必须先快照到不可变局部变量 cls —— var 直接被
+                // runCatching 闭包捕获且循环内重赋值时，Kotlin 拒绝智能转换。
                 var c: Class<*>? = info.javaClass
                 while (c != null) {
-                    val f = runCatching { c.getDeclaredField("windowingMode") }.getOrNull()
+                    val cls: Class<*> = c
+                    val f = runCatching { cls.getDeclaredField("windowingMode") }.getOrNull()
                     if (f != null) { f.isAccessible = true; return@runCatching f }
-                    c = c.superclass
+                    c = cls.superclass
                 }
                 null
             }.getOrNull() ?: return null
