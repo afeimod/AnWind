@@ -473,13 +473,12 @@ fun DesktopEnvironment(
         // ===== 8. 虚拟鼠标指针层（v2.13：Windows 风格指针 + 点击涟漪，最顶层） =====
         MouseCursorOverlay()
 
-        // ===== 8.5 自由窗口决策弹窗（v2.23.2 / v2.23.3） =====
-        // 从桌面/开始菜单启动手机应用时，自由窗口（freeform）未开启或
-        // 未真正生效（AOSP：enable_freeform_support 仅开机读取一次，写入
-        // 后需重启手机）时，不再静默退化为全屏盖住桌面，而是先弹本窗
-        // 按原因告知下一步（ADB 授权 / 重启手机 / ROM 排查），并附带实时
-        // 诊断状态；由用户选择"仍以全屏启动"或"取消"。
-        // 能力检测/写入跟踪/启动后验证见 FreeformCompat 与 AndroidApps。
+        // ===== 8.5 自由窗口决策弹窗（v2.23.2 / v2.23.3 / v2.23.4） =====
+        // 从桌面/开始菜单启动手机应用后的跟进弹窗（v2.23.4：启动永不校弹窗阻断，
+        // 弹窗只在启动后按状态触发）：无自动开启手段 → ADB 授权引导；开关本次
+        // 开机内写入 → 重启提示；无 Root 且未确认过效果 → 一次性用户确认；
+        // 确认/验证仍全屏 → 解决方案（Root 特性注入 / 系统小窗）。
+        // 能力检测/写入跟踪/Root 注入/验证见 FreeformCompat 与 AndroidApps。
         val pendingAndroidLaunch by FreeformCompat.pendingLaunch.collectAsState()
         pendingAndroidLaunch?.let { pending ->
             FreeformDecisionDialog(pending)
@@ -535,27 +534,31 @@ private fun playStartupSound(context: Context, assetPath: String) {
 }
 
 /**
- * v2.23.3：自由窗口未开启/未生效时的手机应用启动决策弹窗（分原因展示）。
+ * v2.23.4：自由窗口决策弹窗（启动后跟进，按原因分流）。
  *
- * 从桌面/开始菜单启动手机应用时，若自由窗口不可用或未真正生效（能力
- * 检测 / 写入时间跟踪 / 启动后验证见 [FreeformCompat] 与 [AndroidApps]），
- * 按原因码分流文案：
- * - [FreeformCompat.REASON_NO_PERMISSION]：ADB 授权 / 开发者选项 / Root；
- * - [FreeformCompat.REASON_NEEDS_REBOOT]：开关已写入但系统仅在开机时
- *   读取（AOSP 确认），引导重启手机；
- * - [FreeformCompat.REASON_STILL_FULLSCREEN]：开关已开仍被拒，先重启、
- *   再排查 ROM（开发者选项手动开启 / 设为默认桌面 / 系统小窗接管）；
- * - [FreeformCompat.REASON_FIRST_HINT]：升级存量用户一次性轻提示。
+ * 从桌面/开始菜单启动手机应用**之后**，按 [FreeformCompat] 的状态机触发：
+ * - [FreeformCompat.REASON_NO_PERMISSION]：开关未开且无自动开启手段 →
+ *   ADB 授权 / 开发者选项 / Root 引导；
+ * - [FreeformCompat.REASON_NEEDS_REBOOT]：开关是本次开机内写入的 →
+ *   一次性重启提示（不阻断启动，仅告知）；
+ * - [FreeformCompat.REASON_USER_CONFIRM]：一次性用户确认 —— 「应用是否
+ *   真的以窗口形式打开了？」（无 Root 时唯一可靠的验证方式）；
+ * - [FreeformCompat.REASON_SOLUTIONS]：确认/验证仍全屏 → 解决方案：
+ *   ① Root 特性注入（把特性声明写入 /system/etc/permissions，绕过
+ *   "ROM 忽略开关"的屏蔽，需重启）；② 系统自带小窗指引（按厂商）。
  *
- * 所有原因均附带实时诊断状态（[FreeformCompat.diagnosticLines]），
- * 用户随时能看到"缺哪一步"，不再有黑盒失败。按钮："仍以全屏启动 /
- * 取消 / 本次运行内不再询问"（会话级，重启 AnWind 后恢复询问）。
+ * 所有原因均附带实时诊断状态（[FreeformCompat.diagnosticLines]）。
+ * v2.23.4 修正：诊断里的特性检测已改为正确的 AOSP 字面值
+ * （android.software.freeform_window_management），此前显示的"未声明"
+ * 在任何设备上都恒为未声明，不可信。
  */
 @Composable
 private fun FreeformDecisionDialog(pending: FreeformCompat.PendingLaunch) {
     val context = LocalContext.current
     val theme = LocalWinTheme.current
     var copied by remember { mutableStateOf(false) }
+    // Root 特性注入：null=未开始，""=进行中，其他=结果文案
+    var injectState by remember { mutableStateOf<String?>(null) }
 
     // 关闭弹窗即失效能力缓存：用户可能刚按指引授予了 ADB 权限或打开了
     // 开发者选项开关，下次启动手机应用时立即重新探测（不等 30s TTL）
@@ -565,9 +568,9 @@ private fun FreeformDecisionDialog(pending: FreeformCompat.PendingLaunch) {
     }
 
     val title = when (pending.reason) {
-        FreeformCompat.REASON_NEEDS_REBOOT -> "还需重启一次手机"
-        FreeformCompat.REASON_STILL_FULLSCREEN -> "系统暂未放行自由窗口"
-        FreeformCompat.REASON_FIRST_HINT -> "自由窗口已开启"
+        FreeformCompat.REASON_NEEDS_REBOOT -> "重启手机后生效"
+        FreeformCompat.REASON_SOLUTIONS -> "让手机应用窗口化的可行方案"
+        FreeformCompat.REASON_USER_CONFIRM -> "窗口化生效了吗？"
         else -> "手机应用窗口化暂不可用"
     }
 
@@ -578,22 +581,75 @@ private fun FreeformDecisionDialog(pending: FreeformCompat.PendingLaunch) {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 when (pending.reason) {
                     FreeformCompat.REASON_NEEDS_REBOOT -> Text(
-                        "自由窗口开关已成功写入（ADB 授权已生效），但系统只在「开机时」读取一次" +
-                            "该开关——请重启手机一次。重启后无需任何操作，从桌面启动的手机应用" +
-                            "即会以浮动窗口运行在桌面上。若刚才的「${pending.label}」已经以窗口打开，" +
-                            "说明你的系统支持热加载，可忽略本提示。"
+                        "自由窗口开关已成功写入，但系统只在「开机时」读取一次该开关——" +
+                            "刚才启动的「${pending.label}」本次可能仍是全屏，属正常现象。" +
+                            "重启手机一次后，从桌面启动的手机应用即会以浮动窗口运行。" +
+                            "若刚才已经是窗口，说明你的系统支持热加载，可忽略本提示。"
                     )
-                    FreeformCompat.REASON_STILL_FULLSCREEN -> {
-                        Text("自由窗口开关已开启，但「${pending.label}」仍被系统以全屏方式运行。请依次尝试：")
-                        Text("① 若从未重启过手机，先重启一次（系统仅在开机时读取该开关）。")
-                        Text("② 系统设置 → 开发者选项 → 查找「启用自由窗口 / Freeform」手动开启后重启（部分系统无此选项）。")
-                        Text("③ 将 AnWind 设为默认桌面（部分系统只对默认桌面放行窗口化）。")
-                        Text("④ 部分定制 ROM 会拦截第三方窗口化请求，可改用系统自带的「小窗 / 平行窗口」功能。")
+
+                    FreeformCompat.REASON_SOLUTIONS -> {
+                        Text(
+                            "「${pending.label}」仍以全屏运行：你的系统未放行自由窗口" +
+                                "（开关已开/已重启仍无效，多见于定制 ROM 屏蔽了通用开关）。" +
+                                "可尝试以下方案："
+                        )
+                        Text("① Root 特性注入（推荐，一次性解决）：", fontWeight = FontWeight.Bold)
+                        Text(
+                            "把「自由窗口能力声明」写入系统分区 /system/etc/permissions/，" +
+                                "重启后 PackageManager 直接声明支持自由窗口，绕过被屏蔽的开关路径。" +
+                                "部分设备有 dm-verity 写保护会失败，可改用 Magisk 模块注入同名特性文件。",
+                            fontSize = 12.sp
+                        )
+                        if (injectState == null || injectState == "") {
+                            TextButton(
+                                onClick = {
+                                    if (injectState == "") return@TextButton
+                                    injectState = ""
+                                    Thread {
+                                        val result = FreeformCompat.tryRootFeatureInjection()
+                                        injectState = when (result) {
+                                            FreeformCompat.InjectionResult.SUCCESS_NEEDS_REBOOT ->
+                                                "✓ 已写入系统分区。重启手机后生效，届时所有应用都能窗口化。"
+                                            FreeformCompat.InjectionResult.NO_ROOT ->
+                                                "✗ 未检测到 Root 授权（请先在 Magisk/KernelSU 中放行）。"
+                                            FreeformCompat.InjectionResult.FAILED ->
+                                                "✗ 写入被系统拒绝（多为 dm-verity / EROFS 写保护）。" +
+                                                    "可改用 Magisk 模块注入同名特性文件后重启。"
+                                        }
+                                    }.apply { isDaemon = true }.start()
+                                },
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                            ) { Text(if (injectState == "") "正在尝试写入…" else "尝试 Root 写入（需重启）") }
+                        } else {
+                            Text(
+                                injectState ?: "",
+                                fontSize = 12.sp,
+                                color = theme.accentColor
+                            )
+                        }
+                        Text("② 使用系统自带的「小窗 / 浮窗」：", fontWeight = FontWeight.Bold)
+                        Text(FreeformCompat.oemFloatingWindowHint(), fontSize = 12.sp)
+                        Text(
+                            "③ 确认手机已重启过（系统仅在开机时读取开关），且 AnWind 未被省电策略限制后台。",
+                            fontSize = 12.sp
+                        )
                     }
-                    FreeformCompat.REASON_FIRST_HINT -> Text(
-                        "自由窗口开关已开启。系统只在开机时读取该开关——如果「${pending.label}」" +
-                            "仍以全屏运行，请重启手机一次；重启后即会正常以窗口形式运行。"
-                    )
+
+                    FreeformCompat.REASON_USER_CONFIRM -> {
+                        Text(
+                            "已尝试让「${pending.label}」以浮动窗口形式启动。" +
+                                "它在屏幕上实际显示为哪种？"
+                        )
+                        Text(
+                            "· 窗口：应用像电脑程序一样悬浮在桌面上，任务栏可见 ✓",
+                            fontSize = 12.sp
+                        )
+                        Text(
+                            "· 全屏：应用铺满整屏、盖住了桌面 ✗",
+                            fontSize = 12.sp
+                        )
+                    }
+
                     else -> {
                         Text(
                             "当前设备未开启自由窗口（Freeform），从桌面启动的「${pending.label}」只能全屏运行并覆盖桌面。" +
@@ -632,6 +688,11 @@ private fun FreeformDecisionDialog(pending: FreeformCompat.PendingLaunch) {
                         }
                         Text("② 无电脑：系统设置 → 开发者选项 → 打开「启用自由窗口」后重启手机（部分系统名为「自由形式窗口」）。")
                         Text("③ Root 设备：AnWind 已在后台自动尝试开启，重启手机后生效。")
+                        Text(
+                            "提示：卸载重装会使 ADB 授权失效，需重新执行一次命令。",
+                            fontSize = 12.sp,
+                            color = Color(0x8A000000)
+                        )
                     }
                 }
 
@@ -649,26 +710,57 @@ private fun FreeformDecisionDialog(pending: FreeformCompat.PendingLaunch) {
                     }
                 }
 
-                Text(
-                    "本次运行内不再询问，直接全屏启动",
-                    fontSize = 12.sp,
-                    color = theme.accentColor,
-                    modifier = Modifier.clickable {
-                        FreeformCompat.suppressDecision = true
-                        close()
-                        AndroidApps.launchFullscreen(context, pending.pkg, pending.activity)
-                    }
-                )
+                if (pending.reason == FreeformCompat.REASON_NO_PERMISSION) {
+                    Text(
+                        "本次运行内不再询问，直接全屏启动",
+                        fontSize = 12.sp,
+                        color = theme.accentColor,
+                        modifier = Modifier.clickable {
+                            FreeformCompat.suppressDecision = true
+                            close()
+                            AndroidApps.launchFullscreen(context, pending.pkg, pending.activity)
+                        }
+                    )
+                }
             }
         },
         confirmButton = {
-            TextButton(onClick = {
-                close()
-                AndroidApps.launchFullscreen(context, pending.pkg, pending.activity)
-            }) { Text("仍以全屏启动") }
+            when (pending.reason) {
+                FreeformCompat.REASON_USER_CONFIRM -> TextButton(onClick = {
+                    FreeformCompat.noteVerified(context, true)
+                    close()
+                }) { Text("是，已是窗口") }
+
+                FreeformCompat.REASON_SOLUTIONS -> TextButton(onClick = {
+                    FreeformCompat.suppressDecision = true
+                    close()
+                }) { Text("仍以全屏使用") }
+
+                FreeformCompat.REASON_NEEDS_REBOOT -> TextButton(onClick = { close() }) { Text("知道了") }
+
+                else -> TextButton(onClick = {
+                    close()
+                    AndroidApps.launchFullscreen(context, pending.pkg, pending.activity)
+                }) { Text("仍以全屏启动") }
+            }
         },
         dismissButton = {
-            TextButton(onClick = { close() }) { Text("取消") }
+            when (pending.reason) {
+                FreeformCompat.REASON_USER_CONFIRM -> TextButton(onClick = {
+                    FreeformCompat.noteVerified(context, false)
+                    close()
+                    // 转解决方案弹窗（Root 注入 / 系统小窗）
+                    FreeformCompat.requestDecision(
+                        pending.pkg, pending.activity, pending.label,
+                        FreeformCompat.REASON_SOLUTIONS
+                    )
+                }) { Text("否，仍全屏") }
+
+                FreeformCompat.REASON_NEEDS_REBOOT -> null
+                FreeformCompat.REASON_SOLUTIONS -> TextButton(onClick = { close() }) { Text("关闭") }
+
+                else -> TextButton(onClick = { close() }) { Text("取消") }
+            }
         }
     )
 }

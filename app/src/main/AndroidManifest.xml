@@ -38,12 +38,14 @@
     <uses-permission android:name="android.permission.WRITE_SETTINGS"
         tools:ignore="ProtectedPermissions" />
 
-    <!-- v2.23.2/2.23.3 手机应用强制窗口化：允许（经 ADB/Shizuku 一次性授权后）自动
-         打开系统全局「自由窗口」开关（enable_freeform_support），使从桌面启动的
-         手机应用以 freeform 浮动窗口运行而非全屏覆盖桌面。注意：AOSP 中该开关
-         仅在系统启动时读取一次，写入后需重启手机一次才真正生效（由应用内
-         写入时间跟踪与启动后验证引导用户）。该权限无法运行时弹窗申请，
-         未授权时自动忽略（走决策弹窗引导）；一次性授权命令（包名以实际为准）：
+    <!-- v2.23.2~v2.23.4 手机应用强制窗口化：允许（经 ADB/Shizuku 一次性授权后）自动
+         打开系统全局「自由窗口」开关（enable_freeform_support，连同
+         force_resizable_activities / enable_non_resizable_multi_window 两个
+         配套开关），使从桌面启动的手机应用以 freeform 浮动窗口运行而非全屏
+         覆盖桌面。注意：AOSP 中这些开关仅在系统启动时读取一次，写入后需重启
+         手机一次才真正生效（由应用内写入时间跟踪与启动后跟进引导用户）。
+         该权限无法运行时弹窗申请，未授权时自动忽略（走决策弹窗引导）；
+         一次性授权命令（包名以实际为准）：
          adb shell pm grant com.anwind android.permission.WRITE_SECURE_SETTINGS -->
     <uses-permission android:name="android.permission.WRITE_SECURE_SETTINGS"
         tools:ignore="ProtectedPermissions" />

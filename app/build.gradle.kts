@@ -169,9 +169,16 @@ android {
         // v2.23.2：手机应用强制 freeform 窗口化根修 —— 新增 FreeformCompat
         //（能力检测/ADB/Root 自动开启/决策弹窗），见 AndroidApps.kt 与
         // DesktopEnvironment.kt 的 v2.23.2 注释
+        // v2.23.3：开关写入时间跟踪 + 启动后验证 + 分原因弹窗
+        // v2.23.4：三处根因修复 —— ① Bundle 隐藏键名（android.activity.
+        // windowingMode，点号非冒号）+ 旧版 launchStackId 双键；② 特性
+        // 字符串改 android.software.freeform_window_management；③ 删除
+        // 对三方应用无效的任务回读验证，改为 Root dumpsys 验证 + 一次性
+        // 用户确认；补写 enable_non_resizable_multi_window；新增 Root 特性
+        // 注入（/system/etc/permissions）；弹窗永不阻断窗口化启动尝试
         targetSdk = 28
-        versionCode = 50
-        versionName = "2.23.3"
+        versionCode = 51
+        versionName = "2.23.4"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {

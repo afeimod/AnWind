@@ -3,8 +3,10 @@ package com.anwind.core.desktop
 import android.content.Context
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
+import android.os.Build
 import android.os.SystemClock
 import android.provider.Settings
+import android.util.Base64
 import android.util.Log
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -12,49 +14,59 @@ import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * v2.23.3：自由窗口（Freeform）能力检测 / 自动开启 / **生效状态跟踪** / 用户决策中枢。
+ * v2.23.4：自由窗口（Freeform）能力检测 / 自动开启 / Root 特性注入 / 用户确认闭环。
  *
- * ## v2.23.2 的教训（本版根因修复）
+ * ## v2.23.3 遗留的三处根因（本版全部实锤修复）
  *
- * v2.23.2 已正确补上"设备能力"前提（检测 + WRITE_SECURE_SETTINGS / Root
- * 写开 enable_freeform_support），但有一个错误假设：**以为开关写入后 WMS
- * 会热加载、改完即生效**。经 AOSP 源码核实（services/core/java/com/android/
- * server/wm/ActivityTaskManagerService.java）：
+ * 1. **Bundle 隐藏键名写错**：v2.23.2/3 用的是 `"android:activity.windowingMode"`
+ *    （冒号），AOSP `ActivityOptions.KEY_LAUNCH_WINDOWING_MODE` 的真实字面值是
+ *    **`"android.activity.windowingMode"`**（点号，见 frameworks/base
+ *    core/java/android/app/ActivityOptions.java）。反射 `setLaunchWindowingMode`
+ *    在 Android 9+（targetSdk 28）被隐藏 API 限制拦截时，这条"终极兜底"通道
+ *    实际写入的是一个系统根本不认识的键 —— **窗口化请求从未送达 system_server**。
+ *    这可以完整解释"授权成功、开关已开、重启多次，应用依旧全屏"。
+ *    本版修正键名，并同时写 API 24~27 时代的 `"android.activity.launchStackId"`
+ *    （TaskLaunchParamsModifier 在各版本只读自己认识的键，多余键被忽略，无副作用）。
  *
- * - 该开关只在系统启动时被读取一次（retrieveSettings() 写入
- *   mSupportsFreeformWindowManagement 后不再更新）；
- * - 运行时 SettingsObserver 只监听字体缩放 / 错误对话框 / 字重，
- *   **不监听**自由窗口开关；
- * - 也就是说：**写开开关后必须重启手机一次，system_server 才会真正放行
- *   WINDOWING_MODE_FREEFORM 请求**；在此之前所有窗口化请求都被静默丢弃，
- *   应用照常全屏启动。
+ * 2. **系统特性字符串写错**：v2.23.3 用 `"android.hardware.freeform_window_management"`，
+ *    AOSP `PackageManager.FEATURE_FREEFORM_WINDOW_MANAGEMENT` 的真实字面值是
+ *    **`"android.software.freeform_window_management"`**（software 不是 hardware）。
+ *    原检测在所有设备上恒为 false，诊断面板"未声明"不可信。
  *
- * 这解释了用户实测"ADB 授权成功、弹窗不再出现、但应用仍不能窗口化启动"：
- * 授权 → 开关写入 → 读回 =1 → 能力检测判"可用" → 从此不再弹窗；但系统从未
- * 在本次开机内重新读取该开关，窗口化请求全部被丢。此外该开关是**全局系统
- * 设置**，卸载重装 AnWind 不会清除（SettingsProvider 独立存储），所以重装后
- * 同样是"看似可用、实际未生效、不再提示"的死局。
+ * 3. **启动后验证通道无效**：`getRunningTasks`/`getRecentTasks` 对三方应用只返回
+ *    自己的任务（AOSP `isGetTasksAllowed` 只放行系统 Recents 组件与持有
+ *    REAL_GET_TASKS 签名权限者，**默认 Launcher 也不放行**），因此 v2.23.3 的
+ *    "回读目标任务 windowingMode"永远返回 null → 走"不可验证"分支 → 一次次给出
+ *    错误的"请重启"建议。本版：Root 设备改用 `su -c dumpsys activity` 真实回读；
+ *    无 Root 时改为**一次性用户确认**（"应用是否已以窗口形式打开？"），不再冒充
+ *    能自动验证。
  *
- * ## v2.23.3 方案
+ * ## AOSP 生效链路（已逐行核对）
  *
- * 1. **写入时间跟踪**：写开关时持久化记录当时的 boot_count + uptimeMillis。
- *    若本次开机内写过且尚未重启 → 明确知道系统还没读到 → 引导用户重启，
- *    不再误判"已生效"后沉默；
- * 2. **启动后验证**：窗口化启动后 300/800/1600ms 回读目标任务真实
- *    windowingMode（TaskInfo 隐藏字段，浅灰名单多数设备可读）：
- *    读到 freeform(=5) → 记录"真实生效"；读到全屏(=1) → 按是否本次开机
- *    写入分流弹窗（需重启 / ROM 屏蔽）；读不到 → 一次性轻提示（覆盖从
- *    v2.23.2 升级、开关已 =1 但无从判断是否重启过的存量用户）；
- * 3. **决策弹窗分原因展示**（[REASON_NO_PERMISSION] / [REASON_NEEDS_REBOOT]
- *    / [REASON_STILL_FULLSCREEN] / [REASON_FIRST_HINT]），并附带实时诊断
- *    状态，用户随时能看到"缺哪一步"，不再存在静默失败路径。
+ * - `mSupportsFreeformWindowManagement = hasSystemFeature(FEATURE_FREEFORM_WINDOW_MANAGEMENT)
+ *   || enable_freeform_support != 0`（ATMS.retrieveSettings，**仅开机读取一次**）；
+ * - 不可用时窗口化请求被**静默丢弃**（TaskLaunchParamsModifier 不应用 freeform，
+ *   应用照常全屏，不抛异常）；
+ * - 单个应用门槛：`!isResizeable() && !supportsNonResizableMultiWindow()` 会挡住
+ *   声明了 `resizeableActivity=false` 的应用 —— 两个真实存在的全局设置可绕过：
+ *   **`force_resizable_activities=1`**（使 isResizeable 恒真）与
+ *   **`enable_non_resizable_multi_window=1`**（允许不可调整应用进多窗口，信箱模式）。
+ *   本版把这两个键连同 `enable_freeform_support` 一起写入（v2.23.3 漏了第三个）。
+ *
+ * ## Root 特性注入（对付"ROM 忽略开关"的终极手段）
+ *
+ * 部分 OEM ROM 屏蔽了 `enable_freeform_support` 的开机读取路径（开关=1、重启
+ * 多次仍全屏）。唯一绕过方法是把特性声明写进系统分区
+ * `/system/etc/permissions/anwind_freeform.xml`，PackageManager 开机扫描后
+ * `hasSystemFeature` 为真，retrieveSettings 直接成立。该操作需要 Root 且修改
+ * 系统分区（dm-verity 设备可能被拒），因此**只由用户在解决方案弹窗里主动触发**
+ * （[tryRootFeatureInjection]），成功后重启手机生效。
  *
  * ## 线程模型
  *
- * - [ensureAvailable]：毫秒级的特性/设置读取 + （已授权时的）同步设置写入，
- *   主线程可直接调用（与既有 getLaunchIntentForPackage 同量级）；
- * - [warmup]：含 su 子进程（4 秒看门狗），必须在 IO 线程调用
- *   （AnWindApp.onCreate → applicationScope.launch(Dispatchers.IO)）。
+ * - [ensureAvailable] / [exemptHiddenApis]：毫秒级，主线程可调；
+ * - [warmup] / [suAvailable] / [verifyFreeformViaRoot] / [tryRootFeatureInjection]：
+ *   含 su 子进程与看门狗，必须后台线程调用。
  */
 object FreeformCompat {
 
@@ -64,25 +76,35 @@ object FreeformCompat {
     const val WINDOWING_MODE_FREEFORM = 5
 
     /**
-     * ActivityOptions.toBundle() 里窗口模式的隐藏键（KEY_LAUNCH_WINDOWING_MODE，
-     * 字面值 "android:activity.windowingMode"）。setLaunchWindowingMode
-     * 内部写的就是这个键 —— 直接 putInt 完全等效，作为反射被个别 ROM
-     * 屏蔽时的终极兜底通道。
+     * ActivityOptions Bundle 隐藏键（AOSP KEY_LAUNCH_WINDOWING_MODE，API 28+）。
+     * ⚠ v2.23.3 曾错写成 "android:activity.windowingMode"（冒号）—— 系统不认识，
+     * 整条兜底通道失效。正确字面值为点号，setLaunchWindowingMode 内部写的就是它。
      */
-    const val KEY_LAUNCH_WINDOWING_MODE = "android:activity.windowingMode"
+    const val KEY_LAUNCH_WINDOWING_MODE = "android.activity.windowingMode"
+
+    /**
+     * API 24~27 时代的等价隐藏键（AOSP KEY_LAUNCH_STACK_ID，值为
+     * FREEFORM_WORKSPACE_STACK_ID=5）。与新键同时写入，各版本只读自己认识的那个。
+     */
+    const val KEY_LAUNCH_STACK_ID = "android.activity.launchStackId"
+
+    /** PackageManager.FEATURE_FREEFORM_WINDOW_MANAGEMENT 的真实字面值（software！） */
+    private const val FEATURE_FREEFORM = "android.software.freeform_window_management"
 
     /** 开发者选项「启用自由窗口」对应的全局设置键（AOSP：仅开机时读取一次） */
     private const val SETTING_ENABLE_FREEFORM = "enable_freeform_support"
 
-    /**
-     * 「强制活动可调整大小」的全局设置键。AOSP 常量 FORCE_RESIZABLES 的
-     * 字面值在不同版本/ROM 文档里有两种写法，这里两个都写（多写的未知键
-     * 只是躺在 global 表里，无任何副作用），确保不可调整大小的应用也能
-     * 被放进 freeform 窗口（系统会替它做兼容缩放）。
-     */
-    private val SETTING_FORCE_RESIZABLES = arrayOf(
-        "force_resizable_activities",
-        "force_resizable"
+    /** AOSP 真实设置（DEVELOPMENT_FORCE_RESIZABLE_ACTIVITIES）：强制所有 Activity 可调整大小 */
+    private const val SETTING_FORCE_RESIZABLE = "force_resizable_activities"
+
+    /** AOSP 真实设置（DEVELOPMENT_ENABLE_NON_RESIZABLE_MULTI_WINDOW）：允许不可调整应用进多窗口（信箱模式） */
+    private const val SETTING_NON_RESIZABLE_MW = "enable_non_resizable_multi_window"
+
+    /** 需要写开的全部全局设置（拿到 WRITE_SECURE_SETTINGS / Root 后一并写入） */
+    private val ALL_SETTINGS = arrayOf(
+        SETTING_ENABLE_FREEFORM,
+        SETTING_FORCE_RESIZABLE,
+        SETTING_NON_RESIZABLE_MW
     )
 
     // ============================================================
@@ -92,14 +114,14 @@ object FreeformCompat {
     /** 未开启且无自动开启手段 → ADB 授权 / 开发者选项 / Root 引导 */
     const val REASON_NO_PERMISSION = 0
 
-    /** 开关已写入但本次开机内系统尚未读取（AOSP：仅开机读取）→ 重启引导 */
+    /** 开关是本次开机内写入的（AOSP：仅开机读取）→ 重启引导（仅提示，不阻断启动） */
     const val REASON_NEEDS_REBOOT = 1
 
-    /** 开关已开（且非本次开机写入）但验证到任务仍全屏 → 先重启、再 ROM 排查 */
-    const val REASON_STILL_FULLSCREEN = 2
+    /** 确认/验证窗口化未生效 → 解决方案（Root 注入 / 系统小窗 / 全屏） */
+    const val REASON_SOLUTIONS = 2
 
-    /** 开关已开、验证通道不可用、历史从未验证成功 → 一次性轻提示（升级存量用户） */
-    const val REASON_FIRST_HINT = 3
+    /** 一次性用户确认：应用是否真的以窗口形式打开了（无 Root 时唯一的"验证"手段） */
+    const val REASON_USER_CONFIRM = 3
 
     /** 自由窗口不可用/未生效时的待决策启动请求（DesktopEnvironment 收集后弹窗） */
     data class PendingLaunch(
@@ -120,20 +142,9 @@ object FreeformCompat {
     @Volatile
     var suppressDecision: Boolean = false
 
-    /** 本进程已尝试过窗口化启动（进入启动后验证流程） */
+    /** 本次进程内已给出过"重启生效"提示（每进程至多一次，避免唠叨） */
     @Volatile
-    var probeTried: Boolean = false
-        private set
-
-    /** 本进程内验证到过"窗口化真实生效"（读到任务 windowingMode=FREEFORM） */
-    @Volatile
-    var probeSucceeded: Boolean = false
-        private set
-
-    /** 本进程内验证到过"任务仍全屏"（系统拒收窗口化请求） */
-    @Volatile
-    var brokenConfirmed: Boolean = false
-        private set
+    private var rebootAdviceShown = false
 
     /** 能力缓存（30 秒 TTL，避免每次点图标都读 SettingsProvider） */
     @Volatile
@@ -144,18 +155,29 @@ object FreeformCompat {
 
     private const val CACHE_TTL_MS = 30_000L
 
-    /** Root 尝试只做一次/进程（避免每次启动手机应用都弹 su 授权框打扰用户） */
-    private val rootAttempted = AtomicBoolean(false)
+    /** Root 探测只做一次/进程（避免反复弹 su 授权框） */
+    @Volatile
+    private var rootChecked = false
+
+    @Volatile
+    private var rootOk = false
+
+    /** 隐藏 API 豁免（VMRuntime.setHiddenApiExemptions）只做一次/进程 */
+    @Volatile
+    private var hiddenApiExempted = false
 
     // ============================================================
-    // 写入时间跟踪（SharedPreferences：判断"开关是本次开机内写的吗"）
+    // 持久化状态（SharedPreferences）
     // ============================================================
 
     private const val PREFS = "freeform_compat"
     private const val KEY_WRITE_BOOT = "write_boot_count"
     private const val KEY_WRITE_UPTIME = "write_uptime"
     private const val KEY_WORKING_BOOT = "working_boot_count"
-    private const val KEY_FIRST_HINT_SHOWN = "first_hint_shown"
+    /** 复用 v2.23.3 的 key：一次性用户确认是否已问过（安装级） */
+    private const val KEY_CONFIRM_ASKED = "first_hint_shown"
+    /** 用户确认"仍全屏"（或 Root dumpsys 实锤全屏）→ 本 ROM 忽略自由窗口开关 */
+    private const val KEY_ROM_IGNORES_SWITCH = "rom_ignores_switch"
 
     private fun prefs(context: Context): SharedPreferences =
         context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -186,8 +208,7 @@ object FreeformCompat {
      * 一定被系统丢弃（个别 ROM 自行加了热加载除外）。判断依据：
      * - 首选 boot_count（公开全局设置，API 24+）：写开关时的 boot_count
      *   与当前一致 = 未重启；
-     * - 读不到 boot_count 的 ROM 退回 uptimeMillis 单调性：同一次开机内
-     *   uptime 只增不减，重启后归零 —— 当前 uptime >= 写入时 uptime 即未重启。
+     * - 读不到 boot_count 的 ROM 退回 uptimeMillis 单调性。
      */
     fun pendingRebootSinceOurWrite(context: Context): Boolean {
         val p = prefs(context)
@@ -208,17 +229,26 @@ object FreeformCompat {
             .apply()
     }
 
-    /** 历史上是否验证过"窗口化真实生效"过至少一次 */
+    /** 历史上是否确认过"窗口化真实生效"（用户确认或 Root 验证，任一） */
     fun everVerifiedWorking(context: Context): Boolean =
         prefs(context).getInt(KEY_WORKING_BOOT, -1) >= 0
 
-    /** 一次性轻提示（升级存量用户）是否已展示过（安装级，一次性） */
-    fun firstHintAlreadyShown(context: Context): Boolean =
-        prefs(context).getBoolean(KEY_FIRST_HINT_SHOWN, false)
+    /** 一次性用户确认是否已问过（安装级；卸载重装会重置，重新确认） */
+    fun userConfirmAlreadyAsked(context: Context): Boolean =
+        prefs(context).getBoolean(KEY_CONFIRM_ASKED, false)
 
-    /** 标记一次性轻提示已展示（安装级） */
-    fun markFirstHintShown(context: Context) {
-        prefs(context).edit().putBoolean(KEY_FIRST_HINT_SHOWN, true).apply()
+    /** 标记一次性用户确认已问过 */
+    fun markUserConfirmAsked(context: Context) {
+        prefs(context).edit().putBoolean(KEY_CONFIRM_ASKED, true).apply()
+    }
+
+    /** 用户/Root 已实锤本 ROM 忽略自由窗口开关（此后静默，仅解决方案弹窗可再触发） */
+    fun romIgnoresSwitch(context: Context): Boolean =
+        prefs(context).getBoolean(KEY_ROM_IGNORES_SWITCH, false)
+
+    /** 标记本 ROM 忽略开关 */
+    fun markRomIgnoresSwitch(context: Context) {
+        prefs(context).edit().putBoolean(KEY_ROM_IGNORES_SWITCH, true).apply()
     }
 
     /** 推荐用户执行的 ADB 一次性授权命令（按实际包名生成，防止 fork 改包名后失效） */
@@ -229,16 +259,9 @@ object FreeformCompat {
     // 能力检测
     // ============================================================
 
-    /**
-     * 设备是否原生声明支持自由窗口（DeX / 部分国产 ROM / 模拟器等）。
-     *
-     * 注：PackageManager.FEATURE_FREEFORM_WINDOW_MANAGEMENT 常量历史上为
-     * 隐藏 API，为兼容各 compileSdk 直接使用字面值（hasSystemFeature 为
-     * 公开 API，接收任意特性字符串）。
-     */
+    /** 设备是否原生声明支持自由窗口（DeX / 部分国产 ROM / 模拟器等） */
     private fun hasFreeformFeature(context: Context): Boolean = runCatching {
-        context.packageManager
-            .hasSystemFeature("android.hardware.freeform_window_management")
+        context.packageManager.hasSystemFeature(FEATURE_FREEFORM)
     }.getOrDefault(false)
 
     /** 全局「启用自由窗口」开关是否已打开（开发者选项或本类写入） */
@@ -265,12 +288,9 @@ object FreeformCompat {
      *
      * - 命中缓存（30 秒内）直接返回；
      * - 未授予 WRITE_SECURE_SETTINGS 时只做检测；
-     * - 已授予时同步写开全局开关（ContentResolver binder 调用，毫秒级）。
-     *   ⚠ v2.23.3 修正：写入成功 ≠ 立即生效 —— 系统只在**下次开机**时读取
-     *   该开关（见类注释），生效状态由 [pendingRebootSinceOurWrite] /
-     *   启动后验证流程单独跟踪，本方法只回答"开关是否处于打开状态"。
-     *
-     * 每次从桌面启动手机应用前由 [AndroidApps] 调用。
+     * - 已授予时同步写开三个全局设置（binder 调用，毫秒级）。
+     *   ⚠ 写入成功 ≠ 立即生效 —— 系统只在**下次开机**时读取该开关（见类注释），
+     *   生效状态由 [pendingRebootSinceOurWrite] 与启动后跟进流程单独跟踪。
      */
     fun ensureAvailable(context: Context): Boolean {
         val now = SystemClock.elapsedRealtime()
@@ -284,7 +304,7 @@ object FreeformCompat {
             available = probe(ctx)
             Log.i(
                 TAG,
-                "WRITE_SECURE_SETTINGS 已授予：自由窗口开关写入" +
+                "WRITE_SECURE_SETTINGS 已授予：自由窗口设置写入" +
                     if (available) "成功（重启手机后系统才会读取生效）" else "失败（走弹窗引导）"
             )
         }
@@ -296,86 +316,70 @@ object FreeformCompat {
     /** 用已授予的 WRITE_SECURE_SETTINGS 写开自由窗口相关全局设置（幂等，记录写入时间） */
     private fun writeFreeformSettings(context: Context) {
         runCatching {
-            Settings.Global.putInt(context.contentResolver, SETTING_ENABLE_FREEFORM, 1)
-            SETTING_FORCE_RESIZABLES.forEach { key ->
+            ALL_SETTINGS.forEach { key ->
                 runCatching { Settings.Global.putInt(context.contentResolver, key, 1) }
             }
             recordWrite(context)
         }.onFailure { Log.w(TAG, "写自由窗口设置失败：${it.message}") }
     }
 
-    /**
-     * 失效能力缓存，下次 [ensureAvailable] 立即重新探测。
-     * 决策弹窗关闭时调用：用户可能刚按指引授予了 ADB 权限或打开了
-     * 开发者选项开关，无需等 30 秒 TTL 过期。
-     */
+    /** 失效能力缓存，下次 [ensureAvailable] 立即重新探测（决策弹窗关闭时调用） */
     fun invalidateCache() {
         cachedAvailable = null
         cachedAt = 0L
     }
 
     /**
-     * 进程启动时后台预热：检测能力；不可用且尚未尝试过 Root 时，
-     * 用 su 静默写开同样的全局开关（Magisk / 模拟器等一次放行即成功）。
-     *
-     * ⚠ Root 写入同样只在**下次开机**被系统读取（见类注释），写入后
-     * [pendingRebootSinceOurWrite] 会如实返回 true。
-     *
-     * 必须在 IO 线程调用（su 子进程 + 4 秒看门狗）。
+     * 进程启动时后台预热：检测能力；不可用且设备有 Root 时，
+     * 用 su 静默写开同样的全局设置（Magisk / 模拟器等一次放行即成功）。
+     * 必须在后台线程调用（su 子进程 + 看门狗）。
      */
     fun warmup(context: Context) {
         val ctx = context.applicationContext
         ensureAvailable(ctx)
-        if (cachedAvailable == false && !rootAttempted.getAndSet(true)) {
-            val cmd = buildString {
-                append("settings put global $SETTING_ENABLE_FREEFORM 1")
-                SETTING_FORCE_RESIZABLES.forEach { append("; settings put global $it 1") }
-            }
-            if (runSuCommands(cmd)) {
-                Log.i(TAG, "Root：自由窗口开关已写入（重启手机后生效）")
-                recordWrite(ctx)
-                // 失效缓存，下次 ensureAvailable 重新探测
-                cachedAvailable = null
-                cachedAt = 0L
-            } else {
-                Log.i(TAG, "Root 不可用或被拒绝（非 Root 设备的正常路径，走 ADB / 开发者选项引导）")
-            }
+        if (cachedAvailable != false) return
+        if (!suAvailable()) return
+        val cmd = ALL_SETTINGS.joinToString("; ") { "settings put global $it 1" }
+        if (runSu(cmd, 4000L)?.first == 0) {
+            Log.i(TAG, "Root：自由窗口设置已写入（重启手机后生效）")
+            recordWrite(ctx)
+            cachedAvailable = null
+            cachedAt = 0L
+        } else {
+            Log.i(TAG, "Root 写入失败（被拒绝），走 ADB / 开发者选项引导")
         }
     }
 
     // ============================================================
-    // 启动后验证回执（AndroidApps 在验证回调里调用）
+    // 启动后跟进（Root 验证 / 用户确认 / 重启提示）
     // ============================================================
 
-    /** 记录"本进程已发起过一次窗口化启动尝试" */
-    fun noteLaunchAttempt() {
-        probeTried = true
-    }
-
-    /**
-     * 启动后验证结果回执。
-     *
-     * @param freeform true = 读到目标任务 windowingMode=FREEFORM(5)，
-     *   记录"真实生效"（含启动后强切成功的场景）；false = 读到全屏(1)，
-     *   标记"系统拒收窗口化请求"。
-     */
+    /** 记录一次验证/确认结果：true = 窗口化真实生效；false = 仍全屏（ROM 忽略开关） */
     fun noteVerified(context: Context, freeform: Boolean) {
+        val ctx = context.applicationContext
+        val p = prefs(ctx)
         if (freeform) {
-            probeSucceeded = true
-            brokenConfirmed = false
-            val p = prefs(context)
-            val boot = currentBoot(context)
+            val boot = currentBoot(ctx)
+            p.edit()
+                .putBoolean(KEY_ROM_IGNORES_SWITCH, false)
+                .apply()
             if (boot >= 0 && p.getInt(KEY_WORKING_BOOT, -1) != boot) {
                 p.edit().putInt(KEY_WORKING_BOOT, boot).apply()
             }
         } else {
-            brokenConfirmed = true
+            p.edit().putBoolean(KEY_ROM_IGNORES_SWITCH, true).apply()
         }
     }
 
-    // ============================================================
-    // 用户决策弹窗
-    // ============================================================
+    /** 每进程至多一次的"重启生效"提示（开关是本次开机内写入时） */
+    fun maybeShowRebootAdvice(context: Context, pkg: String, activity: String, label: String) {
+        if (rebootAdviceShown) return
+        if (suppressDecision) return
+        if (pendingLaunch.value != null) return
+        if (!pendingRebootSinceOurWrite(context)) return
+        rebootAdviceShown = true
+        requestDecision(pkg, activity, label, REASON_NEEDS_REBOOT)
+    }
 
     /** 请求弹窗决策：暂存本次启动请求（含原因码）并通知桌面层弹窗 */
     fun requestDecision(pkg: String, activity: String, label: String, reason: Int) {
@@ -388,17 +392,22 @@ object FreeformCompat {
     }
 
     // ============================================================
-    // 实时诊断（决策弹窗展示，用户随时能看到缺哪一步）
+    // 实时诊断（决策弹窗展示）
     // ============================================================
 
     fun diagnosticLines(context: Context): List<String> {
         val ctx = context.applicationContext
         val lines = mutableListOf<String>()
+        lines += "设备：${Build.MANUFACTURER} ${Build.MODEL}（Android ${Build.VERSION.RELEASE}）"
         lines += "系统 Freeform 特性：${if (hasFreeformFeature(ctx)) "已声明" else "未声明"}"
         lines += "自由窗口开关：${if (isFreeformSettingOn(ctx)) "已开启 (=1)" else "未开启 (=0)"}"
         lines += "ADB 授权：${if (hasSecureSettings(ctx)) "已授予" else "未授予"}"
+        lines += "Root：${if (rootChecked && rootOk) "可用" else "未知/不可用"}"
         if (pendingRebootSinceOurWrite(ctx)) {
             lines += "开关写入：本次开机内写入，重启后系统才会读取"
+        }
+        if (romIgnoresSwitch(ctx)) {
+            lines += "本 ROM：已确认忽略自由窗口开关"
         }
         if (everVerifiedWorking(ctx)) {
             lines += "窗口化验证：历史成功过"
@@ -406,26 +415,66 @@ object FreeformCompat {
         return lines
     }
 
+    /** 按厂商给出系统自带「小窗/浮窗」的使用指引（解决方案弹窗展示） */
+    fun oemFloatingWindowHint(): String {
+        val m = (Build.MANUFACTURER ?: "").lowercase()
+        return when {
+            m.contains("xiaomi") || m.contains("redmi") ->
+                "小米/Redmi（HyperOS/MIUI）：最近任务卡片长按应用图标 →「小窗」；也可从控制中心使用小窗入口。"
+            m.contains("oppo") || m.contains("oneplus") || m.contains("realme") ->
+                "OPPO/一加/真我（ColorOS）：最近任务卡片长按或上拉 →「自由浮窗」。"
+            m.contains("vivo") || m.contains("iqoo") ->
+                "vivo/iQOO（OriginOS）：最近任务卡片下拉/长按 →「小窗」。"
+            m.contains("huawei") || m.contains("honor") ->
+                "华为/荣耀：侧边栏「智慧多窗」，或最近任务 →「小窗」。"
+            m.contains("samsung") ->
+                "三星（One UI）：最近任务 → 长按应用图标 →「在弹出视图中打开」。"
+            else ->
+                "部分定制系统自带应用「小窗/浮窗」功能，可在最近任务、通知栏或应用信息中查找。"
+        }
+    }
+
     // ============================================================
-    // Root 辅助
+    // 隐藏 API 豁免（Android 9+ 反射放行）
     // ============================================================
 
     /**
-     * 执行 `su -c <cmd>`；返回是否成功（exit 0）。
-     *
-     * - 先探测常见 su 路径，无 Root 环境直接返回 false，不白起进程；
-     * - 4 秒看门狗 destroy：Magisk 首次授权弹窗等待 / su 挂起时兜底退出，
-     *   不阻塞调用线程的协程池；
-     * - 一切异常（IOException / SELinux 拒绝）都吞掉返回 false。
+     * 解除本进程的隐藏 API 访问限制（VMRuntime.setHiddenApiExemptions("L")，
+     * 参考成熟项目 farmerbb/Taskbar 的同款做法）。Android 9 上该反射本身可能
+     * 被拦（返回 false，无碍 —— Bundle 键才是主通道）；Android 10+ 均可成功。
+     * 即使完全失败也不影响启动：Bundle 隐藏键写入不依赖反射。
      */
-    private fun runSuCommands(cmd: String): Boolean = runCatching {
+    fun exemptHiddenApis(): Boolean {
+        if (hiddenApiExempted) return true
+        hiddenApiExempted = runCatching {
+            val vm = Class.forName("dalvik.system.VMRuntime")
+            val getRuntime = vm.getDeclaredMethod("getRuntime")
+            val setExemptions = vm.getDeclaredMethod(
+                "setHiddenApiExemptions",
+                Array<String>::class.java
+            )
+            setExemptions.invoke(getRuntime.invoke(null), arrayOf("L"))
+            true
+        }.getOrDefault(false)
+        return hiddenApiExempted
+    }
+
+    // ============================================================
+    // Root 辅助（后台线程调用）
+    // ============================================================
+
+    /**
+     * 执行 `su -c <cmd>`，返回 (exit code, 合并输出)；无 su 二进制或超时返回 null。
+     * 看门狗 destroy 防止 Magisk 授权弹窗等待时挂死调用线程。
+     */
+    private fun runSu(cmd: String, timeoutMs: Long): Pair<Int, String>? = runCatching {
         val suExists = listOf(
             "/system/bin/su",
             "/system/xbin/su",
             "/sbin/su",
             "/system/sd/xbin/su"
         ).any { File(it).exists() }
-        if (!suExists) return@runCatching false
+        if (!suExists) return@runCatching null
 
         val process = ProcessBuilder("su", "-c", cmd)
             .redirectErrorStream(true)
@@ -433,13 +482,105 @@ object FreeformCompat {
         val finished = AtomicBoolean(false)
         Thread {
             try {
-                Thread.sleep(4000L)
+                Thread.sleep(timeoutMs)
                 if (!finished.get()) process.destroy()
             } catch (_: InterruptedException) {
             }
         }.apply { isDaemon = true }.start()
+        val output = runCatching {
+            process.inputStream.readBytes().toString(Charsets.UTF_8)
+        }.getOrDefault("")
         val exit = runCatching { process.waitFor() }.getOrDefault(-1)
         finished.set(true)
-        exit == 0
-    }.getOrDefault(false)
+        exit to output
+    }.getOrDefault(null)
+
+    /** 设备是否有可用 Root（结果进程内缓存；首次调用可能弹 su 授权框） */
+    fun suAvailable(): Boolean {
+        if (rootChecked) return rootOk
+        rootOk = runSu("id", 4000L)
+            ?.let { it.first == 0 && it.second.contains("uid=0") } == true
+        rootChecked = true
+        Log.i(TAG, "Root 探测：${if (rootOk) "可用" else "不可用"}")
+        return rootOk
+    }
+
+    /**
+     * Root 专属启动后验证：`dumpsys activity activities` 回读目标包任务的真实
+     * windowingMode。返回 true（freeform）/ false（全屏）/ null（dumpsys 不可用
+     * 或未找到目标任务）。dumpsys 的任务头行（`* Task{... mode=freeform ...}`）
+     * 与 Activity 行（`ActivityRecord{... pkg/.Activity ...}`）在不同行，逐行
+     * 跟踪最近的 Task 头即可关联。
+     */
+    fun verifyFreeformViaRoot(pkg: String): Boolean? {
+        val out = runSu("dumpsys activity activities", 8000L)?.second ?: return null
+        var sawTarget = false
+        var sawFreeform = false
+        var headerFreeform = false
+        out.lineSequence().forEach { raw ->
+            val t = raw.trim()
+            if (t.startsWith("* Task{") || t.startsWith("Task{")) {
+                headerFreeform = t.contains("mode=freeform") ||
+                    t.contains("windowingMode=freeform") ||
+                    t.contains("windowingMode=5")
+            } else if (t.contains("ActivityRecord{") && t.contains("$pkg/")) {
+                sawTarget = true
+                if (headerFreeform) sawFreeform = true
+            }
+        }
+        return when {
+            sawFreeform -> true
+            sawTarget -> false
+            else -> null
+        }
+    }
+
+    /** Root 特性注入结果 */
+    enum class InjectionResult {
+        /** 写入成功，重启手机后特性声明被 PackageManager 扫描生效 */
+        SUCCESS_NEEDS_REBOOT,
+
+        /** 无可用 Root */
+        NO_ROOT,
+
+        /** 写入失败（多为 dm-verity / EROFS 写保护） */
+        FAILED
+    }
+
+    /**
+     * Root 特性注入：把
+     * `<permissions><feature name="android.software.freeform_window_management" />
+     * </permissions>` 写入 `/system/etc/permissions/anwind_freeform.xml`。
+     *
+     * 这是"ROM 忽略 enable_freeform_support 开关"时的唯一通用绕过：特性声明
+     * 被 PackageManager 开机扫描后，ATMS.retrieveSettings 的第一个条件直接
+     * 成立，无需依赖开发者选项开关。经 base64 传输内容规避 shell 转义问题；
+     * 先尝试 remount 再写入，写入后 cat 校验。**必须后台线程调用。**
+     */
+    fun tryRootFeatureInjection(): InjectionResult {
+        if (!suAvailable()) return InjectionResult.NO_ROOT
+        val xml = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n" +
+            "<permissions>\n" +
+            "    <feature name=\"$FEATURE_FREEFORM\" />\n" +
+            "</permissions>\n"
+        val b64 = Base64.encodeToString(xml.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
+        val path = "/system/etc/permissions/anwind_freeform.xml"
+        val cmd = "mount -o rw,remount / 2>/dev/null; " +
+            "mount -o rw,remount /system 2>/dev/null; " +
+            "mkdir -p /system/etc/permissions; " +
+            "echo $b64 | base64 -d > $path && cat $path"
+        val res = runSu(cmd, 10_000L) ?: return InjectionResult.FAILED
+        val ok = res.first == 0 && res.second.contains(FEATURE_FREEFORM)
+        if (ok) {
+            // 写回只读，保持系统分区常态（即使失败也无碍，重启前保持 rw 无风险）
+            runSu(
+                "mount -o ro,remount / 2>/dev/null; mount -o ro,remount /system 2>/dev/null",
+                4000L
+            )
+            Log.i(TAG, "Root 特性注入成功：$path（重启后生效）")
+        } else {
+            Log.w(TAG, "Root 特性注入失败（写保护/dm-verity）：${res.second.take(200)}")
+        }
+        return if (ok) InjectionResult.SUCCESS_NEEDS_REBOOT else InjectionResult.FAILED
+    }
 }
