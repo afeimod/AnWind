@@ -61,17 +61,31 @@ import com.anwind.core.theme.LocalWinTheme
  *
  *   桌面快捷方式新增 [SHORTCUT_ANDROID_APP]（type=4，target = "pkg/activity"）
  *   → 走同一套强制窗口化路径，保证"从桌面启动手机应用一定进窗口"。
+ *
+ * v2.23.2：**根修——补齐"设备能力"前提，见 [FreeformCompat]**。
+ *   v2.23.0/1 的全部启动参数技巧（windowing mode / stack / bounds /
+ *   setTaskWindowingMode）都有一个共同前提：设备本身支持 freeform。
+ *   多数 ROM 出厂未开启该能力，system_server 会直接丢弃
+ *   WINDOWING_MODE_FREEFORM 请求 → 应用照常全屏盖住桌面（即
+ *   "启动手机应用会调用出桌面"的根因）。
+ *   本版启动前先经 [FreeformCompat.ensureAvailable] 保能力：
+ *   - 已授予 WRITE_SECURE_SETTINGS（ADB/Shizuku 一次性授权）→ 自动
+ *     写开 enable_freeform_support 开关，WMS 热加载，立即可用；
+ *   - Root 设备 → 进程启动时后台已静默写开（[FreeformCompat.warmup]）；
+ *   - 仍不可用 → 不再静默退化全屏，而是弹窗告知开启方式，由用户
+ *     选择"仍以全屏启动"或"取消"（[FreeformCompat.pendingLaunch] +
+ *     DesktopEnvironment 的 FreeformDecisionDialog）。
+ *   同时强化 [freeformOptions]：反射被屏蔽时直接往 Bundle 写入
+ *   KEY_LAUNCH_WINDOWING_MODE（与 setLaunchWindowingMode 落盘的键
+ *   完全一致）；[scheduleFreeformEnforce] 由单次 250ms 改为
+ *   300/800/1600ms 三轮重试。
  */
 object AndroidApps {
 
     private const val TAG = "AnWind.AndroidApps"
 
-    /**
-     * v2.23.0：android.app.WindowConfiguration.WINDOWING_MODE_FREEFORM。
-     * 隐藏常量（AOSP 自 API 26 起定义，API 24/25 对应的
-     * FREEFORM_WORKSPACE_STACK_ID 同为 5），各版本数值稳定，直接硬编码。
-     */
-    private const val WINDOWING_MODE_FREEFORM = 5
+    // v2.23.2：WINDOWING_MODE_FREEFORM(=5) 与隐藏 Bundle 键统一收敛到
+    // FreeformCompat，供本对象与能力检测/弹窗共用（原局部常量已删除）
 
     /** 单个安卓应用条目 */
     data class AppInfo(
@@ -156,76 +170,114 @@ object AndroidApps {
 
     /**
      * 用 pkg/activity（来自桌面快捷方式 target）启动安卓应用，强制 freeform 窗口。
-     * 返回是否构造 Intent 成功（实际启动结果由系统异步处理，调用方根据返回值
-     * 决定是否给用户提示）。
+     * 返回是否已处理（已启动 / 已转入决策弹窗）；Intent 构造失败返回 false，
+     * 由调用方决定是否给用户提示。
      */
-    fun launchByComponent(context: Context, pkg: String, activity: String): Boolean {
-        if (activity.isBlank()) {
-            // 没存 activity：用 getLaunchIntentForPackage 兜底，仍走 freeform 强制
-            val launchIntent = context.packageManager.getLaunchIntentForPackage(pkg)
-                ?: return false
-            launchIntent.addFlags(
-                Intent.FLAG_ACTIVITY_NEW_TASK or
-                    Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED or
-                    Intent.FLAG_ACTIVITY_NEW_DOCUMENT
-            )
-            return runCatching {
-                context.startActivity(launchIntent, freeformOptions(context))
-                scheduleFreeformEnforce(context, pkg)
-                true
-            }.getOrElse { false }
-        }
-        val info = AppInfo(label = pkg, pkg = pkg, activity = activity, isSystem = false, icon = null)
-        return launch(context, info)
+    fun launchByComponent(context: Context, pkg: String, activity: String): Boolean =
+        launchAndroidApp(context, pkg, activity, pkg)
+
+    /**
+     * 启动一个手机应用（开始菜单"手机应用/系统应用"分页入口）。
+     * 返回是否已处理（已窗口化启动 / 已转入决策弹窗）。
+     */
+    fun launch(context: Context, app: AppInfo): Boolean =
+        launchAndroidApp(context, app.pkg, app.activity, app.label)
+
+    /**
+     * v2.23.2：决策弹窗里"仍以全屏启动"的入口 —— 跳过 freeform 与询问，
+     * 直接普通启动（用户已知情且明确选择全屏）。
+     */
+    fun launchFullscreen(context: Context, pkg: String, activity: String): Boolean {
+        val intent = buildLaunchIntent(context, pkg, activity) ?: return false
+        return runCatching {
+            context.startActivity(intent)
+            true
+        }.getOrElse { false }
     }
 
     /**
-     * 用显式 Component 启动应用；返回是否启动成功。
-     *
-     * v2.23.0：携带 [freeformOptions] 强制以桌面窗口（freeform）模式启动：
-     * - 目标任务已存在时，系统同样会把它切换到请求的窗口模式，
-     *   保证"从桌面启动一定进窗口"；
-     * - 旧平台（API < 24）或个别 ROM 屏蔽隐藏 API 时优雅降级为
-     *   原普通启动（全屏），不影响可用性。
-     *
-     * v2.23.1：Intent 增加 NEW_DOCUMENT（公开 API），新建独立 document 任务；
-     * 启动后延迟 250ms 再调用 ActivityManager.setTaskWindowingMode 兜底强制。
+     * 构造启动 Intent：优先显式 Component；activity 为空时退回
+     * getLaunchIntentForPackage（两分支统一带 NEW_TASK / RESET_TASK_IF_NEEDED /
+     * NEW_DOCUMENT，语义见 [launchAndroidApp]）。
      */
-    fun launch(context: Context, app: AppInfo): Boolean = runCatching {
-        val intent = Intent(Intent.ACTION_MAIN)
-            .addCategory(Intent.CATEGORY_LAUNCHER)
-            .setClassName(app.pkg, app.activity)
-            .addFlags(
-                Intent.FLAG_ACTIVITY_NEW_TASK or
-                    Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED or
-                    // v2.23.1：新建独立 document 任务（公开 API）—— 避开复用
-                    // 其他入口创建的 fullscreen 旧任务，让本次任务直接落入
-                    // 下方 freeform 窗口模式；同意图后续启动复用该任务。
-                    Intent.FLAG_ACTIVITY_NEW_DOCUMENT
-            )
-        context.startActivity(intent, freeformOptions(context))
-        scheduleFreeformEnforce(context, app.pkg)
-        true
-    }.getOrElse { false }
+    private fun buildLaunchIntent(context: Context, pkg: String, activity: String): Intent? {
+        val base = if (activity.isBlank()) {
+            runCatching { context.packageManager.getLaunchIntentForPackage(pkg) }.getOrNull()
+        } else {
+            Intent(Intent.ACTION_MAIN)
+                .addCategory(Intent.CATEGORY_LAUNCHER)
+                .setClassName(pkg, activity)
+        } ?: return null
+        return base.addFlags(
+            Intent.FLAG_ACTIVITY_NEW_TASK or
+                Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED or
+                // v2.23.1：新建独立 document 任务（公开 API）—— 避开复用
+                // 其他入口创建的 fullscreen 旧任务，让本次任务直接落入
+                // freeform 窗口模式；同意图后续启动复用该任务。
+                Intent.FLAG_ACTIVITY_NEW_DOCUMENT
+        )
+    }
 
     /**
-     * v2.23.1：启动后兜底强制 freeform。
+     * 手机应用启动主路径（开始菜单 / 桌面快捷方式共用入口）。
+     *
+     * v2.23.2 流程：
+     * 1. [FreeformCompat.ensureAvailable] 保"设备支持自由窗口"前提
+     *    （已授予 WRITE_SECURE_SETTINGS 时同步写开开关，毫秒级）；
+     * 2. 可用 → 带 [freeformOptions] 启动 + 启动后三轮 [scheduleFreeformEnforce]
+     *    兜底强制切窗；
+     * 3. 不可用且未抑制询问 → [FreeformCompat.requestDecision] 转弹窗，
+     *    由用户选择"仍以全屏启动 / 取消"（不再静默全屏）；
+     * 4. 不可用且用户已选"不再提示" → 直接全屏启动。
+     */
+    private fun launchAndroidApp(context: Context, pkg: String, activity: String, label: String): Boolean {
+        val intent = buildLaunchIntent(context, pkg, activity) ?: return false
+
+        // ① 保能力：确保设备支持自由窗口（30s 缓存，快路径毫秒级）
+        val freeformReady = FreeformCompat.ensureAvailable(context)
+
+        if (!freeformReady) {
+            // 用户已选"不再提示" → 直接全屏兜底
+            if (FreeformCompat.suppressDecision) {
+                return runCatching {
+                    context.startActivity(intent)
+                    true
+                }.getOrElse { false }
+            }
+            // 转入决策弹窗（返回 true 让开始菜单先收起，弹窗在桌面层显示）
+            FreeformCompat.requestDecision(pkg, activity, label)
+            return true
+        }
+
+        // ② 窗口化启动 + 多轮兜底强制
+        return runCatching {
+            context.startActivity(intent, freeformOptions(context))
+            scheduleFreeformEnforce(context, pkg)
+            true
+        }.getOrElse { false }
+    }
+
+    /**
+     * v2.23.1 → v2.23.2：启动后兜底强制 freeform。
      *
      * 一些 ROM（尤其是国产定制 ROM）会忽略 [ActivityOptions.setLaunchWindowingMode]，
-     * 把任务先按 fullscreen 建起来；这里在 250ms 后扫描最近任务，
+     * 把任务先按 fullscreen 建起来；这里在 300/800/1600ms 三轮扫描最近任务，
      * 命中目标包名时反射调用 `ActivityTaskManager.setTaskWindowingMode(
      * taskId, 5, true)` 把它从 fullscreen 改成 freeform，再配一个最小尺寸
-     * 的边界，让应用以"小窗口"形态呈现。
+     * 的边界，让应用以"小窗口"形态呈现。多轮重试针对"任务先全屏建好、
+     * 再异步初始化完成"的时序：单次 250ms 扫描时机太早会扑空。
      *
      * 整个过程不抛异常（被屏蔽就 warn 退出）；返回值仅用于调试观察。
      */
     private fun scheduleFreeformEnforce(context: Context, targetPkg: String) {
         val main = Handler(Looper.getMainLooper())
-        main.postDelayed({
-            runCatching {
-                forceFreeformOnRunningTask(context, targetPkg)
-            }.onFailure { Log.w(TAG, "force freeform enforce failed: ${it.message}") }
-        }, 250L)
+        longArrayOf(300L, 800L, 1600L).forEach { at ->
+            main.postDelayed({
+                runCatching {
+                    forceFreeformOnRunningTask(context, targetPkg)
+                }.onFailure { Log.w(TAG, "force freeform enforce failed: ${it.message}") }
+            }, at)
+        }
     }
 
     /** 反射尝试把最近一个属于 [targetPkg] 的任务切到 freeform 模式。 */
@@ -270,7 +322,7 @@ object AndroidApps {
             atmClz.getMethod("getInstance").invoke(null) as? Any
         }.getOrNull() ?: am
         runCatching {
-            method.invoke(atmInstance, taskId, WINDOWING_MODE_FREEFORM, true)
+            method.invoke(atmInstance, taskId, FreeformCompat.WINDOWING_MODE_FREEFORM, true)
             Log.i(TAG, "forceFreeform: taskId=$taskId → FREEFORM 已强制")
         }.onFailure { Log.w(TAG, "forceFreeform invoke failed: ${it.message}") }
     }
@@ -298,12 +350,12 @@ object AndroidApps {
         try {
             ActivityOptions::class.java
                 .getMethod("setLaunchWindowingMode", Int::class.javaPrimitiveType)
-                .invoke(options, WINDOWING_MODE_FREEFORM)
+                .invoke(options, FreeformCompat.WINDOWING_MODE_FREEFORM)
         } catch (t: Throwable) {
             runCatching {
                 ActivityOptions::class.java
                     .getMethod("setLaunchStack", Int::class.javaPrimitiveType)
-                    .invoke(options, WINDOWING_MODE_FREEFORM)
+                    .invoke(options, FreeformCompat.WINDOWING_MODE_FREEFORM)
             }
         }
 
@@ -320,7 +372,16 @@ object AndroidApps {
         val top = (dm.heightPixels - h) / 2
         options.setLaunchBounds(Rect(left, top, left + w, top + h))
 
-        options.toBundle()
+        val bundle = options.toBundle() ?: return@runCatching null
+        // 3) v2.23.2 终极兜底：直接写入隐藏 Bundle 键 ——
+        //    setLaunchWindowingMode 内部写的就是这个键，无条件 putInt：
+        //    反射成功时是幂等覆盖；反射被 ROM 屏蔽时这里成为唯一生效通道，
+        //    与 FreeformCompat 的能力保障配合完成"强制窗口化"
+        bundle.putInt(
+            FreeformCompat.KEY_LAUNCH_WINDOWING_MODE,
+            FreeformCompat.WINDOWING_MODE_FREEFORM
+        )
+        bundle
     }.getOrNull()
 }
 

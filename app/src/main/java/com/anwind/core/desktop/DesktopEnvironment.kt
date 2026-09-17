@@ -1,12 +1,19 @@
 package com.anwind.core.desktop
 
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.media.MediaPlayer
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -17,8 +24,12 @@ import androidx.compose.ui.input.pointer.PointerType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.anwind.AnWindApp
 import com.anwind.core.input.MouseController
 import com.anwind.core.input.MouseCursorOverlay
@@ -462,6 +473,16 @@ fun DesktopEnvironment(
         // ===== 8. 虚拟鼠标指针层（v2.13：Windows 风格指针 + 点击涟漪，最顶层） =====
         MouseCursorOverlay()
 
+        // ===== 8.5 自由窗口决策弹窗（v2.23.2） =====
+        // 自由窗口（freeform）不可用时，从桌面/开始菜单启动手机应用不再
+        // 静默退化为全屏盖住桌面，而是先弹本窗告知开启方式（ADB 授权 /
+        // 开发者选项 / Root 自动开启），由用户选择"仍以全屏启动"或"取消"。
+        // 能力检测与自动开启见 FreeformCompat；启动路径改造见 AndroidApps。
+        val pendingAndroidLaunch by FreeformCompat.pendingLaunch.collectAsState()
+        pendingAndroidLaunch?.let { pending ->
+            FreeformDecisionDialog(pending)
+        }
+
         // ===== 9. 锁屏层（v2.14：设置→个性化→锁屏界面 / 开始菜单电源→锁定） =====
         // 放在键盘/鼠标层之上，拦截一切交互，只允许上滑或点击解锁
         // v2.17：独立锁屏壁纸（图片/视频） + PIN 密码验证 + 自动锁屏（见上方定时协程）
@@ -509,6 +530,93 @@ private fun playStartupSound(context: Context, assetPath: String) {
     } catch (_: Exception) {
         // 其他异常同样跳过
     }
+}
+
+/**
+ * v2.23.2：自由窗口（freeform）不可用时的手机应用启动决策弹窗。
+ *
+ * 从桌面/开始菜单启动手机应用时，若设备不支持自由窗口（能力检测与
+ * 自动开启逻辑见 [FreeformCompat]），不再静默退化为全屏，而是弹本窗
+ * 告知三种开启方式，由用户选择"仍以全屏启动 / 取消"，或点按
+ * "本次运行内不再询问"（之后恢复旧行为：直接全屏启动）。
+ */
+@Composable
+private fun FreeformDecisionDialog(pending: FreeformCompat.PendingLaunch) {
+    val context = LocalContext.current
+    val theme = LocalWinTheme.current
+    var copied by remember { mutableStateOf(false) }
+
+    // 关闭弹窗即失效能力缓存：用户可能刚按指引授予了 ADB 权限或打开了
+    // 开发者选项开关，下次启动手机应用时立即重新探测（不等 30s TTL）
+    fun close(invalidate: Boolean = true) {
+        if (invalidate) FreeformCompat.invalidateCache()
+        FreeformCompat.cancelPendingLaunch()
+    }
+
+    AlertDialog(
+        onDismissRequest = { close() },
+        title = { Text("手机应用窗口化暂不可用") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    "当前设备未开启自由窗口（Freeform），从桌面启动的「${pending.label}」只能全屏运行并覆盖桌面。" +
+                        "开启后，手机应用将以浮动窗口形式运行在桌面上，桌面与任务栏保持可见。"
+                )
+                Text("开启方式（任选其一）：", fontWeight = FontWeight.Bold)
+                Text("① 电脑执行一次以下 ADB 命令（推荐；授权后 AnWind 自动开启并一直维持）：")
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(6.dp))
+                        .background(Color(0x14000000))
+                        .padding(horizontal = 10.dp, vertical = 2.dp)
+                ) {
+                    Text(
+                        FreeformCompat.ADB_GRANT_COMMAND,
+                        fontSize = 11.sp,
+                        lineHeight = 16.sp,
+                        fontFamily = FontFamily.Monospace,
+                        modifier = Modifier.weight(1f)
+                    )
+                    TextButton(
+                        onClick = {
+                            runCatching {
+                                val cm = context.getSystemService(Context.CLIPBOARD_SERVICE)
+                                    as? ClipboardManager
+                                cm?.setPrimaryClip(
+                                    ClipData.newPlainText("adb", FreeformCompat.ADB_GRANT_COMMAND)
+                                )
+                            }
+                            copied = true
+                        },
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                    ) { Text(if (copied) "已复制" else "复制") }
+                }
+                Text("② 无电脑：系统设置 → 开发者选项 → 打开「启用自由窗口」后回到桌面重试（部分系统名为「自由形式窗口」）。")
+                Text("③ Root 设备：AnWind 已在后台自动尝试开启，重新打开 AnWind 后生效。")
+                Text(
+                    "本次运行内不再询问，直接全屏启动",
+                    fontSize = 12.sp,
+                    color = theme.accentColor,
+                    modifier = Modifier.clickable {
+                        FreeformCompat.suppressDecision = true
+                        close()
+                        AndroidApps.launchFullscreen(context, pending.pkg, pending.activity)
+                    }
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                close()
+                AndroidApps.launchFullscreen(context, pending.pkg, pending.activity)
+            }) { Text("仍以全屏启动") }
+        },
+        dismissButton = {
+            TextButton(onClick = { close() }) { Text("取消") }
+        }
+    )
 }
 
 /**

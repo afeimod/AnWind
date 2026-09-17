@@ -166,9 +166,12 @@ android {
         // 唯一代价：Android 10+ 安装时提示“此应用为旧版 Android 打造”。
         // ============================================================
         // v2.22.2 内置 X11 桌面（版本号随功能递增）
+        // v2.23.2：手机应用强制 freeform 窗口化根修 —— 新增 FreeformCompat
+        //（能力检测/ADB/Root 自动开启/决策弹窗），见 AndroidApps.kt 与
+        // DesktopEnvironment.kt 的 v2.23.2 注释
         targetSdk = 28
-        versionCode = 48
-        versionName = "2.23.1"
+        versionCode = 49
+        versionName = "2.23.2"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {

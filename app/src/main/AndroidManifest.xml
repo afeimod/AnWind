@@ -38,6 +38,14 @@
     <uses-permission android:name="android.permission.WRITE_SETTINGS"
         tools:ignore="ProtectedPermissions" />
 
+    <!-- v2.23.2 手机应用强制窗口化：允许（经 ADB/Shizuku 一次性授权后）自动
+         打开系统全局「自由窗口」开关（enable_freeform_support），使从桌面启动的
+         手机应用以 freeform 浮动窗口运行而非全屏覆盖桌面。该权限无法运行时弹窗
+         申请，未授权时自动忽略（走决策弹窗引导）；一次性授权命令：
+         adb shell pm grant com.anwind android.permission.WRITE_SECURE_SETTINGS -->
+    <uses-permission android:name="android.permission.WRITE_SECURE_SETTINGS"
+        tools:ignore="ProtectedPermissions" />
+
     <!-- v2.21 桌面歌词：系统悬浮窗（需用户在设置页授予「显示在应用上层」）+ 前台服务 -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
