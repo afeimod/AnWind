@@ -547,17 +547,29 @@ private fun playStartupSound(context: Context, assetPath: String) {
 
 /**
  * v2.23.2：自由窗口（freeform）不可用时的手机应用启动决策弹窗。
- *
- * 从桌面/开始菜单启动手机应用时，若设备不支持自由窗口（能力检测与
- * 自动开启逻辑见 [FreeformCompat]），不再静默退化为全屏，而是弹本窗
- * 告知三种开启方式，由用户选择"仍以全屏启动 / 取消"，或点按
- * "本次运行内不再询问"（之后恢复旧行为：直接全屏启动）。
+ * v2.24.0：开发者选项指引按 ROM 品牌定制（[FreeformCompat.romGuidance]），
+ * 并新增「打开桌面窗口设置」入口（引擎状态/诊断报告页）。
  */
 @Composable
 private fun FreeformDecisionDialog(pending: FreeformCompat.PendingLaunch) {
     val context = LocalContext.current
     val theme = LocalWinTheme.current
     var copied by remember { mutableStateOf(false) }
+    val guidance = remember { FreeformCompat.romGuidance() }
+
+    // 打开 设置 → 桌面窗口（引擎状态/诊断报告）
+    fun openEngineSettings() {
+        runCatching {
+            com.anwind.core.window.WindowManager.get().open(
+                appId = "settings",
+                title = "桌面窗口",
+                launchMode = com.anwind.core.window.LaunchMode.FLOATING,
+                launchArgs = mapOf("section" to "windowengine"),
+                initialWidth = 720,
+                initialHeight = 640
+            )
+        }
+    }
 
     // 关闭弹窗即失效能力缓存：用户可能刚按指引授予了 ADB 权限或打开了
     // 开发者选项开关，下次启动手机应用时立即重新探测（不等 30s TTL）
@@ -573,7 +585,7 @@ private fun FreeformDecisionDialog(pending: FreeformCompat.PendingLaunch) {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
                     "当前设备未开启自由窗口（Freeform），从桌面启动的「${pending.label}」只能全屏运行并覆盖桌面。" +
-                        "开启后，手机应用将以浮动窗口形式运行在桌面上，桌面与任务栏保持可见。"
+                        "开启后，手机应用将以桌面级大窗口运行，桌面与任务栏保持可见。"
                 )
                 Text("开启方式（任选其一）：", fontWeight = FontWeight.Bold)
                 Text("① 电脑执行一次以下 ADB 命令（推荐；授权后 AnWind 自动开启并一直维持）：")
@@ -606,8 +618,21 @@ private fun FreeformDecisionDialog(pending: FreeformCompat.PendingLaunch) {
                         contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
                     ) { Text(if (copied) "已复制" else "复制") }
                 }
-                Text("② 无电脑：系统设置 → 开发者选项 → 打开「启用自由窗口」后回到桌面重试（部分系统名为「自由形式窗口」）。")
+                Text(
+                    "② 无电脑：在系统设置里打开以下开发者选项开关后回到桌面重试" +
+                        (if (guidance.romName.isBlank()) "" else "（${guidance.romName}）：")
+                )
+                guidance.toggles.forEach { Text("　　• $it", fontSize = 12.sp) }
                 Text("③ Root 设备：AnWind 已在后台自动尝试开启，重新打开 AnWind 后生效。")
+                Text(
+                    "遇到问题？打开 设置 → 桌面窗口 查看引擎状态与诊断报告",
+                    fontSize = 12.sp,
+                    color = theme.accentColor,
+                    modifier = Modifier.clickable {
+                        close()
+                        openEngineSettings()
+                    }
+                )
                 Text(
                     "本次运行内不再询问，直接全屏启动",
                     fontSize = 12.sp,

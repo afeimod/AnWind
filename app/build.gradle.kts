@@ -166,12 +166,13 @@ android {
         // 唯一代价：Android 10+ 安装时提示“此应用为旧版 Android 打造”。
         // ============================================================
         // v2.22.2 内置 X11 桌面（版本号随功能递增）
-        // v2.23.2：手机应用强制 freeform 窗口化根修 —— 新增 FreeformCompat
-        //（能力检测/ADB/Root 自动开启/决策弹窗），见 AndroidApps.kt 与
-        // DesktopEnvironment.kt 的 v2.23.2 注释
+        // v2.24.0：桌面窗口引擎 —— 启动级联重构（MIUI/HyperOS 专有通道加速
+        // + AOSP freeform 修正键名 + 卡全屏 CLEAR_TASK 修复 + 隐藏 API 豁免
+        // + 设置→桌面窗口 诊断中心），见 FreeformCompat.kt / AndroidApps.kt /
+        // WindowEnginePage.kt 的 v2.24.0 注释与 docs/DESKTOP_WINDOW.md
         targetSdk = 28
-        versionCode = 50
-        versionName = "2.23.3"
+        versionCode = 51
+        versionName = "2.24.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {

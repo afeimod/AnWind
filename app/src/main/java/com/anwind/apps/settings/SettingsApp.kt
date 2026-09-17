@@ -184,6 +184,8 @@ private fun SettingsContent(scope: WindowContentScope) {
                     Triple("personalization", "个性化", Icons.Default.Palette),
                     Triple("apps", "应用", Icons.Default.Apps),
                     Triple("desktop", "桌面设置", Icons.Default.DesktopWindows),
+                    // v2.24.0：桌面窗口引擎（手机应用窗口化状态/诊断）
+                    Triple("windowengine", "桌面窗口", Icons.Default.WebAsset),
                     Triple("time", "时间和语言", Icons.Default.Schedule),
                     Triple("gaming", "游戏", Icons.Default.SportsEsports),
                     Triple("accessibility", "辅助功能", Icons.Default.Accessibility),
@@ -228,6 +230,8 @@ private fun SettingsContent(scope: WindowContentScope) {
                     "apps" -> AppsSection()
                     // v2.17："账户"替换为桌面设置（不再跳转手机系统设置）
                     "desktop" -> DesktopSettingsSection()
+                    // v2.24.0：桌面窗口引擎诊断页
+                    "windowengine" -> WindowEngineSection()
                     "time" -> TimeLanguageSection()
                     "gaming" -> GamingSection()
                     "accessibility" -> AccessibilitySection()
