@@ -75,10 +75,17 @@ import com.anwind.core.theme.LocalWinTheme
  *   - 仍不可用 → 不再静默退化全屏，而是弹窗告知开启方式，由用户
  *     选择"仍以全屏启动"或"取消"（[FreeformCompat.pendingLaunch] +
  *     DesktopEnvironment 的 FreeformDecisionDialog）。
- *   同时强化 [freeformOptions]：反射被屏蔽时直接往 Bundle 写入
- *   KEY_LAUNCH_WINDOWING_MODE（与 setLaunchWindowingMode 落盘的键
- *   完全一致）；[scheduleFreeformEnforce] 由单次 250ms 改为
- *   300/800/1600ms 三轮重试。
+ * v2.23.3：**根修 v2.23.2 的“重启盲区” + 启动结果验证**。
+ *   AOSP 证实 enable_freeform_support 仅在系统启动时读取一次（ATMS.
+ *   retrieveSettings，运行时无 Observer 监听该键）——v2.23.2 写开开关后
+ *   误判“已生效”从此沉默，导致用户“授权成功却依旧全屏、弹窗也不再出现”。
+ *   本版：
+ *   - [FreeformCompat] 持久化跟踪写入时间（boot_count/uptime），
+ *     本次开机内写入且未重启 → 明确引导重启，不再空试；
+ *   - 窗口化启动后 300/800/1600ms 回读目标任务真实 windowingMode
+ *     （[readTaskWindowingMode]），读到 freeform(5) 才算成功；读到全屏(1)
+ *     → 分原因弹窗（需重启 / ROM 屏蔽）；读不到 → 升级用户一次性提示；
+ *   - 决策弹窗分原因展示并附带实时诊断状态（见 DesktopEnvironment）。
  */
 object AndroidApps {
 
@@ -221,98 +228,227 @@ object AndroidApps {
     /**
      * 手机应用启动主路径（开始菜单 / 桌面快捷方式共用入口）。
      *
-     * v2.23.2 流程：
-     * 1. [FreeformCompat.ensureAvailable] 保"设备支持自由窗口"前提
-     *    （已授予 WRITE_SECURE_SETTINGS 时同步写开开关，毫秒级）；
-     * 2. 可用 → 带 [freeformOptions] 启动 + 启动后三轮 [scheduleFreeformEnforce]
-     *    兜底强制切窗；
-     * 3. 不可用且未抑制询问 → [FreeformCompat.requestDecision] 转弹窗，
-     *    由用户选择"仍以全屏启动 / 取消"（不再静默全屏）；
-     * 4. 不可用且用户已选"不再提示" → 直接全屏启动。
+     * v2.23.3 状态机（在 v2.23.2 基础上补齐“生效”维度）：
+     * 1. [FreeformCompat.ensureAvailable] 保“开关打开”（已授权时自动写入）；
+     * 2. 开关未开且未抑制询问 → [FreeformCompat.REASON_NO_PERMISSION] 弹窗；
+     * 3. 开关是本次开机内写入的（系统尚未读取）且本进程已验证过它不生效
+     *    → 不再空试，直接 [FreeformCompat.REASON_NEEDS_REBOOT] 引导重启
+     *    （首次尝试仍会走窗口化启动——照顾个别热加载该开关的 ROM）；
+     * 4. 本进程已确认系统拒收窗口化请求（开关开、非本次开机写入仍全屏）
+     *    → [FreeformCompat.REASON_STILL_FULLSCREEN] 弹窗排查；
+     * 5. 其余 → 窗口化启动 + 启动后三轮 [scheduleFreeformVerifyAndEnforce]
+     *    验证/强切，验证结果经 [FreeformCompat.noteVerified] 回写状态，
+     *    失败时按原因弹窗，不存在静默失败路径。
      */
     private fun launchAndroidApp(context: Context, pkg: String, activity: String, label: String): Boolean {
         val intent = buildLaunchIntent(context, pkg, activity) ?: return false
 
-        // ① 保能力：确保设备支持自由窗口（30s 缓存，快路径毫秒级）
+        // ① 保能力：确保自由窗口开关处于打开状态（30s 缓存，快路径毫秒级）
         val freeformReady = FreeformCompat.ensureAvailable(context)
 
         if (!freeformReady) {
             // 用户已选"不再提示" → 直接全屏兜底
-            if (FreeformCompat.suppressDecision) {
-                return runCatching {
-                    context.startActivity(intent)
-                    true
-                }.getOrElse { false }
-            }
+            if (FreeformCompat.suppressDecision) return launchPlain(context, intent)
             // 转入决策弹窗（返回 true 让开始菜单先收起，弹窗在桌面层显示）
-            FreeformCompat.requestDecision(pkg, activity, label)
+            FreeformCompat.requestDecision(pkg, activity, label, FreeformCompat.REASON_NO_PERMISSION)
             return true
         }
 
-        // ② 窗口化启动 + 多轮兜底强制
-        return runCatching {
+        // ② 开关是本次开机内写开的：系统还没读到（AOSP 仅开机读取）。
+        //    本进程验证过它确实不生效后直接引导重启，不再空试；
+        //    首次仍会落到⑤尝试（个别 ROM 对该开关做了热加载）
+        if (FreeformCompat.pendingRebootSinceOurWrite(context) &&
+            FreeformCompat.probeTried && !FreeformCompat.probeSucceeded
+        ) {
+            if (FreeformCompat.suppressDecision) return launchPlain(context, intent)
+            FreeformCompat.requestDecision(pkg, activity, label, FreeformCompat.REASON_NEEDS_REBOOT)
+            return true
+        }
+
+        // ③ 本进程已确认系统把窗口化请求丢弃（开关开、非本次开机写入仍全屏）
+        if (FreeformCompat.brokenConfirmed) {
+            if (FreeformCompat.suppressDecision) return launchPlain(context, intent)
+            FreeformCompat.requestDecision(pkg, activity, label, FreeformCompat.REASON_STILL_FULLSCREEN)
+            return true
+        }
+
+        // ④ 窗口化启动 + 启动后三轮验证/强切
+        val ok = runCatching {
             context.startActivity(intent, freeformOptions(context))
-            scheduleFreeformEnforce(context, pkg)
             true
         }.getOrElse { false }
+        if (!ok) return false
+
+        FreeformCompat.noteLaunchAttempt()
+        scheduleFreeformVerifyAndEnforce(context, pkg, activity, label)
+        return true
     }
 
+    /** 普通全屏启动（用户已知情选择全屏，或"不再提示"后的兜底） */
+    private fun launchPlain(context: Context, intent: Intent): Boolean =
+        runCatching {
+            context.startActivity(intent)
+            true
+        }.getOrElse { false }
+
     /**
-     * v2.23.1 → v2.23.2：启动后兜底强制 freeform。
+     * v2.23.3：启动后验证 + 兜底强切（取代 v2.23.2 的纯 enforce）。
      *
-     * 一些 ROM（尤其是国产定制 ROM）会忽略 [ActivityOptions.setLaunchWindowingMode]，
-     * 把任务先按 fullscreen 建起来；这里在 300/800/1600ms 三轮扫描最近任务，
-     * 命中目标包名时反射调用 `ActivityTaskManager.setTaskWindowingMode(
-     * taskId, 5, true)` 把它从 fullscreen 改成 freeform，再配一个最小尺寸
-     * 的边界，让应用以"小窗口"形态呈现。多轮重试针对"任务先全屏建好、
-     * 再异步初始化完成"的时序：单次 250ms 扫描时机太早会扑空。
+     * 300/800/1600ms 三轮，每轮：
+     * 1. 定位目标包名的最近任务，回读其真实 windowingMode（[readTaskWindowingMode]，
+     *    TaskInfo 隐藏字段，@UnsupportedAppUsage 浅灰名单，多数设备可读）；
+     * 2. 已是 FREEFORM → 验证成功（[FreeformCompat.noteVerified] 记录）；
+     * 3. 非 FREEFORM → 反射 `ActivityTaskManager.setTaskWindowingMode(taskId, 5,
+     *    true)` 尝试强切，再回读一次，以回读结果为准（针对一些 ROM 把任务
+     *    "先按全屏建好"的时序；系统不支持 freeform 时强切同样被拒绝，
+     *    回读仍为全屏 → 如实上报失败）；
+     * 4. 最后一轮仍读不到（任务不可见/反射被屏蔽）→ [handleUnverifiable]：
+     *    本次开机内写过开关 → 重启引导；否则升级存量用户一次性轻提示。
      *
-     * 整个过程不抛异常（被屏蔽就 warn 退出）；返回值仅用于调试观察。
+     * 多轮重试针对"任务先全屏建好、再异步初始化完成"的时序：单次扫描
+     * 时机太早会扑空。整个过程不抛异常。
      */
-    private fun scheduleFreeformEnforce(context: Context, targetPkg: String) {
+    private fun scheduleFreeformVerifyAndEnforce(
+        context: Context,
+        pkg: String,
+        activity: String,
+        label: String
+    ) {
         val main = Handler(Looper.getMainLooper())
-        longArrayOf(300L, 800L, 1600L).forEach { at ->
+        val delays = longArrayOf(300L, 800L, 1600L)
+        delays.forEachIndexed { index, at ->
             main.postDelayed({
                 runCatching {
-                    forceFreeformOnRunningTask(context, targetPkg)
-                }.onFailure { Log.w(TAG, "force freeform enforce failed: ${it.message}") }
+                    val isLast = index == delays.lastIndex
+                    val mode = forceFreeformOnRunningTask(context, pkg)
+                    when {
+                        mode == FreeformCompat.WINDOWING_MODE_FREEFORM ->
+                            // 明确读到 freeform：窗口化真实生效（含强切成功）
+                            FreeformCompat.noteVerified(context, true)
+
+                        mode != null -> {
+                            // 明确读到非 freeform（1=fullscreen 等）：请求被系统丢弃
+                            FreeformCompat.noteVerified(context, false)
+                            maybeRequestFailureDecision(context, pkg, activity, label)
+                        }
+
+                        else ->
+                            // 任务未找到或模式不可读；只在最后一轮做补偿处理
+                            if (isLast) handleUnverifiable(context, pkg, activity, label)
+                    }
+                }.onFailure { Log.w(TAG, "verify/enforce failed: ${it.message}") }
             }, at)
         }
     }
 
-    /** 反射尝试把最近一个属于 [targetPkg] 的任务切到 freeform 模式。 */
-    private fun forceFreeformOnRunningTask(context: Context, targetPkg: String) {
-        val am = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager ?: return
-        // 1) 找最近的任务 id —— getRecentTasks 在 Android 5+ 只能看到自己应用的任务，
-        //    但作为 Launcher (HOME category) 我们可以拿到全部任务（系统对默认 Launcher 放行）。
-        val taskId: Int = runCatching {
-            @Suppress("DEPRECATION")
-            val tasks = am.getRunningTasks(8) ?: emptyList()
-            tasks.firstOrNull { it.topActivity?.packageName == targetPkg }?.id
-                ?: tasks.firstOrNull { it.baseActivity?.packageName == targetPkg }?.id
-        }.getOrNull() ?: runCatching {
-            // getRunningTasks 在 Android 5+ 仅返回调用方自己任务，作为 Launcher 仍可拿到；
-            // 取不到时再尝试 getRecentTasks（deprecated 但仍可用，Launcher 同样有权限）
-            @Suppress("DEPRECATION")
-            val recent = am.getRecentTasks(8, ActivityManager.RECENT_WITH_EXCLUDED)
-            recent.firstOrNull {
-                it.baseIntent?.component?.packageName == targetPkg
-            }?.id
-        }.getOrNull() ?: -1
+    /** 验证明确失败 → 按是否本次开机写入开关分流弹窗（需重启 / ROM 屏蔽） */
+    private fun maybeRequestFailureDecision(
+        context: Context,
+        pkg: String,
+        activity: String,
+        label: String
+    ) {
+        if (FreeformCompat.suppressDecision) return
+        if (FreeformCompat.pendingLaunch.value != null) return
+        val reason = if (FreeformCompat.pendingRebootSinceOurWrite(context)) {
+            FreeformCompat.REASON_NEEDS_REBOOT
+        } else {
+            FreeformCompat.REASON_STILL_FULLSCREEN
+        }
+        FreeformCompat.requestDecision(pkg, activity, label, reason)
+    }
 
-        if (taskId < 0) {
-            Log.w(TAG, "forceFreeform: 目标任务未找到 (pkg=$targetPkg)")
+    /**
+     * 验证通道不可用（任务不可见 / windowingMode 反射被屏蔽）的补偿处理：
+     * - 本次开机内写过开关 → 大概率确实需要重启，直接重启引导；
+     * - 否则若历史从未验证成功过（v2.23.2 升级存量用户：开关已 =1 但无从
+     *   判断是否重启过）→ 一次性轻提示；
+     * - 其余情况静默（不无端打扰）。
+     */
+    private fun handleUnverifiable(
+        context: Context,
+        pkg: String,
+        activity: String,
+        label: String
+    ) {
+        if (FreeformCompat.suppressDecision) return
+        if (FreeformCompat.pendingLaunch.value != null) return
+        if (FreeformCompat.pendingRebootSinceOurWrite(context)) {
+            FreeformCompat.requestDecision(pkg, activity, label, FreeformCompat.REASON_NEEDS_REBOOT)
             return
         }
+        if (FreeformCompat.everVerifiedWorking(context)) return
+        if (FreeformCompat.firstHintAlreadyShown(context)) return
+        FreeformCompat.markFirstHintShown(context)
+        FreeformCompat.requestDecision(pkg, activity, label, FreeformCompat.REASON_FIRST_HINT)
+    }
 
-        // 2) ActivityTaskManager.setTaskWindowingMode(taskId, windowingMode, toTop)
-        //    反射调用（hidden API）；不同 Android 版本类名略有差异：
-        //    - API 29+ ：android.app.ActivityTaskManager
-        //    - API 24~28：android.app.ActivityManager (同方法签名)
+    /**
+     * v2.23.3：定位目标任务 → 回读真实 windowingMode，必要时强切 freeform。
+     *
+     * 返回值：目标任务当前的 windowingMode（5=FREEFORM 生效中）；
+     * null = 任务未找到或模式不可读（验证通道不可用）。
+     *
+     * 1) 找最近的任务 —— getRunningTasks 在 Android 5+ 只能看到自己应用的
+     *    任务，但作为 Launcher (HOME category) 我们可以拿到全部任务（系统
+     *    对默认 Launcher 放行）；取不到时再尝试 getRecentTasks 兼容路径；
+     * 2) 已是 freeform 直接返回；否则反射 setTaskWindowingMode 强切后回读。
+     */
+    private fun forceFreeformOnRunningTask(context: Context, targetPkg: String): Int? {
+        val am = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager ?: return null
+
+        fun findTaskAndId(): Pair<Any?, Int> {
+            runCatching {
+                @Suppress("DEPRECATION")
+                val running = am.getRunningTasks(16) ?: emptyList<ActivityManager.RunningTaskInfo>()
+                running.firstOrNull {
+                    it.topActivity?.packageName == targetPkg ||
+                        it.baseActivity?.packageName == targetPkg
+                }?.let { return it to it.id }
+                @Suppress("DEPRECATION")
+                val recent = am.getRecentTasks(16, ActivityManager.RECENT_WITH_EXCLUDED)
+                    ?: emptyList<ActivityManager.RecentTaskInfo>()
+                recent.firstOrNull {
+                    it.baseIntent?.component?.packageName == targetPkg
+                }?.let { return it to it.id }
+            }.onFailure { Log.w(TAG, "forceFreeform: 任务查询失败: ${it.message}") }
+            return null to -1
+        }
+
+        val (first, taskId) = findTaskAndId()
+        val task = first ?: run {
+            Log.w(TAG, "forceFreeform: 目标任务未找到 (pkg=$targetPkg)")
+            return null
+        }
+
+        // 已在 freeform → 直接确认成功
+        readTaskWindowingMode(task)?.let { mode ->
+            if (mode == FreeformCompat.WINDOWING_MODE_FREEFORM) return mode
+        }
+
+        // 反射强切（hidden API；系统不支持时同样会被拒绝，以回读为准）
+        if (taskId >= 0) invokeSetTaskWindowingMode(am, taskId)
+
+        // 回读强切后的真实状态
+        val (after, _) = findTaskAndId()
+        return after?.let { readTaskWindowingMode(it) }
+    }
+
+    /**
+     * 反射调用 `ActivityTaskManager.setTaskWindowingMode(taskId, 5, true)`。
+     * 不同 Android 版本类名略有差异：API 29+ 在 android.app.ActivityTaskManager，
+     * API 24~28 在 android.app.ActivityManager（同方法签名）。失败只记日志。
+     */
+    private fun invokeSetTaskWindowingMode(am: ActivityManager, taskId: Int) {
         val atmClz = runCatching { Class.forName("android.app.ActivityTaskManager") }
             .getOrNull() ?: ActivityManager::class.java
         val method = runCatching {
-            atmClz.getMethod("setTaskWindowingMode", Int::class.javaPrimitiveType, Int::class.javaPrimitiveType, Boolean::class.javaPrimitiveType)
+            atmClz.getMethod(
+                "setTaskWindowingMode",
+                Int::class.javaPrimitiveType,
+                Int::class.javaPrimitiveType,
+                Boolean::class.javaPrimitiveType
+            )
         }.getOrNull()
         if (method == null) {
             Log.w(TAG, "forceFreeform: setTaskWindowingMode 反射失败，ROM 可能屏蔽")
@@ -323,8 +459,36 @@ object AndroidApps {
         }.getOrNull() ?: am
         runCatching {
             method.invoke(atmInstance, taskId, FreeformCompat.WINDOWING_MODE_FREEFORM, true)
-            Log.i(TAG, "forceFreeform: taskId=$taskId → FREEFORM 已强制")
+            Log.i(TAG, "forceFreeform: taskId=$taskId → FREEFORM 强切请求已发")
         }.onFailure { Log.w(TAG, "forceFreeform invoke failed: ${it.message}") }
+    }
+
+    /**
+     * 读取任务真实 windowingMode（5=freeform，1=fullscreen）。
+     *
+     * `TaskInfo.windowingMode` 为隐藏 API（@UnsupportedAppUsage 浅灰名单，
+     * 多数设备可反射读取）：优先尝试 getter（部分 ROM 暴露），失败后沿类
+     * 层级查找同名字段；全部失败返回 null（验证通道不可用，调用方按
+     * "不可验证"处理，不会误报成功/失败）。
+     */
+    private fun readTaskWindowingMode(task: Any): Int? {
+        runCatching {
+            task.javaClass.getMethod("getWindowingMode").invoke(task) as? Int
+        }.getOrNull()?.let { return it }
+        var c: Class<*>? = task.javaClass
+        while (c != null) {
+            // 局部 val 快照：避免 var 被 runCatching lambda 捕获导致 smart cast 失败
+            val cls: Class<*> = c
+            val field = runCatching { cls.getDeclaredField("windowingMode") }.getOrNull()
+            if (field != null) {
+                return runCatching {
+                    field.isAccessible = true
+                    field.getInt(task)
+                }.getOrNull()
+            }
+            c = cls.superclass
+        }
+        return null
     }
 
     /**

@@ -473,11 +473,13 @@ fun DesktopEnvironment(
         // ===== 8. 虚拟鼠标指针层（v2.13：Windows 风格指针 + 点击涟漪，最顶层） =====
         MouseCursorOverlay()
 
-        // ===== 8.5 自由窗口决策弹窗（v2.23.2） =====
-        // 自由窗口（freeform）不可用时，从桌面/开始菜单启动手机应用不再
-        // 静默退化为全屏盖住桌面，而是先弹本窗告知开启方式（ADB 授权 /
-        // 开发者选项 / Root 自动开启），由用户选择"仍以全屏启动"或"取消"。
-        // 能力检测与自动开启见 FreeformCompat；启动路径改造见 AndroidApps。
+        // ===== 8.5 自由窗口决策弹窗（v2.23.2 / v2.23.3） =====
+        // 从桌面/开始菜单启动手机应用时，自由窗口（freeform）未开启或
+        // 未真正生效（AOSP：enable_freeform_support 仅开机读取一次，写入
+        // 后需重启手机）时，不再静默退化为全屏盖住桌面，而是先弹本窗
+        // 按原因告知下一步（ADB 授权 / 重启手机 / ROM 排查），并附带实时
+        // 诊断状态；由用户选择"仍以全屏启动"或"取消"。
+        // 能力检测/写入跟踪/启动后验证见 FreeformCompat 与 AndroidApps。
         val pendingAndroidLaunch by FreeformCompat.pendingLaunch.collectAsState()
         pendingAndroidLaunch?.let { pending ->
             FreeformDecisionDialog(pending)
@@ -533,12 +535,21 @@ private fun playStartupSound(context: Context, assetPath: String) {
 }
 
 /**
- * v2.23.2：自由窗口（freeform）不可用时的手机应用启动决策弹窗。
+ * v2.23.3：自由窗口未开启/未生效时的手机应用启动决策弹窗（分原因展示）。
  *
- * 从桌面/开始菜单启动手机应用时，若设备不支持自由窗口（能力检测与
- * 自动开启逻辑见 [FreeformCompat]），不再静默退化为全屏，而是弹本窗
- * 告知三种开启方式，由用户选择"仍以全屏启动 / 取消"，或点按
- * "本次运行内不再询问"（之后恢复旧行为：直接全屏启动）。
+ * 从桌面/开始菜单启动手机应用时，若自由窗口不可用或未真正生效（能力
+ * 检测 / 写入时间跟踪 / 启动后验证见 [FreeformCompat] 与 [AndroidApps]），
+ * 按原因码分流文案：
+ * - [FreeformCompat.REASON_NO_PERMISSION]：ADB 授权 / 开发者选项 / Root；
+ * - [FreeformCompat.REASON_NEEDS_REBOOT]：开关已写入但系统仅在开机时
+ *   读取（AOSP 确认），引导重启手机；
+ * - [FreeformCompat.REASON_STILL_FULLSCREEN]：开关已开仍被拒，先重启、
+ *   再排查 ROM（开发者选项手动开启 / 设为默认桌面 / 系统小窗接管）；
+ * - [FreeformCompat.REASON_FIRST_HINT]：升级存量用户一次性轻提示。
+ *
+ * 所有原因均附带实时诊断状态（[FreeformCompat.diagnosticLines]），
+ * 用户随时能看到"缺哪一步"，不再有黑盒失败。按钮："仍以全屏启动 /
+ * 取消 / 本次运行内不再询问"（会话级，重启 AnWind 后恢复询问）。
  */
 @Composable
 private fun FreeformDecisionDialog(pending: FreeformCompat.PendingLaunch) {
@@ -553,48 +564,91 @@ private fun FreeformDecisionDialog(pending: FreeformCompat.PendingLaunch) {
         FreeformCompat.cancelPendingLaunch()
     }
 
+    val title = when (pending.reason) {
+        FreeformCompat.REASON_NEEDS_REBOOT -> "还需重启一次手机"
+        FreeformCompat.REASON_STILL_FULLSCREEN -> "系统暂未放行自由窗口"
+        FreeformCompat.REASON_FIRST_HINT -> "自由窗口已开启"
+        else -> "手机应用窗口化暂不可用"
+    }
+
     AlertDialog(
         onDismissRequest = { close() },
-        title = { Text("手机应用窗口化暂不可用") },
+        title = { Text(title) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(
-                    "当前设备未开启自由窗口（Freeform），从桌面启动的「${pending.label}」只能全屏运行并覆盖桌面。" +
-                        "开启后，手机应用将以浮动窗口形式运行在桌面上，桌面与任务栏保持可见。"
-                )
-                Text("开启方式（任选其一）：", fontWeight = FontWeight.Bold)
-                Text("① 电脑执行一次以下 ADB 命令（推荐；授权后 AnWind 自动开启并一直维持）：")
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
+                when (pending.reason) {
+                    FreeformCompat.REASON_NEEDS_REBOOT -> Text(
+                        "自由窗口开关已成功写入（ADB 授权已生效），但系统只在「开机时」读取一次" +
+                            "该开关——请重启手机一次。重启后无需任何操作，从桌面启动的手机应用" +
+                            "即会以浮动窗口运行在桌面上。若刚才的「${pending.label}」已经以窗口打开，" +
+                            "说明你的系统支持热加载，可忽略本提示。"
+                    )
+                    FreeformCompat.REASON_STILL_FULLSCREEN -> {
+                        Text("自由窗口开关已开启，但「${pending.label}」仍被系统以全屏方式运行。请依次尝试：")
+                        Text("① 若从未重启过手机，先重启一次（系统仅在开机时读取该开关）。")
+                        Text("② 系统设置 → 开发者选项 → 查找「启用自由窗口 / Freeform」手动开启后重启（部分系统无此选项）。")
+                        Text("③ 将 AnWind 设为默认桌面（部分系统只对默认桌面放行窗口化）。")
+                        Text("④ 部分定制 ROM 会拦截第三方窗口化请求，可改用系统自带的「小窗 / 平行窗口」功能。")
+                    }
+                    FreeformCompat.REASON_FIRST_HINT -> Text(
+                        "自由窗口开关已开启。系统只在开机时读取该开关——如果「${pending.label}」" +
+                            "仍以全屏运行，请重启手机一次；重启后即会正常以窗口形式运行。"
+                    )
+                    else -> {
+                        Text(
+                            "当前设备未开启自由窗口（Freeform），从桌面启动的「${pending.label}」只能全屏运行并覆盖桌面。" +
+                                "开启后，手机应用将以浮动窗口形式运行在桌面上，桌面与任务栏保持可见。"
+                        )
+                        Text("开启方式（任选其一，完成后均需重启手机一次生效）：", fontWeight = FontWeight.Bold)
+                        Text("① 电脑执行一次以下 ADB 命令（推荐；授权后 AnWind 自动开启并一直维持）：")
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(6.dp))
+                                .background(Color(0x14000000))
+                                .padding(horizontal = 10.dp, vertical = 2.dp)
+                        ) {
+                            Text(
+                                FreeformCompat.adbGrantCommand(context),
+                                fontSize = 11.sp,
+                                lineHeight = 16.sp,
+                                fontFamily = FontFamily.Monospace,
+                                modifier = Modifier.weight(1f)
+                            )
+                            TextButton(
+                                onClick = {
+                                    runCatching {
+                                        val cm = context.getSystemService(Context.CLIPBOARD_SERVICE)
+                                            as? ClipboardManager
+                                        cm?.setPrimaryClip(
+                                            ClipData.newPlainText("adb", FreeformCompat.adbGrantCommand(context))
+                                        )
+                                    }
+                                    copied = true
+                                },
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                            ) { Text(if (copied) "已复制" else "复制") }
+                        }
+                        Text("② 无电脑：系统设置 → 开发者选项 → 打开「启用自由窗口」后重启手机（部分系统名为「自由形式窗口」）。")
+                        Text("③ Root 设备：AnWind 已在后台自动尝试开启，重启手机后生效。")
+                    }
+                }
+
+                // 实时诊断状态：让用户随时看到"缺哪一步"，不再有黑盒失败
+                Text("当前状态：", fontWeight = FontWeight.Bold)
+                Column(
                     modifier = Modifier
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(6.dp))
                         .background(Color(0x14000000))
-                        .padding(horizontal = 10.dp, vertical = 2.dp)
+                        .padding(horizontal = 10.dp, vertical = 6.dp)
                 ) {
-                    Text(
-                        FreeformCompat.ADB_GRANT_COMMAND,
-                        fontSize = 11.sp,
-                        lineHeight = 16.sp,
-                        fontFamily = FontFamily.Monospace,
-                        modifier = Modifier.weight(1f)
-                    )
-                    TextButton(
-                        onClick = {
-                            runCatching {
-                                val cm = context.getSystemService(Context.CLIPBOARD_SERVICE)
-                                    as? ClipboardManager
-                                cm?.setPrimaryClip(
-                                    ClipData.newPlainText("adb", FreeformCompat.ADB_GRANT_COMMAND)
-                                )
-                            }
-                            copied = true
-                        },
-                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
-                    ) { Text(if (copied) "已复制" else "复制") }
+                    FreeformCompat.diagnosticLines(context).forEach {
+                        Text(it, fontSize = 11.sp, lineHeight = 16.sp, fontFamily = FontFamily.Monospace)
+                    }
                 }
-                Text("② 无电脑：系统设置 → 开发者选项 → 打开「启用自由窗口」后回到桌面重试（部分系统名为「自由形式窗口」）。")
-                Text("③ Root 设备：AnWind 已在后台自动尝试开启，重新打开 AnWind 后生效。")
+
                 Text(
                     "本次运行内不再询问，直接全屏启动",
                     fontSize = 12.sp,

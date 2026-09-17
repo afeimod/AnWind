@@ -170,8 +170,8 @@ android {
         //（能力检测/ADB/Root 自动开启/决策弹窗），见 AndroidApps.kt 与
         // DesktopEnvironment.kt 的 v2.23.2 注释
         targetSdk = 28
-        versionCode = 49
-        versionName = "2.23.2"
+        versionCode = 50
+        versionName = "2.23.3"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {

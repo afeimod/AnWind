@@ -116,11 +116,11 @@ class AnWindApp : Application() {
                 .ensureRescueLibs(this@AnWindApp)
         }
 
-        // v2.23.2 自由窗口能力预热：后台检测设备是否支持 freeform；
+        // v2.23.2/2.23.3 自由窗口能力预热：后台检测设备是否支持 freeform；
         // 已授予 WRITE_SECURE_SETTINGS（ADB/Shizuku）或 Root 的设备会自动
-        // 写开全局开关，使"从桌面启动手机应用 → 以窗口形式运行"开箱即用。
-        // 不可用则留待首次启动手机应用时弹窗引导（见 FreeformCompat /
-        // DesktopEnvironment 的 FreeformDecisionDialog）。
+        // 写开全局开关。注意：AOSP 里该开关仅在系统启动时读取一次，写入后
+        // 需重启手机才真正生效——生效状态由 FreeformCompat 的写入时间跟踪
+        // 与 AndroidApps 的启动后验证负责，不可用时弹窗引导（见 DesktopEnvironment）。
         applicationScope.launch(Dispatchers.IO) {
             com.anwind.core.desktop.FreeformCompat.warmup(this@AnWindApp)
         }
