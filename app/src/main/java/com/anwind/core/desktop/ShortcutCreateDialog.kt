@@ -6,6 +6,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -15,8 +17,10 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Popup
@@ -26,15 +30,19 @@ import com.anwind.core.theme.LocalWinTheme
 import com.anwind.core.window.AppRegistry
 import com.anwind.data.model.DesktopItemType
 import com.anwind.data.model.Shortcut
-import com.anwind.data.model.AppInfo
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /**
  * 快捷方式创建对话框。
  *
- * 支持 3 种类型：
+ * 支持 4 种类型：
  * 1. URL 快捷方式 - 直接输入网址
  * 2. 本地文件快捷方式 - 通过 SAF 选择 .html 文件
  * 3. 应用快捷方式 - 从内置应用列表选择
+ * 4. v2.23.1 手机应用快捷方式 - 从设备安装的安卓应用列表选择，
+ *    target 编码 `pkg/activity`，启动时走 [AndroidApps.launchByComponent]
+ *    强制 freeform 桌面窗口路径。
  *
  * 用户可自定义名称和图标 emoji。
  */
@@ -44,6 +52,7 @@ fun ShortcutCreateDialog(
     onCreate: (Shortcut) -> Unit
 ) {
     val theme = LocalWinTheme.current
+    val context = LocalContext.current
     var selectedType by remember { mutableStateOf(DesktopItemType.SHORTCUT_URL) }
     var label by remember { mutableStateOf("") }
     var target by remember { mutableStateOf("") }
@@ -56,6 +65,13 @@ fun ShortcutCreateDialog(
         if (uri != null) {
             target = uri.toString()
             if (label.isBlank()) label = "本地HTML"
+        }
+    }
+
+    // v2.23.1：手机应用列表（IO 线程异步加载）
+    val androidApps by produceState<List<AndroidApps.AppInfo>?>(initialValue = null) {
+        value = withContext(Dispatchers.IO) {
+            runCatching { AndroidApps.load(context) }.getOrNull() ?: emptyList()
         }
     }
 
@@ -97,6 +113,11 @@ fun ShortcutCreateDialog(
                         selectedType = DesktopItemType.SHORTCUT_APP
                         iconEmoji = "📱"
                     }
+                    // v2.23.1：手机应用快捷方式
+                    TypeChip("手机应用", selectedType == DesktopItemType.SHORTCUT_ANDROID_APP) {
+                        selectedType = DesktopItemType.SHORTCUT_ANDROID_APP
+                        iconEmoji = "📲"
+                    }
                 }
 
                 Spacer(Modifier.height(16.dp))
@@ -118,6 +139,7 @@ fun ShortcutCreateDialog(
                         DesktopItemType.SHORTCUT_URL -> "网址 URL"
                         DesktopItemType.SHORTCUT_FILE -> "本地 HTML 文件"
                         DesktopItemType.SHORTCUT_APP -> "选择应用"
+                        DesktopItemType.SHORTCUT_ANDROID_APP -> "选择手机应用"
                         else -> "目标"
                     },
                     color = if (theme.isDark) Color.White else Color.Black,
@@ -150,7 +172,7 @@ fun ShortcutCreateDialog(
                         }
                     }
                     DesktopItemType.SHORTCUT_APP -> {
-                        // 应用选择列表
+                        // 内置应用选择列表
                         val apps = remember { AppRegistry.all() }
                         val scrollState = androidx.compose.foundation.rememberScrollState()
                         Column(
@@ -184,6 +206,86 @@ fun ShortcutCreateDialog(
                             }
                         }
                     }
+                    DesktopItemType.SHORTCUT_ANDROID_APP -> {
+                        // v2.23.1：手机应用选择列表
+                        when {
+                            androidApps == null -> Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .fillMaxWidth(),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                CircularProgressIndicator(
+                                    color = theme.accentColor,
+                                    strokeWidth = 2.dp,
+                                    modifier = Modifier.size(22.dp)
+                                )
+                            }
+                            androidApps!!.isEmpty() -> Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .fillMaxWidth(),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    "未读取到手机应用",
+                                    color = (if (theme.isDark) Color.White else Color.Black).copy(alpha = 0.5f),
+                                    fontSize = 12.sp
+                                )
+                            }
+                            else -> {
+                                val list = androidApps!!
+                                LazyColumn(
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    items(list, key = { "${it.pkg}/${it.activity}" }) { info ->
+                                        val selected = target == AndroidApps.toShortcutTarget(info)
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .clickable {
+                                                    target = AndroidApps.toShortcutTarget(info)
+                                                    if (label.isBlank()) label = info.label
+                                                }
+                                                .background(
+                                                    if (selected) theme.accentColor.copy(alpha = 0.15f)
+                                                    else Color.Transparent
+                                                )
+                                                .padding(horizontal = 8.dp, vertical = 6.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            AndroidAppIcon(
+                                                packageName = info.pkg,
+                                                icon = info.icon,
+                                                size = 28.dp
+                                            )
+                                            Spacer(Modifier.width(10.dp))
+                                            Column(modifier = Modifier.weight(1f)) {
+                                                Text(
+                                                    text = info.label,
+                                                    color = if (theme.isDark) Color.White else Color.Black,
+                                                    fontSize = 12.sp,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                                Text(
+                                                    text = info.pkg,
+                                                    color = (if (theme.isDark) Color.White else Color.Black)
+                                                        .copy(alpha = 0.45f),
+                                                    fontSize = 10.sp,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                            }
+                                            if (selected) {
+                                                Text("✓", color = theme.accentColor)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                     else -> {}
                 }
 
@@ -193,7 +295,7 @@ fun ShortcutCreateDialog(
                 Text("图标", color = if (theme.isDark) Color.White else Color.Black, fontSize = 12.sp)
                 Spacer(Modifier.height(4.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    listOf("🔗", "📄", "📱", "🌐", "🎮", "📁", "🎵", "📷").forEach { emoji ->
+                    listOf("🔗", "📄", "📱", "📲", "🌐", "🎮", "📁", "🎵", "📷").forEach { emoji ->
                         Box(
                             modifier = Modifier
                                 .size(36.dp)

@@ -112,6 +112,8 @@ fun DesktopIconGrid(
                     1 -> DesktopItemType.SHORTCUT_URL
                     2 -> DesktopItemType.SHORTCUT_FILE
                     3 -> DesktopItemType.SHORTCUT_APP
+                    // v2.23.1：手机应用桌面快捷方式 → 强制 freeform 窗口启动
+                    4 -> DesktopItemType.SHORTCUT_ANDROID_APP
                     else -> DesktopItemType.SHORTCUT_URL
                 },
                 target = entity.target,
@@ -190,6 +192,11 @@ fun DesktopIconGrid(
 
 /**
  * 启动一个桌面项（图标双击 / 右键菜单"打开"共用同一入口，保证行为一致）。
+ *
+ * v2.23.1：新增 [DesktopItemType.SHORTCUT_ANDROID_APP] 分支 ——
+ * target 编码 `pkg/activity`，调用 [AndroidApps.launchByComponent]
+ * 走强制 freeform 窗口化路径（Intent NEW_DOCUMENT + 反射
+ * setLaunchWindowingMode + 启动后 setTaskWindowingMode 兜底强制）。
  */
 fun launchDesktopItem(item: DesktopItem, wm: WindowManager) {
     when (item.type) {
@@ -228,6 +235,12 @@ fun launchDesktopItem(item: DesktopItem, wm: WindowManager) {
                     initialHeight = a.defaultHeight.value.toInt()
                 )
             }
+        }
+        DesktopItemType.SHORTCUT_ANDROID_APP -> {
+            // v2.23.1：手机应用桌面快捷方式 → 强制 freeform 窗口启动
+            val ctx = runCatching { com.anwind.AnWindApp.get() }.getOrNull() ?: return
+            val (pkg, activity) = AndroidApps.parseShortcutTarget(item.target) ?: return
+            AndroidApps.launchByComponent(ctx, pkg, activity)
         }
     }
 }
