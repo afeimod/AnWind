@@ -2,8 +2,10 @@ package com.anwind.core.desktop
 
 import android.app.Activity
 import android.app.ActivityOptions
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ActivityInfo
 import android.content.pm.ApplicationInfo
 import android.content.pm.ResolveInfo
 import android.graphics.Bitmap
@@ -14,6 +16,7 @@ import android.os.Build
 import android.os.Bundle
 import android.util.Log
 import android.view.View
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -74,6 +77,20 @@ import com.anwind.core.theme.LocalWinTheme
  * - **级联错位**：连续打开的窗口按 Windows 经典阶梯摆放；
  * - 桌面层每次重组把最新任务栏高度发布到 [updateTaskbarReserve]
  *   （DesktopEnvironment 的 SideEffect），未发布时按 56dp 保守估计。
+ *
+ * v2.23.6：**“仍是手机小窗”根因修复 —— 方向感知窗口 + force_resizable**：
+ * 用户实测窗口化已生效但窗口是手机比例小窗。AOSP 实锤：手机应用多声明
+ * resizeableActivity=false/固定方向，系统未开 force_resizable_activities
+ * 时会将其信箱化成手机比例小窗（见 [FreeformCompat] 类注释）。本版：
+ * - [freeformOptions] 按目标应用锁定的方向给出**同比例的桌面大窗口**：
+ *   竖屏应用 → 高 82% 工作区、宽 9:16 的"高窗口"（桌面尺寸却匹配应用
+ *   自身布局，即使未开 force_resizable 也不会被信箱化成小窗）；
+ *   横屏应用 → 宽 82% 屏宽、高 9:16 的"宽窗口"；未指定 → 82%×72%；
+ * - [fallBackToHints] 新增 [FreeformCompat.REASON_PHONE_SHAPED] 分流：
+ *   自由窗口可用但 force_resizable=0 时一次性引导开启（开启+重启后
+ *   应用填满桌面大窗口）；
+ * - Root 设备启动后比对 dumpsys 真实边界，被 ROM 压小的窗口用
+ *   am stack resize 强制拉回桌面边界（[enforceDesktopBoundsViaRoot]）。
  */
 object AndroidApps {
 
@@ -103,6 +120,17 @@ object AndroidApps {
      * 摆放），第 5 个窗口后从头计数，避免无限漂移出屏。
      */
     private val cascade = AtomicInteger(0)
+
+    /**
+     * v2.23.6：最近一次经 [freeformOptions] 请求的桌面窗口边界。
+     * Root 设备启动后用它与 dumpsys 读到的真实边界比对，若 ROM 把窗口
+     * 压成手机尺寸小窗，则用 am stack resize 强制拉回。
+     */
+    @Volatile
+    private var lastRequestedBounds: Rect? = null
+
+    /** v2.23.6：目标应用方向查询缓存（pkg/activity → 1=竖屏 2=横屏 0=未指定/未知） */
+    private val orientationCache = ConcurrentHashMap<String, Int>()
 
     /** 单个安卓应用条目 */
     data class AppInfo(
@@ -262,7 +290,7 @@ object AndroidApps {
         // ② 窗口化启动（v2.23.4：无论开关是刚写入还是历史开启，都先尝试 ——
         //    个别 ROM 热加载开关，且尝试本身零成本）
         val ok = runCatching {
-            context.startActivity(intent, freeformOptions(context))
+            context.startActivity(intent, freeformOptions(context, pkg, activity))
             true
         }.getOrElse { false }
         if (!ok) return false
@@ -299,7 +327,12 @@ object AndroidApps {
                 // Root：dumpsys 真实验证
                 if (FreeformCompat.suAvailable()) {
                     when (FreeformCompat.verifyFreeformViaRoot(pkg)) {
-                        true -> FreeformCompat.noteVerified(ctx, true)
+                        true -> {
+                            FreeformCompat.noteVerified(ctx, true)
+                            // v2.23.6：ROM 把 freeform 窗口压成手机小窗时
+                            //（dumpsys 真实边界 < 请求的 80%），强制拉回桌面边界
+                            enforceDesktopBoundsViaRoot(pkg)
+                        }
                         false -> {
                             FreeformCompat.noteVerified(ctx, false)
                             if (FreeformCompat.pendingLaunch.value == null) {
@@ -330,6 +363,16 @@ object AndroidApps {
             FreeformCompat.pendingRebootSinceOurWrite(context) ->
                 FreeformCompat.maybeShowRebootAdvice(context, pkg, activity, label)
 
+            // v2.23.6：窗口化已生效但「强制应用可调整大小」未开 ——
+            // 手机应用会被信箱化成手机比例小窗（用户实测现象），
+            // 一次性引导开启（开启 + 重启后应用填满桌面大窗口）
+            !FreeformCompat.isForceResizableOn(context) &&
+                !FreeformCompat.everVerifiedWorking(context) &&
+                !FreeformCompat.userConfirmAlreadyAsked(context) -> {
+                FreeformCompat.markUserConfirmAsked(context)
+                FreeformCompat.requestDecision(pkg, activity, label, FreeformCompat.REASON_PHONE_SHAPED)
+            }
+
             // 本安装从未确认过效果：一次性用户确认（回答后不再问）
             !FreeformCompat.everVerifiedWorking(context) &&
                 !FreeformCompat.userConfirmAlreadyAsked(context) -> {
@@ -338,6 +381,62 @@ object AndroidApps {
             }
 
             // 其余（已确认过 / 已标记 ROM 忽略开关）：静默，不再打扰
+        }
+    }
+
+    /**
+     * v2.23.6：目标应用是否锁定了竖屏/横屏（公开字段
+     * ActivityInfo.screenOrientation，查询无需权限）。绝大多数手机应用锁竖屏 ——
+     * 给这些应用开**同比例的桌面大窗口**（高窗口），既匹配应用自身布局，
+     * 又不会被系统信箱化成手机小窗 —— 即使 force_resizable_activities
+     * 未开，也能获得最佳桌面窗口观感。
+     *
+     * @return true=锁竖屏；false=锁横屏；null=未指定/查询失败
+     */
+    private fun lockedOrientation(context: Context, pkg: String, activity: String): Boolean? {
+        if (activity.isBlank()) return null
+        val key = "$pkg/$activity"
+        orientationCache[key]?.let { return it == 1 }
+        val result = runCatching {
+            when (context.packageManager
+                .getActivityInfo(ComponentName(pkg, activity), 0).screenOrientation) {
+                ActivityInfo.SCREEN_ORIENTATION_PORTRAIT,
+                ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT,
+                ActivityInfo.SCREEN_ORIENTATION_REVERSE_PORTRAIT,
+                ActivityInfo.SCREEN_ORIENTATION_USER_PORTRAIT -> true
+
+                ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE,
+                ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE,
+                ActivityInfo.SCREEN_ORIENTATION_REVERSE_LANDSCAPE,
+                ActivityInfo.SCREEN_ORIENTATION_USER_LANDSCAPE -> false
+
+                else -> null
+            }
+        }.getOrNull()
+        orientationCache[key] = when (result) { true -> 1; false -> 2; null -> 0 }
+        return result
+    }
+
+    /**
+     * v2.23.6，Root 专属兑底：比对任务真实边界（dumpsys）与请求的桌面窗口边界，
+     * 若 ROM 把 freeform 窗口压成手机比例小窗（小于请求的 80%），用
+     * am stack resize 强制拉回。后台线程调用，全失败路径静默（best effort）。
+     */
+    private fun enforceDesktopBoundsViaRoot(pkg: String) {
+        runCatching {
+            val requested = lastRequestedBounds ?: return
+            val task = FreeformCompat.findRootTaskInfo(pkg) ?: return
+            if (!task.freeform) return
+            val tb = task.bounds ?: return
+            val shrunk = tb.width() < requested.width() * 0.8f ||
+                tb.height() < requested.height() * 0.8f
+            if (!shrunk) return
+            val adjusted = FreeformCompat.resizeRootTask(task.id, requested)
+            Log.i(
+                TAG,
+                "Root 桌面边界校正（$pkg）：请求=${requested.toShortString()} " +
+                    "实际=${tb.toShortString()} ${if (adjusted) "已调整" else "失败（任务不可调/ROM 拒绝）"}"
+            )
         }
     }
 
@@ -369,8 +468,14 @@ object AndroidApps {
      *    内部写的就是同一个键，反射被屏蔽时这里是等效主通道。
      *
      * 返回 null 表示构建失败（极少见），调用方回退普通启动。
+     *
+     * v2.23.6：**方向感知尺寸** —— 按目标应用锁定的方向给同比例桌面大窗口
+     * （竖屏应用 → 高窗口：高 82% 工作区、宽 9:16；横屏应用 → 宽窗口：
+     * 宽 82% 屏宽、高 9:16；未指定 → 82% 宽 × 72% 高）。竖屏高窗口既匹配
+     * 手机应用自身布局，又不会被系统信箱化成手机小窗；
+     * force_resizable_activities 开启后应用直接填满这些窗口。
      */
-    private fun freeformOptions(context: Context): Bundle? = runCatching {
+    private fun freeformOptions(context: Context, pkg: String, activity: String): Bundle? = runCatching {
         // 1) 解除隐藏 API 限制（Android 9+；失败无碍，Bundle 键通道不依赖反射）
         FreeformCompat.exemptHiddenApis()
 
@@ -389,8 +494,8 @@ object AndroidApps {
             .firstOrNull()
             ?.invoke(options, mode)
 
-        // 3) 桌面窗口边界（v2.23.5）：屏幕可见区域去掉底部任务栏 = 桌面工作区，
-        //    窗口取工作区的 82% 宽 × 72% 高，居中摆放 + 级联错位。
+        // 3) 桌面窗口边界（v2.23.5 起）：屏幕可见区域去掉底部任务栏 = 桌面工作区，
+        //    尺寸按目标应用方向给出同比例桌面大窗口（见 3.3，v2.23.6）。
         val dm = context.resources.displayMetrics
         val density = dm.density.coerceAtLeast(1f)
 
@@ -421,13 +526,41 @@ object AndroidApps {
         val workBottom = (screenBottom - taskbarPx).coerceAtLeast(screenTop + screenH / 2)
         val workH = (workBottom - workTop).coerceAtLeast(1)
 
-        // 3.3) 桌面窗口尺寸：82% 宽 × 72% 高（工作区），小屏保底 420×560
-        val w = (screenW * 0.82f).toInt()
-            .coerceAtLeast(minOf(420, screenW))
-            .coerceAtMost(screenW)
-        val h = (workH * 0.72f).toInt()
-            .coerceAtLeast(minOf(560, workH))
-            .coerceAtMost(workH)
+        // 3.3) v2.23.6 桌面窗口尺寸（方向感知）：
+        //      - 竖屏锁定应用（绝大多数手机应用）→ 高窗口：高 82% 工作区，
+        //        宽 = 高 × 9/16 —— 桌面尺寸且匹配应用布局，不会被信箱化成
+        //        手机小窗（就像在电脑上开一个竖版应用窗口）；
+        //      - 横屏锁定应用（游戏等）→ 宽窗口：宽 82% 屏宽，高 = 宽 × 9/16；
+        //      - 未指定方向 → 通用桌面窗口（82% 宽 × 72% 高，同 v2.23.5）。
+        //        force_resizable_activities 开启后应用直接填满这些窗口。
+        val w: Int
+        val h: Int
+        when (lockedOrientation(context, pkg, activity)) {
+            true -> {
+                h = (workH * 0.82f).toInt()
+                    .coerceAtLeast(minOf(560, workH))
+                    .coerceAtMost(workH)
+                w = (h * 9f / 16f).toInt()
+                    .coerceAtLeast(minOf(400, screenW))
+                    .coerceAtMost((screenW * 0.92f).toInt().coerceAtLeast(minOf(400, screenW)))
+            }
+            false -> {
+                w = (screenW * 0.82f).toInt()
+                    .coerceAtLeast(minOf(420, screenW))
+                    .coerceAtMost(screenW)
+                h = (w * 9f / 16f).toInt()
+                    .coerceAtLeast(minOf(320, workH))
+                    .coerceAtMost((workH * 0.80f).toInt().coerceAtLeast(minOf(320, workH)))
+            }
+            null -> {
+                w = (screenW * 0.82f).toInt()
+                    .coerceAtLeast(minOf(420, screenW))
+                    .coerceAtMost(screenW)
+                h = (workH * 0.72f).toInt()
+                    .coerceAtLeast(minOf(560, workH))
+                    .coerceAtMost(workH)
+            }
+        }
 
         // 3.4) 居中 + 级联错位（每窗右下移 28dp，5 级循环），整体钳回工作区内
         val step = (28 * density).toInt()
@@ -436,6 +569,7 @@ object AndroidApps {
             .coerceIn(screenLeft, (screenLeft + screenW - w).coerceAtLeast(screenLeft))
         val top = (workTop + (workH - h) / 2 + n * step)
             .coerceIn(workTop, (workBottom - h).coerceAtLeast(workTop))
+        lastRequestedBounds = Rect(left, top, left + w, top + h)
         options.setLaunchBounds(Rect(left, top, left + w, top + h))
 
         val bundle = options.toBundle() ?: return@runCatching null

@@ -3,6 +3,7 @@ package com.anwind.core.desktop
 import android.content.Context
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
+import android.graphics.Rect
 import android.os.Build
 import android.os.SystemClock
 import android.provider.Settings
@@ -69,6 +70,21 @@ import java.util.concurrent.atomic.AtomicBoolean
  * 任务栏避让/级联摆放）由 [AndroidApps.freeformOptions] 负责；本类只负责
  * 能力链路（检测/写入/验证）。厂商"小窗"引导已按用户要求移除。
  *
+ * ## v2.23.6：“手机小窗”根因 —— force_resizable_activities
+ *
+ * 用户实测：窗口化已生效（应用确实以窗口打开），但窗口是**手机比例的小窗**
+ * 而非桌面大窗口。AOSP 实锤（ActivityRecord.canForceResizeNonResizable）：
+ * 绝大多数手机应用声明 resizeableActivity=false / 固定方向，在自由窗口中
+ * 若系统未开 force_resizable_activities，会被**信箱化（letterbox）成手机
+ * 比例小窗**而不是填满窗口边界；且该开关与 enable_freeform_support 一样
+ * **仅在开机时读取一次**（ATMS.retrieveSettings，SettingsObserver 不监听）。
+ * 因此“桌面大窗口”需要三个全局设置齐开：enable_freeform_support（能窗口化）
+ * + force_resizable_activities（不可调整应用填满窗口）+
+ * enable_non_resizable_multi_window（兑底放行）。本版：
+ * [ensureAvailable]/[warmup] 在任一键缺失时即写入；新增 [REASON_PHONE_SHAPED]
+ * 分流弹窗与 [manualAdbCommands] 手动路径；Root 新增 [findRootTaskInfo]/
+ * [resizeRootTask]（am stack resize 把被 ROM 压小的窗口拉回桌面边界）。
+ *
  * ## 线程模型
  *
  * - [ensureAvailable] / [exemptHiddenApis]：毫秒级，主线程可调；
@@ -129,6 +145,13 @@ object FreeformCompat {
 
     /** 一次性用户确认：应用是否真的以窗口形式打开了（无 Root 时唯一的"验证"手段） */
     const val REASON_USER_CONFIRM = 3
+
+    /**
+     * v2.23.6：窗口化已生效但 force_resizable_activities=0 ——
+     * 手机应用被系统信箱化成**手机比例小窗**，引导开启「强制应用可调整大小」
+     * （开启 + 重启后应用填满桌面大窗口）。
+     */
+    const val REASON_PHONE_SHAPED = 4
 
     /** 自由窗口不可用/未生效时的待决策启动请求（DesktopEnvironment 收集后弹窗） */
     data class PendingLaunch(
@@ -262,6 +285,14 @@ object FreeformCompat {
     fun adbGrantCommand(context: Context): String =
         "adb shell pm grant ${context.packageName} android.permission.WRITE_SECURE_SETTINGS"
 
+    /**
+     * v2.23.6：不想授权给 AnWind 的手动替代命令（电脑逐行执行，效果与授权后
+     * 自动写入相同，同样需重启一次生效）。不依赖 pm grant，卸载重装不丢。
+     */
+    fun manualAdbCommands(): String = ALL_SETTINGS.joinToString("\n") {
+        "adb shell settings put global $it 1"
+    }
+
     // ============================================================
     // 能力检测
     // ============================================================
@@ -275,6 +306,24 @@ object FreeformCompat {
     private fun isFreeformSettingOn(context: Context): Boolean = runCatching {
         Settings.Global.getInt(context.contentResolver, SETTING_ENABLE_FREEFORM, 0) != 0
     }.getOrDefault(false)
+
+    /** 读一个全局设置（读 Settings.Global 无需任何权限；失败当 0） */
+    private fun readGlobalInt(context: Context, key: String): Int = runCatching {
+        Settings.Global.getInt(context.contentResolver, key, 0)
+    }.getOrDefault(0)
+
+    /**
+     * v2.23.6：「强制应用可调整大小」是否已开启 —— **桌面大窗口的关键开关**。
+     * 未开启时，声明 resizeableActivity=false / 固定方向的手机应用在自由窗口
+     * 中会被系统信箱化成手机比例小窗（AOSP ActivityRecord.
+     * canForceResizeNonResizable）。读取无需权限。
+     */
+    fun isForceResizableOn(context: Context): Boolean =
+        readGlobalInt(context, SETTING_FORCE_RESIZABLE) != 0
+
+    /** 「允许不可调整应用进多窗口」是否已开启（兜底放行，读取无需权限） */
+    private fun isNonResizableMwOn(context: Context): Boolean =
+        readGlobalInt(context, SETTING_NON_RESIZABLE_MW) != 0
 
     /** 当前设备自由窗口能力探测（系统特性声明 / 全局开关任一成立即可用） */
     private fun probe(context: Context): Boolean =
@@ -296,6 +345,9 @@ object FreeformCompat {
      * - 命中缓存（30 秒内）直接返回；
      * - 未授予 WRITE_SECURE_SETTINGS 时只做检测；
      * - 已授予时同步写开三个全局设置（binder 调用，毫秒级）。
+     *   v2.23.6：三个设置**任一缺失**即补写（此前仅"自由窗口不可用"才写
+     *   —— 开关已开而 force_resizable_activities=0 的设备会永远停在手机
+     *   比例小窗）；
      *   ⚠ 写入成功 ≠ 立即生效 —— 系统只在**下次开机**时读取该开关（见类注释），
      *   生效状态由 [pendingRebootSinceOurWrite] 与启动后跟进流程单独跟踪。
      */
@@ -306,12 +358,14 @@ object FreeformCompat {
         }
         val ctx = context.applicationContext
         var available = probe(ctx)
-        if (!available && hasSecureSettings(ctx)) {
+        if (hasSecureSettings(ctx) &&
+            (!available || !isForceResizableOn(ctx) || !isNonResizableMwOn(ctx))
+        ) {
             writeFreeformSettings(ctx)
             available = probe(ctx)
             Log.i(
                 TAG,
-                "WRITE_SECURE_SETTINGS 已授予：自由窗口设置写入" +
+                "WRITE_SECURE_SETTINGS 已授予：桌面窗口设置写入" +
                     if (available) "成功（重启手机后系统才会读取生效）" else "失败（走弹窗引导）"
             )
         }
@@ -337,18 +391,21 @@ object FreeformCompat {
     }
 
     /**
-     * 进程启动时后台预热：检测能力；不可用且设备有 Root 时，
-     * 用 su 静默写开同样的全局设置（Magisk / 模拟器等一次放行即成功）。
+     * 进程启动时后台预热：检测能力；任一桌面窗口设置缺失且设备有 Root 时，
+     * 用 su 静默写开缺失的全局设置（Magisk / 模拟器等一次放行即成功）。
      * 必须在后台线程调用（su 子进程 + 看门狗）。
      */
     fun warmup(context: Context) {
         val ctx = context.applicationContext
         ensureAvailable(ctx)
-        if (cachedAvailable != false) return
+        // v2.23.6：自由窗口可用但 force_resizable 等未开时也要写
+        //（否则手机应用永远停在手机比例小窗）
+        val missing = ALL_SETTINGS.filter { readGlobalInt(ctx, it) == 0 }
+        if (missing.isEmpty()) return
         if (!suAvailable()) return
-        val cmd = ALL_SETTINGS.joinToString("; ") { "settings put global $it 1" }
+        val cmd = missing.joinToString("; ") { "settings put global $it 1" }
         if (runSu(cmd, 4000L)?.first == 0) {
-            Log.i(TAG, "Root：自由窗口设置已写入（重启手机后生效）")
+            Log.i(TAG, "Root：桌面窗口设置已写入（重启手机后生效）")
             recordWrite(ctx)
             cachedAvailable = null
             cachedAt = 0L
@@ -408,6 +465,8 @@ object FreeformCompat {
         lines += "设备：${Build.MANUFACTURER} ${Build.MODEL}（Android ${Build.VERSION.RELEASE}）"
         lines += "系统 Freeform 特性：${if (hasFreeformFeature(ctx)) "已声明" else "未声明"}"
         lines += "自由窗口开关：${if (isFreeformSettingOn(ctx)) "已开启 (=1)" else "未开启 (=0)"}"
+        lines += "强制应用可调整大小：${if (isForceResizableOn(ctx)) "已开启 (=1)" else "未开启 (=0)"}" +
+            " ← 桌面大窗口关键（未开则手机应用被压成手机比例小窗）"
         lines += "ADB 授权：${if (hasSecureSettings(ctx)) "已授予" else "未授予"}"
         lines += "Root：${if (rootChecked && rootOk) "可用" else "未知/不可用"}"
         if (pendingRebootSinceOurWrite(ctx)) {
@@ -521,6 +580,69 @@ object FreeformCompat {
             sawTarget -> false
             else -> null
         }
+    }
+
+    /** Root 任务快照（v2.23.6，dumpsys 解析结果） */
+    data class RootTaskInfo(
+        /** Task id（am stack resize 用） */
+        val id: Int,
+        /** 是否处于自由窗口模式 */
+        val freeform: Boolean,
+        /** 任务当前边界（屏幕坐标系） */
+        val bounds: Rect?
+    )
+
+    /**
+     * v2.23.6，Root 专属：查找目标包的任务及其真实边界（dumpsys 解析）。
+     *
+     * 任务头行（`* Task{... #46 ... mode=freeform ...}`）携带 id 与窗口模式，
+     * 其后的 `bounds=[l,t][r,b]` 行携带边界，ActivityRecord 行（
+     * `ActivityRecord{... pkg/.Act ...}`）用于关联目标包。优先返回
+     * freeform 任务；找不到返回 null。用于启动后比对：ROM 是否把窗口
+     * 压成了手机比例小窗。
+     */
+    fun findRootTaskInfo(pkg: String): RootTaskInfo? {
+        val out = runSu("dumpsys activity activities", 8000L)?.second ?: return null
+        var curId = -1
+        var curFreeform = false
+        var curBounds: Rect? = null
+        var fallback: RootTaskInfo? = null
+        out.lineSequence().forEach { raw ->
+            val t = raw.trim()
+            if (t.startsWith("* Task{") || t.startsWith("Task{")) {
+                curId = Regex("#(\\d+)").find(t)?.groupValues?.get(1)?.toIntOrNull() ?: -1
+                curFreeform = t.contains("mode=freeform") ||
+                    t.contains("windowingMode=freeform") ||
+                    t.contains("windowingMode=5")
+                curBounds = null
+            } else if (curId >= 0 && curBounds == null) {
+                val m = Regex("bounds=\\[(-?\\d+),(-?\\d+)\\]\\[(-?\\d+),(-?\\d+)\\]").find(t)
+                if (m != null) {
+                    val g = m.groupValues
+                    curBounds = Rect(g[1].toInt(), g[2].toInt(), g[3].toInt(), g[4].toInt())
+                }
+            }
+            if (curId >= 0 && t.contains("ActivityRecord{") && t.contains("$pkg/")) {
+                val info = RootTaskInfo(curId, curFreeform, curBounds)
+                if (curFreeform) return info
+                if (fallback == null) fallback = info
+            }
+        }
+        return fallback
+    }
+
+    /**
+     * v2.23.6，Root 专属：强制任务边界（`am stack resize`）。部分 ROM 会把
+     * freeform 窗口限制成厂商“小窗”尺寸（忽略我们传入的启动边界），启动后
+     * 用它把窗口拉回桌面窗口边界。返回是否成功（best effort，失败无副作用）。
+     */
+    fun resizeRootTask(taskId: Int, bounds: Rect): Boolean {
+        val cmd = "am stack resize $taskId " +
+            "${bounds.left},${bounds.top},${bounds.right},${bounds.bottom}"
+        val res = runSu(cmd, 6000L) ?: return false
+        return res.first == 0 &&
+            !res.second.contains("Exception", ignoreCase = true) &&
+            !res.second.contains("Error", ignoreCase = true)
     }
 
     /** Root 特性注入结果 */

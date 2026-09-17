@@ -565,12 +565,17 @@ private fun playStartupSound(context: Context, assetPath: String) {
  * 在任何设备上都恒为未声明，不可信。
  * v2.23.5：文案统一"桌面窗口"表述（像电脑程序窗口一样摆在桌面上，
  * 任务栏可见），移除厂商"小窗"引导（用户明确拒绝该方案）。
+ * v2.23.6：新增 [FreeformCompat.REASON_PHONE_SHAPED] 分流（窗口化已生效但
+ * force_resizable_activities=0 —— 手机应用被信箱化成手机比例小窗，引导
+ * 开启后填满桌面大窗口）；用户确认弹窗新增“手机小窗”第三选项直达该分流。
  */
 @Composable
 private fun FreeformDecisionDialog(pending: FreeformCompat.PendingLaunch) {
     val context = LocalContext.current
     val theme = LocalWinTheme.current
     var copied by remember { mutableStateOf(false) }
+    // v2.23.6：手动 settings 命令的复制状态
+    var copiedManual by remember { mutableStateOf(false) }
     // Root 特性注入：null=未开始，""=进行中，其他=结果文案
     var injectState by remember { mutableStateOf<String?>(null) }
 
@@ -585,6 +590,7 @@ private fun FreeformDecisionDialog(pending: FreeformCompat.PendingLaunch) {
         FreeformCompat.REASON_NEEDS_REBOOT -> "重启手机后生效"
         FreeformCompat.REASON_SOLUTIONS -> "让手机应用以桌面窗口运行的可行方案"
         FreeformCompat.REASON_USER_CONFIRM -> "桌面窗口生效了吗？"
+        FreeformCompat.REASON_PHONE_SHAPED -> "窗口是手机小窗？让它变成桌面大窗口"
         else -> "手机应用桌面窗口暂不可用"
     }
 
@@ -655,6 +661,87 @@ private fun FreeformDecisionDialog(pending: FreeformCompat.PendingLaunch) {
                         )
                     }
 
+                    FreeformCompat.REASON_PHONE_SHAPED -> {
+                        Text(
+                            "自由窗口已经生效（应用能以窗口打开），但大多数手机应用声明" +
+                                "「不可调整大小」—— 系统未开启「强制应用可调整大小」时，" +
+                                "会把它们压缩成手机比例的小窗。开启后（需重启手机一次），" +
+                                "应用将填满桌面大窗口，像电脑程序一样运行。"
+                        )
+                        Text("开启方式（任选其一，完成后重启手机一次）：", fontWeight = FontWeight.Bold)
+                        Text("① 推荐，电脑执行一次 ADB 授权（此后 AnWind 自动维持全部设置）：")
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(6.dp))
+                                .background(Color(0x14000000))
+                                .padding(horizontal = 10.dp, vertical = 2.dp)
+                        ) {
+                            Text(
+                                FreeformCompat.adbGrantCommand(context),
+                                fontSize = 11.sp,
+                                lineHeight = 16.sp,
+                                fontFamily = FontFamily.Monospace,
+                                modifier = Modifier.weight(1f)
+                            )
+                            TextButton(
+                                onClick = {
+                                    runCatching {
+                                        val cm = context.getSystemService(Context.CLIPBOARD_SERVICE)
+                                            as? ClipboardManager
+                                        cm?.setPrimaryClip(
+                                            ClipData.newPlainText("adb", FreeformCompat.adbGrantCommand(context))
+                                        )
+                                    }
+                                    copied = true
+                                },
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                            ) { Text(if (copied) "已复制" else "复制") }
+                        }
+                        Text("② 不授权，电脑手动执行以下三条（效果相同）：")
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(6.dp))
+                                .background(Color(0x14000000))
+                                .padding(horizontal = 10.dp, vertical = 2.dp)
+                        ) {
+                            Text(
+                                FreeformCompat.manualAdbCommands(),
+                                fontSize = 11.sp,
+                                lineHeight = 16.sp,
+                                fontFamily = FontFamily.Monospace,
+                                modifier = Modifier.weight(1f)
+                            )
+                            TextButton(
+                                onClick = {
+                                    runCatching {
+                                        val cm = context.getSystemService(Context.CLIPBOARD_SERVICE)
+                                            as? ClipboardManager
+                                        cm?.setPrimaryClip(
+                                            ClipData.newPlainText("settings", FreeformCompat.manualAdbCommands())
+                                        )
+                                    }
+                                    copiedManual = true
+                                },
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                            ) { Text(if (copiedManual) "已复制" else "复制") }
+                        }
+                        Text(
+                            "③ 无电脑：系统设置 → 开发者选项 → 打开「强制活动可调整大小」" +
+                                "（部分系统名为 Force activities to be resizable），" +
+                                "并确认「启用自由窗口」已打开，然后重启手机。"
+                        )
+                        Text(
+                            "本版已按应用锁定方向给出同比例的桌面大窗口（竖屏应用为大尺寸高窗口），" +
+                                "即使暂不开启上述设置，窗口也远大于系统小窗；开启后应用将完全填满窗口。",
+                            fontSize = 12.sp,
+                            color = Color(0x8A000000)
+                        )
+                    }
+
                     FreeformCompat.REASON_USER_CONFIRM -> {
                         Text(
                             "已尝试让「${pending.label}」以「桌面窗口」形式启动" +
@@ -668,6 +755,18 @@ private fun FreeformDecisionDialog(pending: FreeformCompat.PendingLaunch) {
                         Text(
                             "· 全屏：应用铺满整屏、盖住了桌面 ✗",
                             fontSize = 12.sp
+                        )
+                        Text(
+                            "· 手机比例小窗：是窗口但很小、像手机一样竖窄 —— 点击查看变大方法",
+                            fontSize = 12.sp,
+                            color = theme.accentColor,
+                            modifier = Modifier.clickable {
+                                close()
+                                FreeformCompat.requestDecision(
+                                    pending.pkg, pending.activity, pending.label,
+                                    FreeformCompat.REASON_PHONE_SHAPED
+                                )
+                            }
                         )
                     }
 
@@ -708,7 +807,7 @@ private fun FreeformDecisionDialog(pending: FreeformCompat.PendingLaunch) {
                                 contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
                             ) { Text(if (copied) "已复制" else "复制") }
                         }
-                        Text("② 无电脑：系统设置 → 开发者选项 → 打开「启用自由窗口」后重启手机（部分系统名为「自由形式窗口」）。")
+                        Text("② 无电脑：系统设置 → 开发者选项 → 打开「启用自由窗口」与「强制活动可调整大小」两个开关后重启手机（部分系统名为「自由形式窗口」/「强制活动可调整大小」）。")
                         Text("③ Root 设备：AnWind 已在后台自动尝试开启，重启手机后生效。")
                         Text(
                             "提示：卸载重装会使 ADB 授权失效，需重新执行一次命令。",
@@ -758,6 +857,8 @@ private fun FreeformDecisionDialog(pending: FreeformCompat.PendingLaunch) {
                     close()
                 }) { Text("仍以全屏使用") }
 
+                FreeformCompat.REASON_PHONE_SHAPED -> TextButton(onClick = { close() }) { Text("知道了") }
+
                 FreeformCompat.REASON_NEEDS_REBOOT -> TextButton(onClick = { close() }) { Text("知道了") }
 
                 else -> TextButton(onClick = {
@@ -779,6 +880,7 @@ private fun FreeformDecisionDialog(pending: FreeformCompat.PendingLaunch) {
                 }) { Text("否，仍全屏") }
 
                 FreeformCompat.REASON_NEEDS_REBOOT -> null
+                FreeformCompat.REASON_PHONE_SHAPED -> null
                 FreeformCompat.REASON_SOLUTIONS -> TextButton(onClick = { close() }) { Text("关闭") }
 
                 else -> TextButton(onClick = { close() }) { Text("取消") }
