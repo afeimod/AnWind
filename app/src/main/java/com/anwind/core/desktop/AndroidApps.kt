@@ -1,5 +1,6 @@
 package com.anwind.core.desktop
 
+import android.app.Activity
 import android.app.ActivityOptions
 import android.content.Context
 import android.content.Intent
@@ -12,6 +13,8 @@ import android.graphics.drawable.Drawable
 import android.os.Build
 import android.os.Bundle
 import android.util.Log
+import android.view.View
+import java.util.concurrent.atomic.AtomicInteger
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
@@ -62,10 +65,44 @@ import com.anwind.core.theme.LocalWinTheme
  * 3. 删除 v2.23.3 的任务回读验证（getRunningTasks/getRecentTasks 对三方
  *    应用只返回自己的任务，永远读不到目标应用 —— AOSP isGetTasksAllowed
  *    只放行系统 Recents 与 REAL_GET_TASKS 签名权限持有者）。
+ *
+ * v2.23.5：**“桌面窗口”形态定稿**（用户明确要求：要的是像电脑程序窗口
+ * 一样摆在桌面上的“桌面窗口”，不是手机系统那种小尺寸“小窗”）：
+ * - [freeformOptions] 的初始边界改为**桌面工作区计算**：屏幕可见区域
+ *   去掉底部任务栏，窗口取工作区 82% 宽 × 72% 高，水平居中、纵向居中
+ *   略偏上，四周留出可见的桌面边距，任务栏永不被窗口盖住；
+ * - **级联错位**：连续打开的窗口按 Windows 经典阶梯摆放；
+ * - 桌面层每次重组把最新任务栏高度发布到 [updateTaskbarReserve]
+ *   （DesktopEnvironment 的 SideEffect），未发布时按 56dp 保守估计。
  */
 object AndroidApps {
 
     private const val TAG = "AnWind.AndroidApps"
+
+    // ============================================================
+    // v2.23.5：桌面窗口几何（任务栏避让 + 级联摆放）
+    // ============================================================
+
+    /**
+     * 桌面任务栏高度（px），由桌面层每次重组经 [updateTaskbarReserve] 发布。
+     *
+     * freeform 窗口是**系统级窗口**，会浮在包括 AnWind 在内的一切应用之上
+     * —— 想让任务栏始终可见（“桌面窗口”的核心观感），窗口边界必须主动
+     * 避开任务栏区域。桌面层未发布前（或发布失效）按 56dp 保守估计。
+     */
+    @Volatile
+    private var taskbarReservePx: Int = -1
+
+    /** 桌面层发布最新任务栏高度（px）；<=0 视为“恢复默认估计” */
+    fun updateTaskbarReserve(px: Int) {
+        taskbarReservePx = px
+    }
+
+    /**
+     * 级联计数器：连续打开的窗口按 28dp 阶梯右下错位（Windows 经典多窗口
+     * 摆放），第 5 个窗口后从头计数，避免无限漂移出屏。
+     */
+    private val cascade = AtomicInteger(0)
 
     /** 单个安卓应用条目 */
     data class AppInfo(
@@ -307,20 +344,29 @@ object AndroidApps {
     /**
      * v2.23.0：构建"桌面窗口"启动参数（ActivityOptions）。
      *
-     * v2.23.4 强化（全部键名/方法名均已对 AOSP 源码逐行核对）：
+     * v2.23.5：**桌面窗口形态定稿** —— 用户要的是"像电脑程序窗口一样摆在
+     * 桌面上"，而不是手机 ROM 那种小尺寸居中的"小窗"：
+     * - 初始边界基于**桌面工作区**（屏幕可见区域去掉底部任务栏）计算：
+     *   宽 82% 屏宽、高 72% 工作区高，水平居中、纵向居中；四周留出
+     *   可见的桌面边距，任务栏永不被盖住 —— 一眼可辨"这是桌面上的
+     *   程序窗口"，与系统小窗（小尺寸、贴顶悬浮）明显区分；
+     * - 连续打开的窗口按 28dp 级联右下错位（Windows 经典多窗口摆放），
+     *   第 5 个窗口后从头计数；
+     * - 坐标系：优先用 Activity 内容视图的**可见 frame**（屏幕坐标系，
+     *   天然对齐状态栏/导航条的实际占位，无论是否边到边都准确），
+     *   拿不到时回退真实显示尺寸。
+     *
+     * v2.23.4 的送达链路保持不变（已对 AOSP 逐行核对）：
      * 1. **隐藏 API 豁免**：先调 [FreeformCompat.exemptHiddenApis]
      *    （VMRuntime.setHiddenApiExemptions，同 farmerbb/Taskbar 的做法），
      *    解除 Android 9+ 对三方应用的反射限制；
      * 2. **窗口模式反射三连**：setLaunchWindowingMode（API 28+）→
      *    setLaunchStackId（API 24~27）→ setLaunchStack（极旧 ROM 兜底），
      *    命中任意一个即可，值均为 5（FREEFORM）；
-     * 3. **初始窗口边界**：setLaunchBounds（公开 API），居中 72%×76%，
-     *    小屏不低于 420×560；
-     * 4. **双 Bundle 隐藏键兜底**：toBundle() 后直接 putInt 两个真实键
+     * 3. **双 Bundle 隐藏键兜底**：toBundle() 后直接 putInt 两个真实键
      *    （"android.activity.windowingMode" API 28+ /
      *    "android.activity.launchStackId" API 24~27）—— setLaunchWindowingMode
-     *    内部写的就是同一个键，反射被屏蔽时这里是等效主通道（v2.23.3 的
-     *    键名是错的，冒号应为点号，本版修正）。
+     *    内部写的就是同一个键，反射被屏蔽时这里是等效主通道。
      *
      * 返回 null 表示构建失败（极少见），调用方回退普通启动。
      */
@@ -343,16 +389,53 @@ object AndroidApps {
             .firstOrNull()
             ?.invoke(options, mode)
 
-        // 3) 初始窗口边界
+        // 3) 桌面窗口边界（v2.23.5）：屏幕可见区域去掉底部任务栏 = 桌面工作区，
+        //    窗口取工作区的 82% 宽 × 72% 高，居中摆放 + 级联错位。
         val dm = context.resources.displayMetrics
-        val w = (dm.widthPixels * 0.72f).toInt()
-            .coerceAtLeast(minOf(420, dm.widthPixels))
-            .coerceAtMost(dm.widthPixels)
-        val h = (dm.heightPixels * 0.76f).toInt()
-            .coerceAtLeast(minOf(560, dm.heightPixels))
-            .coerceAtMost(dm.heightPixels)
-        val left = (dm.widthPixels - w) / 2
-        val top = (dm.heightPixels - h) / 2
+        val density = dm.density.coerceAtLeast(1f)
+
+        // 3.1) 屏幕坐标系里的桌面可用区域：优先 Activity 内容视图的可见
+        //      frame（已扣除状态栏/导航条的真实占位），失败回退显示尺寸。
+        val frame = Rect()
+        (context as? Activity)?.window
+            ?.findViewById<View>(android.R.id.content)
+            ?.getWindowVisibleDisplayFrame(frame)
+        val screenLeft: Int
+        val screenTop: Int
+        val screenRight: Int
+        val screenBottom: Int
+        if (!frame.isEmpty()) {
+            screenLeft = frame.left; screenTop = frame.top
+            screenRight = frame.right; screenBottom = frame.bottom
+        } else {
+            screenLeft = 0; screenTop = 0
+            screenRight = dm.widthPixels; screenBottom = dm.heightPixels
+        }
+        val screenW = (screenRight - screenLeft).coerceAtLeast(1)
+        val screenH = (screenBottom - screenTop).coerceAtLeast(1)
+
+        // 3.2) 任务栏避让：桌面层发布的实时高度（未发布时 56dp 估计）+ 8dp 间隙
+        val taskbarPx = (if (taskbarReservePx > 0) taskbarReservePx
+            else (56 * density).toInt()) + (8 * density).toInt()
+        val workTop = screenTop
+        val workBottom = (screenBottom - taskbarPx).coerceAtLeast(screenTop + screenH / 2)
+        val workH = (workBottom - workTop).coerceAtLeast(1)
+
+        // 3.3) 桌面窗口尺寸：82% 宽 × 72% 高（工作区），小屏保底 420×560
+        val w = (screenW * 0.82f).toInt()
+            .coerceAtLeast(minOf(420, screenW))
+            .coerceAtMost(screenW)
+        val h = (workH * 0.72f).toInt()
+            .coerceAtLeast(minOf(560, workH))
+            .coerceAtMost(workH)
+
+        // 3.4) 居中 + 级联错位（每窗右下移 28dp，5 级循环），整体钳回工作区内
+        val step = (28 * density).toInt()
+        val n = ((cascade.getAndIncrement() % 5) + 5) % 5
+        val left = (screenLeft + (screenW - w) / 2 + n * step)
+            .coerceIn(screenLeft, (screenLeft + screenW - w).coerceAtLeast(screenLeft))
+        val top = (workTop + (workH - h) / 2 + n * step)
+            .coerceIn(workTop, (workBottom - h).coerceAtLeast(workTop))
         options.setLaunchBounds(Rect(left, top, left + w, top + h))
 
         val bundle = options.toBundle() ?: return@runCatching null

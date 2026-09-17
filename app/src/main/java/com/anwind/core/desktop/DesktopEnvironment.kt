@@ -244,6 +244,16 @@ fun DesktopEnvironment(
                     with(density) { fullHeight.toPx() } * 0.32f
                 )
             }
+            // v2.23.5：把最新任务栏高度发布给 AndroidApps —— 手机应用以桌面
+            // 窗口（freeform）启动时，窗口边界据此避开任务栏，保证“窗口摆在
+            // 桌面上、任务栏始终可见”的桌面形态。真全屏（F11）时无任务栏，
+            // 发布 0（窗口可用整屏）。
+            val tbReserve = when {
+                anyTrueFullscreen -> 0.dp
+                taskbarFloating -> taskbarHeight + 8.dp
+                else -> taskbarHeight
+            }
+            AndroidApps.updateTaskbarReserve(with(density) { tbReserve.toPx() }.toInt())
         }
 
         // 任务栏可见性：真全屏时彻底隐藏；否则按自动隐藏策略
@@ -473,11 +483,13 @@ fun DesktopEnvironment(
         // ===== 8. 虚拟鼠标指针层（v2.13：Windows 风格指针 + 点击涟漪，最顶层） =====
         MouseCursorOverlay()
 
-        // ===== 8.5 自由窗口决策弹窗（v2.23.2 / v2.23.3 / v2.23.4） =====
-        // 从桌面/开始菜单启动手机应用后的跟进弹窗（v2.23.4：启动永不校弹窗阻断，
+        // ===== 8.5 桌面窗口决策弹窗（v2.23.2 / v2.23.3 / v2.23.4 / v2.23.5） =====
+        // 从桌面/开始菜单启动手机应用后的跟进弹窗（v2.23.4：启动永不被弹窗阻断，
         // 弹窗只在启动后按状态触发）：无自动开启手段 → ADB 授权引导；开关本次
         // 开机内写入 → 重启提示；无 Root 且未确认过效果 → 一次性用户确认；
-        // 确认/验证仍全屏 → 解决方案（Root 特性注入 / 系统小窗）。
+        // 确认/验证仍全屏 → 解决方案（Root 特性注入 / 排查指引）。
+        // v2.23.5：文案全面改为“桌面窗口”表述（用户明确要求：像电脑程序窗口
+        // 一样摆在桌面上，不是手机系统“小窗”），移除厂商小窗引导。
         // 能力检测/写入跟踪/Root 注入/验证见 FreeformCompat 与 AndroidApps。
         val pendingAndroidLaunch by FreeformCompat.pendingLaunch.collectAsState()
         pendingAndroidLaunch?.let { pending ->
@@ -542,15 +554,17 @@ private fun playStartupSound(context: Context, assetPath: String) {
  * - [FreeformCompat.REASON_NEEDS_REBOOT]：开关是本次开机内写入的 →
  *   一次性重启提示（不阻断启动，仅告知）；
  * - [FreeformCompat.REASON_USER_CONFIRM]：一次性用户确认 —— 「应用是否
- *   真的以窗口形式打开了？」（无 Root 时唯一可靠的验证方式）；
+ *   真的以桌面窗口形式打开了？」（无 Root 时唯一可靠的验证方式）；
  * - [FreeformCompat.REASON_SOLUTIONS]：确认/验证仍全屏 → 解决方案：
  *   ① Root 特性注入（把特性声明写入 /system/etc/permissions，绕过
- *   "ROM 忽略开关"的屏蔽，需重启）；② 系统自带小窗指引（按厂商）。
+ *   "ROM 忽略开关"的屏蔽，需重启）；② 换应用测试与排查项。
  *
  * 所有原因均附带实时诊断状态（[FreeformCompat.diagnosticLines]）。
  * v2.23.4 修正：诊断里的特性检测已改为正确的 AOSP 字面值
  * （android.software.freeform_window_management），此前显示的"未声明"
  * 在任何设备上都恒为未声明，不可信。
+ * v2.23.5：文案统一"桌面窗口"表述（像电脑程序窗口一样摆在桌面上，
+ * 任务栏可见），移除厂商"小窗"引导（用户明确拒绝该方案）。
  */
 @Composable
 private fun FreeformDecisionDialog(pending: FreeformCompat.PendingLaunch) {
@@ -569,9 +583,9 @@ private fun FreeformDecisionDialog(pending: FreeformCompat.PendingLaunch) {
 
     val title = when (pending.reason) {
         FreeformCompat.REASON_NEEDS_REBOOT -> "重启手机后生效"
-        FreeformCompat.REASON_SOLUTIONS -> "让手机应用窗口化的可行方案"
-        FreeformCompat.REASON_USER_CONFIRM -> "窗口化生效了吗？"
-        else -> "手机应用窗口化暂不可用"
+        FreeformCompat.REASON_SOLUTIONS -> "让手机应用以桌面窗口运行的可行方案"
+        FreeformCompat.REASON_USER_CONFIRM -> "桌面窗口生效了吗？"
+        else -> "手机应用桌面窗口暂不可用"
     }
 
     AlertDialog(
@@ -581,10 +595,11 @@ private fun FreeformDecisionDialog(pending: FreeformCompat.PendingLaunch) {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 when (pending.reason) {
                     FreeformCompat.REASON_NEEDS_REBOOT -> Text(
-                        "自由窗口开关已成功写入，但系统只在「开机时」读取一次该开关——" +
+                        "桌面窗口开关已成功写入，但系统只在「开机时」读取一次该开关——" +
                             "刚才启动的「${pending.label}」本次可能仍是全屏，属正常现象。" +
-                            "重启手机一次后，从桌面启动的手机应用即会以浮动窗口运行。" +
-                            "若刚才已经是窗口，说明你的系统支持热加载，可忽略本提示。"
+                            "重启手机一次后，从桌面启动的手机应用即会以「桌面窗口」运行：" +
+                            "像电脑上的程序窗口一样摆在桌面上，桌面与任务栏保持可见。" +
+                            "若刚才已经是桌面窗口，说明你的系统支持热加载，可忽略本提示。"
                     )
 
                     FreeformCompat.REASON_SOLUTIONS -> {
@@ -627,8 +642,13 @@ private fun FreeformDecisionDialog(pending: FreeformCompat.PendingLaunch) {
                                 color = theme.accentColor
                             )
                         }
-                        Text("② 使用系统自带的「小窗 / 浮窗」：", fontWeight = FontWeight.Bold)
-                        Text(FreeformCompat.oemFloatingWindowHint(), fontSize = 12.sp)
+                        Text("② 换个应用再试（推荐用系统「设置」测试）：", fontWeight = FontWeight.Bold)
+                        Text(
+                            "个别应用自身锁定方向或声明不可缩放，可能不遵守窗口模式；" +
+                                "系统「设置」是理想的测试对象。若设置能进桌面窗口而某个应用不行，" +
+                                "属于该应用自身的兼容问题，不影响其他应用。",
+                            fontSize = 12.sp
+                        )
                         Text(
                             "③ 确认手机已重启过（系统仅在开机时读取开关），且 AnWind 未被省电策略限制后台。",
                             fontSize = 12.sp
@@ -637,11 +657,12 @@ private fun FreeformDecisionDialog(pending: FreeformCompat.PendingLaunch) {
 
                     FreeformCompat.REASON_USER_CONFIRM -> {
                         Text(
-                            "已尝试让「${pending.label}」以浮动窗口形式启动。" +
-                                "它在屏幕上实际显示为哪种？"
+                            "已尝试让「${pending.label}」以「桌面窗口」形式启动" +
+                                "（像电脑程序窗口一样摆在桌面上）。它在屏幕上实际显示为哪种？"
                         )
                         Text(
-                            "· 窗口：应用像电脑程序一样悬浮在桌面上，任务栏可见 ✓",
+                            "· 桌面窗口：应用像电脑程序一样以窗口摆在桌面上，" +
+                                "四周能看到桌面，任务栏可见 ✓",
                             fontSize = 12.sp
                         )
                         Text(
@@ -653,7 +674,8 @@ private fun FreeformDecisionDialog(pending: FreeformCompat.PendingLaunch) {
                     else -> {
                         Text(
                             "当前设备未开启自由窗口（Freeform），从桌面启动的「${pending.label}」只能全屏运行并覆盖桌面。" +
-                                "开启后，手机应用将以浮动窗口形式运行在桌面上，桌面与任务栏保持可见。"
+                                "开启后，手机应用将以「桌面窗口」形式运行：像电脑上的程序窗口一样" +
+                                "摆在桌面上，桌面与任务栏保持可见。"
                         )
                         Text("开启方式（任选其一，完成后均需重启手机一次生效）：", fontWeight = FontWeight.Bold)
                         Text("① 电脑执行一次以下 ADB 命令（推荐；授权后 AnWind 自动开启并一直维持）：")
@@ -729,7 +751,7 @@ private fun FreeformDecisionDialog(pending: FreeformCompat.PendingLaunch) {
                 FreeformCompat.REASON_USER_CONFIRM -> TextButton(onClick = {
                     FreeformCompat.noteVerified(context, true)
                     close()
-                }) { Text("是，已是窗口") }
+                }) { Text("是，已是桌面窗口") }
 
                 FreeformCompat.REASON_SOLUTIONS -> TextButton(onClick = {
                     FreeformCompat.suppressDecision = true
@@ -749,7 +771,7 @@ private fun FreeformDecisionDialog(pending: FreeformCompat.PendingLaunch) {
                 FreeformCompat.REASON_USER_CONFIRM -> TextButton(onClick = {
                     FreeformCompat.noteVerified(context, false)
                     close()
-                    // 转解决方案弹窗（Root 注入 / 系统小窗）
+                    // 转解决方案弹窗（Root 注入 / 换应用测试与排查）
                     FreeformCompat.requestDecision(
                         pending.pkg, pending.activity, pending.label,
                         FreeformCompat.REASON_SOLUTIONS

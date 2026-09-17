@@ -62,6 +62,13 @@ import java.util.concurrent.atomic.AtomicBoolean
  * 系统分区（dm-verity 设备可能被拒），因此**只由用户在解决方案弹窗里主动触发**
  * （[tryRootFeatureInjection]），成功后重启手机生效。
  *
+ * ## v2.23.5："桌面窗口"形态
+ *
+ * 用户明确要求：手机应用要像**电脑程序窗口**一样摆在桌面上（四周留边、
+ * 任务栏可见），不是手机系统那种小尺寸"小窗"。窗口形态（初始边界/
+ * 任务栏避让/级联摆放）由 [AndroidApps.freeformOptions] 负责；本类只负责
+ * 能力链路（检测/写入/验证）。厂商"小窗"引导已按用户要求移除。
+ *
  * ## 线程模型
  *
  * - [ensureAvailable] / [exemptHiddenApis]：毫秒级，主线程可调；
@@ -117,7 +124,7 @@ object FreeformCompat {
     /** 开关是本次开机内写入的（AOSP：仅开机读取）→ 重启引导（仅提示，不阻断启动） */
     const val REASON_NEEDS_REBOOT = 1
 
-    /** 确认/验证窗口化未生效 → 解决方案（Root 注入 / 系统小窗 / 全屏） */
+    /** 确认/验证窗口化未生效 → 解决方案（Root 注入 / 换应用测试与排查） */
     const val REASON_SOLUTIONS = 2
 
     /** 一次性用户确认：应用是否真的以窗口形式打开了（无 Root 时唯一的"验证"手段） */
@@ -413,25 +420,6 @@ object FreeformCompat {
             lines += "窗口化验证：历史成功过"
         }
         return lines
-    }
-
-    /** 按厂商给出系统自带「小窗/浮窗」的使用指引（解决方案弹窗展示） */
-    fun oemFloatingWindowHint(): String {
-        val m = (Build.MANUFACTURER ?: "").lowercase()
-        return when {
-            m.contains("xiaomi") || m.contains("redmi") ->
-                "小米/Redmi（HyperOS/MIUI）：最近任务卡片长按应用图标 →「小窗」；也可从控制中心使用小窗入口。"
-            m.contains("oppo") || m.contains("oneplus") || m.contains("realme") ->
-                "OPPO/一加/真我（ColorOS）：最近任务卡片长按或上拉 →「自由浮窗」。"
-            m.contains("vivo") || m.contains("iqoo") ->
-                "vivo/iQOO（OriginOS）：最近任务卡片下拉/长按 →「小窗」。"
-            m.contains("huawei") || m.contains("honor") ->
-                "华为/荣耀：侧边栏「智慧多窗」，或最近任务 →「小窗」。"
-            m.contains("samsung") ->
-                "三星（One UI）：最近任务 → 长按应用图标 →「在弹出视图中打开」。"
-            else ->
-                "部分定制系统自带应用「小窗/浮窗」功能，可在最近任务、通知栏或应用信息中查找。"
-        }
     }
 
     // ============================================================

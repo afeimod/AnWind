@@ -176,9 +176,12 @@ android {
         // 对三方应用无效的任务回读验证，改为 Root dumpsys 验证 + 一次性
         // 用户确认；补写 enable_non_resizable_multi_window；新增 Root 特性
         // 注入（/system/etc/permissions）；弹窗永不阻断窗口化启动尝试
+        // v2.23.5：桌面窗口形态定稿 —— 初始边界改为桌面工作区计算（82% 宽
+        // ×72% 高、避开任务栏、级联错位），文案统一"桌面窗口"表述，
+        // 移除厂商小窗引导（用户明确要求桌面窗口而非系统小窗）
         targetSdk = 28
-        versionCode = 51
-        versionName = "2.23.4"
+        versionCode = 52
+        versionName = "2.23.5"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
