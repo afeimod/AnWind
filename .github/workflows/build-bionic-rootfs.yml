@@ -1,0 +1,289 @@
+name: Build AnWind Bionic Rootfs (X11)
+
+# ============================================================================
+# AnWind (com.anwind) bionic rootfs 一键构建
+# 基于仓库内 bionic-rootfs/ 构建系统（NDK 交叉编译，Bionic/libc）：
+#   - 显示协议：X11（termux-x11 / libXlorie），已去除全部 weston/wayland
+#   - 包含完整 X11 客户端库栈 + mesa(GLX/EGL over X11) + hangover-wine(--with-x)
+#   - rootfs 前缀：/data/data/com.anwind/files/rootfs/usr
+#   - X11 socket：/data/data/com.anwind/files/usr/tmp/.X11-unix/X1（显示号 :1）
+#
+# 用法：仓库 → Actions → "Build AnWind Bionic Rootfs (X11)" → Run workflow
+# 前提：本 workflow 依赖仓库根目录下的 bionic-rootfs/ 构建系统，
+#       请先将 AnWind-bionic-rootfs.zip 中的 bionic-rootfs/ 目录提交到仓库根。
+# ============================================================================
+
+on:
+  workflow_dispatch:
+    inputs:
+      arch:
+        description: "目标架构"
+        required: true
+        type: choice
+        default: "aarch64"
+        options:
+          - aarch64
+          - x86_64
+          - all
+      build_target:
+        description: "构建目标（all=全部包，或单个包名如 mesa）"
+        required: false
+        type: string
+        default: "all"
+      make_release:
+        description: "构建成功后创建 GitHub Release"
+        required: true
+        type: boolean
+        default: true
+
+# 取消同一分支上正在进行的旧构建
+concurrency:
+  group: bionic-rootfs-${{ github.ref }}-${{ github.event.inputs.arch }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Bionic Rootfs (${{ matrix.arch }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        # 输入 all 时展开为双架构矩阵
+        arch: ${{ fromJSON(github.event.inputs.arch == 'all' && '["aarch64", "x86_64"]' || format('["{0}"]', github.event.inputs.arch)) }}
+
+    steps:
+      # ============ 1. 检出代码 ============
+      - name: 检出仓库
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: 检查构建系统
+        run: |
+          if [[ ! -f "${GITHUB_WORKSPACE}/bionic-rootfs/build-rootfs-arch.sh" ]]; then
+            echo "::error::未找到 bionic-rootfs/build-rootfs-arch.sh！"
+            echo "请将 AnWind-bionic-rootfs.zip 中的 bionic-rootfs/ 目录提交到仓库根目录后再运行。"
+            exit 1
+          fi
+          echo "构建系统就绪"
+
+      # ============ 2. 释放磁盘空间 ============
+      - name: 释放 Runner 磁盘空间
+        run: |
+          echo "清理前可用空间:"
+          df -h / | tail -1
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+            /usr/local/.ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost \
+            /usr/lib/jvm/temurin-8-jdk-amd64 /usr/lib/jvm/temurin-11-jdk-amd64 \
+            "${HOME}/.cache" 2>/dev/null || true
+          sudo docker image prune -af >/dev/null 2>&1 || true
+          echo "清理后可用空间:"
+          df -h / | tail -1
+
+      # ============ 3. 安装宿主依赖 ============
+      - name: 安装宿主依赖（host-deps.sh，含新版 meson/ninja）
+        run: |
+          sudo -E bash "${GITHUB_WORKSPACE}/bionic-rootfs/host-deps.sh"
+          echo "=== 工具版本 ==="
+          meson --version
+          ninja --version
+          cmake --version | head -1
+          ccache --version | head -1
+          pkg-config --version
+          python3 --version
+
+      # ============ 4. 准备 rootfs 前缀目录 ============
+      # build-rootfs-arch.sh 每完成一个包都会 tar -xvf <pkg>.tar -C /
+      # 将其安装进绝对前缀 /data/data/com.anwind/files/rootfs/usr，
+      # 因此需提前创建并把属主交给 runner 用户（构建全程免 sudo）。
+      - name: 准备 AnWind rootfs 前缀目录
+        run: |
+          sudo mkdir -p /data/data/com.anwind/files/rootfs/usr \
+                        /data/data/com.anwind/files/rootfs/home \
+                        /data/data/com.anwind/files/rootfs/tmp/.X11-unix \
+                        /data/data/com.anwind/files/usr/tmp/.X11-unix
+          sudo chown -R "$(whoami):$(whoami)" /data
+          echo "前缀目录就绪:"
+          ls -ld /data/data/com.anwind/files/rootfs/*
+
+      # ============ 5. 还原缓存（NDK / ccache） ============
+      - name: 缓存 NDK
+        uses: actions/cache@v4
+        with:
+          path: bionic-rootfs/ndk
+          key: anwind-ndk-r28b-v1
+
+      - name: 缓存 ccache
+        uses: actions/cache@v4
+        with:
+          path: |
+            bionic-rootfs/bionic_ccache
+            bionic-rootfs/host_ccache
+          key: anwind-bionic-ccache-${{ matrix.arch }}-${{ github.event.inputs.build_target }}-v1
+          restore-keys: |
+            anwind-bionic-ccache-${{ matrix.arch }}-v1
+            anwind-bionic-ccache-v1
+
+      # ============ 6. 构建 ============
+      - name: 构建所有包（${{ matrix.arch }}）
+        shell: bash
+        run: |
+          cd "${GITHUB_WORKSPACE}/bionic-rootfs"
+          chmod +x *.sh
+          set -o pipefail
+          ./build-rootfs-arch.sh --arch "${{ matrix.arch }}" \
+            --build "${{ github.event.inputs.build_target || 'all' }}" \
+            2>&1 | tee "build-${{ matrix.arch }}.log"
+
+      # ============ 7. 组装并校验 rootfs ============
+      - name: 组装 rootfs（make-rootfs.sh）
+        shell: bash
+        run: |
+          cd "${GITHUB_WORKSPACE}/bionic-rootfs"
+          ./make-rootfs.sh --export "/tmp/anwind-rootfs" --arch "${{ matrix.arch }}"
+
+          # 运行时目录 + 主目录
+          mkdir -p /tmp/anwind-rootfs/data/data/com.anwind/files/rootfs/tmp/.X11-unix
+          mkdir -p /tmp/anwind-rootfs/data/data/com.anwind/files/rootfs/home
+
+          # ============ 关键产物校验 ============
+          RFS=/tmp/anwind-rootfs/data/data/com.anwind/files/rootfs/usr
+          echo "=== 关键文件校验 ==="
+          check() {
+            if [[ -e "$1" ]]; then echo "  [OK] $1"; else echo "  [MISS] $1"; MISS=1; fi
+          }
+          MISS=0
+          check "$RFS/lib/libc.so"
+          check "$RFS/lib/libX11.so.6"
+          check "$RFS/lib/libX11-xcb.so.1"
+          check "$RFS/lib/libxcb.so.1"
+          check "$RFS/lib/libXext.so.6"
+          check "$RFS/lib/libXrender.so.1"
+          check "$RFS/lib/libXfixes.so.3"
+          check "$RFS/lib/libXrandr.so.2"
+          check "$RFS/lib/libXi.so.6"
+          check "$RFS/lib/libXcursor.so.1"
+          check "$RFS/lib/libXinerama.so.1"
+          check "$RFS/lib/libXcomposite.so.1"
+          check "$RFS/lib/libXxf86vm.so.1"
+          check "$RFS/lib/libxkbcommon.so.0"
+          check "$RFS/lib/libxkbcommon-x11.so.0"
+          check "$RFS/lib/libxshmfence.so.1"
+          check "$RFS/lib/libGL.so.1"
+          check "$RFS/lib/libEGL.so.1"
+          check "$RFS/lib/libgbm.so.1"
+          check "$RFS/lib/libvulkan.so.1"
+          check "$RFS/share/X11/xkb"
+          check "$RFS/etc/hosts"
+          if [[ "${{ matrix.arch }}" == "aarch64" ]]; then
+            check "$RFS/opt/bin/wine"
+            check "$RFS/opt/lib/wine"
+            check "$RFS/local/bin/box64"
+          fi
+          [[ "$MISS" == "0" ]] || { echo "::error::rootfs 缺少关键文件！"; exit 1; }
+
+          # ============ weston/wayland 清除校验 ============
+          echo "=== wayland 残留校验（应全部 NOT FOUND）==="
+          for f in libwayland-client.so libwayland-server.so libwayland-egl.so \
+                   libwayland-cursor.so bin/weston; do
+            if find /tmp/anwind-rootfs -name "$(basename "$f")*" | grep -q .; then
+              echo "  [FOUND] $f  <-- 不应存在！"; FAIL_WL=1
+            else
+              echo "  [NOT FOUND] $f"
+            fi
+          done
+          [[ "$FAIL_WL" != "1" ]] || exit 1
+
+          echo "=== rootfs 概览 ==="
+          du -sh /tmp/anwind-rootfs
+          ls /tmp/anwind-rootfs/data/data/com.anwind/files/rootfs/usr/lib | head -40
+
+      # ============ 8. 打包 ============
+      - name: 打包 rootfs
+        shell: bash
+        run: |
+          BUILD_DATE=$(date +%Y%m%d)
+          echo "BUILD_DATE=${BUILD_DATE}" >> $GITHUB_ENV
+          PACKAGE_NAME="anwind-bionic-rootfs-${BUILD_DATE}-${{ matrix.arch }}"
+          cd /tmp
+          tar -czf "${GITHUB_WORKSPACE}/${PACKAGE_NAME}.tar.gz" -C /tmp/anwind-rootfs .
+          cd "${GITHUB_WORKSPACE}"
+          sha256sum "${PACKAGE_NAME}.tar.gz" > checksums-${{ matrix.arch }}.txt
+          echo "PACKAGE_NAME=${PACKAGE_NAME}" >> $GITHUB_ENV
+          echo "=== 打包完成 ==="
+          ls -lh "${PACKAGE_NAME}.tar.gz" checksums-${{ matrix.arch }}.txt
+
+      # ============ 9. 上传构建日志 ============
+      - name: 上传构建日志
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-${{ matrix.arch }}
+          path: bionic-rootfs/build-${{ matrix.arch }}.log
+          compression-level: 9
+
+      # ============ 10. 上传 rootfs 产物 ============
+      - name: 上传 rootfs 产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.PACKAGE_NAME }}
+          path: |
+            ${{ env.PACKAGE_NAME }}.tar.gz
+            checksums-${{ matrix.arch }}.txt
+
+      # ============ 11. 发布 Release ============
+      - name: 创建 Release
+        if: ${{ github.event.inputs.make_release == 'true' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: bionic-rootfs-${{ env.BUILD_DATE }}-${{ matrix.arch }}
+          name: AnWind Bionic Rootfs ${{ env.BUILD_DATE }} (${{ matrix.arch }})
+          body: |
+            **AnWind Bionic Rootfs (X11)** — `${{ matrix.arch }}`
+
+            基于 Android NDK r28b 交叉编译的 Bionic rootfs，供 AnWind（com.anwind）使用。
+
+            ## 构建信息
+            - **架构**: ${{ matrix.arch }}
+            - **NDK**: r28b（API 28）
+            - **显示协议**: X11（termux-x11 / libXlorie），无 weston/wayland
+            - **Mesa**: 26.2.1（platforms=x11, glx=dri；aarch64 附带 freedreno 硬件加速）
+            - **Wine**: hangover 11.16（--with-x，完整 X11 驱动）
+            - **构建日期**: ${{ env.BUILD_DATE }}
+
+            ## 运行时布局
+            解压到 AnWind 的 `files/` 目录后得到：
+            ```
+            /data/data/com.anwind/files/rootfs/usr    # ${prefix}（bionic 系统）
+            /data/data/com.anwind/files/rootfs/home   # 用户主目录
+            ```
+
+            ## X11 说明
+            - X 服务由 AnWind 内置（libXlorie / termux-x11），socket 位于
+              `/data/data/com.anwind/files/usr/tmp/.X11-unix/X1`（默认显示号 `:1`），
+              rootfs 内 X 客户端已补丁对齐该路径，直接 `DISPLAY=:1` 即可连接
+            - rootfs 自带完整 X11 客户端库（libX11/libxcb/全套 Xext 扩展）
+              + Mesa GLX/EGL + Vulkan（XCB/XLIB WSI）
+
+            ## 文件
+            - `anwind-bionic-rootfs-*.tar.gz` — 完整 rootfs
+            - `checksums-*.txt` — SHA256 校验
+          files: |
+            ${{ env.PACKAGE_NAME }}.tar.gz
+            checksums-${{ matrix.arch }}.txt
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # ============ 12. 总结 ============
+      - name: 构建总结
+        run: |
+          echo "=== AnWind Bionic Rootfs (X11) 构建完成 ==="
+          echo "架构: ${{ matrix.arch }}"
+          echo "产物: ${{ env.PACKAGE_NAME }}.tar.gz"
+          echo "前缀: /data/data/com.anwind/files/rootfs/usr"
+          echo "显示: X11 (termux-x11, DISPLAY=:1)"

@@ -1,0 +1,8 @@
+revision="1.8.2"
+url="https://xorg.freedesktop.org/archive/individual/lib/libXi-${revision}.tar.xz"
+urlType="tar"
+arch="aarch64 x86_64"
+buildSys="autotools"
+license="MIT"
+# X Input 扩展（wine XInput2 游戏输入支持）
+deps="libX11 libXext libXfixes xorgproto"

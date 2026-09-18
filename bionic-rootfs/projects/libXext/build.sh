@@ -1,0 +1,8 @@
+revision="1.3.6"
+url="https://xorg.freedesktop.org/archive/individual/lib/libXext-${revision}.tar.xz"
+urlType="tar"
+arch="aarch64 x86_64"
+buildSys="autotools"
+license="MIT"
+# X 扩展库（含 MIT-SHM 共享内存扩展，wine/gst-ximagesink 依赖）
+deps="libX11 xorgproto"

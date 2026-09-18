@@ -1,0 +1,8 @@
+revision="0.9.12"
+url="https://xorg.freedesktop.org/archive/individual/lib/libXrender-${revision}.tar.xz"
+urlType="tar"
+arch="aarch64 x86_64"
+buildSys="autotools"
+license="MIT"
+# X Render 扩展（wine 文字渲染 / Xcursor 依赖）
+deps="libX11 xorgproto"

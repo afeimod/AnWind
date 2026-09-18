@@ -1,0 +1,343 @@
+#!/data/data/com.anwind/files/usr/bin/bash
+# ============================================================
+# anwind-wine — AnWind 容器 Wine 启动器（bionic rootfs / X11）
+# ------------------------------------------------------------
+# 职责：
+#   1. 解析容器（~/.anwind/containers/<name>）与 WINEPREFIX
+#   2. 依容器配置选择 CPU 翻译后端：
+#        box64    : box64 + x86_64 wine（/usr/opt/wine，主力路径）
+#        hangover : aarch64 wine + 内建 qemu 模拟（/usr/opt）
+#        fexcore  : FEX-Emu（FEXInterpreter）+ x86_64 wine
+#        native   : x86_64 设备直接运行（无模拟器）
+#   3. 注入 AnWind X11 / PulseAudio / Mesa 运行时环境
+#   4. 首次运行自动 wineboot -i 初始化前缀
+#
+# 用法：
+#   anwind-wine [--container <name>] <wine 参数...>
+#   anwind-wine --list-backends
+#   环境变量 ANWIND_CONTAINER=<name> 可代替 --container
+#
+# 显示（重要）：本 rootfs 为 X11 方案。X 服务为 AnWind 内置
+# termux-x11/libXlorie，unix socket 在 App 侧
+#   /data/data/com.anwind/files/usr/tmp/.X11-unix/Xn
+# rootfs 内 libxcb/xtrans/libX11 已按该路径打补丁，因此只需
+# 设好 DISPLAY。显示号自动探测（优先 :1），可用 DISPLAY 覆盖。
+# ============================================================
+
+# ---------- 基础路径（与 bionic-rootfs/default.conf 一致） ----------
+RFS_ROOT="/data/data/com.anwind/files/rootfs"
+RFS_USR="$RFS_ROOT/usr"
+APP_PREFIX="/data/data/com.anwind/files/usr"
+CONT_ROOT="$RFS_ROOT/home/.anwind/containers"
+CONF_GLOBAL="$RFS_USR/etc/anwind/container.conf"
+X11_SOCK_DIR="$APP_PREFIX/tmp/.X11-unix"
+LOG_DIR="$CONT_ROOT/logs"
+
+version() { echo "anwind-wine 1.0.0 (AnWind bionic rootfs, X11)"; }
+
+die() { echo "anwind-wine: $*" >&2; exit 1; }
+info() { echo "[anwind-wine] $*"; }
+
+usage() {
+    cat << 'EOF'
+anwind-wine — AnWind 容器 Wine 启动器（bionic rootfs / X11）
+
+用法:
+  anwind-wine [--container <name>] <wine 参数...>
+  anwind-wine --list-backends        查看可用后端（box64/hangover/fexcore/native）
+  anwind-wine --version
+
+说明:
+  - 未指定容器时使用默认容器（anwind-container default <name> 设置）
+  - 环境变量 ANWIND_CONTAINER=<name> 可代替 --container
+  - 后端按容器配置 backend= 选择；auto 时: aarch64 → box64，
+    无 box64 则 hangover；x86_64 设备 → native
+  - 显示: X11（AnWind 内置 X 服务，DISPLAY 自动探测，默认 :1）
+  - 音频: PULSE_SERVER=127.0.0.1:4713（anwind-x11 会话自动拉起）
+EOF
+}
+
+# ---------- 全局配置 ----------
+# 键值读取：key=value 行，忽略注释与空白
+conf_read() { # <file> <key> [default]
+    local _v=""
+    [ -r "$1" ] && _v="$(sed -n "s/^$2=//p" "$1" | head -n 1 | tr -d '\r')"
+    if [ -z "$_v" ] && [ -n "${3:-}" ]; then _v="$3"; fi
+    printf '%s' "$_v"
+}
+
+# ---------- 后端探测 ----------
+WINE_X86="$RFS_USR/opt/wine/bin/wine"        # x86_64 wine（box64/fex/native 用）
+WINE_HANGOVER="$RFS_USR/opt/bin/wine"        # aarch64 wine（hangover qemu 模拟）
+BOX64_BIN=""
+FEX_BIN="$RFS_USR/opt/fex/bin/FEXInterpreter"
+
+for _c in "$RFS_USR/local/bin/box64" "$RFS_USR/bin/box64" "$APP_PREFIX/bin/box64"; do
+    if [ -x "$_c" ]; then BOX64_BIN="$_c"; break; fi
+done
+
+backend_list() {
+    echo "available backends:"
+    [ -x "$WINE_X86" ]  && echo "  [OK] x86_64-wine : $WINE_X86"  || echo "  [--] x86_64-wine 未安装（anwind-container install-wine <tarball>）"
+    [ -n "$BOX64_BIN" ] && echo "  [OK] box64       : $BOX64_BIN" || echo "  [--] box64 未安装"
+    [ -x "$WINE_HANGOVER" ] && echo "  [OK] hangover    : $WINE_HANGOVER" || echo "  [--] hangover 未安装（aarch64 rootfs 自带）"
+    [ -x "$FEX_BIN" ]   && echo "  [OK] fexcore     : $FEX_BIN"   || echo "  [--] fexcore 未安装（FEX-Emu 暂无 bionic 官方构建，安装后自动启用）"
+}
+
+# 依架构与可用组件推导 auto 后端
+auto_backend() {
+    local _arch
+    _arch="$(uname -m)"
+    case "$_arch" in
+        x86_64)
+            [ -x "$WINE_X86" ] && { echo "native"; return; }
+            ;;
+        aarch64|arm64)
+            if [ -x "$WINE_X86" ] && [ -n "$BOX64_BIN" ]; then
+                echo "box64"; return
+            fi
+            if [ -x "$WINE_HANGOVER" ]; then
+                echo "hangover"; return
+            fi
+            ;;
+    esac
+    echo ""
+}
+
+# X11 显示号自动探测：优先 DISPLAY 环境变量，其次 :1，再次任意现存 socket
+resolve_display() {
+    if [ -n "${DISPLAY:-}" ]; then return; fi
+    local _n
+    if [ -S "$X11_SOCK_DIR/X1" ]; then
+        export DISPLAY=":1"; return
+    fi
+    for _n in 0 2 3 4 5 6 7 8 9; do
+        if [ -S "$X11_SOCK_DIR/X$_n" ]; then
+            export DISPLAY=":$_n"; return
+        fi
+    done
+    export DISPLAY=":1"
+}
+
+# ---------- 容器解析 ----------
+resolve_container() {
+    CONT_NAME="${ANWIND_CONTAINER:-}"
+    if [ -n "${CONT_NAME:-}" ]; then return; fi
+    CONT_NAME="$(conf_read "$CONF_GLOBAL" default_container "")"
+    [ -n "$CONT_NAME" ] || die "未指定容器。用法: anwind-wine --container <name> <wine 参数...>，或先执行 anwind-container create"
+}
+
+load_container() {
+    [ -n "${CONT_NAME:-}" ] || die "容器名为空"
+    CONT_DIR="$CONT_ROOT/$CONT_NAME"
+    [ -d "$CONT_DIR" ] || die "容器不存在: $CONT_NAME（anwind-container list 查看）"
+    CONT_CONF="$CONT_DIR/container.conf"
+    WINEPREFIX="$CONT_DIR/prefix"
+    mkdir -p "$WINEPREFIX" "$LOG_DIR"
+    export WINEPREFIX
+}
+
+# ---------- 环境注入 ----------
+apply_env() {
+    # --- X11（核心显示路径） ---
+    resolve_display
+    export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-$APP_PREFIX/tmp}"
+    mkdir -p "$XDG_RUNTIME_DIR" 2>/dev/null || true
+
+    # --- 音频：AnWind 会话 pulse（TCP 4713），rootfs pulseaudio 兜底 ---
+    export PULSE_SERVER="${PULSE_SERVER:-127.0.0.1:4713}"
+
+    # --- X11 分辨率握手（AnWind fix10 协议 .anwind-x11-res） ---
+    # 容器 screen=native 时窗口跟随；WxH 时锁定分辨率（全屏游戏）
+    local _screen
+    _screen="$(conf_read "$CONT_CONF" screen native)"
+    [ -n "$_screen" ] && printf '%s\n' "$_screen" > "$APP_PREFIX/tmp/.anwind-x11-res" 2>/dev/null
+
+    # --- Mesa / GPU 运行时（Winlator/MiceWine 经验值） ---
+    local _gallium _arch
+    _arch="$(uname -m)"
+    _gallium="$(conf_read "$CONT_CONF" gallium auto)"
+    if [ "$_gallium" = "auto" ]; then
+        case "$_arch" in
+            aarch64|arm64) _gallium="freedreno" ;;
+            *)             _gallium="llvmpipe" ;;
+        esac
+    fi
+    case "$_gallium" in
+        zink)
+            export GALLIUM_DRIVER=zink
+            export ZINK_DESCRIPTORS=lazy
+            export ZINK_DEBUG=compact
+            ;;
+        freedreno)
+            export GALLIUM_DRIVER=freedreno
+            ;;
+        llvmpipe|softpipe)
+            export GALLIUM_DRIVER="$_gallium"
+            export LIBGL_ALWAYS_SOFTWARE=1
+            ;;
+    esac
+    export MESA_SHADER_CACHE_DISABLE=false
+    export MESA_SHADER_CACHE_MAX_SIZE=512MB
+    export mesa_glthread=true
+    case "$_arch" in
+        aarch64|arm64) export TU_DEBUG=noconform,sysmem ;;
+    esac
+
+    # --- 用户附加环境 ---
+    local _extra
+    _extra="$(conf_read "$CONT_CONF" env "")"
+    if [ -n "$_extra" ]; then
+        # shellcheck disable=SC2086
+        export $_extra
+    fi
+
+    # --- DLL 覆盖（DXVK/VKD3D 安装器回写） ---
+    local _ovr
+    _ovr="$(conf_read "$CONT_CONF" dxoverrides "")"
+    [ -n "$_ovr" ] && export WINEDLLOVERRIDES="${_ovr}${WINEDLLOVERRIDES:+:$WINEDLLOVERRIDES}"
+
+    # --- LD_LIBRARY_PATH（bionic 不认 DT_RUNPATH，全靠它） ---
+    local _lp="$RFS_USR/lib"
+    [ -d "$RFS_USR/local/lib" ] && _lp="$_lp:$RFS_USR/local/lib"
+    [ -d "$RFS_USR/opt/wine/lib" ] && _lp="$_lp:$RFS_USR/opt/wine/lib"
+    [ -d "$RFS_USR/opt/lib" ] && _lp="$_lp:$RFS_USR/opt/lib"
+    [ -d "$RFS_USR/opt/fex/lib" ] && _lp="$_lp:$RFS_USR/opt/fex/lib"
+    export LD_LIBRARY_PATH="$_lp${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+}
+
+apply_box64_env() {
+    local _preset
+    _preset="$(conf_read "$CONT_CONF" preset performance)"
+    export BOX64_LOG=0
+    export BOX64_NOBANNER=1
+    export BOX64_DYNAREC_TRACE=0
+    case "$_preset" in
+        compatibility)
+            export BOX64_DYNAREC_BIGBLOCK=0
+            export BOX64_DYNAREC_SAFEFLAGS=2
+            export BOX64_DYNAREC_FASTNAN=0
+            export BOX64_DYNAREC_FASTROUND=0
+            export BOX64_DYNAREC_X87DOUBLE=1
+            export BOX64_DYNAREC_STRONGMEM=1
+            ;;
+        performance|*)
+            export BOX64_DYNAREC_BIGBLOCK=1
+            export BOX64_DYNAREC_SAFEFLAGS=0
+            export BOX64_DYNAREC_FASTNAN=1
+            export BOX64_DYNAREC_FASTROUND=1
+            export BOX64_DYNAREC_X87DOUBLE=0
+            export BOX64_DYNAREC_STRONGMEM=0
+            ;;
+    esac
+    # 容器 env 中允许覆盖 BOX64_*
+    local _extra
+    _extra="$(conf_read "$CONT_CONF" env "")"
+    case "$_extra" in *BOX64_*) export $_extra ;; esac
+}
+
+# ---------- 后端执行 ----------
+pick_backend() {
+    BACKEND="$(conf_read "$CONT_CONF" backend auto)"
+    if [ "$BACKEND" = "auto" ] || [ -z "$BACKEND" ]; then
+        BACKEND="$(auto_backend)"
+        [ -n "$BACKEND" ] || die "没有可用后端：既无 x86_64 wine + box64，也无 hangover wine。运行 'anwind-container doctor' 查看详情"
+    fi
+    # 校验所选后端真实可用
+    case "$BACKEND" in
+        box64)
+            [ -n "$BOX64_BIN" ] || die "box64 未安装（anwind-container doctor）"
+            [ -x "$WINE_X86" ]  || die "x86_64 wine 未安装：先执行 anwind-container install-wine"
+            ;;
+        hangover)
+            [ -x "$WINE_HANGOVER" ] || die "hangover wine 不在 $WINE_HANGOVER（aarch64 rootfs 构建时含 hangover-wine）"
+            ;;
+        fexcore)
+            [ -x "$FEX_BIN" ]   && [ -e "$FEX_BIN" ] || die "FEXInterpreter 不在 $FEX_BIN。FEX-Emu 尚无官方 bionic 构建：可将自建 FEX 安装到 $RFS_USR/opt/fex/"
+            [ -x "$WINE_X86" ] || die "x86_64 wine 未安装：先执行 anwind-container install-wine"
+            ;;
+        native)
+            [ -x "$WINE_X86" ] || die "x86_64 wine 未安装"
+            ;;
+        *) die "未知后端: $BACKEND（可选 box64/hangover/fexcore/native/auto）" ;;
+    esac
+    # 自定义 wine 覆盖
+    local _custom
+    _custom="$(conf_read "$CONT_CONF" wine "")"
+    if [ -n "$_custom" ]; then
+        case "$BACKEND" in
+            box64|native|fexcore) WINE_X86="$_custom/bin/wine" ;;
+            hangover) WINE_HANGOVER="$_custom/bin/wine" ;;
+        esac
+    fi
+}
+
+run_wine() {
+    # wineserver / wineboot 是独立 Unix 程序，需直接执行其宿主二进制
+    # （wineserver 无需前缀初始化，置于最前）
+    if [ "${1:-}" = "wineserver" ] || [ "${1:-}" = "wineboot" ]; then
+        local _bin
+        case "$BACKEND" in
+            box64|native|fexcore) _bin="$(dirname "$WINE_X86")/$1" ;;
+            hangover)             _bin="$(dirname "$WINE_HANGOVER")/$1" ;;
+        esac
+        shift
+        case "$BACKEND" in
+            box64)    exec "$BOX64_BIN" "$_bin" "$@" ;;
+            native)   exec "$_bin" "$@" ;;
+            hangover) exec "$_bin" "$@" ;;
+            fexcore)  exec "$FEX_BIN" "$_bin" "$@" ;;
+        esac
+    fi
+    # 首次运行自动初始化前缀（wineboot -i）
+    if [ ! -f "$WINEPREFIX/system.reg" ]; then
+        info "首次使用，初始化 wine 前缀: $WINEPREFIX"
+        case "$BACKEND" in
+            box64)    "$BOX64_BIN" "$(dirname "$WINE_X86")/wineboot" -i ;;
+            native)   "$(dirname "$WINE_X86")/wineboot" -i ;;
+            hangover) "$(dirname "$WINE_HANGOVER")/wineboot" -i ;;
+            fexcore)  "$FEX_BIN" "$(dirname "$WINE_X86")/wineboot" -i ;;
+        esac
+        echo
+    fi
+    case "$BACKEND" in
+        box64)    exec "$BOX64_BIN" "$WINE_X86" "$@" ;;
+        native)   exec "$WINE_X86" "$@" ;;
+        hangover) exec "$WINE_HANGOVER" "$@" ;;
+        fexcore)  exec "$FEX_BIN" "$WINE_X86" "$@" ;;
+    esac
+}
+
+# ---------- 主入口 ----------
+CMD="${1:-}"
+[ -n "$CMD" ] || { version; echo; usage; exit 0; }
+
+case "$CMD" in
+    help|--help|-h)
+        usage
+        exit 0
+        ;;
+    --container)
+        shift
+        [ -n "${1:-}" ] || die "--container 需要容器名"
+        export ANWIND_CONTAINER="$1"
+        shift
+        ;;
+    --list-backends|--backends)
+        backend_list
+        exit 0
+        ;;
+    --version|-V)
+        version
+        exit 0
+        ;;
+esac
+
+resolve_container
+load_container
+apply_env
+pick_backend
+case "$BACKEND" in box64|fexcore) apply_box64_env ;; esac
+
+info "容器=$CONT_NAME 后端=$BACKEND DISPLAY=$DISPLAY WINEPREFIX=$WINEPREFIX"
+run_wine "$@"
