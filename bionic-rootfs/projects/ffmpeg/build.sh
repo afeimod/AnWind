@@ -35,8 +35,9 @@ args="
   --enable-libpulse
   --enable-libx265
   --extra-libs=-landroid-glob
+  --extra-libs=-landroid-shmem
 "
-deps="libandroid-glob gnutls gmp mp3lame libopus libogg libvorbis libvpx openh264 xvidcore freetype fontconfig harfbuzz libxml2 libdrm vulkan-headers vulkan-icd-loader alsa-lib pulseaudio zlib bzip2 libiconv x265"
+deps="libandroid-glob libandroid-shmem gnutls gmp mp3lame libopus libogg libvorbis libvpx openh264 xvidcore freetype fontconfig harfbuzz libxml2 libdrm vulkan-headers vulkan-icd-loader alsa-lib pulseaudio zlib bzip2 libiconv x265"
 custom_configure() {
   local _cfgArgs=()
   local _arg

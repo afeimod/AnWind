@@ -4,5 +4,7 @@ urlType="tar"
 arch="aarch64 x86_64"
 buildSys="autotools"
 license="MIT"
+args="
+  --enable-malloc0returnsnull=yes"
 # X Render 扩展（wine 文字渲染 / Xcursor 依赖）
 deps="libX11 xorgproto"

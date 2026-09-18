@@ -4,11 +4,11 @@ name: AnWind Bionic Mesa (X11 / aarch64 + x86_64)
 # 构建面向 AnWind bionic rootfs 的 Mesa（X11 平台）
 # ------------------------------------------------------------
 # aarch64:
-#   - gallium: swrast（软渲染）+ freedreno（Adreno 硬件，MSM/KGSL 双 KMD）
+#   - gallium: softpipe（软渲染，产物名 swrast_dri.so）+ freedreno（Adreno 硬件，MSM/KGSL 双 KMD）
 #              + zink（OpenGL-over-Vulkan，与 turnip 配合提升兼容性）
 #   - vulkan : freedreno/turnip（Adreno Vulkan）
 # x86_64:
-#   - gallium: swrast（软渲染）
+#   - gallium: softpipe（软渲染，产物名 swrast_dri.so）
 # 平台: platforms=x11 / egl-native-platform=x11 / glx=dri —— 纯 X11，
 #   无 wayland；与 AnWind 内置 X 服务（tmp/.X11-unix/X1）配合。
 # 产物: anwind-mesa-<ver>-<arch>-bionic.tar.gz（data/data/... 布局）
@@ -146,7 +146,9 @@ jobs:
           check "$M/lib/libGL.so.1"
           check "$M/lib/libEGL.so.1"
           check "$M/lib/libgbm.so.1"
+          # mesa 25.1+ 以 softpipe/llvmpipe 源码构建 swrast DRI 驱动，产物名仍为 swrast_dri.so
           check "$M/lib/dri/swrast_dri.so"
+          check "$M/lib/dri/kms_swrast_dri.so"
           echo "=== 架构相关驱动校验 ==="
           if [[ "${{ matrix.arch }}" == "aarch64" ]]; then
             check "$M/lib/dri/freedreno_dri.so"
@@ -200,8 +202,8 @@ jobs:
           body: |
             AnWind bionic rootfs 专用 Mesa（X11）
 
-            - aarch64: swrast + freedreno(MSM/KGSL) + zink + turnip(freedreno vulkan)
-            - x86_64: swrast
+            - aarch64: softpipe(产物名 swrast_dri.so) + freedreno(MSM/KGSL) + zink + turnip(freedreno vulkan)
+            - x86_64: softpipe(产物名 swrast_dri.so)
             - 设备安装: 解包 `anwind-mesa-*.tar.gz` 至 /（data/data/com.anwind/... 自动就位）
             - 容器内切换 GL 驱动: `anwind-container set <name> gallium=zink|freedreno|llvmpipe`
           files: |

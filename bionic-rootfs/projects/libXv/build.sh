@@ -4,5 +4,7 @@ urlType="tar"
 arch="aarch64 x86_64"
 buildSys="autotools"
 license="MIT"
+args="
+  --enable-malloc0returnsnull=yes"
 # X Video 扩展（gstreamer xvimagesink 视频输出）
 deps="libX11 libXext xorgproto"

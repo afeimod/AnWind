@@ -4,5 +4,7 @@ urlType="tar"
 arch="aarch64 x86_64"
 buildSys="autotools"
 license="MIT"
+args="
+  --enable-malloc0returnsnull=yes"
 # X 扩展库（含 MIT-SHM 共享内存扩展，wine/gst-ximagesink 依赖）
 deps="libX11 xorgproto"

@@ -4,5 +4,7 @@ urlType="tar"
 arch="aarch64 x86_64"
 buildSys="autotools"
 license="MIT"
+args="
+  --enable-malloc0returnsnull=yes"
 # 显示分辨率/刷新率切换（wine 分辨率模拟、vulkan xlib_xrandr WSI 依赖）
 deps="libX11 libXext libXrender libXfixes xorgproto"

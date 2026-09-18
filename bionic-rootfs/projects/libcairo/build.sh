@@ -1,6 +1,6 @@
 revision="1.18.4"
-url="https://gitlab.freedesktop.org/cairo/cairo/-/archive/${revision}/cairo-${revision}.tar.gz"
-urlType="tar"
+url="https://gitlab.freedesktop.org/cairo/cairo.git"
+urlType="git"
 arch="aarch64 x86_64"
 buildSys="meson"
 license="LGPL-2.1-or-later OR MPL-1.1"

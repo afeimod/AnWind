@@ -8,7 +8,7 @@ argsToAutogenSh="1"
 args="
   --disable-nls
   --enable-iconv
-  --enable-libxml2
+  --without-libxml2
   --disable-docbook
   --disable-docs
   --with-default-fonts="${prefix}/share/fonts"

@@ -4,5 +4,7 @@ urlType="tar"
 arch="aarch64 x86_64"
 buildSys="autotools"
 license="MIT"
+args="
+  --enable-malloc0returnsnull=yes"
 # XF86VidMode 扩展（mesa GLX / wine 模式切换）
 deps="libX11 libXext xorgproto"

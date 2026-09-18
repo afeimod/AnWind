@@ -6,7 +6,7 @@ buildSys="autotools"
 license="MIT"
 # X11 核心客户端库 + libX11-xcb（mesa x11 平台依赖）
 # X 传输层由 xtrans 提供（已补丁对齐 AnWind 内置 X 服务的 socket 路径）
-deps="xtrans libxcb xorgproto"
+deps="pthread-stub xtrans libxcb xorgproto"
 
 args="
   --disable-xf86bigfont

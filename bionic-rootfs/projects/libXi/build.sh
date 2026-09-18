@@ -4,5 +4,7 @@ urlType="tar"
 arch="aarch64 x86_64"
 buildSys="autotools"
 license="MIT"
+args="
+  --enable-malloc0returnsnull=yes"
 # X Input 扩展（wine XInput2 游戏输入支持）
 deps="libX11 libXext libXfixes xorgproto"

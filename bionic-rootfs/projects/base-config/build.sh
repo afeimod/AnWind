@@ -1,6 +1,7 @@
 revision="2026-v1"
 urlType="local"
 arch="aarch64 x86_64"
+deps="pthread-stub"
 pkgSrcDir="${wsDir}/projects/base-config"
 buildSys="others"
 license="GPL-3.0"
