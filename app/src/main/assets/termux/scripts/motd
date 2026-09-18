@@ -6,6 +6,8 @@
   pkg update           更新软件源
   anwind-mirror        体检/切换 apt 软件源（下载 403 时用）
   anwind-glibc         一键安装 glibc 运行环境
+  anwind-tarxz <tar.xz>       解压 tar.xz 并自动改写 com.termux 路径
+  anwind-tarxz <tar.xz> -t <目录>  解压到指定目录（rootfs 请勿解到 /sdcard）
   anwind-x11           启动内置 X11 桌面（pkg install xfce4 后体验）
   theme win11          切换 AnWind 桌面主题
   apps / start 浏览器  联动 AnWind 应用

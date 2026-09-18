@@ -72,10 +72,12 @@ fun GamepadOverlay() {
     // v2.15.3：手柄隐藏/离开组合时释放全部按下的键（防联键：不留任何"按着"的键）
     // v2.16.4：同时清空元素命中矩形（防陈旧矩形令浏览器侧误剥离正常触摸）
     // v2.20：同时注销工具条直通区
+    // v2.25：同时清空工具条命中矩形（X11 触摸剥离的手柄侧命中区同生命周期）
     DisposableEffect(gamepadEnabled) {
         onDispose {
             GamepadController.releaseAllKeys()
             GamepadController.clearElementHits()
+            GamepadController.clearToolbarHit()
             TrackpadRouter.registerPassthrough("gpToolbar", null)
         }
     }
@@ -155,8 +157,12 @@ fun GamepadOverlay() {
                 .align(Alignment.TopEnd)
                 .padding(top = 12.dp, end = 12.dp)
                 // v2.20：工具条登记为触控板直通区（真实手指可直接点 ⚙ ✎ ✕）
+                // v2.25：同时登记为 X11 触摸剥离的手柄侧命中区（⚙✎✕ 落点
+                // 归手柄，否则工具条指针被 X11 触摸桥当成屏幕手势吞掉）
                 .onGloballyPositioned {
-                    TrackpadRouter.registerPassthrough("gpToolbar", it.boundsInWindowCompat())
+                    val b = it.boundsInWindowCompat()
+                    TrackpadRouter.registerPassthrough("gpToolbar", b)
+                    GamepadController.registerToolbarHit(b.left, b.top, b.right, b.bottom)
                 }
         )
     }

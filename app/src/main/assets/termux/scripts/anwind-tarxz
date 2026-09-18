@@ -22,6 +22,15 @@
 # 树内的 X11 客户端脚本重写后必然失效，故最后统一换回内置
 # 主副本（etc/anwind/x11/termux-x11）。
 #
+# 解压目录（v2.25 起为正式用法）：
+#   默认 = 压缩包同目录 + 去后缀名（无需额外参数）；
+#   -t <目录> = 指定任意解压目标（相对/绝对路径均可，自动归一）。
+#   注意：/sdcard、/storage/emulated 等共享存储是 FUSE 文件系统，
+#   不支持符号链接/权限位——rootfs / bootstrap 类压缩包解到那里
+#   必然损坏（ln -s 失败、bin/ 下全是断链）。此类包请务必
+#   -t 到 $HOME 或 $PREFIX 下；普通数据包（无符号链接）不受限，
+#   脚本只会给出提示而不会拦截。
+#
 # 用法:
 #   anwind-tarxz <archive.tar.xz>             解压到 <去后缀同名目录>/ 并改写
 #   anwind-tarxz <archive.tar.xz> -t <目录>   解压到指定目录并改写
@@ -44,6 +53,13 @@ anwind-tarxz — 解压 tar.xz 并强制把所有内嵌 com.termux 路径改写�
   anwind-tarxz <archive.tar.xz> -t <目录>    解压到指定目录并改写
   anwind-tarxz -h | --help                   显示本帮助
 
+解压目录:
+  - 默认为压缩包同目录下的去后缀同名目录；
+  - -t 可指定任意目录（相对/绝对路径均可，自动归一为绝对路径）；
+  - 共享存储（/sdcard、/storage/emulated 等）不支持符号链接：
+    rootfs/bootstrap 类压缩包请务必 -t 到 $HOME 等本地目录，
+    否则 bin/ 下符号链接全部断裂、环境不可用。
+
 说明:
   - 等长字节重写对 ELF / 文本 / 符号链接都安全
     （com.termux 与 com.anwind 同为 10 字节，等效按 com.anwind 重新编译）；
@@ -54,9 +70,32 @@ anwind-tarxz — 解压 tar.xz 并强制把所有内嵌 com.termux 路径改写�
     保持 com.termux.x11.*，不可重写）。
 
 示例:
-  anwind-tarxz /sdcard/Download/termux-rootfs.tar.xz
+  anwind-tarxz /sdcard/Download/termux-rootfs.tar.xz -t ~/rootfs
   anwind-tarxz bootstrap-arm64.txz -t ~/bootstrap
+  anwind-tarxz data-pack.tar.xz                # 普通数据包用默认目录即可
 USAGE
+}
+
+# 相对路径 → 绝对路径（realpath 优先，缺失时手工拼接）。
+abspath() {
+  _p="$1"
+  case "$_p" in
+    /*) ;;
+    *) _p="$(pwd)/$_p" ;;
+  esac
+  if command -v realpath >/dev/null 2>&1; then
+    realpath -m "$_p" 2>/dev/null || echo "$_p"
+  else
+    echo "$_p"
+  fi
+}
+
+# 目标是否落在共享存储（FUSE：不支持符号链接/权限位）。
+is_shared_storage() {
+  case "$1" in
+    /sdcard/*|/sdcard|/storage/emulated/*|/storage/emulated|/mnt/user/*|/mnt/media_rw/*) return 0 ;;
+    *) return 1 ;;
+  esac
 }
 
 ARCHIVE=""
@@ -84,12 +123,23 @@ done
   exit 69
 }
 
-# 目标目录默认：压缩包同目录 + 去后缀名
+# 目标目录默认：压缩包同目录 + 去后缀名；-t 指定时归一为绝对路径
 if [ -z "$TARGET" ]; then
   _base=$(basename "$ARCHIVE")
   _base=${_base%.tar.xz}; _base=${_base%.txz}; _base=${_base%.tar}; _base=${_base%.xz}
   _dir=$(dirname "$ARCHIVE")
   TARGET="$_dir/$_base"
+else
+  TARGET=$(abspath "$TARGET")
+fi
+
+if is_shared_storage "$TARGET"; then
+  echo "anwind-tarxz: 警告: 目标 $TARGET 位于共享存储（FUSE 文件系统）。" >&2
+  echo "              共享存储不支持符号链接与权限位：rootfs / bootstrap" >&2
+  echo "              类压缩包解到那里必然损坏（bin/ 全是断链）。" >&2
+  echo "              rootfs 请改用: anwind-tarxz <$ARCHIVE> -t \$HOME/<目录>" >&2
+  echo "              （普通数据包无符号链接，可忽略本警告，继续解压）" >&2
+  sleep 2
 fi
 
 if [ -e "$TARGET" ] && [ -n "$(ls -A "$TARGET" 2>/dev/null)" ]; then

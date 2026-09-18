@@ -586,4 +586,32 @@ object GamepadController {
         }
         return false
     }
+
+    // ---- v2.25 迷你工具条命中（对齐 LinBox：X11 触摸剥离的手柄侧命中区）----
+    // 工具条（⚙✎✕）落点若不登记，X11 智能触摸桥会把按住工具条的手指当成
+    // 屏幕手势（剥离子集为空 → 事件被吞），按钮点不到。
+
+    /** 工具条命中矩形（窗口坐标 px；仅 UI 线程读写） */
+    private var toolbarHitRect: FloatArray? = null
+
+    /** 工具条布局后登记命中矩形（GamepadMiniToolbar 调用） */
+    fun registerToolbarHit(l: Float, t: Float, r: Float, b: Float) {
+        toolbarHitRect = floatArrayOf(l, t, r, b)
+    }
+
+    /** 手柄隐藏/离开组合时清空工具条命中（对齐 clearElementHits 生命周期） */
+    fun clearToolbarHit() {
+        toolbarHitRect = null
+    }
+
+    fun hasToolbarHit(): Boolean = toolbarHitRect != null
+
+    /** 手柄 UI 命中判定（X11 触摸剥离用）：元素 ∪ 迷你工具条 */
+    fun isOverPadUi(x: Float, y: Float): Boolean {
+        if (isOverPadElement(x, y)) return true
+        return toolbarHitRect?.let { rect ->
+            x >= rect[0] - HIT_MARGIN_PX && x <= rect[2] + HIT_MARGIN_PX &&
+                y >= rect[1] - HIT_MARGIN_PX && y <= rect[3] + HIT_MARGIN_PX
+        } == true
+    }
 }

@@ -5,7 +5,10 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.pointerInput
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -30,11 +33,15 @@ import com.anwind.apps.terminal.termux.ExtraKeysModifierState
 import com.anwind.apps.terminal.termux.TermuxBootstrapInstaller
 import com.anwind.apps.terminal.termux.TermuxSessionController
 import com.anwind.termux.view.TerminalView
+import com.anwind.termux.terminal.KeyHandler
 import com.anwind.core.window.AppDef
 import com.anwind.core.window.LaunchMode
 import com.anwind.core.window.WindowContentScope
 import com.anwind.core.window.WindowManager
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
@@ -499,6 +506,9 @@ private val KEY_CODE_MAP: Map<String, Int> = mapOf(
     "ENTER" to KeyEvent.KEYCODE_ENTER
 )
 
+/** 方向键长按连发间隔（ms，对齐系统键盘长按连发节奏）。 */
+private const val KEY_REPEAT_INTERVAL_MS = 50L
+
 /** 把一次按键注入 TerminalView（对齐官方 TerminalExtraKeys 的发送协议）。 */
 private fun sendKeyToTerminal(view: TerminalView?, key: String, modifiers: ExtraKeysModifierState) {
     val v = view ?: return
@@ -508,7 +518,18 @@ private fun sendKeyToTerminal(view: TerminalView?, key: String, modifiers: Extra
     val shift = modifiers.shift.isEngaged
     val fn = modifiers.fn.isEngaged
 
-    if (keyCode != null) {
+    if (keyCode != null && !fn) {
+        // v2.24 方向键修复：直接走 handleKeyCode（Termux 官方同源协议）——
+        // 由 KeyHandler 查表后把 ESC 序列写入会话。旧版合成 ACTION_UP KeyEvent
+        // 再过 onKeyDown，路径长且在某些 ROM/组合下被 isSystem/IME 分支截走，
+        // 导致方向键等系统键不起作用。
+        var keyMod = 0
+        if (ctrl) keyMod = keyMod or KeyHandler.KEYMOD_CTRL
+        if (alt) keyMod = keyMod or KeyHandler.KEYMOD_ALT
+        if (shift) keyMod = keyMod or KeyHandler.KEYMOD_SHIFT
+        v.handleKeyCode(keyCode, keyMod)
+    } else if (keyCode != null) {
+        // FN 激活时保留官方 kcm 回退语义（fn+键 → kcm fallback，如 fn+↑ = PGUP）
         var meta = 0
         if (ctrl) meta = meta or (KeyEvent.META_CTRL_ON or KeyEvent.META_CTRL_LEFT_ON)
         if (alt) meta = meta or (KeyEvent.META_ALT_ON or KeyEvent.META_ALT_LEFT_ON)
@@ -535,7 +556,7 @@ private fun TermuxExtraKeysBar(
             .fillMaxWidth()
             .background(Color(0xFF161616))
     ) {
-        // 第一排：ESC CTRL ALT TAB ← ↑ ↓ →
+        // 第一排：ESC CTRL ALT TAB ← ↑ ↓ →（方向键长按连发）
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -546,10 +567,10 @@ private fun TermuxExtraKeysBar(
             ModifierKey("CTRL", modifiers.ctrl)
             ModifierKey("ALT", modifiers.alt)
             ExtraKey("TAB") { key -> sendKeyToTerminal(view, key, modifiers) }
-            ExtraKey("←") { sendKeyToTerminal(view, "LEFT", modifiers) }
-            ExtraKey("↑") { sendKeyToTerminal(view, "UP", modifiers) }
-            ExtraKey("↓") { sendKeyToTerminal(view, "DOWN", modifiers) }
-            ExtraKey("→") { sendKeyToTerminal(view, "RIGHT", modifiers) }
+            RepeatableKey("←", key = "LEFT", view = view, modifiers = modifiers)
+            RepeatableKey("↑", key = "UP", view = view, modifiers = modifiers)
+            RepeatableKey("↓", key = "DOWN", view = view, modifiers = modifiers)
+            RepeatableKey("→", key = "RIGHT", view = view, modifiers = modifiers)
         }
 
         // 第二排（可切换）：导航键层 / 符号键层
@@ -591,6 +612,76 @@ private fun TermuxExtraKeysBar(
                 }
             }
         }
+    }
+}
+
+/**
+ * 方向键（可长按连发）：
+ * - 短按 = 单击一次（按下立即响应，无点击延迟）；
+ * - 按住超过系统长按阈值后自动连续重复（对齐 Termux/系统键盘的
+ *   按住移动节奏），松手立即停止。
+ */
+@Composable
+private fun RowScope.RepeatableKey(
+    label: String,
+    key: String,
+    view: TerminalView?,
+    modifiers: ExtraKeysModifierState
+) {
+    val haptic = androidx.compose.ui.platform.LocalHapticFeedback.current
+    // 连发循环必须运行在指针事件作用域之外：awaitEachGesture 的接收者
+    // AwaitPointerEventScope 不是 CoroutineScope，其内部只允许挂起等待指针
+    // 事件（delay/launch 会破坏指针采样线程），因此用组合级协程域承载。
+    val scope = rememberCoroutineScope()
+    Box(
+        modifier = Modifier
+            .weight(1f)
+            .height(38.dp)
+            .background(Color(0xFF242424), RoundedCornerShape(5.dp))
+            // v2.25 方向键二次根修：pointerInput 的手势协程只在 key 变化时
+            // 重启。旧版 key 只有键名 —— 首次组合时 view 还是 null
+            // （AndroidView 工厂尚未执行），闭包永久捕获 null，此后
+            // terminalView 变为非 null 也不会重启，方向键按下永远静默丢弃。
+            // 把 view 并入 key：视图挂载瞬间手势协程随最新视图重启。
+            .pointerInput(key, view) {
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    down.consume()
+                    haptic.performHapticFeedback(
+                        androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove
+                    )
+                    // 短按：按下立即生效
+                    sendKeyToTerminal(view, key, modifiers)
+                    // 长按：超过系统长按阈值后进入连续重复，松手即停
+                    val repeatJob = scope.launch {
+                        delay(viewConfiguration.longPressTimeoutMillis)
+                        haptic.performHapticFeedback(
+                            androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress
+                        )
+                        while (isActive) {
+                            delay(KEY_REPEAT_INTERVAL_MS)
+                            sendKeyToTerminal(view, key, modifiers)
+                        }
+                    }
+                    try {
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            if (event.changes.none { it.pressed }) break
+                            event.changes.forEach { it.consume() }
+                        }
+                    } finally {
+                        repeatJob.cancel()
+                    }
+                }
+            },
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            label,
+            color = Color(0xFFE0E0E0),
+            fontSize = 12.sp,
+            fontFamily = FontFamily.Monospace
+        )
     }
 }
 
