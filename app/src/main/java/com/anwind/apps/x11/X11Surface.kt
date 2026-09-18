@@ -33,6 +33,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import com.anwind.core.input.gamepad.GamepadController
 import com.anwind.core.theme.LocalWinTheme
 import com.anwind.core.window.WindowContentScope
 import com.anwind.core.window.WindowManager
@@ -42,7 +43,7 @@ import com.termux.x11.Prefs
 import com.termux.x11.X11InputHub
 import com.termux.x11.input.InputStub
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.first
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
