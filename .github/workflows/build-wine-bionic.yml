@@ -1,0 +1,218 @@
+name: AnWind Bionic Wine (X11 / x86_64 / box64-ready)
+
+# ============================================================
+# 构建面向 AnWind bionic rootfs 的 Wine（x86_64 / 新 WoW64 / X11）
+# ------------------------------------------------------------
+# 产物形态（MiceWine 同款模型）：
+#   * Unix 侧 x86_64-android(bionic) + PE 侧 i386/x86_64（新 WoW64）
+#   * 显示仅 X11：--with-x 全套 X 扩展，连接 AnWind 内置
+#     termux-x11/libXlorie X 服务（App 侧 tmp/.X11-unix/X1，默认 :1）
+#   * 音频 PulseAudio（TCP 127.0.0.1:4713）、GStreamer、OpenGL、Vulkan
+#   * aarch64 设备：由 box64 加载运行（配合 anwind-container 容器管理）
+#   * x86_64 设备：原生运行
+# 依赖自动补齐：build-rootfs-arch.sh 依据 toposort 先构建全部依赖
+#   （X11 栈 / mesa / pulseaudio / gstreamer / gnutls / freetype ...）
+# 产物：anwind-wine-<ver>-x86_64-bionic.tar.gz（data/data/... 布局，
+#   设备上用 `anwind-container install-wine <tar.gz>` 一键安装）
+# ============================================================
+
+on:
+  workflow_dispatch:
+    inputs:
+      wine_url:
+        description: 'Wine 源码包 URL（默认 AndreRH hangover-11.16，与 bionic 补丁同源）'
+        required: false
+        default: 'https://github.com/AndreRH/wine/archive/refs/tags/hangover-11.16.tar.gz'
+        type: string
+      make_release:
+        description: '构建成功后创建 GitHub Release'
+        required: false
+        default: true
+        type: boolean
+
+concurrency:
+  group: bionic-wine-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  build-wine:
+    name: Bionic Wine (x86_64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+
+    steps:
+      # ============ 1. 检出代码 ============
+      - name: 检出仓库
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: 检查构建系统
+        run: |
+          if [[ ! -f "${GITHUB_WORKSPACE}/bionic-rootfs/build-rootfs-arch.sh" ]]; then
+            echo "::error::未找到 bionic-rootfs/build-rootfs-arch.sh！"
+            echo "请将 bionic-rootfs/ 目录提交到仓库根目录后再运行。"
+            exit 1
+          fi
+          if [[ ! -f "${GITHUB_WORKSPACE}/bionic-rootfs/projects/wine/build.sh" ]]; then
+            echo "::error::未找到 bionic-rootfs/projects/wine/ 配方！"
+            exit 1
+          fi
+          echo "构建系统与 wine 配方就绪"
+
+      # ============ 2. 释放磁盘空间 ============
+      - name: 释放 Runner 磁盘空间
+        run: |
+          echo "清理前可用空间:"
+          df -h / | tail -1
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+            /usr/local/.ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost \
+            "${HOME}/.cache" 2>/dev/null || true
+          sudo docker image prune -af >/dev/null 2>&1 || true
+          echo "清理后可用空间:"
+          df -h / | tail -1
+
+      # ============ 3. 宿主依赖（bison/flex/gettext 为 wine 工具链必需） ============
+      - name: 安装宿主依赖（host-deps.sh）
+        run: |
+          sudo -E bash "${GITHUB_WORKSPACE}/bionic-rootfs/host-deps.sh"
+          echo "=== 工具版本 ==="
+          bison --version | head -1
+          flex --version
+          make --version | head -1
+          ccache --version | head -1
+          clang --version | head -1 || true
+
+      # ============ 4. 前缀目录（build 系统按绝对路径安装依赖包） ============
+      - name: 准备 AnWind rootfs 前缀目录
+        run: |
+          sudo mkdir -p /data/data/com.anwind/files/rootfs/usr \
+                        /data/data/com.anwind/files/rootfs/home \
+                        /data/data/com.anwind/files/rootfs/tmp/.X11-unix \
+                        /data/data/com.anwind/files/usr/tmp/.X11-unix
+          sudo chown -R "$(whoami):$(whoami)" /data
+          echo "前缀目录就绪"
+
+      # ============ 5. 缓存（NDK / ccache / llvm-mingw） ============
+      - name: 缓存 NDK
+        uses: actions/cache@v4
+        with:
+          path: bionic-rootfs/ndk
+          key: anwind-ndk-r28b-v1
+
+      - name: 缓存 ccache
+        uses: actions/cache@v4
+        with:
+          path: |
+            bionic-rootfs/bionic_ccache
+            bionic-rootfs/host_ccache
+          key: anwind-bionic-ccache-x86_64-wine-v1
+          restore-keys: |
+            anwind-bionic-ccache-x86_64-v1
+            anwind-bionic-ccache-v1
+
+      - name: 缓存 llvm-mingw（PE 交叉编译器）
+        uses: actions/cache@v4
+        with:
+          path: bionic-rootfs/tmp/llvm-mingw-21
+          key: anwind-llvm-mingw-21-20250319-v1
+
+      # ============ 6. 构建 wine（自动拓扑补齐全部依赖） ============
+      - name: 构建 Wine x86_64（含全部依赖）
+        shell: bash
+        run: |
+          cd "${GITHUB_WORKSPACE}/bionic-rootfs"
+          chmod +x *.sh
+          set -o pipefail
+          export ANWIND_WINE_URL="${{ github.event.inputs.wine_url }}"
+          ./build-rootfs-arch.sh --arch x86_64 \
+            --build wine 2>&1 | tee build-wine-x86_64.log
+
+      # ============ 7. 产物校验 ============
+      - name: 校验 wine 产物
+        run: |
+          PKG_TAR=$(ls "${GITHUB_WORKSPACE}/bionic-rootfs/pkgs/"wine-*x86_64.tar | head -n 1)
+          [[ -n "$PKG_TAR" ]] || { echo "::error::未找到 wine 包 tar"; exit 1; }
+          echo "wine 包: $PKG_TAR"
+          rm -rf /tmp/wine-verify && mkdir -p /tmp/wine-verify
+          tar -xf "$PKG_TAR" -C /tmp/wine-verify
+          W=/tmp/wine-verify/data/data/com.anwind/files/rootfs/usr/opt/wine
+          echo "=== 关键文件校验 ==="
+          MISS=0
+          check() { if [[ -e "$1" ]]; then echo "  [OK] $1"; else echo "  [MISS] $1"; MISS=1; fi; }
+          check "$W/bin/wine"
+          check "$W/bin/wineboot"
+          check "$W/bin/wineserver"
+          check "$W/lib/wine/x86_64-windows/kernel32.dll"
+          check "$W/lib/wine/i386-windows/kernel32.dll"
+          ls "$W/lib/wine/" || true
+          echo "=== X11 驱动校验（必须有 winex11.drv，且无 wayland 驱动）==="
+          if find "$W" -name "winex11.drv*" | grep -q .; then
+            echo "  [OK] winex11.drv 存在（X11 显示驱动）"
+          else
+            echo "  [MISS] winex11.drv 缺失！X11 构建失败"; MISS=1
+          fi
+          if find "$W" -name "winewayland.drv*" | grep -q .; then
+            echo "  [FOUND] winewayland.drv 不应存在！"; MISS=1
+          else
+            echo "  [OK] 无 wayland 驱动残留"
+          fi
+          echo "=== 音频驱动校验 ==="
+          find "$W" \( -name "winepulse.drv*" -o -name "winealsa.drv*" \) | sed 's/^/  [OK] /'
+          [[ "$MISS" == "0" ]] || { echo "::error::wine 产物校验失败！"; exit 1; }
+
+      # ============ 8. 打包发行 ============
+      - name: 打包 wine 发行包
+        run: |
+          PKG_TAR=$(ls "${GITHUB_WORKSPACE}/bionic-rootfs/pkgs/"wine-*x86_64.tar | head -n 1)
+          # 从包名提取版本：wine-<revision>-x86_64.tar
+          WINE_VER=$(basename "$PKG_TAR" | sed -e 's/^wine-//' -e 's/-x86_64\.tar$//')
+          echo "WINE_VER=${WINE_VER}" >> "$GITHUB_ENV"
+          PACKAGE_NAME="anwind-wine-${WINE_VER}-x86_64-bionic"
+          echo "PACKAGE_NAME=${PACKAGE_NAME}" >> "$GITHUB_ENV"
+          cd "${GITHUB_WORKSPACE}"
+          tar -czf "${PACKAGE_NAME}.tar.gz" -C /tmp/wine-verify .
+          sha256sum "${PACKAGE_NAME}.tar.gz" > checksums-wine-x86_64.txt
+          echo "=== 打包完成 ==="
+          ls -lh "${PACKAGE_NAME}.tar.gz" checksums-wine-x86_64.txt
+          echo "设备安装方式: anwind-container install-wine ${PACKAGE_NAME}.tar.gz"
+
+      # ============ 9. 上传日志与产物 ============
+      - name: 上传构建日志
+        uses: actions/upload-artifact@v4
+        if: ${{ always() }}
+        with:
+          name: wine-build-log-x86_64
+          path: bionic-rootfs/build-wine-x86_64.log
+          if-no-files-found: ignore
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.PACKAGE_NAME }}
+          path: |
+            ${{ env.PACKAGE_NAME }}.tar.gz
+            checksums-wine-x86_64.txt
+          if-no-files-found: error
+
+      - name: 创建 Release
+        if: ${{ github.event.inputs.make_release == 'true' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: bionic-wine-${{ env.WINE_VER }}
+          name: AnWind Bionic Wine ${{ env.WINE_VER }} (x86_64 / X11)
+          body: |
+            AnWind bionic rootfs 专用 Wine（x86_64 / 新 WoW64 / X11）
+
+            - 显示: X11（AnWind 内置 X 服务, 默认 :1）
+            - 音频: PulseAudio (TCP 127.0.0.1:4713)
+            - 设备安装: `anwind-container install-wine anwind-wine-${{ env.WINE_VER }}-x86_64-bionic.tar.gz`
+            - aarch64 设备需配合 box64（anwind-container 自动选择后端）
+          files: |
+            ${{ env.PACKAGE_NAME }}.tar.gz
+            checksums-wine-x86_64.txt
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

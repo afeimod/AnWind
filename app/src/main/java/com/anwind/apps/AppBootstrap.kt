@@ -2,6 +2,7 @@ package com.anwind.apps
 
 import com.anwind.apps.browser.BrowserApp
 import com.anwind.apps.calculator.CalculatorApp
+import com.anwind.apps.containers.ContainersApp
 import com.anwind.apps.clock.ClockApp
 import com.anwind.apps.filemanager.FileExplorerApp
 import com.anwind.apps.imageviewer.ImageViewerApp
@@ -36,6 +37,8 @@ object AppBootstrap {
         AppRegistry.register(SimpleTerminalApp)
         // v2.22.2：内置 X11 桌面（全屏显示端，终端 anwind-x11 命令调起）
         AppRegistry.register(X11App)
+        // v2.26：Wine 容器管理（box64/FEXCore/Hangover 后端，X11 显示）
+        AppRegistry.register(ContainersApp)
         AppRegistry.register(MediaPlayerApp)
         AppRegistry.register(MusicPlayerApp)
         AppRegistry.register(MinesweeperApp)

@@ -157,7 +157,7 @@ jobs:
             if [[ -e "$1" ]]; then echo "  [OK] $1"; else echo "  [MISS] $1"; MISS=1; fi
           }
           MISS=0
-          check "$RFS/lib/libc.so"
+          check "$RFS/lib/libc++_shared.so"
           check "$RFS/lib/libX11.so.6"
           check "$RFS/lib/libX11-xcb.so.1"
           check "$RFS/lib/libxcb.so.1"
@@ -179,10 +179,16 @@ jobs:
           check "$RFS/lib/libvulkan.so.1"
           check "$RFS/share/X11/xkb"
           check "$RFS/etc/hosts"
+          check "$RFS/bin/anwind-container"
+          check "$RFS/bin/anwind-wine"
+          check "$RFS/etc/anwind/container.conf"
           if [[ "${{ matrix.arch }}" == "aarch64" ]]; then
             check "$RFS/opt/bin/wine"
             check "$RFS/opt/lib/wine"
             check "$RFS/local/bin/box64"
+          else
+            check "$RFS/opt/wine/bin/wine"
+            check "$RFS/opt/wine/lib/wine/x86_64-windows/kernel32.dll"
           fi
           [[ "$MISS" == "0" ]] || { echo "::error::rootfs 缺少关键文件！"; exit 1; }
 

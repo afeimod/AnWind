@@ -1,0 +1,211 @@
+name: AnWind Bionic Mesa (X11 / aarch64 + x86_64)
+
+# ============================================================
+# 构建面向 AnWind bionic rootfs 的 Mesa（X11 平台）
+# ------------------------------------------------------------
+# aarch64:
+#   - gallium: swrast（软渲染）+ freedreno（Adreno 硬件，MSM/KGSL 双 KMD）
+#              + zink（OpenGL-over-Vulkan，与 turnip 配合提升兼容性）
+#   - vulkan : freedreno/turnip（Adreno Vulkan）
+# x86_64:
+#   - gallium: swrast（软渲染）
+# 平台: platforms=x11 / egl-native-platform=x11 / glx=dri —— 纯 X11，
+#   无 wayland；与 AnWind 内置 X 服务（tmp/.X11-unix/X1）配合。
+# 产物: anwind-mesa-<ver>-<arch>-bionic.tar.gz（data/data/... 布局）
+# ============================================================
+
+on:
+  workflow_dispatch:
+    inputs:
+      mesa_ref:
+        description: 'Mesa 版本（Git 标签，如 mesa-26.2.1）'
+        required: false
+        default: 'mesa-26.2.1'
+        type: string
+      arch:
+        description: '目标架构'
+        required: false
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - aarch64
+          - x86_64
+      make_release:
+        description: '构建成功后创建 GitHub Release'
+        required: false
+        default: true
+        type: boolean
+
+concurrency:
+  group: bionic-mesa-${{ github.ref }}-${{ github.event.inputs.arch }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  build-mesa:
+    name: Bionic Mesa (${{ matrix.arch }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: ${{ fromJSON(github.event.inputs.arch == 'all' && '["aarch64", "x86_64"]' || format('["{0}"]', github.event.inputs.arch)) }}
+
+    steps:
+      # ============ 1. 检出代码 ============
+      - name: 检出仓库
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: 检查构建系统
+        run: |
+          if [[ ! -f "${GITHUB_WORKSPACE}/bionic-rootfs/build-rootfs-arch.sh" ]]; then
+            echo "::error::未找到 bionic-rootfs/build-rootfs-arch.sh！"
+            exit 1
+          fi
+          if [[ ! -f "${GITHUB_WORKSPACE}/bionic-rootfs/projects/mesa/build.sh" ]]; then
+            echo "::error::未找到 bionic-rootfs/projects/mesa/ 配方！"
+            exit 1
+          fi
+          echo "构建系统与 mesa 配方就绪"
+
+      # ============ 2. 释放磁盘空间（mesa + llvm 依赖链较大） ============
+      - name: 释放 Runner 磁盘空间
+        run: |
+          echo "清理前可用空间:"
+          df -h / | tail -1
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+            /usr/local/.ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost \
+            "${HOME}/.cache" 2>/dev/null || true
+          sudo docker image prune -af >/dev/null 2>&1 || true
+          echo "清理后可用空间:"
+          df -h / | tail -1
+
+      # ============ 3. 宿主依赖 ============
+      - name: 安装宿主依赖（host-deps.sh，含新版 meson/ninja）
+        run: |
+          sudo -E bash "${GITHUB_WORKSPACE}/bionic-rootfs/host-deps.sh"
+          meson --version
+          ninja --version
+          glslangValidator --version 2>/dev/null | head -1 || true
+
+      # ============ 4. 前缀目录 ============
+      - name: 准备 AnWind rootfs 前缀目录
+        run: |
+          sudo mkdir -p /data/data/com.anwind/files/rootfs/usr \
+                        /data/data/com.anwind/files/rootfs/home \
+                        /data/data/com.anwind/files/rootfs/tmp/.X11-unix \
+                        /data/data/com.anwind/files/usr/tmp/.X11-unix
+          sudo chown -R "$(whoami):$(whoami)" /data
+
+      # ============ 5. 缓存 ============
+      - name: 缓存 NDK
+        uses: actions/cache@v4
+        with:
+          path: bionic-rootfs/ndk
+          key: anwind-ndk-r28b-v1
+
+      - name: 缓存 ccache
+        uses: actions/cache@v4
+        with:
+          path: |
+            bionic-rootfs/bionic_ccache
+            bionic-rootfs/host_ccache
+          key: anwind-bionic-ccache-${{ matrix.arch }}-mesa-v1
+          restore-keys: |
+            anwind-bionic-ccache-${{ matrix.arch }}-v1
+            anwind-bionic-ccache-v1
+
+      # ============ 6. 构建 mesa（自动拓扑补齐 X11 全栈依赖） ============
+      - name: 构建 Mesa ${{ matrix.arch }}（含 X11 栈依赖）
+        shell: bash
+        run: |
+          cd "${GITHUB_WORKSPACE}/bionic-rootfs"
+          chmod +x *.sh
+          set -o pipefail
+          export ANWIND_MESA_REF="${{ github.event.inputs.mesa_ref }}"
+          ./build-rootfs-arch.sh --arch "${{ matrix.arch }}" \
+            --build mesa 2>&1 | tee build-mesa-${{ matrix.arch }}.log
+
+      # ============ 7. 产物校验 ============
+      - name: 校验 mesa 产物
+        run: |
+          PKG_TAR=$(ls "${GITHUB_WORKSPACE}/bionic-rootfs/pkgs/"mesa-*-${{ matrix.arch }}.tar | head -n 1)
+          [[ -n "$PKG_TAR" ]] || { echo "::error::未找到 mesa 包 tar"; exit 1; }
+          echo "mesa 包: $PKG_TAR"
+          rm -rf /tmp/mesa-verify && mkdir -p /tmp/mesa-verify
+          tar -xf "$PKG_TAR" -C /tmp/mesa-verify
+          M=/tmp/mesa-verify/data/data/com.anwind/files/rootfs/usr
+          echo "=== 关键文件校验 ==="
+          MISS=0
+          check() { if [[ -e "$1" ]]; then echo "  [OK] $1"; else echo "  [MISS] $1"; MISS=1; fi; }
+          check "$M/lib/libGL.so.1"
+          check "$M/lib/libEGL.so.1"
+          check "$M/lib/libgbm.so.1"
+          check "$M/lib/dri/swrast_dri.so"
+          echo "=== 架构相关驱动校验 ==="
+          if [[ "${{ matrix.arch }}" == "aarch64" ]]; then
+            check "$M/lib/dri/freedreno_dri.so"
+            check "$M/lib/dri/zink_dri.so"
+            check "$M/lib/libvulkan_freedreno.so"
+          fi
+          echo "=== wayland 残留校验（应全部不存在）==="
+          for f in "$M/lib/libwayland-client.so" "$M/lib/libgallium-"*"-wayland"*; do
+            if [[ -e "$f" ]]; then echo "  [FOUND] $f 不应存在！"; MISS=1; else echo "  [NOT FOUND] $(basename "$f")"; fi
+          done
+          [[ "$MISS" == "0" ]] || { echo "::error::mesa 产物校验失败！"; exit 1; }
+
+      # ============ 8. 打包发行 ============
+      - name: 打包 mesa 发行包
+        run: |
+          PKG_TAR=$(ls "${GITHUB_WORKSPACE}/bionic-rootfs/pkgs/"mesa-*-${{ matrix.arch }}.tar | head -n 1)
+          MESA_VER=$(basename "$PKG_TAR" | sed -e 's/^mesa-//' -e 's/-${{ matrix.arch }}\.tar$//')
+          echo "MESA_VER=${MESA_VER}" >> "$GITHUB_ENV"
+          PACKAGE_NAME="anwind-mesa-${MESA_VER}-${{ matrix.arch }}-bionic"
+          echo "PACKAGE_NAME=${PACKAGE_NAME}" >> "$GITHUB_ENV"
+          cd "${GITHUB_WORKSPACE}"
+          tar -czf "${PACKAGE_NAME}.tar.gz" -C /tmp/mesa-verify .
+          sha256sum "${PACKAGE_NAME}.tar.gz" > "checksums-mesa-${{ matrix.arch }}.txt"
+          echo "=== 打包完成 ==="
+          ls -lh "${PACKAGE_NAME}.tar.gz" "checksums-mesa-${{ matrix.arch }}.txt"
+
+      # ============ 9. 上传日志与产物 ============
+      - name: 上传构建日志
+        uses: actions/upload-artifact@v4
+        if: ${{ always() }}
+        with:
+          name: mesa-build-log-${{ matrix.arch }}
+          path: bionic-rootfs/build-mesa-${{ matrix.arch }}.log
+          if-no-files-found: ignore
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.PACKAGE_NAME }}
+          path: |
+            ${{ env.PACKAGE_NAME }}.tar.gz
+            checksums-mesa-${{ matrix.arch }}.txt
+          if-no-files-found: error
+
+      - name: 创建 Release
+        if: ${{ github.event.inputs.make_release == 'true' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: bionic-mesa-${{ env.MESA_VER }}
+          name: AnWind Bionic Mesa ${{ env.MESA_VER }} (X11)
+          body: |
+            AnWind bionic rootfs 专用 Mesa（X11）
+
+            - aarch64: swrast + freedreno(MSM/KGSL) + zink + turnip(freedreno vulkan)
+            - x86_64: swrast
+            - 设备安装: 解包 `anwind-mesa-*.tar.gz` 至 /（data/data/com.anwind/... 自动就位）
+            - 容器内切换 GL 驱动: `anwind-container set <name> gallium=zink|freedreno|llvmpipe`
+          files: |
+            ${{ env.PACKAGE_NAME }}.tar.gz
+            checksums-mesa-${{ matrix.arch }}.txt
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
