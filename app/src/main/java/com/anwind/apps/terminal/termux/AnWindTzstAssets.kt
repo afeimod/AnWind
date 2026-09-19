@@ -259,12 +259,14 @@ object AnWindTzstAssets {
      *
      * 落位规则（用户资产 = 顶层 system32/ + syswow64/ 布局，直接解压；
      * 非 x32/x64 目录样式）：
-     *   system32/*  → drive_c/windows/system32/   （64 位 DLL）
-     *   syswow64/*  → drive_c/windows/syswow64/   （32 位 DLL）
+     *   system32 目录 → drive_c/windows/system32/   （64 位 DLL）
+     *   syswow64 目录 → drive_c/windows/syswow64/   （32 位 DLL）
      * 兼容上游发布布局自动重映射：
-     *   x64/*       → system32/*
-     *   x32/* x86/* → syswow64/*
-     *   裸 *.dll    → system32/*（视为 64 位）
+     *   x64 目录      → system32
+     *   x32、x86 目录 → syswow64
+     *   裸 *.dll      → system32（视为 64 位）
+     * ⚠ Kotlin 注释支持嵌套：注释文本里禁止出现 "斜杠+星号" 序列
+     *   （会被 lexer 当作子注释开启，导致整段注释永不闭合）。
      *
      * 幂等标记: <prefix>/anwindmeta/.anwind-dxvk-applied（glibc-runner [F5]
      * 同名互认）；标记存在且指纹未变 → 跳过。资产更新（指纹变化）→ 重铺。
