@@ -118,6 +118,16 @@ if [[ -f /etc/os-release ]]; then
     command -v libtoolize >/dev/null 2>&1 \
       || { echo "libtoolize 不可用!（libexpat 等包 autoreconf 必需）" && exit 1; }
     libtoolize --version | head -1
+    # libtool 二进制兜底：libflac 等 autogen.sh 会 `command -v libtool`
+    # （此前出现过 libtoolize 可用但 libtool 缺失、40 分钟构建到 libflac 才失败的坑。
+    #  libflac 已改走 CMake 不再依赖它，此处仅尝试修复 + 警告，不再致命拦截）
+    if ! command -v libtool >/dev/null 2>&1; then
+      echo "警告: libtool 二进制缺失，尝试显式重装..."
+      apt-get install -y --reinstall libtool || true
+      command -v libtool >/dev/null 2>&1 \
+        || echo "警告: libtool 仍不可用（当前配方链已不依赖；若后续新增 autogen 包需注意）"
+    fi
+    command -v libtool >/dev/null 2>&1 && libtool --version | head -1 || true
     sed -i 's/^#\(en_US.UTF-8\)/\1/' /etc/locale.gen && locale-gen
     ;;
   *)
