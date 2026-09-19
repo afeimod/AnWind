@@ -59,11 +59,37 @@ shopt -u nullglob
 
 [[ ${#pkgFiles[@]} -eq 0 ]] && { echo "未找到匹配的包 (arch=${targetArch})"; exit 1; }
 
+# ---- 磁盘空间预检：解压目标需要至少与包体积相当的空间 ----
+needKB=$(du -sk "${pkgDir}" | cut -f1)
+freeKB=$(df -Pk "$exportPath" | awk 'NR==2{print $4}')
+echo "包总计: $((needKB / 1024))MB, 解压目标可用: $((freeKB / 1024))MB"
+if [[ "$freeKB" -lt "$needKB" ]]; then
+  echo "::error::磁盘空间不足：解压需约 $((needKB / 1024))MB，仅剩 $((freeKB / 1024))MB"
+  echo "提示：请在调用本脚本前清理构建源码树（src/）与下载缓存。"
+  df -h "$exportPath" | tail -2
+  exit 2
+fi
+
 echo "解压 ${#pkgFiles[@]} 个包到 ${exportPath} (arch=${targetArch})"
 
+# ---- 逐包解压：单包失败不中断，最后汇总报告（便于一眼定位问题包） ----
+failedPkgs=()
 for pkg in "${pkgFiles[@]}"; do
   echo "解压 => $(basename "$pkg")"
-  tar -xf "$pkg" -C "$exportPath"
+  if ! tar -xf "$pkg" -C "$exportPath" 2>"/tmp/.make-rootfs-err.$$"; then
+    echo "::error::解压失败 => $(basename "$pkg")"
+    # 注意顺序：head 先截断再交给 sed，避免 sed 在长错误清单下触发 SIGPIPE/pipefail
+    head -15 "/tmp/.make-rootfs-err.$$" | sed 's/^/    /' || true
+    failedPkgs+=("$(basename "$pkg")")
+  fi
 done
+rm -f "/tmp/.make-rootfs-err.$$"
+
+if [[ ${#failedPkgs[@]} -gt 0 ]]; then
+  echo "::error::共 ${#failedPkgs[@]} 个包解压失败: ${failedPkgs[*]}"
+  echo "=== 解压目标磁盘状态 ==="
+  df -h "$exportPath" | tail -2
+  exit 2
+fi
 
 echo "完成"

@@ -160,6 +160,16 @@ jobs:
         shell: bash
         run: |
           cd "${GITHUB_WORKSPACE}/bionic-rootfs"
+
+          # 组装前清理：源码树/下载缓存已完成使命（NDK 与 ccache 在 Post 阶段
+          # 单独回存缓存，不受影响）。此前 620 个包的源码树+构建产物可占 10GB+，
+          # 曾把磁盘压到解压中途 "No space left on device"（tar exit 2）。
+          echo "=== 清理构建残留，释放磁盘 ==="
+          rm -rf "${GITHUB_WORKSPACE}/bionic-rootfs/src" \
+                 "${GITHUB_WORKSPACE}/bionic-rootfs/tmp" \
+                 /tmp/download-src /tmp/ndk.zip /tmp/ndk-tmp 2>/dev/null || true
+          df -h / | tail -1
+
           ./make-rootfs.sh --export "/tmp/anwind-rootfs" --arch "${{ matrix.arch }}"
 
           # 运行时目录 + 主目录

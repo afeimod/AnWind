@@ -195,6 +195,13 @@ jobs:
           free -h
 
       # ============ 8. 产物校验 ============
+      # 布局说明（wine 11 新 WoW64）：
+      #   * arm64ec 形态：arm64ec PE 代码以 ARM64X 混合形式并入 aarch64-windows/ 的
+      #     DLL（load config 内含 CHPE 元数据），不再产出独立 arm64ec-windows/ 目录
+      #     —— 与官方 hangover 发布包（hangover_11.16_arm64.deb）布局逐字节一致；
+      #     音频/显示等 unix 侧模块为 aarch64-unix/ 下的 .so（wine11 起音频驱动
+      #     是纯 unixlib，winepulse.drv/winealsa.drv 的 PE 侧文件已不存在）
+      #   * x86_64 形态：PE 为 i386-windows/ + x86_64-windows/，unix 为 x86_64-unix/
       - name: 校验 wine 产物（${{ matrix.flavor }}）
         run: |
           if [[ "${{ matrix.flavor }}" == "x86_64" ]]; then
@@ -216,15 +223,35 @@ jobs:
             check "$W/opt/wine/bin/wineserver"
             check "$W/opt/wine/lib/wine/x86_64-windows/kernel32.dll"
             check "$W/opt/wine/lib/wine/i386-windows/kernel32.dll"
+            check "$W/opt/wine/lib/wine/x86_64-unix/ntdll.so"
+            check "$W/opt/wine/lib/wine/x86_64-unix/winex11.so"
+            check "$W/opt/wine/lib/wine/x86_64-unix/winepulse.so"
+            check "$W/opt/wine/lib/wine/x86_64-unix/winealsa.so"
+            echo "--- lib/wine 目录布局 ---"
             ls "$W/opt/wine/lib/wine/" || true
           else
             check "$W/opt/bin/wine"
             check "$W/opt/bin/wineboot"
             check "$W/opt/bin/wineserver"
-            check "$W/opt/lib/wine/arm64ec-windows/kernel32.dll"
             check "$W/opt/lib/wine/aarch64-windows/kernel32.dll"
+            check "$W/opt/lib/wine/aarch64-windows/ntdll.dll"
             check "$W/opt/lib/wine/i386-windows/kernel32.dll"
+            check "$W/opt/lib/wine/aarch64-unix/ntdll.so"
+            check "$W/opt/lib/wine/aarch64-unix/winex11.so"
+            check "$W/opt/lib/wine/aarch64-unix/winepulse.so"
+            check "$W/opt/lib/wine/aarch64-unix/winealsa.so"
+            check "$W/opt/.anwind-wine-info"
+            echo "--- lib/wine 目录布局 ---"
             ls "$W/opt/lib/wine/" || true
+          fi
+          echo "=== ARM64X 混合校验（arm64ec 代码应并入 aarch64-windows DLL） ==="
+          if [[ "${{ matrix.flavor }}" == "arm64ec" ]]; then
+            python3 "${GITHUB_WORKSPACE}/bionic-rootfs/verify-arm64x.py" \
+              "$W/opt/lib/wine/aarch64-windows/kernel32.dll" \
+              "$W/opt/lib/wine/aarch64-windows/ntdll.dll" \
+              "$W/opt/lib/wine/aarch64-windows/winex11.drv" || MISS=1
+          else
+            echo "  [SKIP] x86_64 形态无需 ARM64X 校验"
           fi
           echo "=== X11 驱动校验（必须有 winex11.drv，且无 wayland 驱动）==="
           if find "$W" -name "winex11.drv*" | grep -q .; then
@@ -237,8 +264,15 @@ jobs:
           else
             echo "  [OK] 无 wayland 驱动残留"
           fi
-          echo "=== 音频驱动校验 ==="
-          find "$W" \( -name "winepulse.drv*" -o -name "winealsa.drv*" \) | sed 's/^/  [OK] /'
+          echo "=== 音频驱动校验（wine 11 音频驱动为 unix 侧模块 .so） ==="
+          for drv in winepulse.so winealsa.so; do
+            found=$(find "$W" -name "$drv" 2>/dev/null | head -n 1 || true)
+            if [[ -n "$found" ]]; then
+              echo "  [OK] $drv => $found"
+            else
+              echo "  [MISS] $drv 缺失！音频将无声"; MISS=1
+            fi
+          done
           [[ "$MISS" == "0" ]] || { echo "::error::wine 产物校验失败！"; exit 1; }
 
       # ============ 9. 打包发行 ============
