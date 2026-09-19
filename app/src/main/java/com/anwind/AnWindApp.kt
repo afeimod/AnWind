@@ -114,6 +114,13 @@ class AnWindApp : Application() {
             // 迁移异常中断时打开主界面一次仍可部署 etc/anwind/rescue
             com.anwind.apps.terminal.termux.TermuxBootstrapInstaller
                 .ensureRescueLibs(this@AnWindApp)
+            // v2.26 rev40 [A1]：内置 tzst 资产自解压（幂等）——
+            // rootfs/mesa/box64/turnip 按指纹铺装到 bionic rootfs；
+            // dxvk 仅对"已构建"的 wine 前缀解压到 drive_c/windows
+            // （未构建的前缀自动等待，前缀就绪后的首次启动/进容器
+            // 界面即补齐），不预创建任何前缀目录。
+            com.anwind.apps.terminal.termux.AnWindTzstAssets
+                .installAllIfNeeded(this@AnWindApp)
         }
 
         // v2.23.2 自由窗口能力预热：后台检测设备是否支持 freeform；

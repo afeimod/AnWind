@@ -1,6 +1,6 @@
 #!/data/data/com.anwind/files/usr/bin/sh
 # ============================================================
-# anwind-tarxz — 解压 tar.xz 并把所有内嵌 com.termux 路径
+# anwind-tarxz — 解压 tar.xz / tzst 并把所有内嵌 com.termux 路径
 #                强制改写为 com.anwind（与 pkg 安装时同款引擎）
 # ============================================================
 # 背景：官方 termux 生态的 rootfs / bootstrap / 打包 tar.xz 把
@@ -32,12 +32,13 @@
 #   脚本只会给出提示而不会拦截。
 #
 # 用法:
-#   anwind-tarxz <archive.tar.xz>             解压到 <去后缀同名目录>/ 并改写
-#   anwind-tarxz <archive.tar.xz> -t <目录>   解压到指定目录并改写
+#   anwind-tarxz <archive>             解压到 <去后缀同名目录>/ 并改写
+#   anwind-tarxz <archive> -t <目录>   解压到指定目录并改写
 #   anwind-tarxz -h | --help                  本帮助
 #
-# 兼容: *.tar.xz / *.txz（bootstrap 自带 GNU tar + xz，保留
-#       权限/符号链接/硬链接）
+# 兼容 (rev40 起): *.tar.xz / *.txz / *.tzst / *.tar.zst / *.tar
+#       （bootstrap 自带 GNU tar + xz；tzst 需 zstd 程序，缺失时
+#       给出 pkg install zstd 指引）
 # ============================================================
 set -u
 
@@ -46,12 +47,16 @@ REPREFIX="$PREFIX/bin/anwind-reprefix"
 
 usage() {
   cat <<'USAGE'
-anwind-tarxz — 解压 tar.xz 并强制把所有内嵌 com.termux 路径改写为 com.anwind
+anwind-tarxz — 解压 tar.xz / tzst 并强制把所有内嵌 com.termux 路径改写为 com.anwind
 
 用法:
   anwind-tarxz <archive.tar.xz>              解压到 <archive 去后缀>/ 并改写
   anwind-tarxz <archive.tar.xz> -t <目录>    解压到指定目录并改写
   anwind-tarxz -h | --help                   显示本帮助
+
+兼容格式:
+  *.tar.xz / *.txz / *.tar（离线自带）
+  *.tzst / *.tar.zst（需 zstd: pkg install zstd）
 
 解压目录:
   - 默认为压缩包同目录下的去后缀同名目录；
@@ -126,7 +131,8 @@ done
 # 目标目录默认：压缩包同目录 + 去后缀名；-t 指定时归一为绝对路径
 if [ -z "$TARGET" ]; then
   _base=$(basename "$ARCHIVE")
-  _base=${_base%.tar.xz}; _base=${_base%.txz}; _base=${_base%.tar}; _base=${_base%.xz}
+  _base=${_base%.tar.xz}; _base=${_base%.txz}; _base=${_base%.tar.zst}
+  _base=${_base%.tzst}; _base=${_base%.tar}; _base=${_base%.xz}; _base=${_base%.zst}
   _dir=$(dirname "$ARCHIVE")
   TARGET="$_dir/$_base"
 else
@@ -150,11 +156,34 @@ fi
 mkdir -p "$TARGET" 2>/dev/null || { echo "anwind-tarxz: 无法创建 $TARGET" >&2; exit 73; }
 
 echo "==> [1/4] 解压 $(basename "$ARCHIVE") → $TARGET"
-if ! tar -xJf "$ARCHIVE" -C "$TARGET"; then
-  echo "anwind-tarxz: 解压失败（xz 数据损坏 / 磁盘或内存不足；" >&2
-  echo "              若含设备节点等特殊文件，GNU tar 会部分报错，请检查上方输出）" >&2
-  exit 74
-fi
+case "$ARCHIVE" in
+  *.tar.xz|*.txz)
+    if ! tar -xJf "$ARCHIVE" -C "$TARGET"; then
+      echo "anwind-tarxz: 解压失败（xz 数据损坏 / 磁盘或内存不足；" >&2
+      echo "              若含设备节点等特殊文件，GNU tar 会部分报错，请检查上方输出）" >&2
+      exit 74
+    fi
+    ;;
+  *.tzst|*.tar.zst)
+    if command -v zstd >/dev/null 2>&1; then
+      if ! zstd -dc "$ARCHIVE" | tar -xf - -C "$TARGET"; then
+        echo "anwind-tarxz: 解压失败（zstd/tar 报错，请检查上方输出）" >&2
+        exit 74
+      fi
+    elif tar --zstd -xf "$ARCHIVE" -C "$TARGET" 2>/dev/null; then
+      :   # tar 自带 zstd 过滤器
+    else
+      echo "anwind-tarxz: 解压 .tzst 需要 zstd。请先执行: pkg install zstd" >&2
+      exit 74
+    fi
+    ;;
+  *)
+    if ! tar -xf "$ARCHIVE" -C "$TARGET"; then
+      echo "anwind-tarxz: 解压失败（无法识别的格式或数据损坏）" >&2
+      exit 74
+    fi
+    ;;
+esac
 
 echo "==> [2/4] 强制改写内嵌路径 com.termux → com.anwind（等长重写，ELF 安全）"
 CHANGES=$("$REPREFIX" --tree "$TARGET")

@@ -72,6 +72,12 @@ fun ContainerListContent(scope: WindowContentScope) {
         withContext(Dispatchers.IO) {
             containers = ContainerManager.list()
             rootfsReady = ContainerManager.rootfsReady()
+            // v2.26 rev40：进入容器界面即补压 DXVK 资产——用户首次
+            // wineboot 构建前缀后无需重启 App，回到本界面即自动把
+            // 内置 dxvk-*.tzst 解压进新前缀的 drive_c/windows
+            // （system32/syswow64 布局直解；未构建前缀自动跳过）。
+            com.anwind.apps.terminal.termux.AnWindTzstAssets
+                .applyDxvkWhenPrefixReady(context)
         }
     }
 
@@ -118,8 +124,9 @@ fun ContainerListContent(scope: WindowContentScope) {
                     Text("未检测到 bionic rootfs", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.error)
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "请先在 AnWind 中导入由 build-bionic-rootfs.yml 构建出的 rootfs 包（内含 anwind-container CLI），" +
-                            "路径：/data/data/com.anwind/files/rootfs",
+                        "未检测到 bionic rootfs。若本 APK 内置了 rootfs 资产（assets/anwind/rootfs-*.tzst），" +
+                            "启动时会自动解压到 /data/data/com.anwind/files/rootfs（请稍候重进）；" +
+                            "也可在终端用 anwind-tarxz 导入 build-bionic-rootfs.yml 构建的 rootfs 包（内含 anwind-container CLI）。",
                         fontSize = 12.sp, color = themeSec()
                     )
                 }

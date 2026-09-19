@@ -167,7 +167,10 @@ jobs:
           check "$M/lib/dri/kms_swrast_dri.so"
           echo "=== 架构相关驱动校验 ==="
           if [[ "${{ matrix.arch }}" == "aarch64" ]]; then
-            check "$M/lib/dri/freedreno_dri.so"
+            # freedreno 的 DRI 驱动按 winsys 命名：msm（内核 DRM 后端）与 kgsl（高通用户态后端），
+            # mesa 从不产出 freedreno_dri.so 这个文件名，禁止再按它校验
+            check "$M/lib/dri/msm_dri.so"
+            check "$M/lib/dri/kgsl_dri.so"
             check "$M/lib/dri/zink_dri.so"
             check "$M/lib/libvulkan_freedreno.so"
           fi

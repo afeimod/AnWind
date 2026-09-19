@@ -341,13 +341,26 @@ load_env_host() {
 # @src
 
 dl_src() {
+  # 支持备用下载源：项目可在 build.sh 中定义 backupUrls=(...) 数组，主源失败时按序回退
+  local _urls=("$url")
+  local _u
+  if [[ -n "${backupUrls[*]:-}" ]]; then
+    _urls+=("${backupUrls[@]}")
+  fi
   rm -rf /tmp/download-src
   mkdir -p /tmp/download-src
-  wget -P /tmp/download-src/ $url || {
-    echo "下载 $url 失败"
+  for _u in "${_urls[@]}"; do
+    echo "下载 => $_u"
+    # 快速失败：--timeout 限制单次连接/读取最长 60s，避免对被墙/屏蔽的源傻等半小时
+    if wget --timeout=60 --tries=2 --waitretry=3 -P /tmp/download-src/ "$_u"; then
+      return 0
+    fi
+    echo "下载 $_u 失败，切换下一个源..."
     rm -rf /tmp/download-src
-    exit 1
-  }
+    mkdir -p /tmp/download-src
+  done
+  echo "错误: 全部下载源均失败 => ${_urls[*]}" >&2
+  return 1
 }
 
 get_src() {
@@ -397,6 +410,8 @@ get_src() {
   wget)
     if dl_src; then
       echo "源码下载完成"
+    else
+      echo "源码下载失败!" && exit 1
     fi
     ;;
   local)

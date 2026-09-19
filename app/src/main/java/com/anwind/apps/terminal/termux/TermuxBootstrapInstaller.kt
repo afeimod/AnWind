@@ -295,7 +295,23 @@ object TermuxBootstrapInstaller {
     //        首选镜像切换到 ISCAS（中科院，pool 级双验证通过；.cn 域名
     //        保住老版 pkg select_mirror 的轮换跳过特性），存量安装由
     //        增量迁移自动改写，anwind-mirror 同步同一模式集合。
-    private const val EXTRAS_REVISION = 39
+    // rev40 = v2.26 tzst 资产自解压集：
+    //   [A1] APK 内 assets/anwind/ 的 tzst 资产（rootfs/mesa/box64/
+    //        turnip/dxvk）自解压引擎 AnWindTzstAssets —— bionic 四件
+    //        指纹幂等铺装到 /data/data/com.anwind/files/rootfs（CI 的
+    //        data/data 布局成员自动剥壳重映射）；dxvk 在【wine 前缀
+    //        构建后】（system.reg + drive_c 判定）解压进
+    //        drive_c/windows：顶层 system32/syswow64 布局直接归位
+    //        （非 x32/x64 目录样式），上游 x64/x32 布局自动重映射，
+    //        幂等标记 anwindmeta/.anwind-dxvk-applied（与 glibc-runner
+    //        [F5] 双端互认）+ container.conf dxvk 版本戳回写；
+    //   [S1] glibc-runner 更新：dxvk/mesa 离线资产支持 .tzst/.tar.zst
+    //        （zstd 解压链自动探测，缺失给 pkg install zstd 指引），
+    //        DXVK 解压同步 system32/syswow64 布局语义；
+    //   [S2] anwind-tarxz 升级为 tzst 通用导入器（.tar.xz/.tzst/.tar.zst）；
+    //   [S3] rootfs 侧 anwind-container：install-wine/install-dxvk/
+    //        install-vkd3d 支持本地 tzst 文件与 zstd 解压。
+    private const val EXTRAS_REVISION = 40
 
     /** 安装状态（Compose 界面订阅渲染）。 */
     sealed class InstallState {
@@ -501,6 +517,16 @@ object TermuxBootstrapInstaller {
         installPackageToolchain(context)
         revisionFile(context).writeText("$EXTRAS_REVISION\n")
         _extrasReady.value = true
+
+        // 7.5 内置 tzst 资产自解压（rev40 [A1]）：rootfs/mesa/box64/
+        //     turnip → bionic rootfs；dxvk 仅对已构建前缀生效（前缀
+        //     尚未构建时由 App 启动/进入容器界面时机自动补齐）。
+        //     失败绝不阻断 bootstrap 安装（与 XKB 三级容错同策略）。
+        try {
+            AnWindTzstAssets.installAllIfNeeded(context)
+        } catch (e: Exception) {
+            android.util.Log.w(TAG, "tzst 资产自解压失败（不阻断安装）: ${e.message}")
+        }
 
         // 8. 清理缓存归档
         bootstrapFile.delete()
@@ -1105,6 +1131,13 @@ object TermuxBootstrapInstaller {
                 installAnWindExtras(context)
                 revisionFile(context).writeText("$EXTRAS_REVISION\n")
                 android.util.Log.i(TAG, "Termux extras migrated to revision $EXTRAS_REVISION")
+                // rev40：迁移完成后同步重铺 tzst 资产（脚本主副本已刷新，
+                // 资产指纹幂等，已就位时零开销）
+                try {
+                    AnWindTzstAssets.installAllIfNeeded(context)
+                } catch (e: Exception) {
+                    android.util.Log.w(TAG, "tzst 资产自解压失败（不阻断迁移）: ${e.message}")
+                }
             } catch (e: Exception) {
                 // 迁移失败不永久阻塞终端（降级为旧行为，bootstrap 本体完好）
                 android.util.Log.e(TAG, "extras migration failed", e)

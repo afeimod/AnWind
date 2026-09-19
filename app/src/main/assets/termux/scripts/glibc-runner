@@ -273,12 +273,27 @@
 #       至此 -f 与 -d 在 App 侧会话逐位一致, 仅多每次清桌面。
 #       兼容性重映射: 短选项 -f 由 --findlib 让给 --force-desktop,
 #       --findlib 保留长选项 (glibc 原生模式缺库检查)。
+#
+# v3.13 (AnWind rev40 —— tzst 资产自解压统一):
+#  [S1] 全线支持 tzst 格式 (tar+zstd): DXVK 资产 (opt/dxvk1/
+#       dxvk-*.tzst|.tar.zst, 兼容旧 .tar.gz) 与 mesa zink 离线资产
+#       (opt/mesa/mesa-zink.tzst|.tar.zst, 兼容旧 .tar.gz)。解压统一
+#       走 glr_tar_extract: zstd 程序在 → zstd -dc + tar -xf; 缺失时
+#       兑底 tar --zstd; 都没有则明确提示 pkg install zstd。
+#  [S2] DXVK 落位语义改版: 顶层 system32/ + syswow64/ 布局直接归位
+#       (用户资产样式, 64 位 DLL 进 system32、32 位进 syswow64,
+#       不是 x32/x64 目录样式); 上游发布包 x64/ + x32|x86/ 自动
+#       重映射; 裸 *.dll 归 system32。解压走 anwindmeta/.dxvk-stage.*
+#       暂存 + 归位, 不再向 windows/ 直解散落 x64 目录。
+#  [S3] 前缀构建后的解压: glr_dxvk_install 增加前缀就绪门 —— 无
+#       system.reg 时跳过且不写幂等标记, 前缀由 wineboot 构建完成后
+#       自愈路径自动补装 (与 App 侧 AnWindTzstAssets 双端同语义)。
 # ============================================================
 
 APP_PREFIX="${GLR_APP_PREFIX:-/data/data/com.anwind/files/usr}"
 GLIBC_PREFIX="${APP_PREFIX}/glibc"
 GLR_LD=${GLIBC_PREFIX}/lib/ld-linux-aarch64.so.1
-GLR_VERSION="3.12-anwind7"
+GLR_VERSION="3.13-anwind1"
 
 # [R1] 分辨率握手协议文件 (AnWind X11 窗口监听此文件)
 GLR_RES_FILE="${APP_PREFIX}/tmp/.anwind-x11-res"
@@ -417,17 +432,26 @@ glr_ensure_zink_libs() {
     local _mark="${GLIBC_PREFIX}/opt/.anwind-zink-libs-tried"
     # 离线资产: repack 侧预置 tar 包(tar 根 = glibc 前缀, 应含
     # lib/libGL.so.1 + lib/libGLX_mesa.so.0 + lib/dri/zink_dri.so +
-    # lib/libvulkan.so.1 + share/vulkan/icd.d/ 全链布局)
-    local _tgz="${GLIBC_PREFIX}/opt/mesa/mesa-zink.tar.gz"
-    if [ -f "${_tgz}" ]; then
+    # lib/libvulkan.so.1 + share/vulkan/icd.d/ 全链布局)。
+    # rev40 [S1]: 支持 tzst 格式(mesa-zink.tzst/.tar.zst, 优先), 兼容旧 .tar.gz
+    local _tgz="" _cand
+    for _cand in "${GLIBC_PREFIX}/opt/mesa/mesa-zink.tzst" \
+                 "${GLIBC_PREFIX}/opt/mesa/mesa-zink.tar.zst" \
+                 "${GLIBC_PREFIX}/opt/mesa/mesa-zink.tar.gz"; do
+        [ -f "${_cand}" ] && { _tgz="${_cand}"; break; }
+    done
+    if [ -n "${_tgz}" ]; then
         # fix23: 解压后必须**全链复验** —— 旧逻辑只回查 dri/zink_dri.so,
         # 只含 dri+icd 布局的 tar 会误报就绪, 游戏读不到 libGL.so.1
-        glr_run_bionic tar -xzf "${_tgz}" -C "${GLIBC_PREFIX}" 2>/dev/null
-        if glr_zink_chain >/dev/null; then
-            echo " [K1] 已从离线资产安装 mesa zink 全链: ${_tgz}"
-            return 0
+        if glr_tar_extract "${_tgz}" "${GLIBC_PREFIX}"; then
+            if glr_zink_chain >/dev/null; then
+                echo " [K1] 已从离线资产安装 mesa zink 全链: ${_tgz}"
+                return 0
+            fi
+            echo " [K1] 离线资产缺 GL 链件(libGL.so.1/libGLX_mesa 等), 转包管理器补装..."
+        else
+            echo " [K1] 离线资产解压失败: ${GLR_ZSTD_HINT:-未知原因} (${_tgz})"
         fi
-        echo " [K1] 离线资产缺 GL 链件(libGL.so.1/libGLX_mesa 等), 转包管理器补装..."
     fi
     # 已尝试且失败 → 不每次启动都联网重试(--fix-zink 清记账强制)
     if [ -f "${_mark}" ]; then
@@ -989,6 +1013,89 @@ glr_run_bionic() {
     ( export LD_LIBRARY_PATH="${APP_PREFIX}/lib"; unset LD_PRELOAD
       "$@" )
 }
+
+# ---- rev40 [S1]: tzst(tar+zstd) 归一解压 ----
+# 兼容 .tzst / .tar.zst / .tar.gz / .tgz / 裸 tar。zstd 链依次:
+#   a) zstd 程序在 → zstd -dc 落临时 tar 再 tar -xf (GNU tar 无需 --zstd 支持)
+#   b) 兑底 tar --zstd 直接解压(部分构建的 GNU tar 自带 zstd 过滤器)
+# 失败回显 pkg install zstd 指引。$1=归档 $2=目标目录
+GLR_ZSTD_HINT=""
+glr_tar_extract() {
+    local _a="$1" _d="$2" _t _rc
+    [ -f "${_a}" ] || { GLR_ZSTD_HINT="归档不存在: ${_a}"; return 1; }
+    mkdir -p "${_d}" 2>/dev/null
+    case "${_a}" in
+        *.tar.gz|*.tgz)
+            glr_run_bionic tar -xzf "${_a}" -C "${_d}" 2>> "${GLR_LOGBOOT:-/dev/null}"
+            return $?
+            ;;
+        *.tzst|*.tar.zst)
+            if command -v zstd >/dev/null 2>&1; then
+                _t="${_d}/.glr-zstd-$$.tar"
+                if ! glr_run_bionic zstd -dc "${_a}" > "${_t}" 2>> "${GLR_LOGBOOT:-/dev/null}"; then
+                    rm -f "${_t}"; GLR_ZSTD_HINT="zstd 解压失败(归档损坏?)"; return 1
+                fi
+                glr_run_bionic tar -xf "${_t}" -C "${_d}" 2>> "${GLR_LOGBOOT:-/dev/null}"
+                _rc=$?
+                rm -f "${_t}"
+                return ${_rc}
+            fi
+            if glr_run_bionic tar --zstd -xf "${_a}" -C "${_d}" 2>> "${GLR_LOGBOOT:-/dev/null}"; then
+                return 0
+            fi
+            GLR_ZSTD_HINT="缺 zstd: 在 AnWind 终端执行 pkg install zstd 后重试"
+            return 1
+            ;;
+        *)
+            glr_run_bionic tar -xf "${_a}" -C "${_d}" 2>> "${GLR_LOGBOOT:-/dev/null}"
+            return $?
+            ;;
+    esac
+}
+
+# ---- rev40 [S1]: DXVK 暂存目录 → drive_c/windows 布局归位 ----
+# 用户资产样式: 顶层 system32/ + syswow64/ → 直接归位(不是 x32/x64
+# 目录样式, DLL 各就各位: 64 位进 system32, 32 位进 syswow64);
+# 上游发布包兼容: x64/ → system32, x32|x86/ → syswow64;
+# 无目录布局: 裸 *.dll 按 64 位归入 system32。
+# 上游发布包常有单根目录包装(如 dxvk-2.4/x64), 经
+# glr_dxvk_layout_root 沿"仅单子目录且无散文件"链下钻。
+glr_dxvk_layout_root() { # $1=stage → 回显布局根
+    local _d="$1" _f _sub _c _e
+    while :; do
+        _f="$(find "$_d" -maxdepth 1 -type f 2>/dev/null | head -n 1)"
+        [ -n "$_f" ] && break
+        _sub=""; _c=0
+        for _e in "$_d"/*/; do
+            [ -d "$_e" ] || continue
+            _sub="$_e"; _c=$((_c+1))
+        done
+        [ "$_c" = "1" ] || break
+        _d="$_sub"
+    done
+    printf '%s\n' "$_d"
+}
+glr_dxvk_layout_place() { # $1=stage $2=windows
+    local _w="$2" _hit=0 _d
+    local _s="$(glr_dxvk_layout_root "$1")"
+    mkdir -p "${_w}/system32" "${_w}/syswow64" 2>/dev/null
+    for _d in "${_s}"/*/; do
+        [ -d "${_d}" ] || continue
+        case "$(basename "${_d}")" in
+            system32) glr_run_bionic cp -rf "${_d}"/. "${_w}/system32/" 2>> "${GLR_LOGBOOT:-/dev/null}"; _hit=1 ;;
+            syswow64) glr_run_bionic cp -rf "${_d}"/. "${_w}/syswow64/" 2>> "${GLR_LOGBOOT:-/dev/null}"; _hit=1 ;;
+            x64)      glr_run_bionic cp -rf "${_d}"/. "${_w}/system32/" 2>> "${GLR_LOGBOOT:-/dev/null}"; _hit=1 ;;
+            x32|x86)  glr_run_bionic cp -rf "${_d}"/. "${_w}/syswow64/" 2>> "${GLR_LOGBOOT:-/dev/null}"; _hit=1 ;;
+        esac
+    done
+    [ "${_hit}" = "1" ] && return 0
+    # 无目录布局: 裸 dll 按 64 位归入 system32(find -exec 无法调用 shell
+    # 函数, 经管道逐行回灌 bionic 层)
+    find "${_s}" -type f -name "*.dll" 2>/dev/null | while IFS= read -r _dll; do
+        glr_run_bionic cp -f "${_dll}" "${_w}/system32/" 2>> "${GLR_LOGBOOT:-/dev/null}"
+    done
+    return 0
+}
 # fix23 [S1]: 备份后缀时间戳(bionic 安全; 失败退 $$)
 glr_epoch() {
     local _e
@@ -1526,7 +1633,8 @@ glr_bootstrap_prefix() {
 #   fix-fonts.tar.xz  → tar 解压到 drive_c/windows
 #   drive_c.7z / directx.7z / start/ / mesa/ / d3d/ → 同目录直读
 #   dxvk-*.tar.gz     → 唯一来源 ${GLIBC_PREFIX}/opt/dxvk1/, 直接 tar
-#     解压到 drive_c/windows(不做任何布局映射)
+#     解压到 drive_c/windows(rev40: 同样支持 dxvk-*.tzst/.tar.zst,
+#     布局归位 system32/syswow64)
 # 旧 fix23 的"前缀根 → prefix.bak.* 搜索 + 注册表头嗅探"已移除(用户要求:
 # 不找 mobox, 只认 startonwine 固定路径)。
 # 幂等标记(anwindmeta/, fix24 [M1] 由 moboxmeta 改名): fonts-fix-applied /
@@ -1558,10 +1666,14 @@ glr_reg_import() {   # $1 = .reg 文件; 经 box64+wine regedit 导入
         >> "${GLR_LOGBOOT:-/dev/null}" 2>&1
 }
 
-# dxvk tar: opt/dxvk1/(startonwine 唯一来源, dxvk-2.3.1.tar.gz 等)
+# dxvk 资产: opt/dxvk1/ 唯一来源。rev40 起支持 tzst 格式(tar+zstd,
+# dxvk-2.4.tzst / dxvk-2.4.tar.zst), 兼容旧 .tar.gz/.tgz(优先 tzst)
 glr_dxvk_tarball() {
     local _f
-    for _f in "${GLIBC_PREFIX}/opt/dxvk1"/dxvk-*.tar.gz; do
+    for _f in "${GLIBC_PREFIX}/opt/dxvk1"/dxvk-*.tzst \
+              "${GLIBC_PREFIX}/opt/dxvk1"/dxvk-*.tar.zst \
+              "${GLIBC_PREFIX}/opt/dxvk1"/dxvk-*.tar.gz \
+              "${GLIBC_PREFIX}/opt/dxvk1"/dxvk-*.tgz; do
         [ -f "${_f}" ] || continue
         printf '%s\n' "${_f}"
         return 0
@@ -1569,14 +1681,33 @@ glr_dxvk_tarball() {
     return 1
 }
 
-glr_dxvk_install() {  # startonwine 原样: 直接 tar 解压 → drive_c/windows
-    local _f _w
+# rev40 [S1]: DXVK 安装 = 前缀构建后的解压。
+#   ★ 前缀未初始化(无 system.reg)时直接跳过, 绝不预创建/污染前缀 ——
+#     前缀由 wineboot 构建完成后, 自愈路径(glr_repack_selfheal)/
+#     --install-prefix 会再次调用本函数自动补装;
+#   解压走暂存目录 + 布局归位: 顶层 system32/syswow64 直解(用户资产
+#   样式), 上游 x64/x32|x86 自动重映射, 裸 dll 归 system32。
+glr_dxvk_install() {
+    local _f _w _stage
     _f="$(glr_dxvk_tarball)" || return 1
-    echo " [F5] 安装 DXVK: ${_f} → drive_c/windows"
+    [ -f "${WINEPREFIX}/system.reg" ] || {
+        echo " [F5] 前缀未构建, DXVK 等待前缀就绪后自动安装: ${_f}"
+        return 1
+    }
     _w="${WINEPREFIX}/drive_c/windows"
-    mkdir -p "${_w}" 2>/dev/null
-    glr_run_bionic tar -xf "${_f}" -C "${_w}/" 2>> "${GLR_LOGBOOT:-/dev/null}"
-    return 0
+    echo " [F5] 安装 DXVK: ${_f} → drive_c/windows (system32/syswow64)"
+    _stage="${WINEPREFIX}/anwindmeta/.dxvk-stage.$$"
+    rm -rf "${_stage}" 2>/dev/null
+    if ! glr_tar_extract "${_f}" "${_stage}"; then
+        echo " [F5] DXVK 解压失败: ${GLR_ZSTD_HINT:-未知原因} (${_f})"
+        rm -rf "${_stage}" 2>/dev/null
+        return 1
+    fi
+    glr_dxvk_layout_place "${_stage}" "${_w}"
+    local _rc=$?
+    rm -rf "${_stage}" 2>/dev/null
+    [ "${_rc}" = "0" ] || echo " [F5] DXVK 布局归位异常(详见 ${GLR_LOGBOOT:-日志})"
+    return ${_rc}
 }
 
 # 标记驱动的幂等应用(游戏启动/--init/--fix-prefix 消费; 每项资产独立)
@@ -1799,11 +1930,11 @@ glr_cmd_install() {
             fi
         else
             # fix24 [F5]: DXVK 走共享 helper —— 唯一来源 opt/dxvk1/,
-            # 直接 tar 解压(startonwine 原样, 无布局映射)
+            # rev40 [S1]: tzst/tar.gz 均可, 布局归位 system32/syswow64
             if glr_dxvk_install; then
                 "${GLR_LD}" "${_bx}" "${GLR_WINE_BASE}/bin/wineserver" -k >/dev/null 2>&1
             else
-                echo "# 跳过 DXVK (opt/dxvk1/ 无 dxvk-*.tar.gz)"
+                echo "# 跳过 DXVK (opt/dxvk1/ 无 dxvk-*.tzst / dxvk-*.tar.gz)"
             fi
             _mesa="$(glr_asset_dir mesa)"
             _f=""

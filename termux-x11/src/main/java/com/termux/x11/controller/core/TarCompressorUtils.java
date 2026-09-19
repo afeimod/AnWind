@@ -157,6 +157,9 @@ public abstract class TarCompressorUtils {
                         FileUtils.symlink(entry.getLinkName(), file.getAbsolutePath());
                     }
                     else {
+                        // 部分归档不含目录成员（仅文件条目），落盘前确保父目录存在
+                        File parent = file.getParentFile();
+                        if (parent != null && !parent.isDirectory()) parent.mkdirs();
                         try (BufferedOutputStream outStream = new BufferedOutputStream(new FileOutputStream(file), StreamUtils.BUFFER_SIZE)) {
                             if (!StreamUtils.copy(tar, outStream)) return false;
                         }

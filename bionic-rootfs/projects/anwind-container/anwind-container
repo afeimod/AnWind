@@ -22,9 +22,10 @@
 #   run <name> <exe> [args...]    在容器中运行 exe（等价 anwind-wine）
 #   cmd <name> <winecmd> [...]    运行 wine 子命令（wineboot/winecfg/reg...）
 #   stop <name>                   结束容器内全部 wine 进程（wineserver -k）
-#   install-wine <tarball|URL>    安装 x86_64 wine 发行包（CI Release 产物）
-#   install-dxvk <name> [ver]     向容器安装 DXVK（Vulkan D3D9/10/11）
-#   install-vkd3d <name> [ver]    向容器安装 VKD3D-Proton（Vulkan D3D12）
+#   install-wine <tarball|URL>    安装 x86_64 wine 发行包（.tar.gz/.tzst 均可）
+#   install-dxvk <name> [文件|URL|版本] 向容器安装 DXVK（tzst/tar.gz;
+#                                 顶层 system32/syswow64 直解, x64/x32 自动重映射）
+#   install-vkd3d <name> [文件|URL|版本] 向容器安装 VKD3D-Proton（Vulkan D3D12）
 #   doctor                        体检：X11 / 后端 / 音频 / 容器
 #
 # 显示：X11（AnWind 内置 X 服务，socket 在 App 侧 tmp/.X11-unix）。
@@ -217,7 +218,7 @@ cmd_stop() {
     msg "完成"
 }
 
-# ---------- install-wine：安装 x86_64 wine 发行包 ----------
+# ---------- 解压工具（rev40: 支持 tzst = tar+zstd） ----------
 fetch() { # <url> <outfile>
     local url="$1" out="$2"
     mkdir -p "$(dirname "$out")"
@@ -229,7 +230,54 @@ fetch() { # <url> <outfile>
         die "需要 curl 或 wget"
     fi
 }
-tar_extract() { # <archive> [extra opts]
+# 归档解压自动适配: .tar.gz/.tgz → gzip; .tzst/.tar.zst → zstd
+# (zstd 程序在则 zstd -dc | tar 兩段式; 否则兑底 tar --zstd); 其余裸 tar
+# $1=归档 $2=目标目录
+tar_extract_any() {
+    local a="$1" d="$2" _t _rc
+    [ -f "$a" ] || { echo "[错误] 归档不存在: $a" >&2; return 1; }
+    mkdir -p "$d" 2>/dev/null
+    case "$a" in
+        *.tar.gz|*.tgz)
+            if command -v tar >/dev/null 2>&1; then
+                tar -xzf "$a" -C "$d" || return 1
+            elif [ -x /system/bin/tar ]; then
+                /system/bin/tar -xzf "$a" -C "$d" || return 1
+            else
+                return 1
+            fi
+            ;;
+        *.tzst|*.tar.zst)
+            if command -v zstd >/dev/null 2>&1 || [ -x "$APP_PREFIX/bin/zstd" ]; then
+                _t="$d/.zstd-$$.tar"
+                zstd -dc "$a" > "$_t" 2>/dev/null || "$APP_PREFIX/bin/zstd" -dc "$a" > "$_t" \
+                    || { rm -f "$_t"; return 1; }
+                if command -v tar >/dev/null 2>&1; then
+                    tar -xf "$_t" -C "$d"; _rc=$?
+                else
+                    /system/bin/tar -xf "$_t" -C "$d"; _rc=$?
+                fi
+                rm -f "$_t"
+                return ${_rc}
+            fi
+            if command -v tar >/dev/null 2>&1; then
+                tar --zstd -xf "$a" -C "$d" 2>/dev/null && return 0
+            fi
+            echo "[错误] 需要 zstd 解压 .tzst: 先在 AnWind 终端执行 pkg install zstd" >&2
+            return 1
+            ;;
+        *)
+            if command -v tar >/dev/null 2>&1; then
+                tar -xf "$a" -C "$d" || return 1
+            elif [ -x /system/bin/tar ]; then
+                /system/bin/tar -xf "$a" -C "$d" || return 1
+            else
+                return 1
+            fi
+            ;;
+    esac
+}
+tar_extract() { # <archive> [extra opts]（兼容旧签名: 解到 / ）
     local a="$1"; shift
     if command -v tar >/dev/null 2>&1; then
         tar -xzf "$a" -C / "$@" 2>/dev/null || tar -xf "$a" -C / "$@" || return 1
@@ -242,7 +290,7 @@ tar_extract() { # <archive> [extra opts]
 
 cmd_install_wine() {
     local src="$1"
-    [ -n "$src" ] || die "用法: anwind-container install-wine <本地tar.gz | URL>"
+    [ -n "$src" ] || die "用法: anwind-container install-wine <本地tar.gz/tzst | URL>"
     local _f="$src" _tmp=0
     case "$src" in
         http://*|https://*)
@@ -256,8 +304,23 @@ cmd_install_wine() {
             [ -f "$_f" ] || die "文件不存在: $_f"
             ;;
     esac
-    msg "解包 wine 到 / （data/data/com.anwind/... 路径自动就位）..."
-    tar_extract "$_f" || die "解包失败（需要 rootfs 发行包格式: data/data/... 开头）"
+    case "$_f" in
+        *.tzst|*.tar.zst)
+            msg "解包 wine(tzst) 到 / （data/data/com.anwind/... 路径自动就位）..."
+            mkdir -p "$DL_TMP/extract.$$"
+            tar_extract_any "$_f" "$DL_TMP/extract.$$" || die "解包失败（需要 zstd: pkg install zstd）"
+            if [ -d "$DL_TMP/extract.$$/data" ]; then
+                cp -a "$DL_TMP/extract.$$/data/" / 2>/dev/null || die "落位失败"
+            else
+                cp -a "$DL_TMP/extract.$$/." "$RFS_ROOT/" || die "落位失败"
+            fi
+            rm -rf "$DL_TMP/extract.$$"
+            ;;
+        *)
+            msg "解包 wine 到 / （data/data/com.anwind/... 路径自动就位）..."
+            tar_extract "$_f" || die "解包失败（需要 rootfs 发行包格式: data/data/... 开头）"
+            ;;
+    esac
     if [ -x "$RFS_USR/opt/wine/bin/wine" ]; then
         msg "wine 安装成功: $RFS_USR/opt/wine/bin/wine"
         sed -n '1p;5,6p' "$RFS_USR/opt/wine/.anwind-wine-info" 2>/dev/null || true
@@ -273,62 +336,121 @@ wine_reg_set() { # <container> <dll> <value>
     "$AW_WINE" --container "$1" reg add "HKCU\\Software\\Wine\\DllOverrides" /v "$2" /d "$3" /f
 }
 
+# rev40: DLL 归位 —— 暂存目录 → system32/syswow64。
+# 用户资产样式(顶层 system32/ + syswow64/)直接归位; 上游发布包
+# (x64/ + x32|x86/)自动重映射; 裸 *.dll 按 64 位归 system32。
+# 单根目录包装(如 dxvk-2.4/x64)沿"仅单子目录且无散文件"链下钻。
+dxvk_layout_root() { # $1=staging → 回显布局根
+    local _d="$1" _f _sub _c _e
+    while :; do
+        _f="$(find "$_d" -maxdepth 1 -type f 2>/dev/null | head -n 1)"
+        [ -n "$_f" ] && break
+        _sub=""; _c=0
+        for _e in "$_d"/*/; do
+            [ -d "$_e" ] || continue
+            _sub="$_e"; _c=$((_c+1))
+        done
+        [ "$_c" = "1" ] || break
+        _d="$_sub"
+    done
+    printf '%s\n' "$_d"
+}
+dxvk_place_layout() { # $1=staging $2=syswow64-dir $3=system32-dir
+    local _p32="$2" _p64="$3" _d _hit=0
+    local _s="$(dxvk_layout_root "$1")"
+    mkdir -p "$_p32" "$_p64" 2>/dev/null
+    for _d in "$_s"/*/; do
+        [ -d "$_d" ] || continue
+        case "$(basename "$_d")" in
+            system32) cp -rf "$_d"/. "$_p64/" 2>/dev/null; _hit=1 ;;
+            syswow64) cp -rf "$_d"/. "$_p32/" 2>/dev/null; _hit=1 ;;
+            x64)      cp -rf "$_d"/. "$_p64/" 2>/dev/null; _hit=1 ;;
+            x32|x86)  cp -rf "$_d"/. "$_p32/" 2>/dev/null; _hit=1 ;;
+        esac
+    done
+    [ "$_hit" = "1" ] && return 0
+    find "$_s" -type f -name "*.dll" -exec cp -f {} "$_p64/" \; 2>/dev/null
+    return 0
+}
+
 cmd_install_dxvk() {
-    local name="$1" ver="${2:-2.4}"
+    local name="$1" src="${2:-}"
     [ -d "$CONT_ROOT/$name" ] || die "容器不存在: $name"
-    local _url="https://github.com/doitsujin/dxvk/releases/download/v${ver}/dxvk-${ver}.tar.gz"
-    mkdir -p "$DL_TMP"
-    local _f="$DL_TMP/dxvk-${ver}.tar.gz"
-    msg "下载 DXVK v${ver} ..."
-    fetch "$_url" "$_f" || die "下载失败: $_url"
-    msg "解包..."
-    rm -rf "$DL_TMP/dxvk-${ver}"
-    tar -xzf "$_f" -C "$DL_TMP" || die "解包失败"
+    local _f _tmp=0 _dir _ver
+    if [ -n "$src" ] && [ -f "$src" ]; then
+        # 本地发行包（.tzst/.tar.zst/.tar.gz 均可, rev40）
+        _f="$src"
+    elif [ -n "$src" ] && case "$src" in http://*|https://*) true ;; *) false ;; esac; then
+        _f="$DL_TMP/$(basename "$src")"
+        msg "下载: $src"
+        fetch "$src" "$_f" || die "下载失败: $src"
+        _tmp=1
+    else
+        # 无参/本地缺失: 官方 release 兑底
+        _ver="${src:-2.4}"
+        local _url="https://github.com/doitsujin/dxvk/releases/download/v${_ver}/dxvk-${_ver}.tar.gz"
+        mkdir -p "$DL_TMP"
+        _f="$DL_TMP/dxvk-${_ver}.tar.gz"
+        msg "下载 DXVK v${_ver} ..."
+        fetch "$_url" "$_f" || die "下载失败: $_url"
+        _tmp=1
+    fi
+    _dir="$DL_TMP/dxvk-stage.$$"
+    msg "解包 $(basename "$_f")..."
+    rm -rf "$_dir"
+    tar_extract_any "$_f" "$_dir" || die "解包失败（.tzst 需要 zstd: pkg install zstd）"
     local _p32="$CONT_ROOT/$name/prefix/drive_c/windows/syswow64"
     local _p64="$CONT_ROOT/$name/prefix/drive_c/windows/system32"
     mkdir -p "$_p32" "$_p64"
-    if [ -d "$DL_TMP/dxvk-${ver}/x64" ]; then
-        cp -f "$DL_TMP/dxvk-${ver}/x64/"*.dll "$_p64/" || die "复制 x64 DLL 失败"
-        cp -f "$DL_TMP/dxvk-${ver}/x32/"*.dll "$_p32/" 2>/dev/null || \
-            cp -f "$DL_TMP/dxvk-${ver}/x86/"*.dll "$_p32/" 2>/dev/null || warn "32 位 DLL 缺失（部分包无 x86 目录）"
-    else
-        die "压缩包结构异常（无 x64 目录）"
-    fi
+    dxvk_place_layout "$_dir" "$_p32" "$_p64" || die "DLL 归位失败"
     local _d
     for _d in d3d8 d3d9 d3d10core d3d11 dxgi; do
         wine_reg_set "$name" "$_d" "native,builtin" >/dev/null 2>&1 || warn "注册表写入失败: $_d（可先 wineboot 后重试）"
     done
-    conf_write_kv "$CONT_ROOT/$name/container.conf" dxvk "$ver"
+    _ver="$(basename "$_f" | sed -e 's/^dxvk-//' -e 's/\.tar\.zst$//;s/\.tzst$//;s/\.tar\.gz$//;s/\.tgz$//')"
+    conf_write_kv "$CONT_ROOT/$name/container.conf" dxvk "$_ver"
     conf_write_kv "$CONT_ROOT/$name/container.conf" dxoverrides "d3d8,d3d9,d3d10core,d3d11,dxgi=native,builtin"
-    rm -rf "$DL_TMP/dxvk-${ver}" "$_f"
-    msg "DXVK v${ver} 安装完成（容器 $name）。需要 Vulkan 驱动（turnip/ Freedreo）才能硬件加速"
+    rm -rf "$_dir"
+    [ "$_tmp" = 1 ] && rm -f "$_f"
+    msg "DXVK（$(basename "$_f")）安装完成（容器 $name）: 64 位 DLL → system32, 32 位 → syswow64。需要 Vulkan 驱动（turnip/Freedreno）才能硬件加速"
     return 0
 }
 
 cmd_install_vkd3d() {
-    local name="$1" ver="${2:-2.14}"
+    local name="$1" src="${2:-}"
     [ -d "$CONT_ROOT/$name" ] || die "容器不存在: $name"
-    local _url="https://github.com/HansKristian-Work/vkd3d-proton/releases/download/v${ver}/vkd3d-proton-${ver}.tar.zst"
-    command -v zstd >/dev/null 2>&1 || [ -x "$APP_PREFIX/bin/zstd" ] \
-        || die "需要 zstd 解压 .tar.zst：先在 AnWind 终端执行 pkg install zstd"
-    mkdir -p "$DL_TMP"
-    local _f="$DL_TMP/vkd3d-proton-${ver}.tar.zst"
-    msg "下载 VKD3D-Proton v${ver} ..."
-    fetch "$_url" "$_f" || die "下载失败: $_url"
-    msg "解包..."
-    rm -rf "$DL_TMP/vkd3d-proton-${ver}"
-    zstd -d "$_f" -o "$DL_TMP/vkd3d.tar" 2>/dev/null || "$APP_PREFIX/bin/zstd" -d "$_f" -o "$DL_TMP/vkd3d.tar" || die "zstd 解压失败"
-    tar -xf "$DL_TMP/vkd3d.tar" -C "$DL_TMP" || die "tar 解包失败"
+    local _f _tmp=0 _dir _ver
+    if [ -n "$src" ] && [ -f "$src" ]; then
+        _f="$src"
+    elif [ -n "$src" ] && case "$src" in http://*|https://*) true ;; *) false ;; esac; then
+        _f="$DL_TMP/$(basename "$src")"
+        msg "下载: $src"
+        fetch "$src" "$_f" || die "下载失败: $src"
+        _tmp=1
+    else
+        _ver="${src:-2.14}"
+        local _url="https://github.com/HansKristian-Work/vkd3d-proton/releases/download/v${_ver}/vkd3d-proton-${_ver}.tar.zst"
+        mkdir -p "$DL_TMP"
+        _f="$DL_TMP/vkd3d-proton-${_ver}.tar.zst"
+        msg "下载 VKD3D-Proton v${_ver} ..."
+        fetch "$_url" "$_f" || die "下载失败: $_url"
+        _tmp=1
+    fi
+    _dir="$DL_TMP/vkd3d-stage.$$"
+    msg "解包 $(basename "$_f")..."
+    rm -rf "$_dir"
+    tar_extract_any "$_f" "$_dir" || die "解包失败（.tzst/.tar.zst 需要 zstd: pkg install zstd）"
     local _p32="$CONT_ROOT/$name/prefix/drive_c/windows/syswow64"
     local _p64="$CONT_ROOT/$name/prefix/drive_c/windows/system32"
     mkdir -p "$_p32" "$_p64"
-    cp -f "$DL_TMP/vkd3d-proton-${ver}/x64/"*.dll "$_p64/" || die "复制 x64 DLL 失败"
-    cp -f "$DL_TMP/vkd3d-proton-${ver}/x86/"*.dll "$_p32/" 2>/dev/null || warn "32 位 DLL 缺失"
+    dxvk_place_layout "$_dir" "$_p32" "$_p64" || die "DLL 归位失败"
     wine_reg_set "$name" "d3d12" "native,builtin" >/dev/null 2>&1 || warn "注册表写入失败: d3d12"
-    conf_write_kv "$CONT_ROOT/$name/container.conf" vkd3d "$ver"
+    _ver="$(basename "$_f" | sed -e 's/^vkd3d-proton-//' -e 's/\.tar\.zst$//;s/\.tzst$//;s/\.tar\.gz$//;s/\.tgz$//')"
+    conf_write_kv "$CONT_ROOT/$name/container.conf" vkd3d "$_ver"
     conf_write_kv "$CONT_ROOT/$name/container.conf" dxoverrides "d3d12=native,builtin"
-    rm -rf "$DL_TMP/vkd3d-proton-${ver}" "$_f" "$DL_TMP/vkd3d.tar"
-    msg "VKD3D-Proton v${ver} 安装完成（容器 $name）"
+    rm -rf "$_dir"
+    [ "$_tmp" = 1 ] && rm -f "$_f"
+    msg "VKD3D-Proton（$(basename "$_f")）安装完成（容器 $name）"
     return 0
 }
 
@@ -432,9 +554,12 @@ anwind-container — AnWind Wine 容器管理（bionic rootfs / X11）
   run <name> <exe> [args...]    在容器中运行 exe
   cmd <name> <winecmd> [...]    运行 wine 子命令（wineboot/winecfg/reg...）
   stop <name>                   结束容器内全部 wine 进程（wineserver -k）
-  install-wine <tarball|URL>    安装 x86_64 wine 发行包（CI Release 产物）
-  install-dxvk <name> [ver]     向容器安装 DXVK（Vulkan D3D9/10/11）
-  install-vkd3d <name> [ver]    向容器安装 VKD3D-Proton（Vulkan D3D12）
+  install-wine <tarball|URL>    安装 x86_64 wine 发行包（.tar.gz/.tzst 均可）
+  install-dxvk <name> [文件|URL|ver]
+                                向容器安装 DXVK（tzst/tar.gz; 64 位→system32,
+                                32 位→syswow64; x64/x32 布局自动重映射）
+  install-vkd3d <name> [文件|URL|ver]
+                                向容器安装 VKD3D-Proton（Vulkan D3D12）
   doctor                        体检：X11 / 后端 / 音频 / 容器
 
 显示: X11（AnWind 内置 X 服务，socket 在 App 侧 tmp/.X11-unix）
