@@ -54,8 +54,12 @@ debianPkgs=(
   gperf
   glslang-tools
   python3-pip
+  python3-yaml
   bison
   flex
+  libtool
+  autoconf
+  automake
   pkgconf
   gettext
   libfreetype-dev
@@ -87,12 +91,19 @@ if [[ -f /etc/os-release ]]; then
     apt install -y ${debianPkgs[@]} || exit 1
     # meson 通过 pip 安装较新版本（GitHub Actions 的 ubuntu-24.04 自带
     # meson 1.3.x，部分包如新版 mesa/xorgproto 需要更高版本）
-    # 注意：ubuntu-24.04 无 `pip` 命令（只有 python3 -m pip），旧脚本用
-    # `pip` 会静默失败 → meson 未安装 → 工作流里 `meson --version` 报 127
-    # （本脚本未开 set -e，失败会被吞掉，因此这里显式断言）
-    python3 -m pip install --break-system-packages --upgrade pip mako PyYAML || true
-    python3 -m pip install --break-system-packages --upgrade meson ninja \
-      || python3 -m pip install --upgrade meson ninja \
+    # 注意：
+    # 1. ubuntu-24.04 无 `pip` 命令（只有 python3 -m pip），旧脚本用
+    #    `pip` 会静默失败 → meson 未安装 → 工作流里 `meson --version` 报 127
+    # 2. 绝不能 `--upgrade pip`：apt 安装的 pip 无 RECORD 文件，升级时
+    #    卸载会报 "Cannot uninstall pip ... RECORD file not found" 而整条
+    #    命令失败，连带 mako 也装不上（mesa 构建必需 mako）
+    # 3. 必须用 --ignore-installed：直接装新副本、不卸载 apt 管理的
+    #    PyYAML/meson/mako，绕开 "Cannot uninstall PyYAML 6.0.1,
+    #    RECORD file not found. Hint: The package was installed by debian."
+    python3 -m pip install --break-system-packages --ignore-installed mako PyYAML \
+      || { echo "mako/PyYAML 安装失败!" && exit 1; }
+    python3 -m pip install --break-system-packages --ignore-installed meson ninja \
+      || python3 -m pip install --ignore-installed meson ninja \
       || { echo "meson/ninja 安装失败!" && exit 1; }
     hash -r
     command -v meson >/dev/null 2>&1 || export PATH="$HOME/.local/bin:/usr/local/bin:$PATH"
@@ -100,6 +111,13 @@ if [[ -f /etc/os-release ]]; then
     command -v meson >/dev/null 2>&1 || { echo "meson 仍不可用!" && exit 1; }
     echo "meson 版本: $(meson --version)"
     echo "ninja 版本: $(ninja --version)"
+    # mesa 的 meson 构建在配置与编译期都会 import mako，必须显式验证
+    python3 -c "import mako" 2>/dev/null \
+      || { echo "python3 mako 模块不可用!（mesa 构建必需）" && exit 1; }
+    echo "mako 版本: $(python3 -c 'import mako; print(mako.__version__)')"
+    command -v libtoolize >/dev/null 2>&1 \
+      || { echo "libtoolize 不可用!（libexpat 等包 autoreconf 必需）" && exit 1; }
+    libtoolize --version | head -1
     sed -i 's/^#\(en_US.UTF-8\)/\1/' /etc/locale.gen && locale-gen
     ;;
   *)

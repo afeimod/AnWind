@@ -139,6 +139,22 @@ jobs:
             --build "${{ github.event.inputs.build_target || 'all' }}" \
             2>&1 | tee "build-${{ matrix.arch }}.log"
 
+      # ============ 6.5 失败自诊断（把日志尾部直接打进步骤输出） ============
+      - name: 失败时输出日志尾部
+        if: ${{ failure() }}
+        shell: bash
+        run: |
+          LOG="${GITHUB_WORKSPACE}/bionic-rootfs/build-${{ matrix.arch }}.log"
+          if [[ -f "$LOG" ]]; then
+            echo "::error::rootfs 构建失败！以下是日志最后 150 行（完整日志见 artifact）"
+            tail -n 150 "$LOG"
+          else
+            echo "::error::rootfs 构建失败且未生成日志文件"
+          fi
+          echo "=== 磁盘/内存状态 ==="
+          df -h / | tail -2
+          free -h
+
       # ============ 7. 组装并校验 rootfs ============
       - name: 组装 rootfs（make-rootfs.sh）
         shell: bash

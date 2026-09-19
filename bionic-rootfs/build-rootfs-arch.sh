@@ -1075,10 +1075,13 @@ while [[ $# -gt 0 ]]; do
     if [[ "$2" == "all" ]]; then
       targetArchs=()
     else
-      local _a
+      # 顶层 while 循环不在函数内，不能使用 local（bash 会报
+      # "local: can only be used in a function"），改用普通变量
+      _a=""
       for _a in $2; do
         targetArchs+=("$(normalize_arch "$_a")")
       done
+      unset _a
     fi
     shift 2
     ;;

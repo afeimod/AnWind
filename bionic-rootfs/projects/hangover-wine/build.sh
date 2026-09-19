@@ -1,10 +1,24 @@
-revision="11.16"
-url="https://github.com/AndreRH/wine/archive/refs/tags/hangover-${revision}.tar.gz"
+# 源码版本/URL 可用环境变量覆盖（CI 工作流用下拉选择传入）：
+#   ANWIND_HANGOVER_TAG / ANWIND_WINE_URL
+revision="${ANWIND_HANGOVER_TAG:-11.16}"
+url="${ANWIND_WINE_URL:-https://github.com/AndreRH/wine/archive/refs/tags/hangover-${revision}.tar.gz}"
 urlType="tar"
 arch="aarch64"
 buildSys="autotools"
 license="LGPL-2.1"
 doNotApplyPatch=1
+
+# ============================================================
+# AnWind bionic Wine（arm64ec 形态 / X11 / 新 WoW64）
+# ------------------------------------------------------------
+# 与 wine（x86_64，box64 加载）互补的第二个 Wine 运行时：
+#   * 目标架构 aarch64（bionic），PE 侧 arm64ec+aarch64+i386（新 WoW64）
+#     —— aarch64 设备原生运行，无需 box64 整机模拟
+#   * 显示：仅 X11（--with-x 全套 X 扩展；无 wayland）
+#   * 安装路径 $prefix/opt（启动器 WINE_HANGOVER 分支识别）
+# llvm-mingw 必须用 20251202+：arm64ec PE 目标需要较新的 llvm/mingw-w64
+# （与用户 glibc 流水线 wine-Arm.yml 的验证组合一致）
+# ============================================================
 
 args="
   ac_cv_header_linux_userfaultfd_h=no
@@ -66,10 +80,10 @@ args="
 
 deps="pthread-stub alsa-lib fontconfig freetype gnutls gstreamer ffmpeg pulseaudio xkeyboard-config libxkbcommon mesa vulkan-headers vulkan-icd-loader xorgproto libxcb xtrans libX11 libXext libXrender libXfixes libXi libXrandr libXcursor libXinerama libXcomposite libXxf86vm"
 
-llvmMingwVersion="21"
-llvmMingwDate="20250319"
-llvmMingwUrl="https://github.com/mstorsjo/llvm-mingw/releases/download/${llvmMingwDate}/llvm-mingw-${llvmMingwDate}-ucrt-ubuntu-20.04-x86_64.tar.xz"
-llvmMingwSha256="ab2a1489416fa82b3e85e88cb877053ee8a591993408caf076737d8de5ae72ca"
+llvmMingwVersion="22"
+llvmMingwDate="20251202"
+llvmMingwUrl="https://github.com/mstorsjo/llvm-mingw/releases/download/${llvmMingwDate}/llvm-mingw-${llvmMingwDate}-ucrt-ubuntu-22.04-x86_64.tar.xz"
+llvmMingwSha256=""
 
 hangoverVersion="${revision}"
 hangoverDebUrl="https://github.com/AndreRH/hangover/releases/download/hangover-${hangoverVersion}/hangover_${hangoverVersion}_ubuntu2204_jammy_arm64.tar"
@@ -168,5 +182,18 @@ pre_setup() {
   export CROSSCFLAGS="-O3 -pipe"
   export CROSSLDFLAGS="-s"
 
-  args+=" --with-wine-tools=wine-tools-build --with-mingw=${wsDir}/tmp/llvm-mingw-21/bin/clang"
+  args+=" --with-wine-tools=wine-tools-build --with-mingw=${_llvmMingwDir}/bin/clang"
+}
+
+pre_package() {
+  # hangover-wine 安装在 $prefix/opt（非 opt/wine），此处仅补标识文件供
+  # anwind-container / 用户识别该运行时形态
+  local _wineDir="${destDir}${prefix}/opt"
+  if [[ -d "${_wineDir}" ]]; then
+    cat > "${_wineDir}/.anwind-wine-info" << EOF
+kind=arm64ec-wow64-x11
+tag=hangover-${revision}
+backend=native
+EOF
+  fi
 }
