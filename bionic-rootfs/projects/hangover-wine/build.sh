@@ -78,7 +78,12 @@ args="
   --with-xxf86vm
 "
 
-deps="pthread-stub alsa-lib fontconfig freetype gnutls gstreamer ffmpeg pulseaudio xkeyboard-config libxkbcommon mesa vulkan-headers vulkan-icd-loader xorgproto libxcb xtrans libX11 libXext libXrender libXfixes libXi libXrandr libXcursor libXinerama libXcomposite libXxf86vm"
+deps="pthread-stub alsa-lib fontconfig freetype gnutls gstreamer ffmpeg pulseaudio xkeyboard-config libxkbcommon mesa vulkan-headers vulkan-icd-loader xorgproto libxcb xtrans libX11 libXext libXrender libXfixes libXi libXrandr libXcursor libXinerama libXcomposite libXxf86vm libandroid-shmem"
+
+# 静默编译：wine 的 make 会回显每条完整编译/链接命令（ccache 全路径），
+# 单包就曾刷出 11.7 万行日志；-s 只关命令回显，编译器/链接器报错照常输出，
+# 失败时仍能从 "make: *** [Makefile:...] Error 1" 定位到目标。
+makeSilent=1
 
 llvmMingwVersion="22"
 llvmMingwDate="20251202"
@@ -98,7 +103,7 @@ pre_setup() {
   if [[ ! -d "${_llvmMingwDir}" ]]; then
     echo "下载 llvm-mingw 工具链..."
     mkdir -p "${wsDir}/tmp"
-    wget -P "${wsDir}/tmp" "${llvmMingwUrl}" || {
+    wget -nv -P "${wsDir}/tmp" "${llvmMingwUrl}" || {
       echo "下载 llvm-mingw 失败"
       return 1
     }
@@ -139,11 +144,11 @@ pre_setup() {
       echo "host configure 失败"
       return 1
     }
-  make -j$(nproc) __tooldeps__ || {
+  make ${makeSilent:+-s} -j$(nproc) __tooldeps__ || {
     echo "host build 失败"
     return 1
   }
-  make -j$(nproc) -C nls || {
+  make ${makeSilent:+-s} -j$(nproc) -C nls || {
     echo "host build 失败"
     return 1
   }

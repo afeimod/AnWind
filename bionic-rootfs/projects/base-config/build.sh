@@ -25,7 +25,7 @@ nameserver 8.8.4.4
 EOF
 
   mkdir -p "${destDir}${prefix}/etc/ca-certificates"
-  wget -P "${destDir}${prefix}/etc/ca-certificates/" https://curl.haxx.se/ca/cacert.pem || { echo "文件下载失败!" && exit 1;}
+  wget -nv -P "${destDir}${prefix}/etc/ca-certificates/" https://curl.haxx.se/ca/cacert.pem || { echo "文件下载失败!" && exit 1;}
 
 cat > "${destDir}${prefix}/etc/machine-id" << EOF
 d0f88608a7756c173fe9057c6a620caf

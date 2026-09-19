@@ -225,7 +225,7 @@ apply_ndk_patches
 if [[ ! -d "${ndkDir}/toolchains/llvm/prebuilt/linux-x86_64/bin" ]]; then
   echo "NDK 不存在，开始下载..."
   mkdir -p "$ndkDir"
-  wget -O "/tmp/ndk.zip" "$ndkURL"
+  wget -nv -O "/tmp/ndk.zip" "$ndkURL"
 
   rm -rf /tmp/ndk-tmp
   mkdir /tmp/ndk-tmp
@@ -352,7 +352,8 @@ dl_src() {
   for _u in "${_urls[@]}"; do
     echo "下载 => $_u"
     # 快速失败：--timeout 限制单次连接/读取最长 60s，避免对被墙/屏蔽的源傻等半小时
-    if wget --timeout=60 --tries=2 --waitretry=3 -P /tmp/download-src/ "$_u"; then
+    # -nv：单行进度输出（完整进度条逐 KB 刷屏对排查无益，纯日志膨胀）
+    if wget -nv --timeout=60 --tries=2 --waitretry=3 -P /tmp/download-src/ "$_u"; then
       return 0
     fi
     echo "下载 $_u 失败，切换下一个源..."
@@ -374,7 +375,8 @@ get_src() {
     local _gitTry
     for ((_gitTry = 1; _gitTry <= _gitRetries; _gitTry++)); do
       echo "克隆 ${pjName} (第 ${_gitTry}/${_gitRetries} 次尝试)"
-      if git clone --recursive --depth=1 -b "${revision}" "${url}" $pjName; then
+      # -c advice.detachedHead=false: 约12行 detached HEAD 提示对每个 git 包都会刷一遍
+      if git -c advice.detachedHead=false clone --recursive --depth=1 -b "${revision}" "${url}" $pjName; then
         _gitTry=0
         break
       fi
@@ -587,7 +589,8 @@ package() {
     rm -rf dev/null
   fi
   fix_libtool_soname_links
-  tar -cvf "${wsDir}/pkgs/${pjName}-${revision}-${targetArch}.tar" .
+  # 日志优化：打包过程无需逐文件列出（tar -v 的文件清单曾占整份日志 10%+）
+  tar -cf "${wsDir}/pkgs/${pjName}-${revision}-${targetArch}.tar" .
   rm -rf "${destDir}"
   cd "${wsDir}"
 }
@@ -868,7 +871,7 @@ build_system() {
           fi
         fi
       fi
-      make -j$(nproc) || compile_err
+      make ${makeSilent:+-s} -j$(nproc) || compile_err
       if declare -F install >/dev/null; then
         DESTDIR="${destDir}" PREFIX="${prefix}" install
       else
@@ -1003,7 +1006,10 @@ make_pkg() {
     [[ "$_targetArch" == "$targetArch" ]] || continue
     local _pkgFile="${pkgDir}/${pjName}-${revision}-${_targetArch}.tar"
     if [[ -f "$_pkgFile" ]]; then
-      tar -xvf "$_pkgFile" -C /
+      # -m(--touch): 不回填文件时间戳。解包目标是 / 顶层目录（runner 上归 root 所有），
+      # tar 末尾对 `.` 做 utime 必报 "Cannot utime: Operation not permitted"
+      # 并以非零退出，属无害噪声；-m 顺带去掉逐文件清单（日志减薄约 10%）。
+      tar --extract --touch --file="$_pkgFile" -C /
       guard_dev_null
     else
       echo "错误: 包不存在 => $_pkgFile"

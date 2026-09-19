@@ -85,7 +85,12 @@ args="
 
 # 构建依赖全部来自 rootfs 既有配方（双架构可用，缺什么 build 系统
 # 依据 toposort 自动补齐）：
-deps="fontconfig freetype gnutls gstreamer ffmpeg pulseaudio mesa vulkan-headers vulkan-icd-loader xkeyboard-config libxkbcommon xorgproto libxcb xtrans libX11 libXext libXrender libXfixes libXi libXrandr libXcursor libXinerama libXcomposite libXxf86vm"
+deps="fontconfig freetype gnutls gstreamer ffmpeg pulseaudio mesa vulkan-headers vulkan-icd-loader xkeyboard-config libxkbcommon xorgproto libxcb xtrans libX11 libXext libXrender libXfixes libXi libXrandr libXcursor libXinerama libXcomposite libXxf86vm libandroid-shmem"
+
+# 静默编译：wine 的 make 会回显每条完整编译/链接命令（ccache 全路径），
+# 单包就曾刷出 11.7 万行日志；-s 只关命令回显，编译器/链接器报错照常输出，
+# 失败时仍能从 "make: *** [Makefile:...] Error 1" 定位到目标。
+makeSilent=1
 
 # PE 交叉编译器：llvm-mingw（与 hangover-wine 同版本， proven）
 llvmMingwVersion="21"
@@ -103,7 +108,7 @@ pre_setup() {
   if [[ ! -d "${_llvmMingwDir}" ]]; then
     echo "下载 llvm-mingw 工具链..."
     mkdir -p "${wsDir}/tmp"
-    wget -P "${wsDir}/tmp" "${llvmMingwUrl}" || {
+    wget -nv -P "${wsDir}/tmp" "${llvmMingwUrl}" || {
       echo "下载 llvm-mingw 失败"
       return 1
     }
@@ -148,11 +153,11 @@ pre_setup() {
       echo "host configure 失败"
       return 1
     }
-  make -j$(nproc) __tooldeps__ || {
+  make ${makeSilent:+-s} -j$(nproc) __tooldeps__ || {
     echo "host build 失败"
     return 1
   }
-  make -j$(nproc) -C nls || {
+  make ${makeSilent:+-s} -j$(nproc) -C nls || {
     echo "host nls build 失败"
     return 1
   }

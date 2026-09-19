@@ -18,6 +18,8 @@ forceAutoreconf=""
 doNotUseNinja=""
 doNotRunCMakeInstallOnCmake=""
 doNotMakePackage=""
+unset backupUrls
+unset makeSilent
 unset -f pre_setup
 unset -f pre_package
 unset -f custom_configure
