@@ -546,6 +546,34 @@ install_license() {
 
 # @package
 
+# libtool 版本号补偿：
+# vanilla libtool.m4 不认识 android host triplet（host_os=android 落入 * 分支），
+# 生成的 libtool version_type=none —— 所有 libtool/autotools 构建的共享库
+# 既无 DT_SONAME 也无版本化文件名（只有 libX11.so，没有 libX11.so.6）。
+# bionic 动态链接不受影响（NEEDED 同样记录无版本名），但运行时生态
+# （wine 等按 libX11.so.6 寻库）与产物校验都要求标准 soname 命名。
+# 这里按 libtool -version-info c:r:a 语义（soname major = current - age）
+# 从 .la 文件反推出各库的 soname 版本并补齐符号链接。
+fix_libtool_soname_links() {
+  local _libDir="${destDir}${prefix}/lib"
+  [[ -d "$_libDir" ]] || return 0
+  local _la _lib _cur _age _major
+  for _la in "${_libDir}"/*.la; do
+    [[ -f "$_la" ]] || continue
+    _cur=$(sed -En 's/^current=([0-9]+).*/\1/p' "$_la" | head -1)
+    _age=$(sed -En 's/^age=([0-9]+).*/\1/p' "$_la" | head -1)
+    [[ -n "$_cur" && -n "$_age" ]] || continue
+    # soname major = current - age（可为 0：如 libmpg123.so.0 / libopus.so.0）
+    [[ $_cur -ge $_age ]] || continue
+    _major=$((_cur - _age))
+    _lib="$(basename "${_la%.la}")"
+    if [[ -f "${_libDir}/${_lib}.so" && ! -e "${_libDir}/${_lib}.so.${_major}" ]]; then
+      ln -sf "${_lib}.so" "${_libDir}/${_lib}.so.${_major}"
+      echo "补齐 soname 链接: ${_lib}.so.${_major} -> ${_lib}.so"
+    fi
+  done
+}
+
 package() {
   if [[ "${doNotMakePackage:-0}" == 1 ]]; then
     echo "${pjName}: doNotMakePackage=1, 跳过打包"
@@ -558,6 +586,7 @@ package() {
     echo "警告: ${pjName} 的 make install 在 DESTDIR 下创建了 dev/null，正在清理..."
     rm -rf dev/null
   fi
+  fix_libtool_soname_links
   tar -cvf "${wsDir}/pkgs/${pjName}-${revision}-${targetArch}.tar" .
   rm -rf "${destDir}"
   cd "${wsDir}"

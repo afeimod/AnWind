@@ -181,7 +181,12 @@ pre_setup() {
   CXXFLAGS="${CXXFLAGS/-fstack-protector-strong/}"
   CPPFLAGS="${CPPFLAGS/-fstack-protector-strong/}"
   LDFLAGS="${LDFLAGS/-Wl,-z,relro,-z,now/}"
-  export LDFLAGS+=" -Wl,--rosegment"
+  # -landroid-shmem：winex11.drv 的 MIT-SHM 路径引用 libandroid_shmget/shmat/
+  # shmctl/shmdt（prefix/include/sys/shm.h 由 libandroid-shmem 提供，宏把标准
+  # shm 接口映射到 libandroid_ 前缀符号）。LDFLAGS 会进每个 unix .so 的链接行
+  # （lld 默认 as-needed，未用到该库的模块不会引入依赖），缺失时 winex11.so
+  # 链接报 "undefined symbol: libandroid_shmget" 直接失败。
+  export LDFLAGS+=" -Wl,--rosegment -landroid-shmem"
 
   # PE→Unix thunk 亦用 ndk clang（CC 已含版本与 ccache）
   export i386_CC="$CC"

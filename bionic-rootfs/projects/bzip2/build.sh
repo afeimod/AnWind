@@ -1,5 +1,12 @@
 revision="1.0.8"
 url="https://sourceware.org/pub/bzip2/bzip2-${revision}.tar.gz"
+# sourceware.org 曾对云厂商/CI 出口 IP 限流（GH runner 上连接超时，
+# 旧 wget 无 --timeout 会傻等约 40 分钟才失败，这正是此前 rootfs
+# 流水线 15~60 分钟不等、日志无报错就死掉的原因）。Debian pool 为
+# Fastly CDN，runner 实测可达，作为主源不可用时的兜底。
+backupUrls=(
+  "http://deb.debian.org/debian/pool/main/b/bzip2/bzip2_${revision}.orig.tar.gz"
+)
 urlType="tar"
 arch="aarch64 x86_64"
 buildSys="others"

@@ -13,10 +13,16 @@ extra_fuction() {
   local _tmpDir="/tmp/download-src/tzdata-extract"
   rm -rf "${_tmpDir}" && mkdir -p "${_tmpDir}"
   ar p "${_deb}" data.tar.xz > "${_tmpDir}/data.tar.xz" || { echo "读取 data.tar.xz 失败!" && exit 1; }
+  # 修复：Debian deb 的 data.tar.xz 成员路径带 ./ 前缀（./usr/share/zoneinfo/...），
+  # 旧模式 'usr/share/zoneinfo/*' 匹配不到任何成员，tar 报
+  # "usr/share/zoneinfo/*: Not found in archive" 直接失败；
+  # 模式必须带 ./ 前缀才能命中（fix: leading ./ in wildcard pattern）。
   tar -xJf "${_tmpDir}/data.tar.xz" -C "${_tmpDir}" \
-    --wildcards 'usr/share/zoneinfo/*' || { echo "解压失败!" && exit 1; }
-  mkdir -p "${destDir}${prefix}/usr/share/zoneinfo"
-  cp -a "${_tmpDir}/usr/share/zoneinfo/." "${destDir}${prefix}/usr/share/zoneinfo/" \
+    --wildcards './usr/share/zoneinfo/*' || { echo "解压失败!" && exit 1; }
+  # 修复：zoneinfo 安装回 ${prefix}/share/zoneinfo（与 Arch 源时代一致的单层 usr，
+  # 旧代码误写成 ${prefix}/usr/share/zoneinfo，会在 rootfs 里多出一层 usr/usr）
+  mkdir -p "${destDir}${prefix}/share/zoneinfo"
+  cp -a "${_tmpDir}/usr/share/zoneinfo/." "${destDir}${prefix}/share/zoneinfo/" \
     || { echo "安装 zoneinfo 失败!" && exit 1; }
   rm -rf "${_tmpDir}"
 }
