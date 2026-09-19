@@ -61,6 +61,12 @@ debianPkgs=(
   autoconf
   automake
   pkgconf
+  # Ubuntu 24.04(noble) 起 autopoint 被拆为独立二进制包（同一 gettext 源码包
+  # 产出，但 gettext 包内不再含 /usr/bin/autopoint）——只装 gettext 的话
+  # autopoint 依然缺失。fontconfig 等包的 autogen.sh 无条件检查 autopoint
+  # （且其 configure.ac 带 AM_GNU_GETTEXT，autoreconf -i 也会真调用它），
+  # 缺它会在 fontconfig 处报 "You must have autopoint installed" 直接失败。
+  autopoint
   gettext
   libfreetype-dev
   locales
