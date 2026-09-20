@@ -38,6 +38,11 @@ APP_PREFIX="/data/data/com.anwind/files/usr"
 CONT_ROOT="$RFS_ROOT/home/.anwind/containers"
 CONF_GLOBAL="$RFS_USR/etc/anwind/container.conf"
 AW_WINE="$RFS_USR/bin/anwind-wine"
+
+# ---------- 运行时目录兜底（在任何子命令执行前） ----------
+# wine 按 termux 风格构建，把 /tmp 硬编码为 $RFS_USR/tmp（wineserver 的
+# .wine-<uid> 运行时目录）；容器/日志目录可能随发行包缺失，统一补建。
+mkdir -p "$RFS_USR/tmp" "$APP_PREFIX/tmp/.X11-unix" "$CONT_ROOT/logs" 2>/dev/null || true
 X11_SOCK_DIR="$APP_PREFIX/tmp/.X11-unix"
 DL_TMP="$APP_PREFIX/tmp/anwind-dl"
 

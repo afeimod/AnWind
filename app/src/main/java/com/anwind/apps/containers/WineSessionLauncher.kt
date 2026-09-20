@@ -174,6 +174,16 @@ object WineSessionLauncher {
         // X11 桌面窗口先就位（X11 显示方案联动）
         ensureX11Window(context)
 
+        // wineserver 运行时目录兜底：wine 按 termux 风格构建，把 /tmp 硬编码为
+        // $PREFIX/tmp（= rootfs/usr/tmp），启动时要在其下创建 .wine-<uid>；
+        // 部分用户导入的 rootfs 缺这个空目录 → "wineserver: mkdir .../.wine-xxx:
+        // No such file or directory"。App 进程与 rootfs 同 UID，直接补建。
+        // App 侧 X11 socket 目录同理（wine 客户端经它连接内置 X 服务）。
+        runCatching {
+            File("${ContainerManager.ROOTFS_ROOT}/usr/tmp").mkdirs()
+            File("${ContainerManager.APP_PREFIX}/tmp/.X11-unix").mkdirs()
+        }
+
         val prefix = TermuxEnvironment.prefixPath(context)
         val bash = File("$prefix/bin/bash")
         if (!bash.isFile) return "未找到 App 侧 bash：$prefix/bin/bash"

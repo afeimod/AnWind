@@ -35,6 +35,12 @@ LOG_DIR="$CONT_ROOT/logs"
 
 version() { echo "anwind-wine 1.0.0 (AnWind bionic rootfs, X11)"; }
 
+# ---------- 运行时目录兜底（必须在任何 wine 调用前） ----------
+# wine 按 termux 风格构建，把 /tmp 硬编码为 $RFS_USR/tmp：wineserver 启动时
+# 要在其下创建 .wine-<uid> 运行时目录；X11 socket 在 App 侧 tmp/.X11-unix。
+# 个别 rootfs 发行包缺这些空目录（tar 对空目录/权限敏感），在此统一补建。
+mkdir -p "$RFS_USR/tmp" "$APP_PREFIX/tmp/.X11-unix" "$LOG_DIR" 2>/dev/null || true
+
 die() { echo "anwind-wine: $*" >&2; exit 1; }
 info() { echo "[anwind-wine] $*"; }
 

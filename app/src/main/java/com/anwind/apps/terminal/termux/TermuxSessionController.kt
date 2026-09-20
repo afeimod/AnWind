@@ -129,9 +129,13 @@ class TermuxSessionController(
         val cwd = TermuxEnvironment.homePath(context)
 
         val env = TermuxEnvironment.buildEnvironment(context, isFailSafe = false)
-        // "-login" 仅作占位参数随 login 脚本传入（会被忽略）；登录 shell 语义
-        // 由 login 脚本内部的 `bash --login` 保证，对齐官方 termux-packages 的 login
-        val args = arrayOf("-login")
+        // 对齐上游 Termux：新会话裸跑 login，不传任何参数。
+        // ⚠️ 历史教训：曾传 ["-login"] 想借 argv[0] 实现 login-shell 语义，
+        // 但 argv[0] 修复后该串变成 $1 被 login 脚本 `exec $SHELL -l "$@"`
+        // 透传给 bash → bash 把 "-login" 拆成 -l -o g -i -n → "-g" 非法
+        // → 打印 Usage 并 exit 2（终端打不开）。登录 shell 语义由 login
+        // 脚本内部的 `bash -l` 保证，此处无需（也不应）再传参。
+        val args = emptyArray<String>()
 
         val processArgs = TermuxEnvironment.setupProcessArgs(context, executable, args)
         val realExecutable = processArgs[0]
