@@ -2,6 +2,7 @@ package com.anwind.termux.terminal;
 
 import android.annotation.SuppressLint;
 import android.os.Handler;
+import android.os.Looper;
 import android.os.Message;
 import android.system.ErrnoException;
 import android.system.Os;
@@ -334,6 +335,19 @@ public final class TerminalSession extends TerminalOutput {
 
     @SuppressLint("HandlerLeak")
     class MainThreadHandler extends Handler {
+
+        // v2.24.1 闪退修复：显式绑定主线程 Looper。
+        // 原实现（无参 Handler()）隐式绑定【构造线程】的 Looper，依赖
+        // Termux 上游 "session 只能在主线程构造" 的隐含约定；AnWind 的
+        // headless wine 会话（WineSessionLauncher.spawn）在
+        // Dispatchers.IO 协程中构造 TerminalSession，IO 工作线程无
+        // Looper → "Can't create handler inside thread that has not
+        // called Looper.prepare()" 闪退（winecfg/创建前缀等全部入口）。
+        // 绑定主 Looper 后任意线程均可安全构造，且回调
+        // （onTextChanged / onSessionFinished 等）与上游主线程语义一致。
+        MainThreadHandler() {
+            super(Looper.getMainLooper());
+        }
 
         final byte[] mReceiveBuffer = new byte[4 * 1024];
 
