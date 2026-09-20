@@ -161,16 +161,40 @@ jobs:
         run: |
           cd "${GITHUB_WORKSPACE}/bionic-rootfs"
 
-          # 组装前清理：源码树/下载缓存已完成使命（NDK 与 ccache 在 Post 阶段
-          # 单独回存缓存，不受影响）。此前 620 个包的源码树+构建产物可占 10GB+，
-          # 曾把磁盘压到解压中途 "No space left on device"（tar exit 2）。
+          # 组装前清理：以下目录在组装阶段均已无用（make-rootfs 只从 pkgs/
+          # 解包，不读构建期前缀），全部释放给解压与打包：
+          #   - src/：620 个包的源码树（10GB+）
+          #   - /tmp/download-src、/tmp/ndk*：下载缓存
+          #   - /tmp/build-*：DESTDIR 打包暂存
+          #   - /data/data/com.anwind/files/rootfs：构建期实装前缀（3.5GB+）
+          # NDK 与 ccache 不动（Post 阶段单独回存缓存）。
           echo "=== 清理构建残留，释放磁盘 ==="
+          echo "清理前: $(df -h / | awk 'NR==2{print $4" 可用"}')"
           rm -rf "${GITHUB_WORKSPACE}/bionic-rootfs/src" \
                  "${GITHUB_WORKSPACE}/bionic-rootfs/tmp" \
-                 /tmp/download-src /tmp/ndk.zip /tmp/ndk-tmp 2>/dev/null || true
-          df -h / | tail -1
+                 /tmp/download-src /tmp/ndk.zip /tmp/ndk-tmp \
+                 /tmp/build-aarch64 /tmp/build-x86_64 \
+                 /data/data/com.anwind/files/rootfs 2>/dev/null || true
+          echo "清理后: $(df -h / | awk 'NR==2{print $4" 可用"}')"
+          echo "pkgs 体积: $(du -sh pkgs 2>/dev/null | cut -f1 || echo 未知)"
 
-          ./make-rootfs.sh --export "/tmp/anwind-rootfs" --arch "${{ matrix.arch }}"
+          # bash 直接调用（不依赖执行位）；tee 留档；失败时给出完整诊断
+          set +e
+          bash make-rootfs.sh --export "/tmp/anwind-rootfs" --arch "${{ matrix.arch }}" 2>&1 | tee /tmp/make-rootfs-run.log
+          rc=${PIPESTATUS[0]}
+          set -e
+          if [[ "$rc" -ne 0 ]]; then
+            echo "::error::make-rootfs.sh 组装失败 (exit $rc)——完整输出见下方与诊断 artifact"
+            tail -50 /tmp/make-rootfs-run.log || true
+            {
+              echo "=== df ==="; df -h / /tmp
+              echo "=== pkgs du ==="; du -sh pkgs
+              echo "=== pkgs 列表 ==="; ls -lh pkgs | head -90
+              echo "=== make-rootfs 日志尾部 ==="; tail -60 /tmp/make-rootfs-run.log
+            } > /tmp/anwind-diag.txt 2>&1
+            cat /tmp/anwind-diag.txt
+            exit "$rc"
+          fi
 
           # 运行时目录 + 主目录
           mkdir -p /tmp/anwind-rootfs/data/data/com.anwind/files/rootfs/tmp/.X11-unix
@@ -219,20 +243,24 @@ jobs:
           [[ "$MISS" == "0" ]] || { echo "::error::rootfs 缺少关键文件！"; exit 1; }
 
           # ============ weston/wayland 清除校验 ============
+          # 注意：find -print -quit 找到即停（不用 find|grep -q：grep -q 提前
+          # 关闭管道会让 find 收到 SIGPIPE，在 pipefail 下把 "找到" 误判为
+          # "未找到"，属于隐蔽的假阴性）。
           echo "=== wayland 残留校验（应全部 NOT FOUND）==="
           for f in libwayland-client.so libwayland-server.so libwayland-egl.so \
                    libwayland-cursor.so bin/weston; do
-            if find /tmp/anwind-rootfs -name "$(basename "$f")*" | grep -q .; then
-              echo "  [FOUND] $f  <-- 不应存在！"; FAIL_WL=1
+            hit="$(find /tmp/anwind-rootfs -name "$(basename "$f")*" -print -quit 2>/dev/null || true)"
+            if [[ -n "$hit" ]]; then
+              echo "  [FOUND] $f  <-- 不应存在！($hit)"; FAIL_WL=1
             else
               echo "  [NOT FOUND] $f"
             fi
           done
-          [[ "$FAIL_WL" != "1" ]] || exit 1
+          [[ "${FAIL_WL:-0}" != "1" ]] || exit 1
 
           echo "=== rootfs 概览 ==="
           du -sh /tmp/anwind-rootfs
-          ls /tmp/anwind-rootfs/data/data/com.anwind/files/rootfs/usr/lib | head -40
+          (ls /tmp/anwind-rootfs/data/data/com.anwind/files/rootfs/usr/lib | head -40) || true
 
       # ============ 8. 打包 ============
       - name: 打包 rootfs
@@ -241,13 +269,34 @@ jobs:
           BUILD_DATE=$(date +%Y%m%d)
           echo "BUILD_DATE=${BUILD_DATE}" >> $GITHUB_ENV
           PACKAGE_NAME="anwind-bionic-rootfs-${BUILD_DATE}-${{ matrix.arch }}"
+          echo "打包前可用空间: $(df -h / | awk 'NR==2{print $4}')"
           cd /tmp
+          set +e
           tar -czf "${GITHUB_WORKSPACE}/${PACKAGE_NAME}.tar.gz" -C /tmp/anwind-rootfs .
+          rc=$?
+          set -e
+          if [[ "$rc" -ne 0 ]]; then
+            echo "::error::rootfs tar.gz 打包失败（exit $rc，多半是磁盘空间不足）"
+            df -h / | tail -2
+            exit 1
+          fi
           cd "${GITHUB_WORKSPACE}"
           sha256sum "${PACKAGE_NAME}.tar.gz" > checksums-${{ matrix.arch }}.txt
           echo "PACKAGE_NAME=${PACKAGE_NAME}" >> $GITHUB_ENV
           echo "=== 打包完成 ==="
           ls -lh "${PACKAGE_NAME}.tar.gz" checksums-${{ matrix.arch }}.txt
+
+      # ============ 8.5 失败诊断存档（组装/打包失败时自动上传） ============
+      - name: 上传失败诊断
+        uses: actions/upload-artifact@v4
+        if: ${{ failure() }}
+        with:
+          name: failure-diag-${{ matrix.arch }}
+          path: |
+            /tmp/make-rootfs-run.log
+            /tmp/anwind-diag.txt
+          if-no-files-found: ignore
+          compression-level: 9
 
       # ============ 9. 上传构建日志 ============
       - name: 上传构建日志

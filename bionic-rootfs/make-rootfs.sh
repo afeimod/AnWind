@@ -57,33 +57,49 @@ shopt -s nullglob
 pkgFiles=("${pkgDir}"/*-"${targetArch}".tar)
 shopt -u nullglob
 
-[[ ${#pkgFiles[@]} -eq 0 ]] && { echo "未找到匹配的包 (arch=${targetArch})"; exit 1; }
+[[ ${#pkgFiles[@]} -eq 0 ]] && {
+  echo "::error::未找到匹配的包 (arch=${targetArch})"
+  echo "pkgs 目录内容（前 20 项）:"
+  ls -lh "${pkgDir}" 2>/dev/null | head -20 || true
+  exit 1
+}
 
 # ---- 磁盘空间预检：解压目标需要至少与包体积相当的空间 ----
-needKB=$(du -sk "${pkgDir}" | cut -f1)
-freeKB=$(df -Pk "$exportPath" | awk 'NR==2{print $4}')
-echo "包总计: $((needKB / 1024))MB, 解压目标可用: $((freeKB / 1024))MB"
-if [[ "$freeKB" -lt "$needKB" ]]; then
-  echo "::error::磁盘空间不足：解压需约 $((needKB / 1024))MB，仅剩 $((freeKB / 1024))MB"
-  echo "提示：请在调用本脚本前清理构建源码树（src/）与下载缓存。"
-  df -h "$exportPath" | tail -2
-  exit 2
+# 注意：du/df 输出必须校验为纯数字后才参与比较，避免诊断脚本本身
+# 因异常输入（空值/非数字）产生二次错误或误判。
+needKB="$(du -sk "${pkgDir}" | cut -f1 | tr -d '[:space:]')"
+freeKB="$(df -Pk "$exportPath" | awk 'NR==2{print $4}' | tr -d '[:space:]')"
+if [[ "$needKB" =~ ^[0-9]+$ && "$freeKB" =~ ^[0-9]+$ ]]; then
+  echo "包总计: $((needKB / 1024))MB (${#pkgFiles[@]} 个), 解压目标可用: $((freeKB / 1024))MB"
+  if [[ "$freeKB" -lt "$needKB" ]]; then
+    echo "::error::磁盘空间不足：解压需约 $((needKB / 1024))MB，仅剩 $((freeKB / 1024))MB"
+    echo "提示：请确认组装步骤已清理 src/、/data/data 前缀、/tmp/build-* 等构建残留。"
+    df -h "$exportPath" | tail -2
+    exit 2
+  fi
+else
+  echo "警告: 磁盘预检数值异常 (needKB='${needKB}' freeKB='${freeKB}')，跳过预检继续组装"
 fi
 
 echo "解压 ${#pkgFiles[@]} 个包到 ${exportPath} (arch=${targetArch})"
 
 # ---- 逐包解压：单包失败不中断，最后汇总报告（便于一眼定位问题包） ----
+# 已成功解压的包立即删除：组装峰值占用从 (pkgs+导出) 降为 (pkgs+单包)，
+# 避免导出与包本体双份占满磁盘；失败的包保留在 pkgs/ 便于诊断。
+errFile="/tmp/.make-rootfs-err.$$"
 failedPkgs=()
 for pkg in "${pkgFiles[@]}"; do
   echo "解压 => $(basename "$pkg")"
-  if ! tar -xf "$pkg" -C "$exportPath" 2>"/tmp/.make-rootfs-err.$$"; then
+  if tar -xf "$pkg" -C "$exportPath" 2>"$errFile"; then
+    rm -f -- "$pkg"
+  else
     echo "::error::解压失败 => $(basename "$pkg")"
     # 注意顺序：head 先截断再交给 sed，避免 sed 在长错误清单下触发 SIGPIPE/pipefail
-    head -15 "/tmp/.make-rootfs-err.$$" | sed 's/^/    /' || true
+    head -15 "$errFile" | sed 's/^/    /' || true
     failedPkgs+=("$(basename "$pkg")")
   fi
 done
-rm -f "/tmp/.make-rootfs-err.$$"
+rm -f "$errFile"
 
 if [[ ${#failedPkgs[@]} -gt 0 ]]; then
   echo "::error::共 ${#failedPkgs[@]} 个包解压失败: ${failedPkgs[*]}"
@@ -92,4 +108,6 @@ if [[ ${#failedPkgs[@]} -gt 0 ]]; then
   exit 2
 fi
 
+echo "=== 组装完成概览 ==="
+du -sh "$exportPath" 2>/dev/null || true
 echo "完成"
