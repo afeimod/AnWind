@@ -129,14 +129,21 @@ class TermuxSessionController(
         val cwd = TermuxEnvironment.homePath(context)
 
         val env = TermuxEnvironment.buildEnvironment(context, isFailSafe = false)
-        val args = arrayOf("-login") // argv0 带前导 '-'：login shell 语义（对齐官方）
+        // "-login" 仅作占位参数随 login 脚本传入（会被忽略）；登录 shell 语义
+        // 由 login 脚本内部的 `bash --login` 保证，对齐官方 termux-packages 的 login
+        val args = arrayOf("-login")
 
         val processArgs = TermuxEnvironment.setupProcessArgs(context, executable, args)
         val realExecutable = processArgs[0]
-        val realArgs = processArgs.drop(1).toTypedArray()
 
         val newSession = TerminalSession(
-            realExecutable, cwd, realArgs, env.toTypedArray(),
+            realExecutable, cwd,
+            // JNI.createSubprocess 把该数组直接用作 execvp() 的 argv（argv[0] = 程序名），
+            // 必须传含 argv[0] 的完整 processArgs（与上游 Termux 传法一致）。
+            // drop(1) 会丢失 argv[0]：对 login 只是侥幸能跑，对 bash -c 则致命
+            // （"-c" 变成 $0，命令串被当脚本文件名 → ENOENT/127）。
+            processArgs,
+            env.toTypedArray(),
             TerminalTermuxDefaults.TRANSCRIPT_ROWS, this
         )
         session = newSession

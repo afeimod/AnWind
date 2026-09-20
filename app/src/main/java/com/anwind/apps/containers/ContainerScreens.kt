@@ -162,20 +162,35 @@ fun ContainerListContent(scope: WindowContentScope) {
                     },
                     onWineBoot = {
                         cs.launch(Dispatchers.IO) {
-                            WineSessionLauncher.initializePrefix(context, c)
-                            withContext(Dispatchers.Main) { refresh() }
+                            val err = WineSessionLauncher.initializePrefix(context, c)
+                            withContext(Dispatchers.Main) {
+                                err?.let {
+                                    android.widget.Toast.makeText(context, it, android.widget.Toast.LENGTH_LONG).show()
+                                }
+                                refresh()
+                            }
                         }
                     },
                     onWineCfg = {
                         cs.launch(Dispatchers.IO) {
-                            WineSessionLauncher.openWineCfg(context, c)
-                            withContext(Dispatchers.Main) { refresh() }
+                            val err = WineSessionLauncher.openWineCfg(context, c)
+                            withContext(Dispatchers.Main) {
+                                err?.let {
+                                    android.widget.Toast.makeText(context, it, android.widget.Toast.LENGTH_LONG).show()
+                                }
+                                refresh()
+                            }
                         }
                     },
                     onRegEdit = {
                         cs.launch(Dispatchers.IO) {
-                            WineSessionLauncher.openRegEdit(context, c)
-                            withContext(Dispatchers.Main) { refresh() }
+                            val err = WineSessionLauncher.openRegEdit(context, c)
+                            withContext(Dispatchers.Main) {
+                                err?.let {
+                                    android.widget.Toast.makeText(context, it, android.widget.Toast.LENGTH_LONG).show()
+                                }
+                                refresh()
+                            }
                         }
                     },
                     onShowLog = { showLogFor = c.name }

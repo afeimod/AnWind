@@ -188,7 +188,6 @@ object WineSessionLauncher {
         val args = arrayOf("-c", shellCmd)
         val processArgs = TermuxEnvironment.setupProcessArgs(context, bash.absolutePath, args)
         val executable = processArgs.first()
-        val realArgs = processArgs.drop(1).toTypedArray()
 
         // 同名旧会话先回收
         activeSessions.remove(containerName)?.finishIfRunning()
@@ -200,7 +199,11 @@ object WineSessionLauncher {
         val session = TerminalSession(
             executable,
             TermuxEnvironment.homePath(context),
-            realArgs,
+            // JNI.createSubprocess 直接把该数组用作 execvp() 的 argv（argv[0] = 程序名）。
+            // 必须传含 argv[0] 的完整 processArgs；若 drop(1) 丢掉它，bash 将以
+            // $0="-c" 启动（被解析为登录 shell 名而非 -c 选项），整条 shellCmd 被
+            // 当作脚本文件名打开 → "No such file or directory" + exit 127。
+            processArgs,
             env.toTypedArray(),
             TRANSCRIPT_ROWS,
             HeadlessClient(containerName)
