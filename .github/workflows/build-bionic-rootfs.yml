@@ -201,12 +201,18 @@ jobs:
           mkdir -p /tmp/anwind-rootfs/data/data/com.anwind/files/rootfs/home
 
           # ============ 关键产物校验 ============
+          # 注意：-L 允许"符号链接本身存在"的项（如 xkeyboard-config 的
+          # share/X11/xkb 是指向 share/xkeyboard-config-2 的链接）；
+          # make-rootfs.sh 已把绝对链接改写为相对链接，正常都会走 -e 分支。
           RFS=/tmp/anwind-rootfs/data/data/com.anwind/files/rootfs/usr
           echo "=== 关键文件校验 ==="
-          check() {
-            if [[ -e "$1" ]]; then echo "  [OK] $1"; else echo "  [MISS] $1"; MISS=1; fi
-          }
           MISS=0
+          MISS_LIST=""
+          check() {
+            if [[ -e "$1" || -L "$1" ]]; then echo "  [OK] $1"; else
+              echo "  [MISS] $1"; MISS=1; MISS_LIST+="$1"$'\n'
+            fi
+          }
           check "$RFS/lib/libc++_shared.so"
           check "$RFS/lib/libX11.so.6"
           check "$RFS/lib/libX11-xcb.so.1"
@@ -240,7 +246,24 @@ jobs:
             check "$RFS/opt/wine/bin/wine"
             check "$RFS/opt/wine/lib/wine/x86_64-windows/kernel32.dll"
           fi
-          [[ "$MISS" == "0" ]] || { echo "::error::rootfs 缺少关键文件！"; exit 1; }
+          if [[ "$MISS" != "0" ]]; then
+            # 把缺失明细与实际目录内容写入诊断文件（failure-diag artifact 会上传），
+            # 避免只报错却看不出缺什么
+            {
+              echo "=== rootfs 缺失的关键文件 ==="
+              printf '%s' "$MISS_LIST"
+              echo "=== usr/lib 实际内容（前 80 项）==="
+              ls -lh "$RFS/lib" 2>/dev/null | head -80 || true
+              echo "=== share/X11 实际内容 ==="
+              ls -l "$RFS/share/X11" 2>/dev/null || true
+              echo "=== bin / etc/anwind 实际内容 ==="
+              ls -l "$RFS/bin/anwind-container" "$RFS/bin/anwind-wine" \
+                   "$RFS/etc/anwind/container.conf" 2>/dev/null || true
+            } > /tmp/anwind-diag.txt 2>&1 || true
+            echo "::error::rootfs 缺少关键文件！缺失明细已写入 failure-diag artifact"
+            printf '%s' "$MISS_LIST"
+            exit 1
+          fi
 
           # ============ weston/wayland 清除校验 ============
           # 注意：find -print -quit 找到即停（不用 find|grep -q：grep -q 提前
@@ -256,7 +279,10 @@ jobs:
               echo "  [NOT FOUND] $f"
             fi
           done
-          [[ "${FAIL_WL:-0}" != "1" ]] || exit 1
+          if [[ "${FAIL_WL:-0}" == "1" ]]; then
+            echo "::error::rootfs 存在 wayland 残留文件！（明细见上方 [FOUND] 行）"
+            exit 1
+          fi
 
           echo "=== rootfs 概览 ==="
           du -sh /tmp/anwind-rootfs

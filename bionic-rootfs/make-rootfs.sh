@@ -108,6 +108,37 @@ if [[ ${#failedPkgs[@]} -gt 0 ]]; then
   exit 2
 fi
 
+# ---- 绝对符号链接重写：让导出树自包含 ----
+# meson 的 install_symlink（如 xkeyboard-config compat-rules 的
+# share/X11/xkb -> <prefix>/share/xkeyboard-config-2）会生成指向设备最终
+# 前缀 /data/data/com.anwind/files/rootfs 的绝对符号链接。该前缀在构建机
+# 上并不存在（组装前已清理），导出树内的这类链接全部为断链：产物校验的
+# [[ -e ]] 跟随链接会误判缺失，设备侧也被迫依赖固定挂载路径。这里把
+# "指向导出树自身"的绝对链接统一改写为相对链接；指向树外（App 侧前缀
+# 等）的链接不在导出树内、不属于 rootfs 自身内容，保持原样。
+rfsPrefix="/data/data/com.anwind/files/rootfs"
+while IFS= read -r -d '' link; do
+  tgt="$(readlink -- "$link")" || continue
+  case "$tgt" in
+    "$rfsPrefix" | "$rfsPrefix"/*) ;;
+    *) continue ;;
+  esac
+  absTgt="${exportPath}${tgt}"
+  if [[ ! -e "$absTgt" && ! -L "$absTgt" ]]; then
+    echo "警告: 符号链接目标不在导出树内，保持原样: ${link#"$exportPath"/} -> $tgt"
+    continue
+  fi
+  newTgt="$(realpath -m --relative-to="$(dirname -- "$link")" "$absTgt")" || {
+    echo "警告: 无法计算相对路径（保留原样）: ${link#"$exportPath"/}"
+    continue
+  }
+  if ln -snf -- "$newTgt" "$link" 2>/dev/null; then
+    echo "重写绝对符号链接 => ${link#"$exportPath"/}: '$tgt' -> '$newTgt'"
+  else
+    echo "警告: 符号链接重写失败（保留原样）: ${link#"$exportPath"/}"
+  fi
+done < <(find "$exportPath" -type l -print0)
+
 echo "=== 组装完成概览 ==="
 du -sh "$exportPath" 2>/dev/null || true
 echo "完成"
