@@ -108,19 +108,31 @@ class AnWindApp : Application() {
         // v2.22.2 X11 客户端宿主定位文件自愈：APK 升级后安装路径变化，
         // 每次启动在后台线程刷新 etc/anwind-x11.env（未装 bootstrap 时静默）
         applicationScope.launch(Dispatchers.IO) {
-            com.anwind.apps.terminal.termux.TermuxBootstrapInstaller
-                .refreshX11Env(this@AnWindApp)
-            // fix9.10：救援库就位保障（幂等）——与迁移路径互为备份，
-            // 迁移异常中断时打开主界面一次仍可部署 etc/anwind/rescue
-            com.anwind.apps.terminal.termux.TermuxBootstrapInstaller
-                .ensureRescueLibs(this@AnWindApp)
-            // v2.26 rev40 [A1]：内置 tzst 资产自解压（幂等）——
-            // rootfs/mesa/box64/turnip 按指纹铺装到 bionic rootfs；
-            // dxvk 仅对"已构建"的 wine 前缀解压到 drive_c/windows
-            // （未构建的前缀自动等待，前缀就绪后的首次启动/进容器
-            // 界面即补齐），不预创建任何前缀目录。
-            com.anwind.apps.terminal.termux.AnWindTzstAssets
-                .installAllIfNeeded(this@AnWindApp)
+            try {
+                com.anwind.apps.terminal.termux.TermuxBootstrapInstaller
+                    .refreshX11Env(this@AnWindApp)
+                // fix9.10：救援库就位保障（幂等）——与迁移路径互为备份，
+                // 迁移异常中断时打开主界面一次仍可部署 etc/anwind/rescue
+                com.anwind.apps.terminal.termux.TermuxBootstrapInstaller
+                    .ensureRescueLibs(this@AnWindApp)
+                // v2.26 rev40 [A1]：内置 tzst 资产自解压（幂等）——
+                // rootfs/mesa/box64/turnip 按指纹铺装到 bionic rootfs；
+                // dxvk 仅对"已构建"的 wine 前缀解压到 drive_c/windows
+                // （未构建的前缀自动等待，前缀就绪后的首次启动/进容器
+                // 界面即补齐），不预创建任何前缀目录。
+                com.anwind.apps.terminal.termux.AnWindTzstAssets
+                    .installAllIfNeeded(this@AnWindApp)
+            } catch (t: Throwable) {
+                // v2.24.1 闪退修复：启动期后台铺装是"尽力而为"的幂等操作，
+                // 任何失败（含 UnsatisfiedLinkError 等 Error 级——Exception
+                // 捕不到）都必须降级为日志，绝不允许在 Application.onCreate
+                // 杀死主进程；指纹未落盘的资产会在下次启动自动重试。
+                android.util.Log.e(
+                    "AnWindApp",
+                    "启动期 bootstrap/tzst 铺装失败（已降级，下次启动重试）",
+                    t
+                )
+            }
         }
 
         // v2.23.2 自由窗口能力预热：后台检测设备是否支持 freeform；

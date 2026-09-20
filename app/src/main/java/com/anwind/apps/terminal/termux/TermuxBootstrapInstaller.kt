@@ -524,8 +524,9 @@ object TermuxBootstrapInstaller {
         //     失败绝不阻断 bootstrap 安装（与 XKB 三级容错同策略）。
         try {
             AnWindTzstAssets.installAllIfNeeded(context)
-        } catch (e: Exception) {
-            android.util.Log.w(TAG, "tzst 资产自解压失败（不阻断安装）: ${e.message}")
+        } catch (t: Throwable) {
+            // Throwable：Error 级故障（如 UnsatisfiedLinkError）同样不阻断安装
+            android.util.Log.w(TAG, "tzst 资产自解压失败（不阻断安装）: ${t.message}")
         }
 
         // 8. 清理缓存归档
@@ -1135,8 +1136,9 @@ object TermuxBootstrapInstaller {
                 // 资产指纹幂等，已就位时零开销）
                 try {
                     AnWindTzstAssets.installAllIfNeeded(context)
-                } catch (e: Exception) {
-                    android.util.Log.w(TAG, "tzst 资产自解压失败（不阻断迁移）: ${e.message}")
+                } catch (t: Throwable) {
+                    // Throwable：Error 级故障（如 UnsatisfiedLinkError）同样不阻断迁移
+                    android.util.Log.w(TAG, "tzst 资产自解压失败（不阻断迁移）: ${t.message}")
                 }
             } catch (e: Exception) {
                 // 迁移失败不永久阻塞终端（降级为旧行为，bootstrap 本体完好）

@@ -236,8 +236,11 @@ object AnWindTzstAssets {
                 val entryRel = destination.path.removePrefix(root.path + "/")
                 remapToRootfs(entryRel)
             }
-        } catch (e: Exception) {
-            android.util.Log.e(TAG, "解压异常: $name: ${e.message}")
+        } catch (t: Throwable) {
+            // Throwable 而非 Exception：UnsatisfiedLinkError 等 Error 级故障
+            // （如 zstd native 库缺失/不兼容）不得穿透导致进程闪退；
+            // 返回 false → 指纹空缺 → 下次启动自动重试
+            android.util.Log.e(TAG, "解压异常: $name: ${t.message}")
             false
         }
     }
@@ -348,8 +351,9 @@ object AnWindTzstAssets {
                 return false
             }
             return installStagedDxvk(stage, windows)
-        } catch (e: Exception) {
-            android.util.Log.e(TAG, "DXVK 解压异常: $name: ${e.message}")
+        } catch (t: Throwable) {
+            // 同 extractToRootfs：Error 级故障降级为日志，不穿透
+            android.util.Log.e(TAG, "DXVK 解压异常: $name: ${t.message}")
             return false
         } finally {
             stage.deleteRecursively()
@@ -480,15 +484,18 @@ object AnWindTzstAssets {
      * ② dxvk → 已构建前缀（未构建的前缀自动等待下次）。
      */
     fun installAllIfNeeded(context: Context) {
+        // 两段均捕获 Throwable：本方法在 Application.onCreate 的后台协程
+        // 调用，任何异常（含 Error）冒泡即等于进程闪退（v2.24.1 修复：
+        // UnsatisfiedLinkError 是 Error，旧 catch (Exception) 捕不到）。
         try {
             installBionicAssetsIfNeeded(context)
-        } catch (e: Exception) {
-            android.util.Log.e(TAG, "bionic tzst 资产铺装失败: ${e.message}")
+        } catch (t: Throwable) {
+            android.util.Log.e(TAG, "bionic tzst 资产铺装失败: ${t.message}")
         }
         try {
             applyDxvkWhenPrefixReady(context)
-        } catch (e: Exception) {
-            android.util.Log.e(TAG, "dxvk tzst 应用失败: ${e.message}")
+        } catch (t: Throwable) {
+            android.util.Log.e(TAG, "dxvk tzst 应用失败: ${t.message}")
         }
     }
 }
