@@ -318,8 +318,12 @@ private fun ContainerCard(
                 buildString {
                     append("后端 ${data.backend.label}")
                     if (data.backend == ContainerBackend.BOX64) append(" · ${data.preset.label}")
-                    append(" · 分辨率 ${data.screen}")
+                    append(" · 显示 ${data.dmode.label}")
+                    if (data.dmode != DisplayMode.OFF && data.screen != "native") append(" ${data.screen}")
                     append(" · 渲染 ${data.gallium}")
+                    if (data.wine.isNotEmpty()) append(" · wine ${data.wine}")
+                    if (data.lang.isNotEmpty() && data.lang != ContainerLangs.DEFAULT) append(" · ${data.lang}")
+                    if (data.audio == ContainerAudio.OFF) append(" · 静音")
                     if (data.dxvk != "off") append(" · DXVK ${data.dxvk}")
                     if (data.vkd3d != "off") append(" · VKD3D ${data.vkd3d}")
                 },
@@ -386,7 +390,21 @@ private fun CreateContainerDialog(onDismiss: () -> Unit, onCreated: () -> Unit) 
     var backend by remember { mutableStateOf(ContainerBackend.AUTO) }
     var preset by remember { mutableStateOf(Box64Preset.PERFORMANCE) }
     var screen by remember { mutableStateOf(ContainerData.DEFAULT_SCREEN) }
+    var dmode by remember { mutableStateOf(DisplayMode.OFF) }
+    var gallium by remember { mutableStateOf(ContainerData.DEFAULT_GALLIUM) }
+    var wine by remember { mutableStateOf("") }
+    var lang by remember { mutableStateOf(ContainerLangs.DEFAULT) }
+    var audio by remember { mutableStateOf(ContainerAudio.PULSE) }
+    var env by remember { mutableStateOf("") }
+    var wines by remember { mutableStateOf<List<WineInstall>>(emptyList()) }
     var error by remember { mutableStateOf<String?>(null) }
+
+    // wine 版本列表（rootfs /usr/opt 扫描；无 wine 时选择器只剩"默认"）
+    LaunchedEffect(Unit) {
+        kotlinx.coroutines.withContext(Dispatchers.IO) {
+            wines = ContainerManager.listWines()
+        }
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -405,9 +423,24 @@ private fun CreateContainerDialog(onDismiss: () -> Unit, onCreated: () -> Unit) 
                 }
                 LabeledEnumSelector("CPU 翻译后端", backend, ContainerBackend.entries.toList()) { backend = it }
                 LabeledEnumSelector("Box64 预设（仅 box64 后端）", preset, Box64Preset.entries.toList()) { preset = it }
+                LabeledEnumSelector("显示模式（glibc-runner -d/-v/-f）", dmode, DisplayMode.entries.toList()) { dmode = it }
                 LabeledChoiceSelector("虚拟分辨率", screen, ContainerData.SCREEN_CHOICES) { screen = it }
+                LabeledWineSelector(wines, wine) { wine = it }
+                LabeledChoiceSelector(
+                    "Mesa 渲染器", gallium,
+                    GalliumDriver.entries.map { it.id }, GalliumDriver.entries.map { it.label }
+                ) { gallium = it }
+                LabeledChoiceSelector("容器语言（与终端隔离）", lang, ContainerLangs.CHOICES, ContainerLangs.DISPLAY) { lang = it }
+                LabeledEnumSelector("音频", audio, ContainerAudio.entries.toList()) { audio = it }
+                OutlinedTextField(
+                    value = env,
+                    onValueChange = { env = it },
+                    label = { Text("附加环境变量（K=V 空格分隔，可空）") },
+                    singleLine = true
+                )
                 Text(
-                    "显示：X11（AnWind 内置 X 服务，socket $PREFIX_DISPLAY_HINT）",
+                    "显示：X11（AnWind 内置 X 服务，启动容器自动拉起，DISPLAY=:1）；" +
+                        "环境/音频/语言均由容器自持，不受终端影响",
                     fontSize = 11.sp, color = themeSec()
                 )
             }
@@ -417,7 +450,9 @@ private fun CreateContainerDialog(onDismiss: () -> Unit, onCreated: () -> Unit) 
                 val err = ContainerManager.create(
                     ContainerData(
                         name = name.trim(), backend = backend,
-                        preset = preset, screen = screen
+                        preset = preset, screen = screen, dmode = dmode,
+                        gallium = gallium, wine = wine,
+                        lang = lang, audio = audio, env = env.trim()
                     )
                 )
                 if (err == null) onCreated() else error = err
@@ -426,8 +461,6 @@ private fun CreateContainerDialog(onDismiss: () -> Unit, onCreated: () -> Unit) 
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } }
     )
 }
-
-private const val PREFIX_DISPLAY_HINT = "/data/data/com.anwind/files/usr/tmp/.X11-unix/X1"
 
 // ---------------------------------------------------------------------------
 // 编辑容器
@@ -442,9 +475,21 @@ private fun EditContainerDialog(
     var backend by remember { mutableStateOf(container.backend) }
     var preset by remember { mutableStateOf(container.preset) }
     var screen by remember { mutableStateOf(container.screen) }
+    var dmode by remember { mutableStateOf(container.dmode) }
     var gallium by remember { mutableStateOf(container.gallium) }
     var env by remember { mutableStateOf(container.env) }
+    var wine by remember { mutableStateOf(container.wine) }
+    var lang by remember { mutableStateOf(container.lang) }
+    var audio by remember { mutableStateOf(container.audio) }
+    var wines by remember { mutableStateOf<List<WineInstall>>(emptyList()) }
     var error by remember { mutableStateOf<String?>(null) }
+
+    // wine 版本列表（rootfs /usr/opt 扫描）
+    LaunchedEffect(Unit) {
+        kotlinx.coroutines.withContext(Dispatchers.IO) {
+            wines = ContainerManager.listWines()
+        }
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -453,16 +498,24 @@ private fun EditContainerDialog(
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 LabeledEnumSelector("CPU 翻译后端", backend, ContainerBackend.entries.toList()) { backend = it }
                 LabeledEnumSelector("Box64 预设（仅 box64 后端）", preset, Box64Preset.entries.toList()) { preset = it }
+                LabeledEnumSelector("显示模式（glibc-runner -d/-v/-f）", dmode, DisplayMode.entries.toList()) { dmode = it }
                 LabeledChoiceSelector("虚拟分辨率", screen, ContainerData.SCREEN_CHOICES) { screen = it }
+                LabeledWineSelector(wines, wine) { wine = it }
                 LabeledChoiceSelector(
                     "Mesa 渲染器", gallium,
                     GalliumDriver.entries.map { it.id }, GalliumDriver.entries.map { it.label }
                 ) { gallium = it }
+                LabeledChoiceSelector("容器语言（与终端隔离）", lang, ContainerLangs.CHOICES, ContainerLangs.DISPLAY) { lang = it }
+                LabeledEnumSelector("音频", audio, ContainerAudio.entries.toList()) { audio = it }
                 OutlinedTextField(
                     value = env,
                     onValueChange = { env = it },
                     label = { Text("附加环境变量（K=V 空格分隔）") },
                     singleLine = true
+                )
+                Text(
+                    "wine 安装新版本：终端 anwind-container install-wine <tarball|URL> --name <名>",
+                    fontSize = 11.sp, color = themeSec()
                 )
                 if (error != null) {
                     Text(error ?: "", color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
@@ -474,7 +527,8 @@ private fun EditContainerDialog(
                 val err = ContainerManager.update(
                     container.copy(
                         backend = backend, preset = preset,
-                        screen = screen, gallium = gallium, env = env.trim()
+                        screen = screen, dmode = dmode, gallium = gallium,
+                        env = env.trim(), wine = wine, lang = lang, audio = audio
                     )
                 )
                 if (err == null) onSaved() else error = err
@@ -688,6 +742,43 @@ private fun LabeledChoiceSelector(
                     selected = v == selected,
                     onClick = { onSelect(v) },
                     label = { Text(displayNames?.getOrNull(i) ?: v, fontSize = 11.sp) }
+                )
+            }
+        }
+    }
+}
+
+/** Wine 版本选择器（多版本：默认/主槽位/wine-<名> 槽位）。 */
+@Composable
+private fun LabeledWineSelector(
+    wines: List<WineInstall>,
+    selected: String,
+    onSelect: (String) -> Unit
+) {
+    Column {
+        Text("Wine 版本（/usr/opt 槽位）", fontSize = 12.sp, color = themeSec())
+        Spacer(Modifier.height(4.dp))
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            modifier = Modifier.horizontalScrollIfNeeded()
+        ) {
+            FilterChip(
+                selected = selected.isEmpty(),
+                onClick = { onSelect("") },
+                label = { Text("默认", fontSize = 11.sp) }
+            )
+            wines.forEach { w ->
+                FilterChip(
+                    selected = selected == w.name,
+                    onClick = { onSelect(w.name) },
+                    label = { Text(w.name, fontSize = 11.sp) }
+                )
+            }
+            if (wines.isEmpty()) {
+                Text(
+                    "（未装多版本，终端 install-wine 安装）",
+                    fontSize = 10.sp, color = themeSec(),
+                    modifier = Modifier.padding(top = 10.dp)
                 )
             }
         }

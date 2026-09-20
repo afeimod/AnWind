@@ -52,3 +52,30 @@ APK 启动 / bootstrap 安装完成后由 `AnWindTzstAssets` **自动自解压**
   glibc-runner 双端互认），并回写 container.conf 的 `dxvk=` 版本戳。
 - wine 前缀未构建（无 system.reg）时 DXVK **不会**预解压；
   前缀由 wineboot 构建完成后的首次 App 启动 / 进入容器界面即自动补齐。
+
+## scripts/ — 容器管理脚本（覆盖安装，v2.26 起）
+
+本目录存放**纯文本 shell 脚本**（非 tzst），由
+`AnWindScriptAssets.deployScriptsIfNeeded` 覆盖安装到
+`/data/data/com.anwind/files/rootfs/usr/bin/`（chmod 0755）：
+
+| 脚本 | 作用 | 部署时机 |
+|------|------|---------|
+| `anwind-container` | 容器管理 CLI v2.0（create/set/install-wine 多版本/wine-list/wine-default/wine-remove/dxvk/vkd3d/doctor） | App 启动 + 每次容器会话启动前 |
+| `anwind-wine` | 容器 Wine 启动器 v2.0（环境隔离版） | 同上 |
+
+要点：
+
+- **不再进入 rootfs 构建**（bionic-rootfs/projects/anwind-container 已移除）；
+  rootfs tzst 解压完成后由 APK 覆盖安装 —— 旧 rootfs 自带的旧脚本一并被替换，
+  用户无需重导 rootfs。
+- **环境隔离**：anwind-wine 运行容器前全量重建环境 —— PREFIX/HOME/TMPDIR/
+  XDG_\*/LD_LIBRARY_PATH/LANG 全部指向 rootfs 自身，清洗终端侧注入的
+  LD_PRELOAD/TERMUX_\* 等残留；音频用 rootfs 自带 PulseAudio（unix socket
+  隔离，module-sles-sink 直连 Android 音频），与 Termux 侧 TCP 4713 无关。
+- **显示**：DISPLAY 一律立即 `:1`（App 侧启动容器时同步自动拉起内置 X 服务）；
+  dmode=off/d/v/f 对齐 glibc-runner 的 -d/-v/-f 分辨率握手协议
+  （`$PREFIX/tmp/.anwind-x11-res`）。
+- **Wine 多版本**：install-wine 装到 `/usr/opt/<槽位名>`（wine / wine-<名>），
+  `wine=` 存槽位名（或绝对路径）；解析顺序：容器 wine= → 全局 default_wine=
+  → /usr/opt/wine。

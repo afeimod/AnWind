@@ -19,7 +19,6 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -305,7 +304,6 @@ fun X11Surface(scope: WindowContentScope) {
 @Composable
 private fun WaitingPanel(state: X11WindowController.State) {
     val theme = LocalWinTheme.current
-    val context = LocalContext.current
 
     Column(
         modifier = Modifier
@@ -349,11 +347,12 @@ private fun WaitingPanel(state: X11WindowController.State) {
             )
         }
         Spacer(Modifier.height(12.dp))
-        OutlinedButton(onClick = { X11Desktop.open(context) }) {
-            Text("打开兼容全屏模式", fontSize = 12.sp)
-        }
+        // v2.26：移除"打开兼容全屏模式"入口 —— 兼容 Activity 与桌面窗口
+        // 争夺连接 fd（谁先取用谁渲染），点了它反而抢走画面导致本窗口
+        // 永远黑屏；X 服务改由容器启动自动拉起（WineSessionLauncher），
+        // 本页仅作为极短过渡等待页存在。
         Text(
-            text = "兼容模式 = 独立全屏 Activity（排查窗口模式问题时使用）",
+            text = "X 服务启动中，画面就绪后自动显示（显示号 :1）",
             color = Color(0xFF8A97A3),
             fontSize = 10.sp
         )

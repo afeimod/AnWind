@@ -11,8 +11,8 @@ import java.io.File
  *   全局配置   : /data/data/com.anwind/files/rootfs/usr/etc/anwind/container.conf
  *
  * conf 为 key=value 行格式（# 注释），键集与 CLI write_new_conf 一一对应：
- *   name / backend / preset / screen / gallium / env / dxvk / vkd3d /
- *   dxoverrides / wine / created
+ *   name / backend / preset / screen / dmode / gallium / env / dxvk /
+ *   vkd3d / dxoverrides / wine / lang / audio / created
  *
  * 显示方案（重要）：本方案为 X11 —— X 服务为 AnWind 内置 termux-x11/
  * libXlorie，unix socket 位于 App 侧 $PREFIX/tmp/.X11-unix/Xn（默认 :1）。
@@ -106,6 +106,61 @@ enum class GalliumDriver(val id: String, val label: String) {
 }
 
 // ---------------------------------------------------------------------------
+// 显示模式（对齐终端 glibc-runner 的 -d/-v/-f，v2.26 新增）
+// ---------------------------------------------------------------------------
+
+/**
+ * 容器显示模式（container.conf 的 dmode= 键）。
+ *
+ * OFF  : 跟随 X11 窗口（native，桌面会话默认）
+ * D    : 固定 X 屏幕分辨率（glibc-runner -d：游戏真实全屏渲染 + App 侧贴合拉伸）
+ * V    : wine 虚拟桌面（-v：explorer /desktop，DDraw 老游戏必需）
+ * F    : 强制窗口直出（-f：清除注册表 wine 蓝底桌面 + 固定分辨率）
+ */
+enum class DisplayMode(val id: String, val label: String, val desc: String) {
+    OFF("off", "跟随窗口", "X 屏幕跟随窗口尺寸（桌面/办公）"),
+    D("d", "固定分辨率 (-d)", "X 屏幕锁定指定分辨率，游戏真实全屏渲染"),
+    V("v", "虚拟桌面 (-v)", "wine explorer /desktop，DDraw 老游戏兼容"),
+    F("f", "窗口直出 (-f)", "强制窗口直出并清除 wine 蓝底桌面");
+
+    companion object {
+        fun fromId(id: String?): DisplayMode =
+            entries.firstOrNull { it.id == id } ?: OFF
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 容器语言选项（container.conf 的 lang= 键，v2.26 新增）
+// ---------------------------------------------------------------------------
+
+/** 容器语言（wine 代码页/IME 行为由它决定；与 Termux 会话语言完全隔离）。 */
+object ContainerLangs {
+    val CHOICES: List<String> = listOf(
+        "zh_CN.UTF-8", "en_US.UTF-8", "zh_TW.UTF-8",
+        "ja_JP.UTF-8", "ko_KR.UTF-8"
+    )
+    val DISPLAY: List<String> = listOf(
+        "简体中文", "English", "繁體中文", "日本語", "한국어"
+    )
+    const val DEFAULT = "zh_CN.UTF-8"
+}
+
+// ---------------------------------------------------------------------------
+// 容器音频模式（container.conf 的 audio= 键，v2.26 新增）
+// ---------------------------------------------------------------------------
+
+/** 容器音频模式（音频由 rootfs 自带 PulseAudio 承载，与 Termux 侧隔离）。 */
+enum class ContainerAudio(val id: String, val label: String, val desc: String) {
+    PULSE("pulse", "PulseAudio", "rootfs 自带 PulseAudio（unix socket 隔离，推荐）"),
+    OFF("off", "禁用", "关闭容器音频（不出声也不拉起服务）");
+
+    companion object {
+        fun fromId(id: String?): ContainerAudio =
+            entries.firstOrNull { it.id == id } ?: PULSE
+    }
+}
+
+// ---------------------------------------------------------------------------
 // 容器数据模型
 // ---------------------------------------------------------------------------
 
@@ -125,6 +180,8 @@ data class ContainerData(
     val preset: Box64Preset = Box64Preset.PERFORMANCE,
     /** 虚拟分辨率："native"（跟随 X11 桌面）或 "宽x高"。 */
     val screen: String = DEFAULT_SCREEN,
+    /** 显示模式（对齐 glibc-runner -d/-v/-f；screen=WxH 时生效）。 */
+    val dmode: DisplayMode = DisplayMode.OFF,
     /** Mesa 渲染器强制项，"auto" 表示不干预。 */
     val gallium: String = DEFAULT_GALLIUM,
     /** 附加环境变量（空格分隔 K=V 列表，原样透传 anwind-wine）。 */
@@ -135,8 +192,12 @@ data class ContainerData(
     val vkd3d: String = "off",
     /** win32.drv 替换（DLL 覆盖列表，DXVK/VKD3D 安装器会自动改写）。 */
     val dxoverrides: String = "",
-    /** 指定 wine 版本目录名（空 = 用 /usr/opt/wine 默认安装）。 */
+    /** 指定 wine 版本目录名（空 = 用全局 default_wine → /usr/opt/wine）。 */
     val wine: String = "",
+    /** 容器语言（LANG/LC_ALL；默认简体中文，与 Termux 会话语言隔离）。 */
+    val lang: String = ContainerLangs.DEFAULT,
+    /** 容器音频模式（rootfs 自带 PulseAudio / 禁用）。 */
+    val audio: ContainerAudio = ContainerAudio.PULSE,
     /** 创建时间（仅记录，人类可读）。 */
     val created: String = ""
 ) {
@@ -155,12 +216,15 @@ data class ContainerData(
         "backend" to backend.id,
         "preset" to preset.id,
         "screen" to screen,
+        "dmode" to dmode.id,
         "gallium" to gallium,
         "env" to env,
         "dxvk" to dxvk,
         "vkd3d" to vkd3d,
         "dxoverrides" to dxoverrides,
         "wine" to wine,
+        "lang" to lang,
+        "audio" to audio.id,
         "created" to created
     )
 
@@ -198,12 +262,15 @@ data class ContainerData(
                 backend = ContainerBackend.fromId(kv["backend"]),
                 preset = Box64Preset.fromId(kv["preset"]),
                 screen = kv["screen"] ?: DEFAULT_SCREEN,
+                dmode = DisplayMode.fromId(kv["dmode"]),
                 gallium = kv["gallium"] ?: DEFAULT_GALLIUM,
                 env = kv["env"] ?: "",
                 dxvk = kv["dxvk"] ?: "off",
                 vkd3d = kv["vkd3d"] ?: "off",
                 dxoverrides = kv["dxoverrides"] ?: "",
                 wine = kv["wine"] ?: "",
+                lang = kv["lang"] ?: ContainerLangs.DEFAULT,
+                audio = ContainerAudio.fromId(kv["audio"]),
                 created = kv["created"] ?: ""
             )
         }
@@ -220,3 +287,26 @@ data class DoctorCheck(
     val title: String,
     val detail: String
 )
+
+// ---------------------------------------------------------------------------
+// Wine 多版本安装项（v2.26：/usr/opt/<wine|wine-名> 槽位）
+// ---------------------------------------------------------------------------
+
+/**
+ * 一个已安装的 wine 版本槽位（ContainerManager.listWines 产出）。
+ *
+ * @property name      槽位名（目录名：wine 或 wine-9.8 等）
+ * @property dir       绝对路径（/usr/opt/<name>）
+ * @property version   .anwind-wine-info 里的 version=（wine --version 输出）
+ * @property installed 安装时间戳
+ */
+data class WineInstall(
+    val name: String,
+    val dir: String,
+    val version: String = "",
+    val installed: String = ""
+) {
+    /** 选择器展示文本（含版本号）。 */
+    val displayLabel: String
+        get() = if (version.isNotEmpty()) "$name（$version）" else name
+}

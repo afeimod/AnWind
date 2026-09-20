@@ -43,6 +43,9 @@ object ContainerManager {
     /** App 侧 X11 socket 目录（显示方案为 X11）。 */
     const val X11_SOCK_DIR = "$APP_PREFIX/tmp/.X11-unix"
 
+    /** rootfs 内 wine 多版本安装根（/usr/opt/，槽位 wine / wine-<名>）。 */
+    const val WINE_OPT_DIR = "$ROOTFS_ROOT/usr/opt"
+
     /** 容器名约束：字母数字开头，仅字母/数字/点/下划线/连字符。 */
     private val NAME_RE = Regex("^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
@@ -151,10 +154,65 @@ object ContainerManager {
         keys["backend"]?.let { d = d.copy(backend = ContainerBackend.fromId(it)) }
         keys["preset"]?.let { d = d.copy(preset = Box64Preset.fromId(it)) }
         keys["screen"]?.let { d = d.copy(screen = it) }
+        keys["dmode"]?.let { d = d.copy(dmode = DisplayMode.fromId(it)) }
         keys["gallium"]?.let { d = d.copy(gallium = it) }
         keys["env"]?.let { d = d.copy(env = it) }
         keys["wine"]?.let { d = d.copy(wine = it) }
+        keys["lang"]?.let { d = d.copy(lang = it) }
+        keys["audio"]?.let { d = d.copy(audio = ContainerAudio.fromId(it)) }
         return update(d)
+    }
+
+    // ------------------------------------------------------------------
+    // Wine 多版本枚举（v2.26：/usr/opt/wine* 槽位，App 端选择器数据源）
+    // ------------------------------------------------------------------
+
+    /**
+     * 扫描 rootfs 内已安装的 wine 版本（/usr/opt/ 下含 bin/wine 的目录）。
+     *
+     * 命名约定与 anwind-container install-wine 对齐：
+     *   wine        主槽位（旧版兼容，无 default_wine 指针时的兑底）
+     *   wine-<名>   多版本槽位（--name 指定）
+     * 每个槽位的 .anwind-wine-info 记录 name/version/installed。
+     */
+    fun listWines(): List<WineInstall> {
+        val opt = File(WINE_OPT_DIR)
+        if (!opt.isDirectory) return emptyList()
+        return opt.listFiles { f ->
+            f.isDirectory && f.name.startsWith("wine") && File(f, "bin/wine").isFile
+        }.orEmpty()
+            .map { dir ->
+                WineInstall(
+                    name = dir.name,
+                    dir = dir.absolutePath,
+                    version = readWineInfo(dir, "version"),
+                    installed = readWineInfo(dir, "installed")
+                )
+            }
+            .sortedBy { it.name }
+    }
+
+    /** 全局默认 wine 槽位名（default_wine=；空 = 用主槽位 wine）。 */
+    fun defaultWineName(): String {
+        val f = File(GLOBAL_CONF)
+        if (!f.isFile) return ""
+        f.readLines().forEach { raw ->
+            val line = raw.trim()
+            if (line.startsWith("default_wine=")) {
+                return line.removePrefix("default_wine=").trim()
+            }
+        }
+        return ""
+    }
+
+    private fun readWineInfo(dir: File, key: String): String {
+        val f = File(dir, ".anwind-wine-info")
+        if (!f.isFile) return ""
+        f.readLines().forEach { raw ->
+            val line = raw.trim()
+            if (line.startsWith("$key=")) return line.removePrefix("$key=").trim()
+        }
+        return ""
     }
 
     // ------------------------------------------------------------------
@@ -236,22 +294,26 @@ object ContainerManager {
                 else "未发现 X11 socket（$X11_SOCK_DIR/Xn）。请先打开 X11 桌面窗口或运行 anwind-x11 :1"
         )
 
-        // 3) 容器 CLI
+        // 3) 容器 CLI（v2.26 起由 APK assets/anwind/scripts 启动时覆盖部署）
         val cli = File(CLI)
         checks += DoctorCheck(
             ok = cli.isFile && cli.canExecute(),
             title = "容器管理 CLI",
-            detail = if (cli.isFile) "anwind-container 已安装（rootfs /usr/bin）"
-                     else "缺少 $CLI，请用新版 bionic-rootfs 构建并导入"
+            detail = if (cli.isFile) "anwind-container / anwind-wine 已就绪（APK 内置脚本自动覆盖部署）"
+                     else "脚本尚未部署（rootfs 未导入）。导入 rootfs 后打开一次主界面，APK 会自动覆盖安装"
         )
 
-        // 4) wine 主程序
+        // 4) wine 主程序（多版本）
+        val wines = listWines()
         val wine = File("$ROOTFS_ROOT/usr/opt/wine/bin/wine")
         checks += DoctorCheck(
-            ok = wine.isFile,
+            ok = wine.isFile || wines.isNotEmpty(),
             title = "Wine（x86_64 / 新 WoW64）",
-            detail = if (wine.isFile) "/usr/opt/wine 就绪"
-                     else "未安装 wine：终端执行 anwind-container install-wine <tarball|URL>"
+            detail = when {
+                wine.isFile && wines.size <= 1 -> "/usr/opt/wine 就绪"
+                wines.isNotEmpty() -> "已装 ${wines.size} 个版本（${wines.joinToString("、") { it.name }}），默认：${defaultWineName().ifEmpty { "wine" }}"
+                else -> "未安装 wine：终端执行 anwind-container install-wine <tarball|URL>"
+            }
         )
 
         // 5) box64

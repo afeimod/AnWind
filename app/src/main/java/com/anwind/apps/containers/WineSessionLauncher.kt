@@ -1,6 +1,7 @@
 package com.anwind.apps.containers
 
 import android.content.Context
+import android.os.SystemClock
 import com.anwind.apps.terminal.termux.TermuxEnvironment
 import com.anwind.apps.x11.X11WindowController
 import com.anwind.termux.terminal.TerminalSession
@@ -25,6 +26,9 @@ object WineSessionLauncher {
 
     /** 允许的最大并发会话数（超龄会话先回收）。 */
     private const val MAX_SESSIONS = 8
+
+    /** X 服务自动拉起的去抖窗口（冷启动 socket 未就绪期间防重复）。 */
+    private const val SERVICE_START_DEBOUNCE_MS = 8000L
 
     /** 活跃会话表：容器名 → 会话（供"停止"与状态展示）。 */
     val activeSessions = LinkedHashMap<String, TerminalSession>()
@@ -143,14 +147,66 @@ object WineSessionLauncher {
      * AnWind 的 X server 即 App 内嵌的 termux-x11（libXlorie）：
      * 打开 X11 桌面窗口 → X 服务就绪 → 容器内 wine 经
      * $PREFIX/tmp/.X11-unix/Xn 直连。无需 Weston/Wayland。
+     *
+     * v2.26：启动容器时同步自动拉起 X 服务（若尚未运行）——
+     * 显示号固定 :1，不再依赖用户先在终端手敲 anwind-x11，
+     * 也不再让 X11 窗口停在"等待连接页"（等待页不再提供
+     * 兼容全屏入口，兼容 Activity 会抢走连接 fd 导致黑屏）。
      */
     fun ensureX11Window(context: Context) {
+        try {
+            ensureX11Service(context)
+        } catch (_: Exception) {
+            // 服务拉起失败不阻断流程：等待页持续重试，doctor 可诊断
+        }
         try {
             X11WindowController.openWindow(context)
         } catch (_: Exception) {
             // X11 窗口未就绪时 wine 会连接失败，doctor 可诊断；
             // 此处静默，避免阻断启动流程
         }
+    }
+
+    private var lastServiceStartAt = 0L
+
+    /**
+     * 自动拉起内置 X 服务（显示号固定 :1）。
+     *
+     * 判定：App 侧 X11 socket（tmp/.X11-unix/X1）已存在 → 服务在跑，
+     * 直接复用；否则后台执行内置客户端脚本
+     *   $PREFIX/bin/termux-x11 :1
+     * （脚本内部自取宿主 APK CLASSPATH + XKB 数据并经 app_process
+     * 启动 CmdEntryPoint，与终端 anwind-x11 完全同源），输出写入
+     * $PREFIX/tmp/anwind-x11-autostart.log 供排障。
+     * 8 秒去抖防重复拉起（socket 未就绪的冷启动窗口期）。
+     */
+    private fun ensureX11Service(context: Context) {
+        val now = SystemClock.elapsedRealtime()
+        val sock = File("${ContainerManager.X11_SOCK_DIR}/X1")
+        if (sock.exists()) return                      // 服务已就绪
+        if (now - lastServiceStartAt < SERVICE_START_DEBOUNCE_MS) return
+        lastServiceStartAt = now
+
+        val prefix = TermuxEnvironment.prefixPath(context)
+        val client = File("$prefix/bin/termux-x11")
+        val sh = File("$prefix/bin/sh")
+        if (!client.isFile) return                     // 组件未迁移完成
+
+        val log = File("$prefix/tmp/anwind-x11-autostart.log")
+        log.parentFile?.mkdirs()
+        val pb = ProcessBuilder(
+            sh.absolutePath, client.absolutePath, ":1"
+        )
+        // 输出全部落日志文件（不用 PIPE：X 服务常驻进程写满管道缓冲会卡死）
+        pb.redirectErrorStream(true)
+        pb.redirectOutput(log)
+        // 补全脚本运行所需的最小环境（脚本内部自处理 CLASSPATH/XKB）
+        pb.environment()?.apply {
+            putIfAbsent("PATH", "$prefix/bin:/system/bin")
+            putIfAbsent("HOME", TermuxEnvironment.homePath(context))
+            putIfAbsent("TMPDIR", "$prefix/tmp")
+        }
+        pb.start()   // 脚本自身判断重复启动（anwindx11 进程探测），无需等待
     }
 
     /** 当前是否存在可用的 X11 socket（App 侧）。 */
@@ -171,8 +227,15 @@ object WineSessionLauncher {
      * rootfs bin 前置 PATH（与 profile.d/anwind-container.sh 一致）。
      */
     private fun spawn(context: Context, containerName: String, shellCmd: String): String? {
-        // X11 桌面窗口先就位（X11 显示方案联动）
+        // X11 桌面窗口先就位（X11 显示方案联动；同步自动拉起 X 服务）
         ensureX11Window(context)
+
+        // v2.26：容器脚本覆盖安装（assets/anwind/scripts → rootfs/usr/bin）
+        // 每次会话前执行，保证脚本与 APK 版本一致（幂等，仅 rootfs 就绪时生效）
+        runCatching {
+            com.anwind.apps.terminal.termux.AnWindScriptAssets
+                .deployScriptsIfNeeded(context.applicationContext)
+        }
 
         // wineserver 运行时目录兜底：wine 按 termux 风格构建，把 /tmp 硬编码为
         // $PREFIX/tmp（= rootfs/usr/tmp），启动时要在其下创建 .wine-<uid>；
@@ -193,6 +256,11 @@ object WineSessionLauncher {
             add("ANWIND_CONTAINER=$containerName")
             // 与 rootfs profile.d 注入一致的 PATH（rootfs bin 优先）
             add("PATH=${ContainerManager.ROOTFS_ROOT}/usr/bin:${TermuxEnvironment.prefixPath(context)}/bin")
+            // v2.26：X11 显示号立即固定 :1 —— 容器启动即面向内置 X
+            // 服务（anwind-wine 侧同名兑底，此处保证 CLI 阶段也生效），
+            // 不再等探测/等待页；环境隔离的最终清洗由 anwind-wine
+            // isolate_env 完成（PREFIX/HOME/LD_LIBRARY_PATH/LANG/音频）
+            add("DISPLAY=:1")
         }
 
         val args = arrayOf("-c", shellCmd)

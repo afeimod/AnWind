@@ -17,13 +17,15 @@ X11 socket 路径打补丁，容器内程序直连内置 X 服务。
   build-wine-bionic.yml     → Wine 构建（x86_64 / 新WoW64 / X11 / box64-ready）
   build-box64-bionic.yml    → Box64 构建（aarch64 / ARM_DYNAREC / ANDROID=1）
   build-mesa-bionic.yml     → Mesa 构建（X11；aarch64=zink+freedreno+turnip）
-bionic-rootfs/              → 完整构建系统（77 配方，含全部 X11 包）
+bionic-rootfs/              → 完整构建系统（76 配方，含全部 X11 包）
   projects/wine/            → 新增配方：bionic Wine（x86_64 新 WoW64）
-  projects/anwind-container/→ 新增配方：容器管理 CLI + Wine 启动器
   projects/mesa/|box64/     → 更新配方（ANWIND_MESA_REF / ANWIND_BOX64_REF 可覆盖）
 app/src/main/java/com/anwind/
   apps/AppBootstrap.kt      → 更新：注册 ContainersApp（覆盖仓库同名文件）
   apps/containers/          → 新增模块：Wine 容器管理 Kotlin 源码（5 个文件）
+app/src/main/assets/anwind/
+  scripts/anwind-container  → 容器管理 CLI v2.0（APK 资产，启动时覆盖安装到 rootfs）
+  scripts/anwind-wine       → Wine 启动器 v2.0 环境隔离版（APK 资产，同上）
 ```
 
 ## 二、App 侧容器管理（新增 Kotlin 源码，app/src/main/java/com/anwind/apps/containers/）
@@ -42,22 +44,37 @@ app/src/main/java/com/anwind/
    `home/.anwind/containers/<name>/container.conf`，键集与终端
    `anwind-container` CLI 逐字对齐 —— App 建的容器终端可跑，终端建的容器
    App 可见，`default_container=` 全局配置双向生效。
-2. **X11 联动**：每次"运行"先 `X11WindowController.openWindow()` 打开内置
-   X11 桌面窗口（X server = libXlorie），再孵化 wine 会话；DISPLAY 由
-   脚本侧自动探测（默认 `:1`），PulseAudio TCP `127.0.0.1:4713` 同步注入。
+2. **X11 联动**：每次"运行"先自动拉起内置 X 服务（socket X1 未就绪时执行
+   `termux-x11 :1`）并打开内置 X11 桌面窗口（X server = libXlorie），
+   再孵化 wine 会话；DISPLAY 立即 `:1`（不再等待页/兼容全屏入口），
+   音频由容器自持的 rootfs PulseAudio（unix socket）承载。
 3. **后端可选**：容器级 backend = box64 / fexcore / hangover / native / auto，
    Box64 预设 performance / compatibility（对应 BOX64_DYNAREC 注入），
    FEXCore 为探测槽位（rootfs 内有 FEXInterpreter 才可选）。
    体检面板（X11 socket / rootfs / CLI / wine / box64 / FEX / 容器数）
    可一键诊断。
+4. **环境隔离（v2.26）**：anwind-wine 运行前全量重建环境 —— PREFIX/HOME/
+   TMPDIR/XDG_*/LD_LIBRARY_PATH/LANG 指向 rootfs 自身，清洗终端注入的
+   LD_PRELOAD/TERMUX_* 残留；音频/驱动/语言不受 Termux 数据环境影响。
+5. **更多配置（v2.26）**：容器 conf 新增 dmode（off/d/v/f，对齐
+   glibc-runner -d/-v/-f）、wine（多版本槽位选择）、lang（容器语言）、
+   audio（pulse/off）；Wine 多版本由 install-wine --name 安装到
+   /usr/opt/<槽位>，wine-list / wine-default / wine-remove 管理。
 
-## 三、rootfs 侧容器管理（已并入 bionic-rootfs/projects/anwind-container/）
+## 三、rootfs 侧容器管理（APK assets 覆盖安装，不再进 rootfs 构建）
+
+v2.26 起 `anwind-container` / `anwind-wine` 改为 APK 内置资产
+（`app/src/main/assets/anwind/scripts/`），App 启动与每次容器会话启动时
+覆盖安装到 rootfs/usr/bin —— rootfs 构建系统已移除 anwind-container 配方，
+旧 rootfs 自带的旧脚本也会被替换，无需重导 rootfs。
 
 - `anwind-container`：create / list / info / set / default / clone / remove /
-  run / cmd / stop / install-wine / install-dxvk / install-vkd3d / doctor
+  run / cmd / stop / install-wine（多版本 --name/--default）/ wine-list /
+  wine-default / wine-remove / install-dxvk / install-vkd3d / doctor
 - `anwind-wine`：后端感知启动器（auto/box64/hangover/fexcore/native），
-  X11 DISPLAY 自动探测、分辨率握手（.anwind-x11-res）、首启 wineboot -i、
-  Mesa/Zink/TU_DEBUG 调优注入、BOX64_DYNAREC 预设。
+  环境全量隔离、容器自持音频（rootfs PulseAudio unix socket）、
+  DISPLAY 立即 :1、dmode 分辨率握手（.anwind-x11-res）、首启 wineboot -i、
+  Mesa/Zink/TU_DEBUG 调优注入、BOX64_DYNAREC 预设、wine 多版本解析。
 
 ## 四、四条构建流水线（全部 workflow_dispatch 手动触发）
 

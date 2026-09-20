@@ -481,10 +481,14 @@ object AnWindTzstAssets {
     /**
      * 全量自解压（App 启动 / bootstrap 安装完成后调用，后台线程）：
      * ① rootfs / mesa / box64 / turnip → rootfs（指纹幂等）；
-     * ② dxvk → 已构建前缀（未构建的前缀自动等待下次）。
+     * ② dxvk → 已构建前缀（未构建的前缀自动等待下次）；
+     * ③ 容器脚本（anwind-container / anwind-wine）→ rootfs/usr/bin
+     *    （v2.26 隔离版：assets/anwind/scripts 覆盖安装 —— 解压完
+     *    rootfs 后立即用 APK 内置最新脚本覆盖，rootfs 构建不再含
+     *    anwind-container 项目，旧 rootfs 自带的旧脚本一并被替换）。
      */
     fun installAllIfNeeded(context: Context) {
-        // 两段均捕获 Throwable：本方法在 Application.onCreate 的后台协程
+        // 三段均捕获 Throwable：本方法在 Application.onCreate 的后台协程
         // 调用，任何异常（含 Error）冒泡即等于进程闪退（v2.24.1 修复：
         // UnsatisfiedLinkError 是 Error，旧 catch (Exception) 捕不到）。
         try {
@@ -496,6 +500,12 @@ object AnWindTzstAssets {
             applyDxvkWhenPrefixReady(context)
         } catch (t: Throwable) {
             android.util.Log.e(TAG, "dxvk tzst 应用失败: ${t.message}")
+        }
+        try {
+            // v2.26：rootfs 就位后覆盖安装容器脚本（assets/anwind/scripts）
+            AnWindScriptAssets.deployScriptsIfNeeded(context)
+        } catch (t: Throwable) {
+            android.util.Log.e(TAG, "容器脚本覆盖安装失败: ${t.message}")
         }
     }
 }
