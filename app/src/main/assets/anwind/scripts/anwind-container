@@ -1,6 +1,6 @@
 #!/data/data/com.anwind/files/usr/bin/bash
 # ============================================================
-# anwind-container v2.0 — AnWind Wine 容器管理（bionic rootfs / X11）
+# anwind-container v2.1 — AnWind Wine 容器管理（bionic rootfs / X11）
 # ★ 隔离版（assets 分发，App 启动时覆盖安装到 rootfs/usr/bin）★
 # ------------------------------------------------------------
 # 数据模型参考 Winlator/WinNative/MiceWine：每个容器 = 独立
@@ -27,11 +27,23 @@
 #   cmd <name> <winecmd> [...]    运行 wine 子命令（wineboot/winecfg/reg...）
 #   stop <name>                   结束容器内全部 wine 进程（wineserver -k）
 #
-#   install-wine <tarball|URL> [--name <版本名>] [--default]
-#                                 安装 x86_64 wine 发行包（.tar.gz/.tzst）；
-#                                 --name 指定槽位名（默认 wine）；
-#                                 --default 同时设为全局默认 wine
+#   start <name>                  一键进入容器自持环境（X 服务自启 +
+#                                 DISPLAY=:1 + LC_ALL/LANG 按容器配置 +
+#                                 隔离 PREFIX/HOME/TMPDIR），shell 里直接
+#                                 运行 wine <程序> 即可出画面出中文
+#   shell <name>                  同 start
+#
+#   install-wine <类别|tarball|URL> [--name <版本名>] [--default]
+#                                 安装 wine 发行包。类别（wine-catalog 查看）：
+#                                   bionic-x86_64  bionic 构建（box64 用）
+#                                   bionic-arm64ec bionic 构建（aarch64 原生）
+#                                   wine-x86_64    普通 Wine（staging/vanilla）
+#                                   wine-arm64     普通 Wine ARM64
+#                                   proton         Proton（WOW64 游戏向）
+#                                 也可直接给本地包或完整 URL
 #   wine-list                     列出已安装的 wine 版本（/usr/opt/wine*）
+#   wine-catalog [类别]           在线构建目录（GitHub Releases，自动
+#                                 列出各类别可下载包；支持 ANWIND_GH_PROXY 加速）
 #   wine-default <名>             设置全局默认 wine（default_wine=）
 #   wine-remove <名> [--force]    移除 wine 版本（有容器在用需 --force）
 #
@@ -45,8 +57,15 @@
 # 音频：容器自带 —— rootfs 内 PulseAudio（unix socket 隔离，
 #       module-sles-sink 直连 Android 音频），与 Termux 侧无关。
 # 环境：anwind-wine 全量隔离（PREFIX/HOME/TMPDIR/LD_LIBRARY_PATH/
-#       LANG 均为 rootfs 自己的一套）。
+#       LANG 均为 rootfs 自己的一套）；start 进入的 shell 同源。
+# 语言：bionic 只认 C locale，wine 在 setlocale 返回 C 时仅读
+#       LC_ALL（不读 LANG）—— 因此容器环境一律同时导出
+#       LANG 与 LC_ALL（默认 zh_CN.UTF-8），wine 界面才能切中文；
+#       中文渲染由部署到 rootfs 的 etc/fonts/local.conf（引入
+#       /system/fonts）提供 CJK 字体。
 # ============================================================
+
+version() { echo "anwind-container 2.1.0 (AnWind bionic rootfs, X11, isolated env, wine catalog)"; }
 
 RFS_ROOT="/data/data/com.anwind/files/rootfs"
 RFS_USR="$RFS_ROOT/usr"
@@ -86,6 +105,75 @@ conf_write_kv() { # <file> <key> <value>
 valid_name() { case "$1" in *[!A-Za-z0-9._-]*|"") return 1 ;; *) return 0 ;; esac; }
 
 arch_now() { uname -m; }
+
+# ---------- X 服务自启（与 anwind-wine ensure_x11 同源） ----------
+# start 进入容器前调用：socket 缺失则后台拉起内置 termux-x11。
+ensure_x11() {
+    local _num _sock _log
+    export DISPLAY="${ANWIND_DISPLAY:-:1}"
+    _num="${DISPLAY#:}"; _num="${_num%%.*}"
+    case "$_num" in *[!0-9]*|"") _num="1"; export DISPLAY=":1" ;; esac
+    _sock="$X11_SOCK_DIR/X$_num"
+    [ -S "$_sock" ] && return 0
+    _log="$APP_PREFIX/tmp/anwind-x11-autostart.log"
+    mkdir -p "$APP_PREFIX/tmp" 2>/dev/null || true
+    msg "X 服务无 socket X$_num，自动拉起内置 X 服务……"
+    if [ -x "$APP_PREFIX/bin/termux-x11" ]; then
+        ( export XDG_RUNTIME_DIR="$APP_PREFIX/tmp" TMPDIR="$APP_PREFIX/tmp"
+          export PATH="$APP_PREFIX/bin:/system/bin"
+          exec "$APP_PREFIX/bin/termux-x11" ":$_num" >>"$_log" 2>&1 ) &
+        disown 2>/dev/null || true
+    elif [ -x "$APP_PREFIX/bin/anwind-x11" ]; then
+        ( export XDG_RUNTIME_DIR="$APP_PREFIX/tmp" TMPDIR="$APP_PREFIX/tmp"
+          exec "$APP_PREFIX/bin/anwind-x11" ":$_num" >/dev/null 2>&1 ) &
+        disown 2>/dev/null || true
+    else
+        warn "内置 X 客户端缺失（$APP_PREFIX/bin/termux-x11）——打开一次 AnWind 主界面完成组件迁移"
+        return 1
+    fi
+    local _i=0
+    while [ "$_i" -lt 20 ]; do
+        [ -S "$_sock" ] && { msg "X 服务就绪（DISPLAY=:$_num）"; return 0; }
+        sleep 0.5 2>/dev/null || sleep 1
+        _i=$((_i + 1))
+    done
+    warn "X 服务 socket 未就绪（X$_num）——排障: cat $_log 或 anwind-x11 doctor"
+    return 1
+}
+
+# ---------- start：进入容器自持环境 ----------
+# 等价 anwind-wine 的 isolate_env（shell 版）：环境与 Termux 终端完全
+# 隔离，X 服务自动就位，DISPLAY/LC_ALL/LANG 无需手敲 env 前缀。
+cmd_start() {
+    local name="${1:-}"
+    [ -n "$name" ] || name="$(conf_read "$CONF_GLOBAL" default_container "")"
+    [ -n "$name" ] || die "未指定容器。用法: anwind-container start <name>（或先 anwind-container default <name>）"
+    [ -d "$CONT_ROOT/$name" ] || die "容器不存在: $name（anwind-container list 查看）"
+    local _c="$CONT_ROOT/$name/container.conf" _lang
+    _lang="$(conf_read "$_c" lang "zh_CN.UTF-8")"
+    [ -n "$_lang" ] || _lang="zh_CN.UTF-8"
+
+    # --- 容器自持环境（与 anwind-wine isolate_env 同源，脱离 Termux）---
+    unset LD_PRELOAD
+    unset TERMUX_VERSION TERMUX_APP_PACKAGE TERMUX_PREFIX TERMUX_MAIN_PACKAGE_FILENAME 2>/dev/null || true
+    export PREFIX="$RFS_USR"
+    export TMPDIR="$RFS_USR/tmp"
+    export HOME="$RFS_ROOT/home"
+    export XDG_RUNTIME_DIR="$RFS_USR/tmp"
+    export XDG_CONFIG_HOME="$HOME/.config" XDG_CACHE_HOME="$HOME/.cache" XDG_DATA_HOME="$HOME/.local/share"
+    mkdir -p "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" "$XDG_DATA_HOME" 2>/dev/null || true
+    # bionic wine 只在 setlocale 返回 C 时读 LC_ALL —— 必须与 LANG 同时给
+    export LANG="$_lang" LC_ALL="$_lang"
+    export PATH="$RFS_USR/bin:$RFS_USR/local/bin:/system/bin:/system/xbin:$APP_PREFIX/bin"
+    export ANWIND_CONTAINER="$name"
+    export WINEPREFIX="$CONT_ROOT/$name/prefix"
+    mkdir -p "$WINEPREFIX" "$CONT_ROOT/logs"
+
+    msg "启动容器 $name（语言=$_lang 音频=容器自持）"
+    ensure_x11
+    msg "环境就绪: DISPLAY=$DISPLAY LANG=$LANG —— 直接运行 wine <程序> / winecfg / regedit 即可"
+    exec "$APP_PREFIX/bin/bash" -l -i
+}
 
 # ---------- create ----------
 cmd_create() {
@@ -340,9 +428,150 @@ find_wine_root() { # $1=staging → 回显 wine 根目录（空串=未找到）
     return 1
 }
 
-# ---------- install-wine（多版本） ----------
+# ---------- GitHub 下载（直连失败自动走加速镜像） ----------
+# ANWIND_GH_PROXY 可自定义镜像前缀；未设置时依次尝试常用公共镜像。
+GH_MIRRORS="https://ghproxy.net https://gh-proxy.com https://ghfast.top"
+gh_fetch() { # <remote-url> <outfile>
+    local url="$1" out="$2" _m _u
+    fetch "$url" "$out" && { [ -s "$out" ] && return 0; } || true
+    for _m in $GH_MIRRORS; do
+        _u="$_m/$url"
+        if command -v curl >/dev/null 2>&1; then
+            curl -sL --fail --connect-timeout 15 -o "$out" "$_u" && [ -s "$out" ] && return 0
+        elif command -v wget >/dev/null 2>&1; then
+            wget -q -O "$out" "$_u" && [ -s "$out" ] && return 0
+        fi
+    done
+    return 1
+}
+
+# ---------- Wine 在线构建目录（v2.1：普通 Wine / Proton / bionic 双形态） ----------
+# 源：本仓库（ANWIND_RELEASES_REPO 可指向 fork）GitHub Releases：
+#   bionic-x86_64  ← build-wine-bionic.yml  anwind-wine-*-x86_64-bionic.tar.gz
+#   bionic-arm64ec ← build-wine-bionic.yml  anwind-wine-*-arm64ec-bionic.tar.gz
+#                  （即 hangover 分支 bionic 构建：aarch64 原生 new WoW64）
+#   wine-x86_64    ← wine-wow64-no.yml / wine-vanilla-*   wine-*wow64.tar.xz
+#   wine-arm64     ← wine-Arm.yml / wine-vanilla-*-arm64   wine-*arm64*wow64.tar.xz
+#   proton         ← wine-wow64-no.yml                     proton-*-wow64.tar.xz
+# （其他分支的发布资产不在目录范围，install-wine 直接给 URL/本地包仍可用）
+catalog_repo()  { echo "${ANWIND_RELEASES_REPO:-afeimod/AnWind}"; }
+# 兜底通道：API 被限流/被墙时改抓 GitHub HTML（expanded_assets 页面，
+# 各加速镜像均可代理 github.com）。releases.atom 取最近 tag 列表 →
+# 逐个 expanded_assets/<tag> 抠资产链接。
+_catalog_urls_html() {
+    local _repo _f _tags _tag _page _hrefs
+    _repo="$(catalog_repo)"
+    _f="$DL_TMP/catalog-atom.xml"
+    gh_fetch "https://github.com/$_repo/releases.atom" "$_f" || return 1
+    # atom entry: <link href="https://github.com/<repo>/releases/tag/<tag>"/>
+    _tags="$(grep -o 'href="[^"]*/releases/tag/[^"]*"' "$_f" 2>/dev/null \
+        | sed 's/^href="//;s/"$//' | head -n 15)"
+    [ -n "$_tags" ] || return 1
+    while IFS= read -r _tag; do
+        [ -n "$_tag" ] || continue
+        _tag="${_tag%%\?*}"; _tag="${_tag%/}"; _tag="${_tag##*/}"
+        _page="$DL_TMP/catalog-tag-$_tag.html"
+        gh_fetch "https://github.com/$_repo/releases/expanded_assets/$_tag" "$_page" || continue
+        _hrefs="$(grep -o 'href="[^"]*/releases/download/[^"]*"' "$_page" 2>/dev/null | sed 's/^href="//;s/"$//')"
+        [ -n "$_hrefs" ] || continue
+        printf '%s\n' "$_hrefs" | while IFS= read -r _h; do
+            case "$_h" in
+                http*)  printf '%s\n' "$_h" ;;
+                /*)     printf 'https://github.com%s\n' "$_h" ;;
+                *)      printf 'https://github.com/%s/releases/download/%s/%s\n' "$_repo" "$_tag" "$_h" ;;
+            esac
+        done
+    done <<EOF
+$_tags
+EOF
+}
+catalog_urls() { # 回显全部资产下载 URL（新→旧）
+    local _f="$DL_TMP/catalog-releases.json" _out=""
+    mkdir -p "$DL_TMP" 2>/dev/null || true
+    if gh_fetch "https://api.github.com/repos/$(catalog_repo)/releases?per_page=100" "$_f" && [ -s "$_f" ]; then
+        _out="$(grep -o '"browser_download_url": *"[^"]*"' "$_f" 2>/dev/null | sed 's/.*"\(https[^" ]*\)"$/\1/')"
+        # 限流响应是 200 + 错误 JSON（无资产字段）→ 视为失败走 HTML 兜底
+        case "$_out" in
+            *releases/download*) printf '%s\n' "$_out"; return 0 ;;
+        esac
+    fi
+    _catalog_urls_html
+}
+classify_asset() { # $1=URL或文件名 → 回显类别（空=不匹配）
+    # 注：只认主线流水线产物；其他分支发布（如 winlator-rootfs 的
+    # proton-*.txz）一律忽略，不进目录。
+    local _b="${1##*/}"
+    case "$_b" in
+        anwind-wine-*x86_64*bionic.tar.gz)  echo bionic-x86_64 ;;
+        anwind-wine-*arm64ec*bionic.tar.gz) echo bionic-arm64ec ;;
+        *proton-*wow64.tar.xz)              echo proton ;;
+        wine-*arm64*wow64.tar.xz)           echo wine-arm64 ;;
+        wine-*wow64.tar.xz)                 echo wine-x86_64 ;;
+        *)                                  echo "" ;;
+    esac
+}
+catalog_flavor_hint() { # $1=类别 → 人工提示
+    case "$1" in
+        bionic-x86_64)  echo "bionic 原生包，aarch64 设备经 box64 运行（推荐）" ;;
+        bionic-arm64ec) echo "bionic 原生包，aarch64 设备原生运行（new WoW64，无需 box64）" ;;
+        wine-x86_64)    echo "glibc 构建：需容器含 x86_64 glibc 运行库 + box64 才能跑" ;;
+        wine-arm64)     echo "glibc 构建：需 glibc 运行环境（aarch64 原生 new WoW64）" ;;
+        proton)         echo "glibc 构建：Proton WOW64，游戏向，需 box64 + glibc 运行库" ;;
+        *)              echo "" ;;
+    esac
+}
+cmd_wine_catalog() {
+    local want="${1:-}" _u _c _shown=0 _urls
+    echo "Wine 在线构建目录（源: GitHub $(catalog_repo) Releases）"
+    echo "  一键安装: anwind-container install-wine <类别>   （不指定 --name 时自动命名槽位）"
+    echo "  类别: bionic-x86_64 / bionic-arm64ec / wine-x86_64 / wine-arm64 / proton"
+    echo
+    _urls="$(catalog_urls)" || die "获取 Release 列表失败（网络受限或 API 限流）。可设 ANWIND_GH_PROXY=<镜像> 重试，或直接 install-wine <完整URL|本地包>"
+    while IFS= read -r _u; do
+        [ -n "$_u" ] || continue
+        _c="$(classify_asset "$_u")"
+        [ -n "$_c" ] || continue
+        if [ -n "$want" ] && [ "$want" != "$_c" ]; then continue; fi
+        printf '  [%s] %s\n' "$_c" "${_u##*/}"
+        printf '        %s\n' "$_u"
+        _shown=$((_shown + 1))
+        [ "$_shown" -ge 12 ] && { echo "  ……（更多同类条目略；install-wine <类别> 自动取最新）"; break; }
+    done <<EOF
+$_urls
+EOF
+    if [ "$_shown" -eq 0 ]; then
+        echo "  （当前 Release 中暂无匹配资产——对应构建流水线尚未发布产物）"
+        [ -n "$want" ] && return 1
+    fi
+    return 0
+}
+resolve_catalog_url() { # $1=类别 → 回显最新资产 URL
+    local _want="$1" _u _c _urls
+    case "$_want" in bionic-x86_64|bionic-arm64ec|wine-x86_64|wine-arm64|proton) ;; *) return 1 ;; esac
+    _urls="$(catalog_urls)" || return 1
+    while IFS= read -r _u; do
+        _c="$(classify_asset "$_u")"
+        [ "$_c" = "$_want" ] && { printf '%s\n' "$_u"; return 0; }
+    done <<EOF
+$_urls
+EOF
+    return 1
+}
+slot_name_from_asset() { # $1=URL/文件名 → 槽位名
+    local _b="${1##*/}"
+    _b="${_b%.tar.gz}"; _b="${_b%.tgz}"; _b="${_b%.tar.xz}"; _b="${_b%.txz}"; _b="${_b%.tzst}"; _b="${_b%.tar.zst}"; _b="${_b%.zip}"
+    # 去发行包前后缀：anwind- / wine-wine- 前缀、-bionic / -wow64 构建标记
+    _b="${_b#anwind-}"
+    _b="${_b#wine-wine-}"
+    _b="${_b%-bionic}"
+    _b="${_b%-wow64}"
+    case "$_b" in wine-*) ;; *) _b="wine-$_b" ;; esac
+    printf '%s\n' "$_b"
+}
+
+# ---------- install-wine（多版本 + 在线类别） ----------
 cmd_install_wine() {
-    local src="" _name="" _mkdef=0
+    local src="" _name="" _mkdef=0 _flavor="" _src_label=""
     while [ $# -gt 0 ]; do
         case "$1" in
             --name)    _name="$2"; shift 2 ;;
@@ -350,7 +579,27 @@ cmd_install_wine() {
             *) src="$1"; shift ;;
         esac
     done
-    [ -n "$src" ] || die "用法: anwind-container install-wine <本地tar.gz/tzst | URL> [--name <版本名>] [--default]"
+    [ -n "$src" ] || die "用法: anwind-container install-wine <类别|本地包|URL> [--name <版本名>] [--default]（wine-catalog 查看类别）"
+
+    # 类别 → 解析最新 Release 资产并下载（gh_fetch 自带镜像兑底）
+    case "$src" in
+        bionic-x86_64|bionic-arm64ec|wine-x86_64|wine-arm64|proton)
+            local _url
+            msg "解析在线构建目录: $src（仓库 $(catalog_repo)）……"
+            _url="$(resolve_catalog_url "$src")" || die "类别 $src 暂无可用资产（wine-catalog $src 查看；或设 ANWIND_GH_PROXY=<镜像> 后重试）"
+            msg "最新资产: $_url"
+            [ -n "$_name" ] || _name="$(slot_name_from_asset "$_url")"
+            mkdir -p "$DL_TMP"
+            local _dl="$DL_TMP/${_url##*/}"
+            msg "下载（直连失败自动走加速镜像）……"
+            gh_fetch "$_url" "$_dl" || die "下载失败: $_url（可设 ANWIND_GH_PROXY=<镜像> 重试）"
+            _flavor="$src"
+            _src_label="$_url"
+            src="$_dl"
+            ;;
+    esac
+    [ -n "$_src_label" ] || _src_label="$src"
+
     # 槽位名默认 wine（主槽位，兼容旧版路径）
     [ -n "$_name" ] || _name="wine"
     case "$_name" in wine|wine-*) ;; *) _name="wine-$_name" ;; esac
@@ -376,7 +625,7 @@ cmd_install_wine() {
     tar_extract_any "$_f" "$_stage" || { rm -rf "$_stage"; die "解包失败（.tzst 需要 zstd: pkg install zstd）"; }
 
     local _root
-    _root="$(find_wine_root "$_stage")" || { rm -rf "$_stage"; die "未在包内找到 wine（bin/wine）—— 请确认这是 AnWind wine x86_64 bionic 发行包"; }
+    _root="$(find_wine_root "$_stage")" || { rm -rf "$_stage"; die "未在包内找到 wine（bin/wine）—— 请确认这是 wine 发行包（bionic/glibc 均可，wine-catalog 查看类别）"; }
 
     # 目标槽位：$OPT_DIR/<name>（同名旧版本先移除）
     local _dest="$OPT_DIR/$_name"
@@ -386,15 +635,24 @@ cmd_install_wine() {
     rm -rf "$_stage"
 
     # 记录版本信息（供 wine-list / App 端展示）
-    local _verstr=""
+    local _verstr="" _archstr=""
     if [ -x "$_dest/bin/wine" ]; then
         _verstr="$(LD_LIBRARY_PATH="$RFS_USR/lib:$OPT_DIR/$_name/lib" "$_dest/bin/wine" --version 2>/dev/null | head -n 1)"
+        _archstr="$(dd if="$_dest/bin/wine" bs=1 skip=18 count=2 2>/dev/null | od -An -tx1 2>/dev/null | tr -d ' \n')"
+        case "$_archstr" in
+            b700) _archstr="aarch64" ;;
+            3e00) _archstr="x86_64" ;;
+            *)    _archstr="unknown" ;;
+        esac
     fi
+    [ -n "$_flavor" ] || _flavor="$(classify_asset "$_src_label")"
     {
         echo "name=$_name"
         [ -n "$_verstr" ] && echo "version=$_verstr"
+        [ -n "$_archstr" ] && echo "arch=$_archstr"
+        [ -n "$_flavor" ] && echo "flavor=$_flavor"
         echo "installed=$(date '+%Y-%m-%d %H:%M:%S')"
-        echo "source=$src"
+        echo "source=$_src_label"
     } > "$_dest/.anwind-wine-info"
 
     if [ "$_mkdef" = "1" ]; then
@@ -403,7 +661,8 @@ cmd_install_wine() {
     fi
     [ "$_tmp" = 1 ] && rm -f "$_f"
 
-    msg "wine 安装成功: $_dest${_verstr:+（$_verstr）}"
+    msg "wine 安装成功: $_dest${_verstr:+（$_verstr，$_archstr）}"
+    [ -n "$_flavor" ] && { local _hint; _hint="$(catalog_flavor_hint "$_flavor")"; [ -n "$_hint" ] && msg "  形态: $_flavor（$_hint）"; }
     msg "选用: 容器 set <name> wine=$_name ｜ 全局: anwind-container wine-default $_name"
     return 0
 }
@@ -420,7 +679,7 @@ wine_dirs() { # 回显所有 wine 目录（绝对路径）
 }
 
 cmd_wine_list() {
-    local _any=0 _d _n _info _ver _def _dw
+    local _any=0 _d _n _info _ver _def _dw _fl
     _def="$(conf_read "$CONF_GLOBAL" default_container "")"
     _dw="$(conf_read "$CONF_GLOBAL" default_wine "")"
     echo "已安装的 wine（$OPT_DIR）:"
@@ -429,11 +688,12 @@ cmd_wine_list() {
         _n="$(basename "$_d")"
         _ver="$(conf_read "$_d/.anwind-wine-info" version "")"
         [ -n "$_ver" ] || _ver="(未知版本)"
+        _fl="$(conf_read "$_d/.anwind-wine-info" flavor "")"
         local _mark=" "
         [ "$_n" = "$_dw" ] && _mark="*"
-        printf "%s %-20s %s\n" "$_mark" "$_n" "$_ver"
+        printf "%s %-24s %s%s\n" "$_mark" "$_n" "$_ver" "${_fl:+  [$_fl]}"
     done < <(wine_dirs)
-    [ "$_any" = 1 ] || echo "  （无 —— anwind-container install-wine <tarball|URL> 安装）"
+    [ "$_any" = 1 ] || echo "  （无 —— anwind-container install-wine <类别|tarball|URL> 安装；wine-catalog 查看在线构建）"
     echo "全局默认: ${_dw:-（未设置，用 /usr/opt/wine）} ｜ 默认容器: ${_def:-（未设置）}"
     return 0
 }
@@ -619,12 +879,12 @@ cmd_doctor() {
     echo "       LD_LIBRARY_PATH/LANG → rootfs 自身；音频走 rootfs 自带 PulseAudio）"
 
     echo
-    echo "[3/6] Wine 运行时（多版本）"
+    echo "[3/6] Wine 运行时（多版本，支持 bionic 双形态 / 普通 Wine / Proton）"
     local _w
     if [ -x "$RFS_USR/opt/wine/bin/wine" ]; then
         echo "  [OK] 默认 wine: $RFS_USR/opt/wine/bin/wine"
     else
-        echo "  [--] /usr/opt/wine 未安装 → anwind-container install-wine <CI Release 的 tar.gz>"
+        echo "  [--] /usr/opt/wine 未安装 → anwind-container install-wine <类别|tarball|URL>（wine-catalog 查看在线构建）"
     fi
     while IFS= read -r _w; do
         _n="$(basename "$_w")"
@@ -632,9 +892,9 @@ cmd_doctor() {
         echo "  [OK] 多版本槽位: $_n"
     done < <(wine_dirs)
     if [ -x "$RFS_USR/opt/bin/wine" ]; then
-        echo "  [OK] hangover wine（aarch64 qemu 模拟）: $RFS_USR/opt/bin/wine"
+        echo "  [OK] 旧版 hangover wine（兼容路径）: $RFS_USR/opt/bin/wine"
     else
-        echo "  [--] hangover wine 未安装（aarch64 rootfs 构建包含）"
+        echo "  [--] 旧版 hangover 路径未安装（可选 install-wine bionic-arm64ec 替代）"
     fi
 
     echo
@@ -656,9 +916,13 @@ cmd_doctor() {
             [ -x "$RFS_USR/opt/wine/bin/wine" ] && _auto="native"
             ;;
         aarch64|arm64)
-            if [ -x "$RFS_USR/opt/wine/bin/wine" ] && [ -n "$(find_box64)" ]; then _auto="box64"
-            elif [ -x "$RFS_USR/opt/bin/wine" ]; then _auto="hangover"
+            if [ -x "$RFS_USR/opt/wine/bin/wine" ]; then
+                case "$(dd if="$RFS_USR/opt/wine/bin/wine" bs=1 skip=18 count=2 2>/dev/null | od -An -tx1 2>/dev/null | tr -d ' \n')" in
+                    b700) _auto="arm64ec" ;;
+                    3e00) [ -n "$(find_box64)" ] && _auto="box64" ;;
+                esac
             fi
+            [ "$_auto" = "无可用后端" ] && [ -x "$RFS_USR/opt/bin/wine" ] && _auto="hangover"
             ;;
     esac
     echo "  架构: $_archnow → 自动后端: $_auto"
@@ -691,10 +955,14 @@ find_box64() {
 
 usage() {
     cat << 'EOF'
-anwind-container v2.0 — AnWind Wine 容器管理（bionic rootfs / X11 · 环境隔离版）
+anwind-container v2.1 — AnWind Wine 容器管理（bionic rootfs / X11 · 环境隔离版）
 
 容器命令:
-  create <name> [--backend auto|box64|hangover|fexcore|native]
+  start [name] | shell [name]   一键进入容器自持环境：X 服务自启 +
+                                DISPLAY=:1 + LANG/LC_ALL 按容器配置
+                                （默认 zh_CN.UTF-8）+ 隔离 PREFIX/HOME/TMPDIR，
+                                shell 里直接运行 wine <程序> 即可
+  create <name> [--backend auto|box64|arm64ec|hangover|fexcore|native]
                 [--preset performance|compatibility]
                 [--screen native|WxH] [--dmode off|d|v|f]
                 [--gallium auto|zink|freedreno|llvmpipe]
@@ -711,11 +979,20 @@ anwind-container v2.0 — AnWind Wine 容器管理（bionic rootfs / X11 · 环�
   cmd <name> <winecmd> [...]    运行 wine 子命令（wineboot/winecfg/reg...）
   stop <name>                   结束容器内全部 wine 进程（wineserver -k）
 
-Wine 多版本:
-  install-wine <tarball|URL> [--name <版本名>] [--default]
-                                安装 x86_64 wine 发行包（.tar.gz/.tzst 均可）；
-                                --name 槽位名（默认 wine；wine- 前缀自动补）；
+Wine 多版本（bionic 双形态 + 普通 Wine + Proton）:
+  install-wine <类别|tarball|URL> [--name <版本名>] [--default]
+                                类别（wine-catalog 查看）:
+                                  bionic-x86_64  bionic 构建（box64 用）
+                                  bionic-arm64ec bionic 构建（aarch64 原生）
+                                  wine-x86_64    普通 Wine（staging/vanilla）
+                                  wine-arm64     普通 Wine ARM64
+                                  proton         Proton（WOW64 游戏向）
+                                也可给本地包或完整 URL；
+                                --name 槽位名（默认自动从资产名取）；
                                 --default 同时设为全局默认
+  wine-catalog [类别]           在线构建目录（GitHub Releases，
+                                ANWIND_GH_PROXY 可设加速镜像，
+                                ANWIND_RELEASES_REPO 可指向 fork）
   wine-list                     列出已安装 wine 版本
   wine-default <名>             设置全局默认 wine
   wine-remove <名> [--force]    移除 wine 版本（被容器占用需 --force）
@@ -732,9 +1009,15 @@ Wine 多版本:
   off  跟随 X11 窗口（native）        d  固定 X 屏幕分辨率（-d）
   v    wine 虚拟桌面（-v，DDraw 游戏）  f  强制窗口直出+清蓝底桌面（-f）
 
-显示: X11（AnWind 内置 X 服务，DISPLAY=:1；socket 在 App 侧 tmp/.X11-unix）
+后端（backend，auto 按 wine 二进制 ELF 架构自动判定）:
+  arm64ec  aarch64 wine 原生运行（bionic-arm64ec 构建，new WoW64）
+  box64    x86_64 wine 经 box64（bionic-x86_64 构建）
+  native   x86_64 设备直跑；hangover 为旧版兼容；fexcore 需自装 FEX
+
+显示: X11（AnWind 内置 X 服务，DISPLAY=:1 自动拉起；socket 在 App 侧 tmp/.X11-unix）
 音频: 容器自带 —— rootfs PulseAudio（unix socket 隔离，sles-sink 直连 Android）
-环境: 全量隔离 —— PREFIX/HOME/TMPDIR/LD_LIBRARY_PATH/LANG 均为 rootfs 自身
+环境: 全量隔离 —— PREFIX/HOME/TMPDIR/LD_LIBRARY_PATH/LANG/LC_ALL 均为 rootfs 自身
+语言: 默认 zh_CN.UTF-8（bionic wine 仅认 LC_ALL，脚本与 start 均同时导出）
 EOF
 }
 
@@ -751,16 +1034,19 @@ case "$CMD" in
     default)       cmd_default "$@" ;;
     clone)         cmd_clone "$@" ;;
     remove|rm)     cmd_remove "$@" ;;
+    start|shell)   cmd_start "$@" ;;
     run)           cmd_run "$@" ;;
     cmd|wine)      cmd_cmd "$@" ;;
     stop)          cmd_stop "$@" ;;
     install-wine)  cmd_install_wine "$@" ;;
     wine-list|wines)     cmd_wine_list ;;
+    wine-catalog)  cmd_wine_catalog "$@" ;;
     wine-default)  cmd_wine_default "$@" ;;
     wine-remove)   cmd_wine_remove "$@" ;;
     install-dxvk)  cmd_install_dxvk "$@" ;;
     install-vkd3d) cmd_install_vkd3d "$@" ;;
     doctor)        cmd_doctor ;;
     help|--help|-h) usage ;;
+    version|--version|-V) version ;;
     *) die "未知命令: $CMD（help 查看用法）" ;;
 esac

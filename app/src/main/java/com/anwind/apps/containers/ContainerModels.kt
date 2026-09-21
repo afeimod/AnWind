@@ -36,8 +36,11 @@ enum class ContainerBackend(
     val label: String,
     val desc: String
 ) {
-    /** 按设备架构与已装组件自动挑选（aarch64: box64 → hangover；x86_64: native）。 */
+    /** 按设备架构与已装组件自动挑选（aarch64: arm64ec → box64 → hangover；x86_64: native）。 */
     AUTO("auto", "自动选择", "自动挑选可用后端（推荐）"),
+
+    /** aarch64 Wine 原生运行（bionic-arm64ec 构建，new WoW64，无需模拟器）。 */
+    ARM64EC("arm64ec", "ARM64EC 原生", "aarch64 Wine 原生运行（new WoW64，无模拟开销）"),
 
     /** box64 + x86_64 Wine（构建系统 wine 包 = x86_64 新 WoW64，主力路径）。 */
     BOX64("box64", "Box64", "box64 运行 x86_64 Wine，性能最佳"),

@@ -1,0 +1,4 @@
+#!/data/data/com.anwind/files/usr/bin/bash
+# AnWind regedit 包装器（APK assets 自动部署，勿手改）
+# 等价: anwind-wine regedit（注册表编辑器，容器自持环境 + X 服务自启）
+exec /data/data/com.anwind/files/rootfs/usr/bin/anwind-wine regedit "$@"

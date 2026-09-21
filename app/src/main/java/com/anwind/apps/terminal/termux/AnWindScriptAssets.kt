@@ -19,12 +19,19 @@ import java.io.File
  *   同样被替换，用户无需重导 rootfs。
  *
  * 资产契约（APK 内 assets/anwind/scripts/ 目录，纯文本脚本）：
- *   anwind-container   容器管理 CLI（create/list/set/install-wine/
- *                      wine-list/wine-default/wine-remove/dxvk/vkd3d/doctor）
- *   anwind-wine        容器 Wine 启动器 v2.0（环境隔离版：
- *                      PREFIX/HOME/TMPDIR/LD_LIBRARY_PATH/LANG/音频
- *                      全部指向 rootfs 自身；DISPLAY 立即 :1；
- *                      dmode=off/d/v/f 显示模式）
+ *   anwind-container   容器管理 CLI（start/shell/create/list/set/install-wine/
+ *                      wine-catalog/wine-list/wine-default/wine-remove/
+ *                      dxvk/vkd3d/doctor）
+ *   anwind-wine        容器 Wine 启动器 v2.1（环境隔离版：
+ *                      PREFIX/HOME/TMPDIR/LD_LIBRARY_PATH/LANG/LC_ALL/
+ *                      音频全部指向 rootfs 自身；DISPLAY 强制 :1；
+ *                      X 服务未运行自动拉起；dmode=off/d/v/f；
+ *                      后端按 wine 二进制 ELF 架构自动判定
+ *                      arm64ec/box64/native/hangover）
+ *   wine/winecfg/wineboot/regedit
+ *                      wine 包装器（exec anwind-wine）—— 终端直接敲
+ *                      wine <程序> 即得隔离环境 + 中文 + 显示，
+ *                      不再需要 anwind-x11 :1 && env DISPLAY=:1
  *
  * 覆盖安装目标（与 ContainerManager.ROOTFS_ROOT 一致）：
  *   /data/data/com.anwind/files/rootfs/usr/bin/<脚本名>（chmod 0755）
@@ -33,6 +40,11 @@ import java.io.File
  *   usr/etc/anwind/container.conf        全局配置（default_container/
  *                                        default_wine 指针，缺失才创建）
  *   usr/etc/profile.d/anwind-container.sh rootfs bin 并入 PATH
+ *   usr/etc/profile.d/anwind-display.sh   DISPLAY=:1 / XDG_RUNTIME_DIR
+ *   usr/etc/fonts/local.conf              引入 /system/fonts（CJK 字体，
+ *                                        wine 中文渲染必需，缺失才创建）
+ *   App 侧 $PREFIX/etc/profile.d/anwind-container.sh：每个终端会话
+ *                                        注入 rootfs bin + DISPLAY=:1
  *   home/.anwind/containers/logs         容器与日志目录
  *
  * 幂等策略：脚本每次启动无条件覆盖（APK 内版本即最新版本，体量仅
@@ -48,8 +60,14 @@ object AnWindScriptAssets {
     /** bionic rootfs 根（与 ContainerManager.ROOTFS_ROOT 逐字一致）。 */
     const val ROOTFS_ROOT = "/data/data/com.anwind/files/rootfs"
 
-    /** 需要部署到 rootfs/usr/bin 的脚本清单。 */
+    /** 需要部署到 rootfs/usr/bin 的主脚本清单（每次启动无条件覆盖）。 */
     private val SCRIPTS = listOf("anwind-container", "anwind-wine")
+
+    /**
+     * wine 包装器清单（exec anwind-wine）：仅当目标不是 ELF 二进制时覆盖 ——
+     * 防 rootfs 自带真实 wine 本体时误杀；缺失或旧脚本则正常覆盖。
+     */
+    private val WRAPPERS = listOf("wine", "winecfg", "wineboot", "regedit")
 
     /**
      * 部署容器脚本到 rootfs（覆盖安装）。
@@ -79,11 +97,20 @@ object AnWindScriptAssets {
 
         for (name in names) {
             // 只部署白名单脚本，避免 assets 里出现意外文件被误装
-            if (name !in SCRIPTS) continue
-            if (copyScript(context, "$SCRIPT_ASSET_DIR/$name", File(binDir, name))) written++
+            if (name in SCRIPTS) {
+                if (copyScript(context, "$SCRIPT_ASSET_DIR/$name", File(binDir, name))) written++
+            } else if (name in WRAPPERS) {
+                val target = File(binDir, name)
+                // 目标是真实 ELF 二进制（如 rootfs 自带 wine 本体）则不覆盖
+                if (target.isFile && isElf(target)) {
+                    android.util.Log.i(TAG, "跳过 $name：目标为 ELF 二进制（不覆盖真实 wine 本体）")
+                    continue
+                }
+                if (copyScript(context, "$SCRIPT_ASSET_DIR/$name", target)) written++
+            }
         }
 
-        ensureSupportFiles()
+        ensureSupportFiles(context)
         if (written > 0) {
             android.util.Log.i(TAG, "容器脚本已覆盖安装: $written 个 → $binDir")
         }
@@ -111,11 +138,36 @@ object AnWindScriptAssets {
         }
     }
 
+    /** 判断文件是否为 ELF 二进制（magic: 7F 45 4C 46）。 */
+    private fun isElf(f: File): Boolean = try {
+        f.inputStream().use { s ->
+            val m = ByteArray(4)
+            var n = 0
+            while (n < 4) {
+                val r = s.read(m, n, 4 - n)
+                if (r < 0) break
+                n += r
+            }
+            n == 4 && m[0] == 0x7F.toByte() && m[1] == 'E'.code.toByte() &&
+                m[2] == 'L'.code.toByte() && m[3] == 'F'.code.toByte()
+        }
+    } catch (_: Exception) {
+        false
+    }
+
     /**
-     * 兜底补齐脚本运行所需的配置与目录（只在缺失时创建，
-     * 不覆盖用户已有配置 —— default_container/default_wine 指针保留）。
+     * 兜底补齐脚本运行所需的配置与目录：
+     *  - 全局容器配置（缺失才创建，保留 default_container/default_wine 指针）
+     *  - rootfs profile.d：anwind-display.sh（DISPLAY=:1 / XDG_RUNTIME_DIR，
+     *    容器 shell 环境；覆盖写入 —— 内容随 APK 版本更新）
+     *  - rootfs etc/fonts/local.conf：引入 /system/fonts（Noto CJK ——
+     *    wine 中文渲染必需；rootfs 无字体包，缺失才创建，不覆盖用户自定义）
+     *  - App 侧 $PREFIX/etc/profile.d/anwind-container.sh：每个终端会话
+     *    自动获得 rootfs bin（anwind-container/wine/winecfg 直接可用）与
+     *    DISPLAY=:1（覆盖写入，内容随 APK 版本更新）
+     *  - 容器存储与日志目录
      */
-    private fun ensureSupportFiles() {
+    private fun ensureSupportFiles(context: Context) {
         try {
             // 全局容器配置（容器 CLI 与 App 端 ContainerManager 共用）
             val conf = File("$ROOTFS_ROOT/usr/etc/anwind/container.conf")
@@ -142,6 +194,51 @@ object AnWindScriptAssets {
                 )
                 Os.chmod(prof.absolutePath, 420)
             }
+
+            // profile.d：容器 shell 的显示/运行时环境（v2.27）
+            // 兜底值（:-），不覆盖已有设置；DISPLAY 立即 :1 消除黑屏
+            val disp = File("$ROOTFS_ROOT/usr/etc/profile.d/anwind-display.sh")
+            disp.parentFile?.mkdirs()
+            disp.writeText(
+                "# AnWind 容器显示/运行时环境（由 APK assets 自动部署，勿手改）\n" +
+                    "export DISPLAY=\"${'$'}{ANWIND_DISPLAY:-:1}\"\n" +
+                    "export XDG_RUNTIME_DIR=\"${'$'}{XDG_RUNTIME_DIR:-/data/data/com.anwind/files/usr/tmp}\"\n"
+            )
+            Os.chmod(disp.absolutePath, 420)
+
+            // fontconfig：引入 Android 系统字体（Noto CJK —— wine 中文
+            // 渲染必需；rootfs 无字体包，Android 自带 CJK 字体零成本复用）
+            val fc = File("$ROOTFS_ROOT/usr/etc/fonts/local.conf")
+            if (!fc.isFile) {
+                fc.parentFile?.mkdirs()
+                fc.writeText(
+                    "<?xml version=\"1.0\"?>\n" +
+                        "<!DOCTYPE fontconfig SYSTEM \"fonts.dtd\">\n" +
+                        "<!-- AnWind: 引入 /system/fonts（Noto CJK 等，中文渲染必需；由 APK 自动部署，已存在则不覆盖） -->\n" +
+                        "<fontconfig>\n" +
+                        "  <dir>/system/fonts</dir>\n" +
+                        "</fontconfig>\n"
+                )
+                Os.chmod(fc.absolutePath, 420)
+            }
+
+            // App 侧 profile.d：每个 AnWind 终端会话自动获得
+            //   * rootfs bin 并入 PATH（anwind-container / anwind-wine /
+            //     wine / winecfg / wineboot / regedit 直接可用）
+            //   * DISPLAY=:1（终端即面向内置 X 服务，配合脚本自启消除黑屏）
+            val appPrefix = TermuxEnvironment.prefixPath(context)
+            val appProf = File("$appPrefix/etc/profile.d/anwind-container.sh")
+            appProf.parentFile?.mkdirs()
+            appProf.writeText(
+                "# AnWind 容器 CLI + X11 显示（由 APK assets 自动部署，勿手改）\n" +
+                    "case \":${'$'}PATH:\" in\n" +
+                    "  *\":$ROOTFS_ROOT/usr/bin:\"*) ;;\n" +
+                    "  *) export PATH=\"$ROOTFS_ROOT/usr/bin:${'$'}{PATH}\" ;;\n" +
+                    "esac\n" +
+                    "export DISPLAY=\"${'$'}{ANWIND_DISPLAY:-:1}\"\n" +
+                    "export XDG_RUNTIME_DIR=\"${'$'}{XDG_RUNTIME_DIR:-$appPrefix/tmp}\"\n"
+            )
+            Os.chmod(appProf.absolutePath, 420)
 
             // 容器存储与日志目录（rootfs home 下）
             File("$ROOTFS_ROOT/home/.anwind/containers/logs").mkdirs()

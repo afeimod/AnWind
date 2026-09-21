@@ -514,7 +514,7 @@ private fun EditContainerDialog(
                     singleLine = true
                 )
                 Text(
-                    "wine 安装新版本：终端 anwind-container install-wine <tarball|URL> --name <名>",
+                    "wine 新版本：本窗下方分类在线安装，或终端 anwind-container install-wine <类别|URL>（wine-catalog 查看构建目录）",
                     fontSize = 11.sp, color = themeSec()
                 )
                 if (error != null) {
@@ -755,6 +755,7 @@ private fun LabeledWineSelector(
     selected: String,
     onSelect: (String) -> Unit
 ) {
+    val context = LocalContext.current
     Column {
         Text("Wine 版本（/usr/opt 槽位）", fontSize = 12.sp, color = themeSec())
         Spacer(Modifier.height(4.dp))
@@ -776,10 +777,36 @@ private fun LabeledWineSelector(
             }
             if (wines.isEmpty()) {
                 Text(
-                    "（未装多版本，终端 install-wine 安装）",
+                    "（未装多版本，可点下方分类在线安装）",
                     fontSize = 10.sp, color = themeSec(),
                     modifier = Modifier.padding(top = 10.dp)
                 )
+            }
+        }
+        // v2.27：在线构建目录一键安装（wine-catalog：bionic 双形态 /
+        // 普通 Wine / Proton；CLI 自动取最新 Release 资产并命名槽位，
+        // 下载进度在"Wine 输出"面板查看，装完重开本窗即可选择）
+        Text(
+            "在线安装（自动取最新构建，进度见\"Wine 输出\"面板）:",
+            fontSize = 10.sp, color = themeSec(),
+            modifier = Modifier.padding(top = 6.dp)
+        )
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            modifier = Modifier.horizontalScrollIfNeeded()
+        ) {
+            listOf(
+                "bionic-arm64ec" to "arm64ec 原生",
+                "bionic-x86_64" to "x86_64 (box64)",
+                "wine-arm64" to "普通Wine ARM64",
+                "wine-x86_64" to "普通Wine x86_64",
+                "proton" to "Proton"
+            ).forEach { (key, label) ->
+                OutlinedButton(
+                    onClick = { WineSessionLauncher.installWine(context, key) },
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                    modifier = Modifier.height(28.dp)
+                ) { Text(label, fontSize = 10.sp) }
             }
         }
     }

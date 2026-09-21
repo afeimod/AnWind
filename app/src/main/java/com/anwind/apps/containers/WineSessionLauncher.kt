@@ -125,15 +125,31 @@ object WineSessionLauncher {
     }
 
     /**
-     * 通过 CLI 安装 wine 发行包（CI Release 的 wine tarball）。
-     * 走前台会话以便用户看到解包/安装进度。
+     * 通过 CLI 安装 wine 发行包（v2.27：支持构建目录类别）。
+     *
+     * @param src 类别名（bionic-x86_64 / bionic-arm64ec / wine-x86_64 /
+     *            wine-arm64 / proton，由 CLI wine-catalog 解析最新 Release
+     *            资产并自动命名槽位）、完整 URL 或本地包路径
+     * @param name 槽位名（null = CLI 自动从资产名取）
+     * @param mkDefault 是否同时设为全局默认 wine
+     * 走前台会话以便用户看到 解析/下载（直连失败自动走加速镜像）/解包 进度。
      */
-    fun installWine(context: Context, tarballOrUrl: String): String? {
+    fun installWine(
+        context: Context,
+        src: String,
+        name: String? = null,
+        mkDefault: Boolean = false
+    ): String? {
         if (!ContainerManager.rootfsReady()) {
             return "rootfs 未就绪：请先导入包含 anwind-container 的 bionic rootfs"
         }
         val placeholder = ContainerData(name = "__install__")
-        val cmd = "exec ${ContainerManager.CLI} install-wine \"${tarballOrUrl.trim()}\""
+        val cmd = buildString {
+            append("exec ${ContainerManager.CLI} install-wine ")
+            append(shellQuote(src.trim()))
+            if (!name.isNullOrBlank()) append(" --name ").append(shellQuote(name.trim()))
+            if (mkDefault) append(" --default")
+        }
         return spawn(context, placeholder.name, cmd)
     }
 

@@ -53,7 +53,7 @@ APK 启动 / bootstrap 安装完成后由 `AnWindTzstAssets` **自动自解压**
 - wine 前缀未构建（无 system.reg）时 DXVK **不会**预解压；
   前缀由 wineboot 构建完成后的首次 App 启动 / 进入容器界面即自动补齐。
 
-## scripts/ — 容器管理脚本（覆盖安装，v2.26 起）
+## scripts/ — 容器管理脚本（覆盖安装，v2.26 起，v2.27 扩展）
 
 本目录存放**纯文本 shell 脚本**（非 tzst），由
 `AnWindScriptAssets.deployScriptsIfNeeded` 覆盖安装到
@@ -61,8 +61,9 @@ APK 启动 / bootstrap 安装完成后由 `AnWindTzstAssets` **自动自解压**
 
 | 脚本 | 作用 | 部署时机 |
 |------|------|---------|
-| `anwind-container` | 容器管理 CLI v2.0（create/set/install-wine 多版本/wine-list/wine-default/wine-remove/dxvk/vkd3d/doctor） | App 启动 + 每次容器会话启动前 |
-| `anwind-wine` | 容器 Wine 启动器 v2.0（环境隔离版） | 同上 |
+| `anwind-container` | 容器管理 CLI v2.1（start/shell/create/set/install-wine 多版本+类别/wine-catalog/wine-list/wine-default/wine-remove/dxvk/vkd3d/doctor） | App 启动 + 每次容器会话启动前 |
+| `anwind-wine` | 容器 Wine 启动器 v2.1（环境隔离 + X 服务自启 + ELF 架构自适应后端） | 同上 |
+| `wine` / `winecfg` / `wineboot` / `regedit` | wine 包装器（exec anwind-wine；目标为 ELF 本体时不覆盖） | 同上 |
 
 要点：
 
@@ -70,12 +71,30 @@ APK 启动 / bootstrap 安装完成后由 `AnWindTzstAssets` **自动自解压**
   rootfs tzst 解压完成后由 APK 覆盖安装 —— 旧 rootfs 自带的旧脚本一并被替换，
   用户无需重导 rootfs。
 - **环境隔离**：anwind-wine 运行容器前全量重建环境 —— PREFIX/HOME/TMPDIR/
-  XDG_\*/LD_LIBRARY_PATH/LANG 全部指向 rootfs 自身，清洗终端侧注入的
+  XDG_\*/LD_LIBRARY_PATH/LANG/LC_ALL 全部指向 rootfs 自身，清洗终端侧注入的
   LD_PRELOAD/TERMUX_\* 等残留；音频用 rootfs 自带 PulseAudio（unix socket
   隔离，module-sles-sink 直连 Android 音频），与 Termux 侧 TCP 4713 无关。
-- **显示**：DISPLAY 一律立即 `:1`（App 侧启动容器时同步自动拉起内置 X 服务）；
-  dmode=off/d/v/f 对齐 glibc-runner 的 -d/-v/-f 分辨率握手协议
+- **语言（v2.27）**：LANG 与 LC_ALL 同时导出（默认 zh_CN.UTF-8）—— bionic
+  只认 C locale，wine 在 setlocale 返回 C 时仅读 LC_ALL（不读 LANG），
+  这是此前 wine 界面切不了中文的根因；中文渲染由部署到 rootfs 的
+  `usr/etc/fonts/local.conf`（引入 /system/fonts 的 Noto CJK）提供字体。
+- **显示（v2.27）**：DISPLAY 强制 `:1`（ANWIND_DISPLAY 可覆盖）；anwind-wine
+  / anwind-container start 在 X socket 缺失时自动后台拉起内置 termux-x11
+  （socket 落 App 侧 tmp/.X11-unix，拉起进程用 App 侧 XDG_RUNTIME_DIR，
+  不被容器隔离污染）—— 终端直接 `wine notepad` 即可出画面，不再需要
+  先手敲 `anwind-x11 :1 && env DISPLAY=:1`。
+- **终端会话注入**：App 侧 `$PREFIX/etc/profile.d/anwind-container.sh`
+  每次部署刷新 —— 终端 PATH 自动含 rootfs bin（容器 CLI/wine 包装器
+  直接可用）且 DISPLAY=:1。
+- **显示模式**：dmode=off/d/v/f 对齐 glibc-runner 的 -d/-v/-f 分辨率握手协议
   （`$PREFIX/tmp/.anwind-x11-res`）。
-- **Wine 多版本**：install-wine 装到 `/usr/opt/<槽位名>`（wine / wine-<名>），
-  `wine=` 存槽位名（或绝对路径）；解析顺序：容器 wine= → 全局 default_wine=
-  → /usr/opt/wine。
+- **Wine 多版本（bionic 双形态 + 普通 Wine + Proton）**：
+  - `install-wine <类别>`：bionic-x86_64 / bionic-arm64ec / wine-x86_64 /
+    wine-arm64 / proton —— 自动从 GitHub Releases（ANWIND_RELEASES_REPO 可
+    指向 fork）取最新资产，直连失败自动走加速镜像（ANWIND_GH_PROXY 可自定义）；
+    仍可直接给本地包或完整 URL。
+  - `wine-catalog [类别]`：查看在线构建目录。
+  - 后端按槽位 wine 二进制的 ELF 头（e_machine）自动判定：aarch64 形态
+    → arm64ec 原生运行（new WoW64），x86_64 形态 → box64/native；
+    解析顺序：容器 wine= → 全局 default_wine= → /usr/opt/wine。
+  - 槽位 .anwind-wine-info 记录 version/arch/flavor/source。

@@ -303,16 +303,16 @@ object ContainerManager {
                      else "脚本尚未部署（rootfs 未导入）。导入 rootfs 后打开一次主界面，APK 会自动覆盖安装"
         )
 
-        // 4) wine 主程序（多版本）
+        // 4) wine 主程序（多版本：bionic 双形态 / 普通 Wine / Proton）
         val wines = listWines()
         val wine = File("$ROOTFS_ROOT/usr/opt/wine/bin/wine")
         checks += DoctorCheck(
             ok = wine.isFile || wines.isNotEmpty(),
-            title = "Wine（x86_64 / 新 WoW64）",
+            title = "Wine 运行时（多版本）",
             detail = when {
                 wine.isFile && wines.size <= 1 -> "/usr/opt/wine 就绪"
                 wines.isNotEmpty() -> "已装 ${wines.size} 个版本（${wines.joinToString("、") { it.name }}），默认：${defaultWineName().ifEmpty { "wine" }}"
-                else -> "未安装 wine：终端执行 anwind-container install-wine <tarball|URL>"
+                else -> "未安装 wine：终端 anwind-container install-wine <类别>（wine-catalog 查看 bionic/普通Wine/Proton 在线构建），或 App 端 Wine 选择器下方分类一键安装"
             }
         )
 

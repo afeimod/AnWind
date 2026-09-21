@@ -1,0 +1,4 @@
+#!/data/data/com.anwind/files/usr/bin/bash
+# AnWind winecfg 包装器（APK assets 自动部署，勿手改）
+# 等价: anwind-wine winecfg（容器自持环境 + X 服务自启 + DISPLAY=:1）
+exec /data/data/com.anwind/files/rootfs/usr/bin/anwind-wine winecfg "$@"
