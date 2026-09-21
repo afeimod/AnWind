@@ -217,6 +217,43 @@ pre_setup() {
     echo "    构建继续；若运行期异常请检查源码树内 *.rej 文件"
   fi
 
+  # bionic POSIX shm 兼容注入（幂等）：
+  # bionic 任何 API 级别都没有 shm_open/shm_unlink（bionic 官方文档
+  # status.md 列为 "Missing functions ... explicitly disallowed by
+  # SELinux"），而 proton 树（official <=9.x 旧树同理）的 esync/fsync
+  # 无条件调用它们 —— dlls/ntdll/unix/{esync,fsync}.c 与
+  # server/{esync,fsync}.c 共 4 个文件：头文件无声明，clang 15+ 的
+  # -Wimplicit-function-declaration 直接判错（CI run#14 两个 flavor
+  # 均折在此处）；libc 亦无符号，须链 libandroid-shmem（其补丁已实现
+  # memfd_create 优先、ashmem 兜底，LDFLAGS 已带 -landroid-shmem）。
+  # 这里把原型注入调用文件；wine >=10 官方树/hangover-11 树已删除
+  # esync/fsync（合并重构进 sync.c，无 shm 调用），文件缺失自动跳过。
+  inject_shm_compat() {
+    local _f
+    for _f in dlls/ntdll/unix/esync.c dlls/ntdll/unix/fsync.c \
+              server/esync.c server/fsync.c; do
+      [[ -f "$_f" ]] || continue
+      if grep -q "ANWIND_SHM_COMPAT" "$_f"; then
+        echo "shm 原型已注入过，跳过 => $_f"
+        continue
+      fi
+      cat > ".anwind-shm-compat.h" <<'SHMDECL'
+/* ANWIND_SHM_COMPAT: bionic 无 POSIX shm_open/shm_unlink
+   （SELinux 策略禁止，任何 API 级别均无）。实现由 libandroid-shmem
+   提供（memfd_create 优先，ashmem 兜底），链接经 -landroid-shmem
+   解析；此块仅补原型，避免隐式函数声明被判错。 */
+#include <sys/types.h>
+extern int shm_open(const char *name, int oflag, mode_t mode);
+extern int shm_unlink(const char *name);
+SHMDECL
+      cat ".anwind-shm-compat.h" "$_f" > "$_f.anwind-tmp" \
+        && mv "$_f.anwind-tmp" "$_f" \
+        && echo "已注入 shm_open/shm_unlink 原型 => $_f"
+    done
+    rm -f ".anwind-shm-compat.h"
+  }
+  inject_shm_compat
+
   CFLAGS="${CFLAGS/-Oz/}"
   CXXFLAGS="${CXXFLAGS/-Oz/}"
   CPPFLAGS="${CPPFLAGS/-Oz/}"

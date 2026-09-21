@@ -173,7 +173,30 @@ jobs:
             check "$M/lib/dri/kgsl_dri.so"
             check "$M/lib/dri/zink_dri.so"
             check "$M/lib/libvulkan_freedreno.so"
+            # turnip 的 Vulkan ICD 清单（zink/外部 Vulkan 加载器发现驱动所需）
+            check "$M/share/vulkan/icd.d/freedreno_icd.aarch64.json"
           fi
+          echo "=== NEEDED 依赖闭环校验（防运行时 dlopen/加载失败导致游戏全挂）==="
+          # 产物内 .so 的 NEEDED 必须满足三者之一，否则构建即失败：
+          #   1. 产物自身携带（$M/lib、$M/lib/dri、$M/lib/gbm）
+          #   2. Android 系统库（设备 /system/lib64 必有）
+          #   3. rootfs 依赖包库（deps 拓扑已先行装入 rootfs）
+          # 若 mesa 增删依赖，请同步更新 deps= 与 ROOTFS_DEP_RE
+          ANDROID_SYS_RE='^(libc|libc\+\+|libdl|libm|liblog|libandroid|libnativewindow|libvulkan|libEGL|libGLESv1_CM|libGLESv2|libOpenSLES)\.so'
+          ROOTFS_DEP_RE='^(libandroid-shmem|libc\+\+_shared|libexpat|libdrm|libdrm_freedreno|libzstd|libz|libX11|libX11-xcb|libxcb|libxcb-glx|libxcb-shm|libxcb-dri3|libxcb-present|libxcb-sync|libxcb-xfixes|libxcb-randr|libxcb-render|libxcb-shape|libxshmfence|libXext|libXfixes|libXdamage|libXxf86vm|libXrandr|libXrender|libXau|libXdmcp|libpthread-stub|libglapi)\.so'
+          BAD_NEEDS=0
+          for so in "$M"/lib/libGL.so.1 "$M"/lib/libEGL.so.1 "$M"/lib/libgbm.so.1 \
+                    "$M"/lib/libglapi.so* "$M"/lib/dri/*_dri.so "$M"/lib/libvulkan_freedreno.so; do
+            [[ -e "$so" ]] || continue
+            while IFS= read -r n; do
+              [[ -z "$n" ]] && continue
+              [[ -e "$M/lib/$n" || -e "$M/lib/dri/$n" || -e "$M/lib/gbm/$n" ]] && continue
+              echo "$n" | grep -qE "$ANDROID_SYS_RE" && continue
+              echo "$n" | grep -qE "$ROOTFS_DEP_RE" && continue
+              echo "  [MISS] $(basename "$so") 需要 $n（产物与白名单均未提供）"; BAD_NEEDS=1
+            done < <(readelf -d "$so" | sed -n 's/.*Shared library: \[\([^]]*\)\].*/\1/p')
+          done
+          if [[ "$BAD_NEEDS" == "0" ]]; then echo "  [OK] NEEDED 依赖闭环"; fi
           echo "=== wayland 残留校验（应全部不存在）==="
           for f in "$M/lib/libwayland-client.so" "$M/lib/libgallium-"*"-wayland"*; do
             if [[ -e "$f" ]]; then echo "  [FOUND] $f 不应存在！"; MISS=1; else echo "  [NOT FOUND] $(basename "$f")"; fi

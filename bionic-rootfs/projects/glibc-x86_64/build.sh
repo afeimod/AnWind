@@ -41,18 +41,24 @@ ${UBUNTU_POOL}/z/zlib/zlib1g_${ZLIB_VER}_amd64.deb
 "
 
 custom_url() {
+  # 必须用绝对路径：get_src 在 cd "${srcDir}" 后调用本函数，而
+  # extra_fuction 执行时构建系统已 cd 进 pkgSrcDir（源码树目录），
+  # 相对路径在两个阶段指向不同位置 -> 下载成功但校验报"缺少已下载的包"
+  # （CI run#14 rootfs 构建折在此处）。
   local _deb _name
+  mkdir -p "${srcDir}/${pjName}"
   for _deb in $DEBS; do
     _name="$(basename "${_deb}")"
     echo "下载 => ${_name}"
     wget -nv --timeout=60 --tries=2 --waitretry=3 \
-      -O "${pjName}/${_name}" "${_deb}" \
+      -O "${srcDir}/${pjName}/${_name}" "${_deb}" \
       || { echo "下载失败 => ${_deb}" && exit 1; }
   done
 }
 
 extra_fuction() {
   local _destLib="${destDir}${prefix}/lib/x86_64-linux-gnu"
+  local _debDir="${srcDir}/${pjName}"   # custom_url 的绝对下载目录，见上
   local _deb _name _ext
 
   mkdir -p "${_destLib}"
@@ -61,12 +67,12 @@ extra_fuction() {
     _name="$(basename "${_deb}")"
     _ext="${pjName}/deb-${_name%.deb}"
 
-    if [[ ! -f "${pjName}/${_name}" ]]; then
-      echo "错误: 缺少已下载的包 => ${_name}" && exit 1
+    if [[ ! -f "${_debDir}/${_name}" ]]; then
+      echo "错误: 缺少已下载的包 => ${_debDir}/${_name}" && exit 1
     fi
     rm -rf "${_ext}"
     mkdir -p "${_ext}"
-    dpkg-deb -x "${pjName}/${_name}" "${_ext}" \
+    dpkg-deb -x "${_debDir}/${_name}" "${_ext}" \
       || { echo "deb 解包失败 => ${_name}" && exit 1; }
 
     # 平铺 usr/lib/x86_64-linux-gnu/*（libc/libm/libpthread/ld-linux/
