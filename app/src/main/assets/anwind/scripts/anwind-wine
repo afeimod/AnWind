@@ -1,6 +1,8 @@
 #!/data/data/com.anwind/files/usr/bin/bash
 # ============================================================
-# anwind-wine v2.1 — AnWind 容器 Wine 启动器（bionic rootfs / X11）
+# anwind-wine v2.2 — AnWind 容器 Wine 启动器（bionic rootfs / X11）
+# v2.2 变更：GStreamer 插件路径隔离（GST_PLUGIN_SYSTEM_PATH）+
+#            box64 glibc 扩展路径（x86_64-linux-gnu 存在时自动接）
 # ★ 隔离版（assets 分发，App 启动时覆盖安装到 rootfs/usr/bin）★
 # ------------------------------------------------------------
 # 职责：
@@ -56,7 +58,7 @@ CONF_GLOBAL="$RFS_USR/etc/anwind/container.conf"
 X11_SOCK_DIR="$APP_PREFIX/tmp/.X11-unix"
 LOG_DIR="$CONT_ROOT/logs"
 
-version() { echo "anwind-wine 2.1.0 (AnWind bionic rootfs, X11 auto-start, isolated env)"; }
+version() { echo "anwind-wine 2.2.0 (AnWind bionic rootfs, X11 auto-start, isolated env)"; }
 
 # ---------- 运行时目录兜底（必须在任何 wine 调用前） ----------
 # wine 按 termux 风格构建，把 /tmp 硬编码为 $RFS_USR/tmp：wineserver 启动时
@@ -68,7 +70,7 @@ info() { echo "[anwind-wine] $*"; }
 
 usage() {
     cat << 'EOF'
-anwind-wine v2.1 — AnWind 容器 Wine 启动器（bionic rootfs / X11 · 环境隔离版）
+anwind-wine v2.2 — AnWind 容器 Wine 启动器（bionic rootfs / X11 · 环境隔离版）
 
 用法:
   anwind-wine [--container <name>] <wine 参数...>
@@ -154,6 +156,15 @@ isolate_env() {
     case "$(uname -m)" in
         aarch64|arm64) export TU_DEBUG=noconform,sysmem ;;
     esac
+
+    # --- 8) GStreamer（rootfs 自带的插件栈，wine winegstreamer 后端用）---
+    # 插件路径显式指向 rootfs，防 Termux 侧 GST 变量串扰；
+    # 注册表缓存 fork 在 Android 上偶发卡死，直接关掉（wine 一次性
+    # 加载，非长驻服务，重建注册表的代价可接受）。
+    if [ -d "$RFS_USR/lib/gstreamer-1.0" ]; then
+        export GST_PLUGIN_SYSTEM_PATH="$RFS_USR/lib/gstreamer-1.0"
+        export GST_REGISTRY_FORK=false
+    fi
 }
 
 # ============================================================
@@ -442,6 +453,15 @@ apply_box64_env() {
     export BOX64_LOG=0
     export BOX64_NOBANNER=1
     export BOX64_DYNAREC_TRACE=0
+    # x86_64 glibc 运行库（rootfs 自带 usr/lib/x86_64-linux-gnu，由
+    # bionic-rootfs 的 glibc-x86_64 配方安装）：本 wine 是 bionic 链接、
+    # 不需要它；但容器内跑常规 glibc x86_64 Linux 程序时，box64 会在
+    # BOX64_LD_LIBRARY_PATH 各目录里找 libc/ld-linux —— 缺它则直接报
+    # "cannot open shared object file"。仅在目录存在时追加，不干扰纯
+    # bionic 环境。
+    if [ -d "$RFS_USR/lib/x86_64-linux-gnu" ]; then
+        export BOX64_LD_LIBRARY_PATH="$RFS_USR/lib/x86_64-linux-gnu${BOX64_LD_LIBRARY_PATH:+:$BOX64_LD_LIBRARY_PATH}"
+    fi
     case "$_preset" in
         compatibility)
             export BOX64_DYNAREC_BIGBLOCK=0

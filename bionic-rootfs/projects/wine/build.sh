@@ -43,7 +43,7 @@ args="
   --enable-nls
   --disable-tests
   --disable-wineandroid-drv
-  --without-alsa
+  --with-alsa
   --without-capi
   --without-coreaudio
   --without-cups
@@ -55,6 +55,7 @@ args="
   --without-gphoto
   --with-gnutls
   --without-gssapi
+  --with-gstreamer
   --without-inotify
   --without-krb5
   --without-netapi
@@ -92,7 +93,12 @@ args="
 
 # 构建依赖全部来自 rootfs 既有配方（双架构可用，缺什么 build 系统
 # 依据 toposort 自动补齐）：
-deps="fontconfig freetype gnutls gstreamer ffmpeg pulseaudio mesa vulkan-headers vulkan-icd-loader xkeyboard-config libxkbcommon xorgproto libxcb xtrans libX11 libXext libXrender libXfixes libXi libXrandr libXcursor libXinerama libXcomposite libXxf86vm libandroid-shmem"
+# ※ gstreamer 必须先开启（--with-gstreamer）：wine 的 winegstreamer
+#   后端依赖它做 WMF/编解码转发，proton 树还额外要求 gstreamer-gl-1.0
+#   （由 gst-plugins-base gl=enabled 提供，见 gstreamer 配方注释）。
+# ※ alsa：与 arm64ec 形态保持一致（winealsa unixlib 参与构建；
+#   CI 产物校验两形态都要求 winealsa.so 存在）。
+deps="pthread-stub alsa-lib fontconfig freetype gnutls gstreamer ffmpeg pulseaudio mesa vulkan-headers vulkan-icd-loader xkeyboard-config libxkbcommon xorgproto libxcb xtrans libX11 libXext libXrender libXfixes libXi libXrandr libXcursor libXinerama libXcomposite libXxf86vm libandroid-shmem"
 
 # 静默编译：wine 的 make 会回显每条完整编译/链接命令（ccache 全路径），
 # 单包就曾刷出 11.7 万行日志；-s 只关命令回显，编译器/链接器报错照常输出，

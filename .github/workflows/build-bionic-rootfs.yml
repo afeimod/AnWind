@@ -233,6 +233,17 @@ jobs:
           check "$RFS/lib/libEGL.so.1"
           check "$RFS/lib/libgbm.so.1"
           check "$RFS/lib/libvulkan.so.1"
+          # ---- GStreamer 运行时（wine winegstreamer 后端依赖；此前
+          #      rootfs 缺 usr/lib/gstreamer-1.0 目录导致 wine 无编解码）----
+          check "$RFS/lib/libgstreamer-1.0.so"
+          check "$RFS/lib/libgstgl-1.0.so"
+          check "$RFS/lib/gstreamer-1.0/libgstcoreelements.so"
+          check "$RFS/libexec/gstreamer-1.0/gst-plugin-scanner"
+          # ---- 语言数据（locale-archive，此前缺失）----
+          check "$RFS/lib/locale/locale-archive"
+          # ---- 系统字体（此前缺失，fontconfig 无字可配）----
+          check "$RFS/share/fonts/dejavu/DejaVuSans.ttf"
+          check "$RFS/share/fonts/noto/NotoSansSC.ttf"
           check "$RFS/share/X11/xkb"
           check "$RFS/etc/hosts"
           check "$RFS/bin/anwind-container"
@@ -242,9 +253,24 @@ jobs:
             check "$RFS/opt/bin/wine"
             check "$RFS/opt/lib/wine"
             check "$RFS/local/bin/box64"
+            # Mesa DRI 驱动（aarch64: zink + freedreno msm/kgsl + softpipe swrast）
+            check "$RFS/lib/dri/zink_dri.so"
+            check "$RFS/lib/dri/kgsl_dri.so"
+            check "$RFS/lib/dri/msm_dri.so"
+            check "$RFS/lib/dri/swrast_dri.so"
+            # box64 跑 glibc x86_64 程序所需的运行库（此前缺失）
+            check "$RFS/lib/x86_64-linux-gnu/libc.so.6"
+            check "$RFS/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2"
+            check "$RFS/lib/x86_64-linux-gnu/libstdc++.so.6"
+            # wine 自带 NLS/字体（locale.nls 为 wine 启动必需）
+            check "$RFS/opt/share/wine/nls/locale.nls"
+            check "$RFS/opt/share/wine/fonts/tahoma.ttf"
           else
             check "$RFS/opt/wine/bin/wine"
             check "$RFS/opt/wine/lib/wine/x86_64-windows/kernel32.dll"
+            check "$RFS/lib/dri/swrast_dri.so"
+            check "$RFS/opt/wine/share/wine/nls/locale.nls"
+            check "$RFS/opt/wine/share/wine/fonts/tahoma.ttf"
           fi
           if [[ "$MISS" != "0" ]]; then
             # 把缺失明细与实际目录内容写入诊断文件（failure-diag artifact 会上传），

@@ -304,6 +304,11 @@ jobs:
             check "$W/opt/wine/lib/wine/x86_64-unix/winex11.so"
             check "$W/opt/wine/lib/wine/x86_64-unix/winepulse.so"
             check "$W/opt/wine/lib/wine/x86_64-unix/winealsa.so"
+            # winegstreamer（--with-gstreamer：WMF/编解码后端，缺它视频无解）
+            check "$W/opt/wine/lib/wine/x86_64-unix/winegstreamer.so"
+            # NLS 数据（locale.nls 为 wine 启动必需）与自带字体
+            check "$W/opt/wine/share/wine/nls/locale.nls"
+            check "$W/opt/wine/share/wine/fonts/tahoma.ttf"
             echo "--- lib/wine 目录布局 ---"
             ls "$W/opt/wine/lib/wine/" || true
           else
@@ -317,6 +322,11 @@ jobs:
             check "$W/opt/lib/wine/aarch64-unix/winex11.so"
             check "$W/opt/lib/wine/aarch64-unix/winepulse.so"
             check "$W/opt/lib/wine/aarch64-unix/winealsa.so"
+            # winegstreamer（--with-gstreamer：WMF/编解码后端，缺它视频无解）
+            check "$W/opt/lib/wine/aarch64-unix/winegstreamer.so"
+            # NLS 数据（locale.nls 为 wine 启动必需）与自带字体
+            check "$W/opt/share/wine/nls/locale.nls"
+            check "$W/opt/share/wine/fonts/tahoma.ttf"
             check "$W/opt/.anwind-wine-info"
             echo "--- lib/wine 目录布局 ---"
             ls "$W/opt/lib/wine/" || true

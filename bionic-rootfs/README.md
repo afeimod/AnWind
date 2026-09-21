@@ -103,6 +103,21 @@ install() { ... }
 ./build-rootfs-arch.sh --update-host-deps         更新主机依赖
 ```
 
+## rootfs 完整性组件（语言 / 字体 / box64 glibc）
+
+| 配方 | 内容 | 说明 |
+|---|---|---|
+| `projects/rootfs-locale` | `usr/lib/locale/locale-archive` | 构建机 localedef（`--prefix`）编入 en_US/zh_CN/zh_TW/ja_JP/ko_KR/de_DE/fr_FR/es_ES/ru_RU/pt_BR；容器内 glibc 程序（含 box64 加载的 x86_64 程序）setlocale 可用 |
+| `projects/rootfs-fonts` | `usr/share/fonts/{dejavu,noto}` | DejaVu 2.37 全量 + Noto Sans SC（可变字体）；fontconfig `--with-default-fonts` 即指向该目录 |
+| `projects/glibc-x86_64` | `usr/lib/x86_64-linux-gnu/`（仅 aarch64 rootfs） | Ubuntu noble 的 libc6/libgcc-s1/libstdc++6/zlib1g 平铺安装，供 box64 运行常规 glibc x86_64 Linux 程序；anwind-wine 检测到该目录时自动导出 `BOX64_LD_LIBRARY_PATH` |
+
+注意：
+- `glibc-x86_64` 的 deb 版本可用 `ANWIND_GLIBC_VER` / `ANWIND_GCC_VER` /
+  `ANWIND_ZLIB_VER` 覆盖（Ubuntu pool 旧版本会被回收，构建失败时改版本号即可）。
+- GStreamer 配方必须开启 `gst-plugins-base:gl`：wine（尤其 Proton 树）的
+  configure 用 pkg-config 检查 `gstreamer-gl-1.0`，`gl=disabled` 时该 .pc
+  不生成，wine 报 "gstreamer-1.0 base plugins development files not found"。
+
 ## 补丁机制
 
 `apply_patches`（项目补丁）与 `apply_ndk_patches`（NDK sysroot 补丁）共用根目录

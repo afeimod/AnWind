@@ -39,7 +39,13 @@ args="
   -Dgst-plugins-base:alsa=enabled
   -Dgst-plugins-base:pango=disabled
   -Dgst-plugins-base:x11=enabled
-  -Dgst-plugins-base:gl=disabled
+  # gl 必开：wine/Proton 的 configure 用 pkg-config 检查 gstreamer-gl-1.0
+  # （proton_10.0: gstreamer-1.0 video audio tag gl 五件套；缺任一 .pc
+  #  整个 GSTREAMER_CFLAGS 失败 → gst/gst.h 找不到 →
+  #  "gstreamer-1.0 base plugins development files not found" 直接报错。
+  #  gl=disabled 时 gstreamer-gl-1.0.pc 不会生成，这正是此前 proton
+  #  arm64ec 构建失败的原因。依赖 mesa 提供的 GL/EGL 头与 libGL/libEGL。）
+  -Dgst-plugins-base:gl=enabled
   -Dgst-plugins-base:opus=enabled
   -Dgst-plugins-good:cairo=disabled
   -Dgst-plugins-good:gdk-pixbuf=disabled
@@ -103,7 +109,9 @@ args="
   -Dgst-plugins-ugly:asfdemux=enabled
   -Dpackage-origin=anwind-bionic-rootfs
 "
-deps="libandroid-shmem alsa-lib libpng pulseaudio gmp pcre2 glib libogg libflac libopus libvorbis mp3lame mpg123 libdrm libcairo nettle libopus libjpeg-turbo libde265 openh264 libvpx orc ffmpeg libfdk-aac xorgproto libxcb libX11 libXext libXfixes libXdamage"
+# mesa：gst-plugins-base 的 gl 库需要 GL/gl.h、GLES2、EGL/egl.h 头与
+# libGL/libEGL（均由 mesa 配方装入 prefix），必须先于 gstreamer 构建
+deps="libandroid-shmem alsa-lib libpng pulseaudio gmp pcre2 glib libogg libflac libopus libvorbis mp3lame mpg123 libdrm libcairo nettle libopus libjpeg-turbo libde265 openh264 libvpx orc ffmpeg libfdk-aac mesa xorgproto libxcb libX11 libXext libXfixes libXdamage"
 
 pre_setup() {
   LDFLAGS+=" -landroid-shmem"
