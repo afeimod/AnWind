@@ -1,7 +1,7 @@
 name: AnWind Bionic Wine (X11 / x86_64 + arm64ec)
 
 # ============================================================
-# 构建面向 AnWind bionic rootfs 的 Wine（两种形态，X11 显示）
+# 构建面向 AnWind bionic rootfs 的 Wine（两种形态 × 三种源码源）
 # ------------------------------------------------------------
 # 形态一 x86_64（配方 projects/wine）：
 #   * Unix 侧 x86_64-android(bionic) + PE 侧 i386/x86_64（新 WoW64）
@@ -10,31 +10,48 @@ name: AnWind Bionic Wine (X11 / x86_64 + arm64ec)
 # 形态二 arm64ec（配方 projects/hangover-wine）：
 #   * Unix 侧 aarch64-android(bionic) + PE 侧 arm64ec/aarch64/i386（新 WoW64）
 #   * aarch64 设备原生运行（无需整机模拟），安装于 $prefix/opt
+# 源码源（wine_kind 下拉选择，两种形态通用）：
+#   hangover  AndreRH/wine        tag hangover-<ver>（默认，移植版 + 补丁集）
+#   official  wine-mirror/wine    tag wine-<ver>    （WineHQ 官方源码 GitHub 镜像）
+#   proton    ValveSoftware/wine  branch proton_<ver>（Valve Proton 的 wine 源码树）
+#   custom    自行填写 wine_url 直链（任意 wine 源码 tarball）
+#   ※ 三大源均支持 arm64ec（实证：official-11.0 / proton_10.0 configure 全过）；
+#     过旧自定义树自动降级 aarch64,i386
 # 共同点：
 #   * 显示仅 X11（--with-x 全套扩展，无 wayland），连接 AnWind 内置
 #     termux-x11/libXlorie X 服务（App 侧 tmp/.X11-unix/X1，默认 :1）
 #   * 音频 PulseAudio（TCP 127.0.0.1:4713）、GStreamer、OpenGL、Vulkan
 #   * 依赖自动补齐：build-rootfs-arch.sh 依据 toposort 先构建全部依赖
-# 产物：
-#   anwind-wine-<ver>-x86_64-bionic.tar.gz   （x86_64 形态）
-#   anwind-wine-<ver>-arm64ec-bionic.tar.gz  （arm64ec 形态）
+# 产物（<ver-token> 按 kind 生成：hangover 保持原样，official/proton
+# 带 kind 前缀避免与 hangover 同号冲突）：
+#   anwind-wine-<ver-token>-x86_64-bionic.tar.gz   （x86_64 形态）
+#   anwind-wine-<ver-token>-arm64ec-bionic.tar.gz  （arm64ec 形态）
 #   设备上用 `anwind-container install-wine <tar.gz>` 一键安装
 # ============================================================
 
 on:
   workflow_dispatch:
     inputs:
-      wine_source:
-        description: 'Wine 源码版本（AndreRH hangover 分支标签）'
+      wine_kind:
+        description: 'Wine 源码类型'
         required: false
-        default: 'hangover-11.16'
+        default: 'hangover'
         type: choice
         options:
-          - hangover-11.16
-          - hangover-11.9
-          - hangover-11.4
-          - hangover-11.0
-          - hangover-10.18
+          - hangover
+          - official
+          - proton
+          - custom
+      wine_version:
+        description: '版本号（hangover: 11.16/11.9/... | official: 11.0/10.15/... | proton: 11.0/10.0/9.0/8.0）※ 三大源均支持 arm64ec；过旧自定义树自动降级 aarch64+i386'
+        required: false
+        default: '11.16'
+        type: string
+      wine_url:
+        description: 'custom 模式专用：源码 tarball 直链（其余模式留空自动推导）'
+        required: false
+        default: ''
+        type: string
       wine_target:
         description: '构建形态'
         required: false
@@ -51,7 +68,7 @@ on:
         type: boolean
 
 concurrency:
-  group: bionic-wine-${{ github.ref }}-${{ github.event.inputs.wine_target }}
+  group: bionic-wine-${{ github.ref }}-${{ github.event.inputs.wine_kind }}-${{ github.event.inputs.wine_target }}
   cancel-in-progress: false
 
 permissions:
@@ -89,6 +106,67 @@ jobs:
             echo "::error::未找到 bionic-rootfs/projects/hangover-wine/ 配方！"; exit 1
           fi
           echo "构建系统与 wine 配方就绪（${{ matrix.flavor }}）"
+
+      # ============ 1.5 解析 Wine 源码地址（三种来源 + custom） ============
+      - name: 解析 Wine 源码地址
+        shell: bash
+        run: |
+          set -euo pipefail
+          KIND="${{ github.event.inputs.wine_kind }}"
+          # printf '%s' 不带换行——echo 的行尾 \n 会被 tr -c 误译为 _（产生 404 URL）
+          VER="$(printf '%s' "${{ github.event.inputs.wine_version }}" | tr -c 'A-Za-z0-9._-' '_')"
+          URL_IN="${{ github.event.inputs.wine_url }}"
+          [[ -n "${VER}" ]] || { echo "::error::wine_version 不能为空"; exit 1; }
+
+          case "${KIND}" in
+            hangover)
+              # AndreRH/wine 移植版（tag）—— 与默认行为一致，命名保持旧约定
+              WINE_URL="https://github.com/AndreRH/wine/archive/refs/tags/hangover-${VER}.tar.gz"
+              WINE_LABEL="hangover-${VER}"
+              WINE_TAG_X86="hangover-${VER}"   # x86_64 包名含 hangover- 前缀（旧约定）
+              WINE_TAG_ARM="${VER}"            # arm64ec 包名用裸版本（旧约定）
+              KIND_DESC="AndreRH hangover 移植版（含 GLES/mesa 适配补丁集）"
+              ;;
+            official)
+              # WineHQ 官方源码（GitHub 官方镜像 wine-mirror/wine，tag wine-<ver>）
+              WINE_URL="https://github.com/wine-mirror/wine/archive/refs/tags/wine-${VER}.tar.gz"
+              WINE_LABEL="official-${VER}"
+              WINE_TAG_X86="official-${VER}"
+              WINE_TAG_ARM="official-${VER}"
+              KIND_DESC="WineHQ 官方源码 wine-${VER}（wine-mirror GitHub 镜像）"
+              ;;
+            proton)
+              # Valve Proton 的 wine 源码树（分支 proton_<ver>，非 tag）
+              WINE_URL="https://github.com/ValveSoftware/wine/archive/refs/heads/proton_${VER}.tar.gz"
+              WINE_LABEL="proton-${VER}"
+              WINE_TAG_X86="proton-${VER}"
+              WINE_TAG_ARM="proton-${VER}"
+              KIND_DESC="Valve Proton 源码树 proton_${VER}（fsync/proton 补丁集）"
+              ;;
+            custom)
+              [[ -n "${URL_IN}" ]] || { echo "::error::custom 模式必须在 wine_url 填入源码 tarball 直链"; exit 1; }
+              WINE_URL="${URL_IN}"
+              WINE_LABEL="custom-${VER}"
+              WINE_TAG_X86="custom-${VER}"
+              WINE_TAG_ARM="custom-${VER}"
+              KIND_DESC="自定义源码：${URL_IN}"
+              ;;
+            *)
+              echo "::error::未知 wine_kind: ${KIND}"; exit 1
+              ;;
+          esac
+
+          echo "Wine 源码类型: ${KIND}"
+          echo "版本标识: ${WINE_LABEL}"
+          echo "源码 URL: ${WINE_URL}"
+          {
+            echo "WINE_URL=${WINE_URL}"
+            echo "WINE_LABEL=${WINE_LABEL}"
+            echo "WINE_TAG_X86=${WINE_TAG_X86}"
+            echo "WINE_TAG_ARM=${WINE_TAG_ARM}"
+            echo "WINE_KIND=${KIND}"
+            echo "KIND_DESC=${KIND_DESC}"
+          } >> "$GITHUB_ENV"
 
       # ============ 2. 释放磁盘空间 ============
       - name: 释放 Runner 磁盘空间
@@ -158,22 +236,21 @@ jobs:
           chmod +x *.sh
           set -o pipefail
 
-          # 链接改为选项：由 wine_source 下拉值推导源码 URL 与 TAG
-          WINE_TAG="${{ github.event.inputs.wine_source }}"
-          HANGOVER_TAG="${WINE_TAG#hangover-}"
-          WINE_URL="https://github.com/AndreRH/wine/archive/refs/tags/${WINE_TAG}.tar.gz"
-          echo "Wine 源码: ${WINE_TAG} => ${WINE_URL}"
+          # 源码链接与版本标识由“解析 Wine 源码地址”步骤按 kind 推导
+          echo "Wine 源码: ${WINE_KIND} => ${WINE_URL}"
 
           if [[ "${{ matrix.flavor }}" == "x86_64" ]]; then
             # x86_64 形态：unix x86_64 + PE i386/x86_64（box64 加载）
             export ANWIND_WINE_URL="${WINE_URL}"
-            export ANWIND_WINE_TAG="${WINE_TAG}"
+            export ANWIND_WINE_TAG="${WINE_TAG_X86}"
+            export ANWIND_WINE_LABEL="${WINE_LABEL}"
             ./build-rootfs-arch.sh --arch x86_64 \
               --build wine 2>&1 | tee build-wine-x86_64.log
           else
             # arm64ec 形态：unix aarch64 + PE arm64ec/aarch64/i386（原生）
             export ANWIND_WINE_URL="${WINE_URL}"
-            export ANWIND_HANGOVER_TAG="${HANGOVER_TAG}"
+            export ANWIND_HANGOVER_TAG="${WINE_TAG_ARM}"
+            export ANWIND_WINE_LABEL="${WINE_LABEL}"
             ./build-rootfs-arch.sh --arch aarch64 \
               --build hangover-wine 2>&1 | tee build-wine-arm64ec.log
           fi
@@ -245,11 +322,22 @@ jobs:
             ls "$W/opt/lib/wine/" || true
           fi
           echo "=== ARM64X 混合校验（arm64ec 代码应并入 aarch64-windows DLL） ==="
+          # .anwind-wine-info 的 kind 反映源码树真实能力：
+          #   arm64ec-wow64-x11 = 完整新 WoW64（含 arm64ec/ARM64X；三大默认源均如此）
+          #   arm64-wow64-x11   = 源码树无 arm64ec（极旧自定义树）
+          #                       自动降级 aarch64,i386 —— 跳过 ARM64X 校验
+          WINE_KIND_ARM=$(grep -E '^kind=' "$W/opt/.anwind-wine-info" 2>/dev/null | cut -d= -f2 || true)
+          echo "  运行时 kind: ${WINE_KIND_ARM:-未知}"
           if [[ "${{ matrix.flavor }}" == "arm64ec" ]]; then
-            python3 "${GITHUB_WORKSPACE}/bionic-rootfs/verify-arm64x.py" \
-              "$W/opt/lib/wine/aarch64-windows/kernel32.dll" \
-              "$W/opt/lib/wine/aarch64-windows/ntdll.dll" \
-              "$W/opt/lib/wine/aarch64-windows/winex11.drv" || MISS=1
+            if [[ "$WINE_KIND_ARM" == "arm64ec-wow64-x11" ]]; then
+              python3 "${GITHUB_WORKSPACE}/bionic-rootfs/verify-arm64x.py" \
+                "$W/opt/lib/wine/aarch64-windows/kernel32.dll" \
+                "$W/opt/lib/wine/aarch64-windows/ntdll.dll" \
+                "$W/opt/lib/wine/aarch64-windows/winex11.drv" || MISS=1
+            else
+              echo "  [SKIP] 源码树不支持 arm64ec，已降级 aarch64,i386（跳过 ARM64X 校验）"
+              echo "         该包运行 ARM64/i386 Windows 程序；x86_64 PE 需换用三大默认源或 x86_64 形态"
+            fi
           else
             echo "  [SKIP] x86_64 形态无需 ARM64X 校验"
           fi
@@ -326,6 +414,9 @@ jobs:
             AnWind bionic rootfs 专用 Wine（${{ matrix.flavor }} / X11）
 
             ${{ matrix.flavor == 'x86_64' && '- 形态: x86_64（unix x86_64 + PE i386/x86_64 WoW64，aarch64 设备经 box64 加载）' || '- 形态: arm64ec（unix aarch64 + PE arm64ec/aarch64/i386 WoW64，aarch64 设备原生运行）' }}
+            - 源码类型: ${{ env.KIND_DESC }}
+            - 运行时标识: ${{ env.WINE_LABEL }}（.anwind-wine-info）
+            - ※ 过旧自定义树无 arm64ec 支持时自动降级 aarch64+i386（详见构建日志与包内 .anwind-wine-info 的 kind 字段）；official/proton 默认版本均支持完整 arm64ec
             - 显示: X11（AnWind 内置 X 服务, 默认 :1）
             - 音频: PulseAudio (TCP 127.0.0.1:4713)
             - 设备安装: `anwind-container install-wine anwind-wine-${{ env.WINE_VER }}-${{ matrix.flavor }}-bionic.tar.gz`

@@ -14,7 +14,7 @@ X11 socket 路径打补丁，容器内程序直连内置 X 服务。
 ```
 .github/workflows/
   build-bionic-rootfs.yml   → bionic rootfs 主构建（aarch64 / x86_64 / all）
-  build-wine-bionic.yml     → Wine 构建（x86_64 / 新WoW64 / X11 / box64-ready）
+  build-wine-bionic.yml     → Wine 构建（x86_64+arm64ec / 新WoW64 / X11；源码可选 hangover / official / proton）
   build-box64-bionic.yml    → Box64 构建（aarch64 / ARM_DYNAREC / ANDROID=1）
   build-mesa-bionic.yml     → Mesa 构建（X11；aarch64=zink+freedreno+turnip）
 bionic-rootfs/              → 完整构建系统（76 配方，含全部 X11 包）
@@ -24,8 +24,9 @@ app/src/main/java/com/anwind/
   apps/AppBootstrap.kt      → 更新：注册 ContainersApp（覆盖仓库同名文件）
   apps/containers/          → 新增模块：Wine 容器管理 Kotlin 源码（5 个文件）
 app/src/main/assets/anwind/
-  scripts/anwind-container  → 容器管理 CLI v2.0（APK 资产，启动时覆盖安装到 rootfs）
-  scripts/anwind-wine       → Wine 启动器 v2.0 环境隔离版（APK 资产，同上）
+  scripts/anwind-container  → 容器管理 CLI v2.1（APK 资产，启动时覆盖安装到 rootfs）
+  scripts/anwind-wine       → Wine 启动器 v2.1 环境隔离版（APK 资产，同上）
+  scripts/wine|winecfg|wineboot|regedit → wine 包装器（APK 资产，同上）
 ```
 
 ## 二、App 侧容器管理（新增 Kotlin 源码，app/src/main/java/com/anwind/apps/containers/）
@@ -53,13 +54,29 @@ app/src/main/assets/anwind/
    FEXCore 为探测槽位（rootfs 内有 FEXInterpreter 才可选）。
    体检面板（X11 socket / rootfs / CLI / wine / box64 / FEX / 容器数）
    可一键诊断。
-4. **环境隔离（v2.26）**：anwind-wine 运行前全量重建环境 —— PREFIX/HOME/
-   TMPDIR/XDG_*/LD_LIBRARY_PATH/LANG 指向 rootfs 自身，清洗终端注入的
+4. **环境隔离（v2.26，v2.27 加强）**：anwind-wine 运行前全量重建环境 —— PREFIX/HOME/
+   TMPDIR/XDG_*/LD_LIBRARY_PATH/LANG/LC_ALL 指向 rootfs 自身，清洗终端注入的
    LD_PRELOAD/TERMUX_* 残留；音频/驱动/语言不受 Termux 数据环境影响。
+   v2.27：LANG 与 LC_ALL 同时导出 —— bionic 只认 C locale，wine 在
+   setlocale 返回 C 时仅读 LC_ALL（不读 LANG），这是 wine 界面切不了
+   中文的确根因；中文渲染由部署到 rootfs 的 etc/fonts/local.conf
+   （引入 /system/fonts 的 Noto CJK）提供字体。
 5. **更多配置（v2.26）**：容器 conf 新增 dmode（off/d/v/f，对齐
    glibc-runner -d/-v/-f）、wine（多版本槽位选择）、lang（容器语言）、
    audio（pulse/off）；Wine 多版本由 install-wine --name 安装到
    /usr/opt/<槽位>，wine-list / wine-default / wine-remove 管理。
+6. **显示自愈 + 终端直用（v2.27）**：DISPLAY 强制 :1；anwind-wine /
+   anwind-container start 在 X socket 缺失时自动后台拉起内置 X 服务
+   —— 终端直接 `wine notepad` 即可出画面，不再需要先手敲
+   `anwind-x11 :1 && env DISPLAY=:1`；每个终端会话由 App 侧
+   profile.d 注入 rootfs bin + DISPLAY=:1。
+7. **Wine 在线构建目录（v2.27）**：install-wine 支持类别一键安装 ——
+   bionic-x86_64（box64 用）/ bionic-arm64ec（aarch64 原生 new WoW64）/
+   wine-x86_64（普通 Wine）/ wine-arm64（普通 Wine ARM64）/ proton；
+   自动取 GitHub Releases 最新资产，直连失败自动走加速镜像
+   （ANWIND_GH_PROXY 可自定义，ANWIND_RELEASES_REPO 可指向 fork）；
+   后端按槽位 wine 的 ELF 头自动判定（arm64ec/box64/native）。
+   App 端 Wine 选择器下方提供同类目一键安装按钮。
 
 ## 三、rootfs 侧容器管理（APK assets 覆盖安装，不再进 rootfs 构建）
 
@@ -68,20 +85,24 @@ v2.26 起 `anwind-container` / `anwind-wine` 改为 APK 内置资产
 覆盖安装到 rootfs/usr/bin —— rootfs 构建系统已移除 anwind-container 配方，
 旧 rootfs 自带的旧脚本也会被替换，无需重导 rootfs。
 
-- `anwind-container`：create / list / info / set / default / clone / remove /
-  run / cmd / stop / install-wine（多版本 --name/--default）/ wine-list /
+- `anwind-container`：start|shell（一键进入容器自持环境） / create / list /
+  info / set / default / clone / remove / run / cmd / stop /
+  install-wine（多版本 + 在线类别）/ wine-catalog / wine-list /
   wine-default / wine-remove / install-dxvk / install-vkd3d / doctor
-- `anwind-wine`：后端感知启动器（auto/box64/hangover/fexcore/native），
-  环境全量隔离、容器自持音频（rootfs PulseAudio unix socket）、
-  DISPLAY 立即 :1、dmode 分辨率握手（.anwind-x11-res）、首启 wineboot -i、
+- `anwind-wine`：后端感知启动器（auto/arm64ec/box64/hangover/fexcore/native，
+  按槽位 wine ELF 架构自动判定），环境全量隔离、容器自持音频
+  （rootfs PulseAudio unix socket）、DISPLAY 强制 :1 + X 服务自启、
+  dmode 分辨率握手（.anwind-x11-res）、首启 wineboot -i、
   Mesa/Zink/TU_DEBUG 调优注入、BOX64_DYNAREC 预设、wine 多版本解析。
+- `wine` / `winecfg` / `wineboot` / `regedit`：包装器（exec anwind-wine）
+  —— 终端直接敲 wine 即得隔离环境 + 中文 + 显示。
 
 ## 四、四条构建流水线（全部 workflow_dispatch 手动触发）
 
 | Workflow | 架构 | 产物 | 设备安装 |
 |---|---|---|---|
 | build-bionic-rootfs | aarch64/x86_64/all | `anwind-rootfs-<arch>.tar.gz` | 解包至 `/`（data/data/... 路径自动就位） |
-| build-wine-bionic | x86_64 | `anwind-wine-<ver>-x86_64-bionic.tar.gz` | `anwind-container install-wine <tar.gz>` |
+| build-wine-bionic | x86_64 / arm64ec | `anwind-wine-<ver>-<arch>-bionic.tar.gz`（hangover / official / proton 三种源码源） | `anwind-container install-wine <tar.gz>` |
 | build-box64-bionic | aarch64 | `anwind-box64-<ver>-aarch64-bionic.tar.gz` | 解包至 `/` |
 | build-mesa-bionic | aarch64+x86_64 | `anwind-mesa-<ver>-<arch>-bionic.tar.gz` | 解包至 `/` |
 
@@ -91,6 +112,16 @@ v2.26 起 `anwind-container` / `anwind-wine` 改为 APK 内置资产
    （新 WoW64）+ llvm-mingw PE + 宿主工具链先行。`--with-x` 全套 X 扩展、
    `--without-wayland`；产物校验强制断言 `winex11.drv` 存在且无
    `winewayland.drv`。aarch64 设备经 box64 加载运行（MiceWine 同款模型）。
+   **源码源任选**（workflow_dispatch 下拉）：`hangover`（AndreRH/wine
+   移植版，默认）/ `official`（WineHQ 官方源码，wine-mirror 官方 GitHub
+   镜像，tag wine-<ver>）/ `proton`（Valve Proton wine 源码树，分支
+   proton_<ver>）+ `custom` 直链；两种形态（x86_64 / arm64ec）均可用
+   任意源码源构建，产物名带 kind 前缀区分：`anwind-wine-official-11.0-*-bionic.tar.gz`、
+   `anwind-wine-proton-10.0-*-bionic.tar.gz`。bionic 补丁集对三源全兼容
+   （hangover 树主补丁全中；official/proton 由 9998b/9998c/9999b 变体补丁
+   覆盖，已实证三树补丁全中 + configure arm64ec 全过）；proton 树无预生成
+   configure，配方自动 autogen；极旧自定义树无 arm64ec 时自动降级
+   aarch64+i386。
 2. **Box64**：`-DANDROID=1 -DARM_DYNAREC=1 -DBAD_SIGNAL=1`，aarch64 专用。
 3. **Mesa**：`platforms=x11 / glx=dri`；aarch64 =
    swrast + freedreno(MSM/KGSL) + zink，vulkan = freedreno/turnip。
@@ -101,8 +132,9 @@ v2.26 起 `anwind-container` / `anwind-wine` 改为 APK 内置资产
 
 1. 把 `.github/workflows/`、`bionic-rootfs/`、`app/src/main/java/com/anwind/`
    三处内容合并提交到 AnWind 仓库（同名覆盖）；
-2. GitHub Actions 依次手动触发：build-bionic-rootfs → build-wine-bionic /
-   build-box64-bionic / build-mesa-bionic；
+2. GitHub Actions 依次手动触发：build-bionic-rootfs → build-wine-bionic
+   （下拉选源码源：hangover / official / proton，选形态 x86_64 / arm64ec）
+   / build-box64-bionic / build-mesa-bionic；
 3. 设备端：导入 rootfs tar.gz → 解包 box64/mesa tar.gz →
    `anwind-container install-wine <wine tar.gz>`；
 4. 打开 App 桌面"📦 Wine 容器"→ 新建容器 → 运行 exe（或终端

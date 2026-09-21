@@ -445,11 +445,15 @@ gh_fetch() { # <remote-url> <outfile>
     return 1
 }
 
-# ---------- Wine 在线构建目录（v2.1：普通 Wine / Proton / bionic 双形态） ----------
+# ---------- Wine 在线构建目录（v2.2：官方 Wine / Proton / hangover / bionic 双形态） ----------
 # 源：本仓库（ANWIND_RELEASES_REPO 可指向 fork）GitHub Releases：
-#   bionic-x86_64  ← build-wine-bionic.yml  anwind-wine-*-x86_64-bionic.tar.gz
-#   bionic-arm64ec ← build-wine-bionic.yml  anwind-wine-*-arm64ec-bionic.tar.gz
-#                  （即 hangover 分支 bionic 构建：aarch64 原生 new WoW64）
+#   bionic-x86_64  ← build-wine-bionic.yml  anwind-wine-*x86_64*bionic.tar.gz
+#   bionic-arm64ec ← build-wine-bionic.yml  anwind-wine-*arm64ec*bionic.tar.gz
+#                  同一 workflow 三种源码源（wine_kind 下拉）：
+#                    hangover          → anwind-wine-hangover-<ver>-x86_64-*.tar.gz
+#                    official（官方）  → anwind-wine-official-<ver>-*-bionic.tar.gz
+#                    proton（Valve）   → anwind-wine-proton-<ver>-*-bionic.tar.gz
+#                  槽位名取自包名，多源共存不冲突（wine-list 可见全部）
 #   wine-x86_64    ← wine-wow64-no.yml / wine-vanilla-*   wine-*wow64.tar.xz
 #   wine-arm64     ← wine-Arm.yml / wine-vanilla-*-arm64   wine-*arm64*wow64.tar.xz
 #   proton         ← wine-wow64-no.yml                     proton-*-wow64.tar.xz

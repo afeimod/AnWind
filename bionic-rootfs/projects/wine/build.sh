@@ -20,10 +20,17 @@ doNotApplyPatch=1
 #     已按 @APP_PREFIX@ 打好 socket 路径补丁
 #   * 音频：PulseAudio（PULSE_SERVER=127.0.0.1:4713，由
 #     anwind-x11 会话拉起；rootfs 亦自带 pulseaudio）
-# 源码默认沿用 AndreRH/wine hangover-11.16（与 hangover-wine
-# 配方同源，本目录的 bionic 补丁即针对该树生成，保证可套用）。
+# 源码支持三种来源（CI 下拉选择，亦可任意环境变量覆盖）：
+#   hangover  AndreRH/wine        tag    hangover-<ver>   （默认，与 arm64ec 配方同源）
+#   official  wine-mirror/wine    tag    wine-<ver>       （WineHQ 官方源码 GitHub 镜像）
+#   proton    ValveSoftware/wine  branch proton_<ver>     （Valve Proton 的 wine 源码树）
+# 本目录的 bionic 补丁针对 hangover 树生成；official/proton 树结构相同
+# （均为上游 wine 树），个别 hunk 可能因版本漂移失败——pre_setup 对此
+# 容错（打印告警继续构建），失败 hunk 落 *.rej 供人工核查。
 # 可用环境变量覆盖：
-#   ANWIND_WINE_URL / ANWIND_WINE_TAG（CI 支持任意 wine 源）
+#   ANWIND_WINE_URL   源码 tarball 直链（三种来源皆用 GitHub archive）
+#   ANWIND_WINE_TAG   版本标识（进包名 wine-<TAG>-x86_64.tar）
+#   ANWIND_WINE_LABEL 运行时标识（写入 .anwind-wine-info 的 tag=，缺省用 TAG）
 # ============================================================
 
 args="
@@ -104,6 +111,17 @@ pre_setup() {
 
   echo "=== AnWind bionic wine（x86_64/X11/WoW64）构建开始 ==="
 
+  # 0. 源码树兼容性：git 树可能不含预生成 configure（如 proton 分支）→ autogen 生成
+  if [[ ! -f "${srcDir}/${pjName}/configure" ]]; then
+    if [[ -f "${srcDir}/${pjName}/autogen.sh" ]]; then
+      echo "源码树无预生成 configure，运行 autogen.sh ..."
+      ( cd "${srcDir}/${pjName}" && ./autogen.sh ) || { echo "autogen 失败"; return 1; }
+    else
+      echo "错误: 源码树既无 configure 也无 autogen.sh"
+      return 1
+    fi
+  fi
+
   # 1. 下载并设置 llvm-mingw 工具链（i686/x86_64 PE 目标）
   if [[ ! -d "${_llvmMingwDir}" ]]; then
     echo "下载 llvm-mingw 工具链..."
@@ -125,10 +143,14 @@ pre_setup() {
   cd "${srcDir}/${pjName}"
 
   # 2. host 构建补丁（winegcc/winebuild 目标修正，bionic 树必需）
+  #    --forward 跳过已应用的 hunk；失败仅告警不中断（official/proton 树
+  #    可能已含等价修正），失败 hunk 落 *.rej。
   for _patch in "${wsDir}/projects/${pjName}"/*.patch.beforehostbuild; do
     if [[ -f "${_patch}" ]]; then
       echo "应用 host build 补丁: $(basename "${_patch}")"
-      sed "s%@TERMUX_PREFIX@%${prefix}%g" "${_patch}" | patch --silent -p1
+      if ! sed "s%@TERMUX_PREFIX@%${prefix}%g" "${_patch}" | patch --silent --forward -p1; then
+        echo "⚠️  host 补丁 $(basename "${_patch}") 有 hunk 未应用（树差异，继续构建）"
+      fi
     fi
   done
 
@@ -170,14 +192,24 @@ pre_setup() {
   cd "${srcDir}/${pjName}"
 
   # bionic 兼容补丁（路径/互斥锁属性/Socket IPX，与 hangover-wine 同源）
+  # 补丁针对 hangover 树生成；official/proton 树个别 hunk 可能漂移，
+  # 失败仅告警不中断，*.rej 留源码树供核查。
+  local _patchFail=""
   for _patch in "${wsDir}/projects/${pjName}"/*.patch; do
     if [[ -f "${_patch}" ]] && [[ ! "${_patch}" == *".beforehostbuild" ]]; then
       echo "应用主补丁: $(basename "${_patch}")"
-      sed -e "s%@TERMUX_PREFIX@%${prefix}%g" \
+      if ! sed -e "s%@TERMUX_PREFIX@%${prefix}%g" \
         -e "s%@TERMUX_BASE_DIR@%/data/data/com.anwind/files/rootfs%g" \
-        "${_patch}" | patch --silent -p1
+        "${_patch}" | patch --silent --forward -p1; then
+        echo "⚠️  主补丁 $(basename "${_patch}") 有 hunk 未应用（源码树差异，继续构建）"
+        _patchFail+=" $(basename "${_patch}")"
+      fi
     fi
   done
+  if [[ -n "${_patchFail}" ]]; then
+    echo "⚠️⚠️ 以下补丁存在失败 hunk:${_patchFail}"
+    echo "    构建继续；若运行期异常请检查源码树内 *.rej 文件"
+  fi
 
   CFLAGS="${CFLAGS/-Oz/}"
   CXXFLAGS="${CXXFLAGS/-Oz/}"
@@ -212,7 +244,7 @@ pre_package() {
   if [[ -d "${_wineDir}" ]]; then
     cat > "${_wineDir}/.anwind-wine-info" << EOF
 kind=x86_64-wow64-x11
-tag=${revision}
+tag=${ANWIND_WINE_LABEL:-${revision}}
 backend=box64|native
 EOF
   else

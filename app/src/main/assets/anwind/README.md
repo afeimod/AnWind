@@ -93,6 +93,10 @@ APK 启动 / bootstrap 安装完成后由 `AnWindTzstAssets` **自动自解压**
     wine-arm64 / proton —— 自动从 GitHub Releases（ANWIND_RELEASES_REPO 可
     指向 fork）取最新资产，直连失败自动走加速镜像（ANWIND_GH_PROXY 可自定义）；
     仍可直接给本地包或完整 URL。
+  - bionic 双形态同一流水线（build-wine-bionic.yml）三种源码源任选：
+    hangover（默认）/ official（WineHQ 官方源码）/ proton（Valve 源码树），
+    产物名带 kind 前缀（anwind-wine-official-11.0-*-bionic.tar.gz 等），
+    多源多版本共存于 wine-list。
   - `wine-catalog [类别]`：查看在线构建目录。
   - 后端按槽位 wine 二进制的 ELF 头（e_machine）自动判定：aarch64 形态
     → arm64ec 原生运行（new WoW64），x86_64 形态 → box64/native；
