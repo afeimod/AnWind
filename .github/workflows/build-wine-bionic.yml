@@ -306,6 +306,8 @@ jobs:
             check "$W/opt/wine/lib/wine/x86_64-unix/winealsa.so"
             # winegstreamer（--with-gstreamer：WMF/编解码后端，缺它视频无解）
             check "$W/opt/wine/lib/wine/x86_64-unix/winegstreamer.so"
+            # amd_ags_x64（AMD AGS，unixlib 链接 libdrm_amdgpu —— 验证 amdgpu 链路）
+            check "$W/opt/wine/lib/wine/x86_64-unix/amd_ags_x64.so"
             # NLS 数据（locale.nls 为 wine 启动必需）与自带字体
             check "$W/opt/wine/share/wine/nls/locale.nls"
             check "$W/opt/wine/share/wine/fonts/tahoma.ttf"
@@ -324,6 +326,8 @@ jobs:
             check "$W/opt/lib/wine/aarch64-unix/winealsa.so"
             # winegstreamer（--with-gstreamer：WMF/编解码后端，缺它视频无解）
             check "$W/opt/lib/wine/aarch64-unix/winegstreamer.so"
+            # amd_ags_x64（AMD AGS，unixlib 链接 libdrm_amdgpu —— 验证 amdgpu 链路）
+            check "$W/opt/lib/wine/aarch64-unix/amd_ags_x64.so"
             # NLS 数据（locale.nls 为 wine 启动必需）与自带字体
             check "$W/opt/share/wine/nls/locale.nls"
             check "$W/opt/share/wine/fonts/tahoma.ttf"

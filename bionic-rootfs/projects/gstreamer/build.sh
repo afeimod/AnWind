@@ -4,6 +4,17 @@ urlType="git"
 arch="aarch64 x86_64"
 buildSys="meson"
 license="LGPL-2.1"
+
+# ⚠️ args 字符串内禁止写注释：框架 meson setup 以无引号展开传递 ${args}，
+#    注释行会变成垃圾位置参数；且注释里的引号会提前闭合 args="..."，
+#    导致整个赋值丢失（v2.29 曾因此 args 全空）。说明一律写在本块外。
+
+# gl 必开：wine/Proton 的 configure 用 pkg-config 检查 gstreamer-gl-1.0
+# （proton_10.0 的 GSTREAMER 检查为 gstreamer-1.0 video audio tag gl 五件套，
+#   缺任一 .pc 则整体失败 → gst/gst.h 找不到 →
+#   configure 报 gstreamer-1.0 base plugins development files not found。
+#   gl=disabled 时 gstreamer-gl-1.0.pc 不会生成，这正是此前 proton
+#   arm64ec/x86_64 构建失败的原因。依赖 mesa 提供的 GL/EGL 头与 libGL/libEGL。）
 args="
   --wrap-mode=nodownload
   -Dgst-full-target-type=shared_library
@@ -39,12 +50,6 @@ args="
   -Dgst-plugins-base:alsa=enabled
   -Dgst-plugins-base:pango=disabled
   -Dgst-plugins-base:x11=enabled
-  # gl 必开：wine/Proton 的 configure 用 pkg-config 检查 gstreamer-gl-1.0
-  # （proton_10.0: gstreamer-1.0 video audio tag gl 五件套；缺任一 .pc
-  #  整个 GSTREAMER_CFLAGS 失败 → gst/gst.h 找不到 →
-  #  "gstreamer-1.0 base plugins development files not found" 直接报错。
-  #  gl=disabled 时 gstreamer-gl-1.0.pc 不会生成，这正是此前 proton
-  #  arm64ec 构建失败的原因。依赖 mesa 提供的 GL/EGL 头与 libGL/libEGL。）
   -Dgst-plugins-base:gl=enabled
   -Dgst-plugins-base:opus=enabled
   -Dgst-plugins-good:cairo=disabled

@@ -55,7 +55,7 @@ license='
  DEALINGS IN THE SOFTWARE.
 '
 args="
-  -Damdgpu=disabled
+  -Damdgpu=enabled
   -Dcairo-tests=disabled
   -Detnaviv=disabled
   -Dfreedreno=enabled
@@ -69,6 +69,13 @@ args="
   -Dvc4=disabled
   -Dvmwgfx=disabled
 "
+# ※ amdgpu 必开：wine 10+ 的 dlls/amd_ags_x64（AMD AGS 支持，部分游戏必需）
+#   无条件 #include <amdgpu.h> 并链接 libdrm_amdgpu（configure.ac:
+#   WINE_PACKAGE_FLAGS(DRMAMDGPU,[libdrm_amdgpu]) → pkg-config 找
+#   libdrm_amdgpu.pc 提供 -I 与 -ldrm_amdgpu）。amdgpu=disabled 时
+#   amdgpu.h / libdrm_amdgpu.pc 均不生成，make 阶段必报
+#   'amdgpu.h' file not found（hangover/official/proton × arm64ec/x86_64 全中）。
+#   Android 上 amdgpu 模块仅是普通用户态库，无需 PCI 设备即可编译。
 pre_setup() {
   CFLAGS+=" -DANDROID"
 }

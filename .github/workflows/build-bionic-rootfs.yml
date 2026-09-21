@@ -239,6 +239,10 @@ jobs:
           check "$RFS/lib/libgstgl-1.0.so"
           check "$RFS/lib/gstreamer-1.0/libgstcoreelements.so"
           check "$RFS/libexec/gstreamer-1.0/gst-plugin-scanner"
+          # ---- libdrm amdgpu（wine 10+ amd_ags_x64 硬依赖 amdgpu.h/
+          #      libdrm_amdgpu.so，缺失则 wine make 阶段必炸）----
+          check "$RFS/include/libdrm/amdgpu.h"
+          check "$RFS/lib/libdrm_amdgpu.so.1"
           # ---- 语言数据（locale-archive，此前缺失）----
           check "$RFS/lib/locale/locale-archive"
           # ---- 系统字体（此前缺失，fontconfig 无字可配）----
