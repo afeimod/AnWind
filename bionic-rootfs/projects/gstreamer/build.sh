@@ -121,3 +121,42 @@ deps="libandroid-shmem alsa-lib libpng pulseaudio gmp pcre2 glib libogg libflac 
 pre_setup() {
   LDFLAGS+=" -landroid-shmem"
 }
+
+custom_patch() {
+  # gst-plugins-base 的 gstshmallocator.c：bionic 任何 API 级别均无
+  # shm_open/shm_unlink 的头文件声明（官方 status.md 列为 SELinux 禁止
+  # 的 missing functions），而 meson 的 has_function('shm_open') 是
+  # 链接测试 —— pre_setup 已把 -landroid-shmem 注入 c_link_args，
+  # libandroid-shmem 在链接期提供符号 → 检查通过并给编译行带上
+  # -DHAVE_SHM_OPEN；但编译期 <sys/mman.h> 无声明，clang 的
+  # -Wimplicit-function-declaration 直接判错（CI wine x86_64/arm64ec
+  # 与 rootfs aarch64 三条流水线均折在 [122/1741] 此文件）。
+  # 按 wine/hangover-wine 配方的同款方案（ANWIND_SHM_COMPAT 标记幂等）
+  # 注入原型，符号由既有 -landroid-shmem 解析（memfd_create 直调优先，
+  # ashmem 兜底）。gst-plugins-bad 的 shm 插件已 -Dshm=disabled，其
+  # shmpipe.c 不参与编译，无需处理。
+  local _srcBase="${pkgSrcDir:-${srcDir}/${pjName}}"
+  local _f="${_srcBase}/subprojects/gst-plugins-base/gst-libs/gst/allocators/gstshmallocator.c"
+  if [[ ! -f "${_f}" ]]; then
+    echo "未找到 gstshmallocator.c（源码树结构变化），跳过 shm 原型注入"
+    return 0
+  fi
+  if grep -q "ANWIND_SHM_COMPAT" "${_f}"; then
+    echo "shm 原型已注入过，跳过 => gstshmallocator.c"
+    return 0
+  fi
+  cat > "${_srcBase}/.anwind-shm-compat.h" <<'SHMDECL'
+/* ANWIND_SHM_COMPAT: bionic 无 POSIX shm_open/shm_unlink 声明（官方
+   status.md 列为 SELinux 禁止，任何 API 级别均无）。实现由
+   libandroid-shmem 提供（memfd_create 直调优先，ashmem 兜底），链接经
+   LDFLAGS 中的 -landroid-shmem 解析；此块仅补原型，
+   避免 clang 隐式函数声明被判错。 */
+#include <sys/types.h>
+extern int shm_open(const char *name, int oflag, mode_t mode);
+extern int shm_unlink(const char *name);
+SHMDECL
+  cat "${_srcBase}/.anwind-shm-compat.h" "${_f}" > "${_f}.anwind-tmp" \
+    && mv "${_f}.anwind-tmp" "${_f}" \
+    && echo "已注入 shm_open/shm_unlink 原型 => gstshmallocator.c"
+  rm -f "${_srcBase}/.anwind-shm-compat.h"
+}
