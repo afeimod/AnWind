@@ -39,6 +39,24 @@ extra_fuction() {
     exit 1
   fi
 
+  # localedef --prefix 模式固定把 archive 落到 $PREFIX/usr/lib/locale/，
+  # 目录必须预先存在 —— localedef 不会自建，缺失时报
+  # "cannot create temporary file: .../locale-archive.XXXX: No such
+  # file or directory"（CI aarch64 run 实测），全部语言失败。
+  mkdir -p "${_localePrefix}/usr/lib/locale"
+
+  # Ubuntu locales 包只带 gzip 压缩 charmap（UTF-8.gz），而 localedef
+  # 不会透明解压 —— 直接把 .gz 路径喂给 -f 会把 gzip 二进制当 charmap
+  # 文本逐行解析，报 "invalid UTF-8 sequence / syntax error in prolog /
+  # premature end of file"（CI aarch64 run 实测），任何 locale 都编
+  # 不出来。这里先解压成纯文本再传给 -f（只需解压一次，循环外缓存）。
+  local _charmap="${wsDir}/tmp/UTF-8.charmap"
+  if [[ ! -s "${_charmap}" ]]; then
+    mkdir -p "$(dirname "${_charmap}")"
+    zcat /usr/share/i18n/charmaps/UTF-8.gz > "${_charmap}" \
+      || { echo "错误: 解压 UTF-8 charmap 失败"; exit 1; }
+  fi
+
   for _loc in $LOCALES; do
     local _name="${_loc%.UTF-8}"
     echo "localedef => ${_name}.utf8"
@@ -47,7 +65,7 @@ extra_fuction() {
     # 隐式名（-f UTF-8）会被解析到 PREFIX 下导致找不到 charmap
     localedef --prefix="${_localePrefix}" -c \
       -i "/usr/share/i18n/locales/${_name}" \
-      -f "/usr/share/i18n/charmaps/UTF-8.gz" \
+      -f "${_charmap}" \
       "${_loc}" \
       || echo "警告: localedef ${_loc} 失败（跳过该语言，不影响其余语言）"
   done

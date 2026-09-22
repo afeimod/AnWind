@@ -246,9 +246,21 @@ pre_setup() {
 extern int shm_open(const char *name, int oflag, mode_t mode);
 extern int shm_unlink(const char *name);
 SHMDECL
-      cat ".anwind-shm-compat.h" "$_f" > "$_f.anwind-tmp" \
-        && mv "$_f.anwind-tmp" "$_f" \
-        && echo "已注入 shm_open/shm_unlink 原型 => $_f"
+      # 插入位置：紧跟 #include "config.h" 之后 —— wine 的 makedep
+      # （tools/makedep.c get_dependencies()）强制校验 config.h 必须是
+      # 源文件第一个 include，否则 config.status 生成 Makefile 阶段直接
+      # fatal_error "config.h must be included before other headers"
+      # （proton_10.0 CI 实测：dlls/ntdll/unix/esync.c:32 中止）。
+      # 置顶前置注入会把它顶掉第一位 —— 绝对不可。无 config.h 的文件
+      # （老树个别 util）退回置顶注入。
+      if grep -q '#include "config.h"' "$_f"; then
+        sed -i '/#include "config.h"/r .anwind-shm-compat.h' "$_f" \
+          && echo "已注入 shm_open/shm_unlink 原型（config.h 之后）=> $_f"
+      else
+        cat ".anwind-shm-compat.h" "$_f" > "$_f.anwind-tmp" \
+          && mv "$_f.anwind-tmp" "$_f" \
+          && echo "已注入 shm_open/shm_unlink 原型（置顶，无 config.h）=> $_f"
+      fi
     done
     rm -f ".anwind-shm-compat.h"
   }
