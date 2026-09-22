@@ -37,6 +37,7 @@ args="
   ac_cv_header_linux_userfaultfd_h=no
   ac_cv_path_GRADLE=no
   --prefix=$prefix/opt/wine
+  --exec-prefix=$prefix/opt/wine
   --libdir=$prefix/opt/wine/lib
   --includedir=$prefix/opt/wine/include
   --enable-archs=i386,x86_64

@@ -387,6 +387,35 @@ PCMBSF
     fi
   fi
 
+  # wineboot xstate aarch64 空桩补齐（proton 树专属，条件应用）：
+  # proton_10.0 的 programs/wineboot/wineboot.c 中 initialize_xstate_features
+  # 只在 x86 分支（#if __i386__||__x86_64__）与 #else 分支有定义，
+  # #elif defined(__aarch64__) 分支漏掉空桩，而 "initialize_xstate_features( data )"
+  # 的调用无条件 —— arm64ec 形态编译 aarch64-windows/arm64ec-windows PE 时
+  # wineboot.o 直接报 -Wimplicit-function-declaration（CI proton_10.0 实测，
+  # hangover-11.16 树无此代码不受影响）。修法与 #else 分支一致：补空桩。
+  # 检测条件：文件存在调用点 且 aarch64 分支内无定义（幂等）。
+  # .patch.proton 后缀避开主补丁循环的 *.patch 通配 —— hangover 树
+  # wineboot.c 结构相近（同为 #elif __aarch64__ + read_tsc_frequency），
+  # 普通应用会 fuzz 误匹配，必须仅在 proton 类树上精确套用。
+  if [[ -f programs/wineboot/wineboot.c ]] \
+     && grep -q "initialize_xstate_features( data )" programs/wineboot/wineboot.c; then
+    if ! sed -n '/#elif defined(__aarch64__)/,/^#else/p' programs/wineboot/wineboot.c \
+         | grep -q "initialize_xstate_features"; then
+      echo "应用 wineboot aarch64 xstate 空桩补丁（proton 树漏定义）"
+      if patch --silent --forward -p1 --fuzz=0 \
+           < "${wsDir}/projects/${pjName}/0005-fix-wineboot-aarch64-xstate.patch.proton"; then
+        echo "已补齐 wineboot aarch64 分支 initialize_xstate_features 空桩"
+      else
+        echo "⚠️ wineboot xstate 补丁未应用（树结构差异，继续构建）"
+        echo "    若后续 aarch64 PE 编译报 initialize_xstate_features 隐式声明，"
+        echo "    请核查 programs/wineboot/wineboot.c 的分支结构"
+      fi
+    else
+      echo "wineboot aarch64 xstate 空桩已存在，跳过"
+    fi
+  fi
+
 
   CFLAGS="${CFLAGS/-Oz/}"
   CXXFLAGS="${CXXFLAGS/-Oz/}"
