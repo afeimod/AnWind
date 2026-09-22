@@ -1,8 +1,19 @@
 #!/data/data/com.anwind/files/usr/bin/bash
 # ============================================================
-# anwind-wine v2.2 — AnWind 容器 Wine 启动器（bionic rootfs / X11）
-# v2.2 变更：GStreamer 插件路径隔离（GST_PLUGIN_SYSTEM_PATH）+
-#            box64 glibc 扩展路径（x86_64-linux-gnu 存在时自动接）
+# anwind-wine v2.3 — AnWind 容器 Wine 启动器（bionic rootfs / X11）
+# v2.3 变更：ensure_emulate_modeset —— 自动写入 wine 注册表
+#            HKCU\Software\Wine\X11 Driver\EmulateModeset=Y。
+#            AnWind 的 X 服务不支持 RandR 动态调分辨率（走 .anwind-x11-res
+#            握手文件），wine 10+ 的 x11drv 却在 explorer 初始化显示设置时
+#            调 RandR → NtUserChangeDisplaySettings 返回 -2 → 模式表没进
+#            注册表 → 游戏 NtUserEnumDisplaySettings 报 "display mode not
+#            found" → D3D 设备创建失败弹错（设备日志 CubeMap.exe 实证，
+#            即"所有游戏运行 exe 报错"的根因）。EmulateModeset 是 wine
+#            上游为无 RandR 环境准备的官方开关，开启后模式切换虚拟化、
+#            枚举返回当前模式。
+#            另：--debug 诊断模式（WINEDEBUG=+seh,+module,err+vulkan,
+#            err+wgl）；bionic 下不再导出 LC_ALL（消除 setlocale 噪音）；
+#            旧版内置 hangover 兜底时给出显式升级提示。
 # ★ 隔离版（assets 分发，App 启动时覆盖安装到 rootfs/usr/bin）★
 # ------------------------------------------------------------
 # 职责：
@@ -58,7 +69,7 @@ CONF_GLOBAL="$RFS_USR/etc/anwind/container.conf"
 X11_SOCK_DIR="$APP_PREFIX/tmp/.X11-unix"
 LOG_DIR="$CONT_ROOT/logs"
 
-version() { echo "anwind-wine 2.2.0 (AnWind bionic rootfs, X11 auto-start, isolated env)"; }
+version() { echo "anwind-wine 2.3.0 (AnWind bionic rootfs, X11 auto-start, isolated env, emulate-modeset)"; }
 
 # ---------- 运行时目录兜底（必须在任何 wine 调用前） ----------
 # wine 按 termux 风格构建，把 /tmp 硬编码为 $RFS_USR/tmp：wineserver 启动时
@@ -70,10 +81,11 @@ info() { echo "[anwind-wine] $*"; }
 
 usage() {
     cat << 'EOF'
-anwind-wine v2.2 — AnWind 容器 Wine 启动器（bionic rootfs / X11 · 环境隔离版）
+anwind-wine v2.3 — AnWind 容器 Wine 启动器（bionic rootfs / X11 · 环境隔离版）
 
 用法:
   anwind-wine [--container <name>] <wine 参数...>
+  anwind-wine --debug <wine 参数...> 诊断模式（+seh/+module/vulkan/wgl 错误全开，排障用）
   anwind-wine --list-backends        查看可用后端（box64/hangover/fexcore/native）
   anwind-wine --version
 
@@ -125,11 +137,15 @@ isolate_env() {
     mkdir -p "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" "$XDG_DATA_HOME" 2>/dev/null || true
 
     # --- 3) 语言 → 容器自己的（container.conf lang=，默认 zh_CN）---
-    # 不再继承 Termux 会话的 LANG=en_US.UTF-8
+    # 不再继承 Termux 会话的 LANG=en_US.UTF-8。
+    # 只设 LANG 不设 LC_ALL：bionic 无 locale 数据（rootfs 的
+    # locale-archive 只供 glibc 容器用），导出 LC_ALL 会触发 bash 每次启动
+    # 的 "warning: setlocale: LC_ALL: cannot change locale" 噪音；
+    # wine 按 LANG 识别界面语言已足够。
     local _lang
     _lang="$(conf_read "$CONT_CONF" lang "zh_CN.UTF-8")"
     [ -n "$_lang" ] || _lang="zh_CN.UTF-8"
-    export LANG="$_lang" LC_ALL="$_lang"
+    export LANG="$_lang"
 
     # --- 4) 动态库搜索路径 → 仅 rootfs（驱动/渲染库零串扰）---
     # 注意：不追加继承值（Termux 侧 lib 会污染 Mesa/ARM 驱动符号解析）
@@ -400,6 +416,29 @@ apply_display_mode() {
     DMODE_RESOLUTION=""
 }
 
+# ---------- 显示模式虚拟化（v2.3 核心修复，wine >=10 环境必开） ----------
+# 根因链（设备日志 CubeMap.exe 实证）：AnWind 的 X 服务（termux-x11/
+# libXlorie）不支持 RandR 动态模式切换（分辨率由 .anwind-x11-res 握手
+# 文件调整），而 wine 10+ 重构后的显示栈在 explorer 初始化显示设置时经
+# x11drv 调 RandR 设模式 → NtUserChangeDisplaySettings 返回 -2
+# （DISP_CHANGE_BADMODE）→ 模式表未写入注册表 → 游戏进程
+# NtUserEnumDisplaySettings 连续报 "display mode not found" → DXUT/D3D
+# 枚举不到任何显示模式 → D3D 设备创建失败弹错——所有游戏全挂。
+# wine 上游为无 RandR 环境提供 EmulateModeset 开关（win32u/sysparams.c
+# 读 HKCU\Software\Wine\X11 Driver\EmulateModeset）：开启后模式切换
+# 在 win32u 内虚拟化成功（不触 X 驱动），枚举返回当前模式。
+# 幂等写入；以 WINEPREFIX 下的标记文件避免每次启动重复起 wine reg。
+ensure_emulate_modeset() {
+    local _marker="$WINEPREFIX/.anwind-emulate-modeset"
+    [ -f "$_marker" ] && return 0
+    info "写入 EmulateModeset=Y（显示模式虚拟化——修复游戏枚举不到显示模式/设备创建失败）……"
+    if wine_run reg add 'HKCU\Software\Wine\X11 Driver' /v EmulateModeset /t REG_SZ /d Y /f >/dev/null 2>&1; then
+        touch "$_marker" 2>/dev/null || true
+    else
+        info "警告: EmulateModeset 写入失败（wine 未就绪？下次启动自动重试）"
+    fi
+}
+
 # dmode=v 的注册表蓝底桌面清理（对齐 glibc-runner -f）
 clear_wine_blue_desktop() {
     local _wine="$1"   # 已按后端包装的可执行调用函数名不适用——直接用 wine_run
@@ -515,6 +554,12 @@ pick_backend() {
             ;;
         *) die "未知后端: $BACKEND（可选 box64/hangover/fexcore/native/auto）" ;;
     esac
+    # 旧版内置 hangover 兜底提示：/usr/opt/bin/wine 是 rootfs 打包时的旧
+    # 构建（早于 CI 的 gstreamer/esync/显示设置修复），仅作保底。槽位
+    # wine（/usr/opt/<名>，install-wine 安装）缺失时才会走到这里。
+    if [ "$BACKEND" = "hangover" ]; then
+        info "提示: 当前使用 rootfs 内置旧版 hangover wine（$WINE_HANGOVER）——建议安装 CI 构建的新版 wine：anwind-container install-wine <wine tar.gz>"
+    fi
 }
 
 # wine_run：非 exec 的后端包装调用（供 reg 清理 / wineboot 用）
@@ -554,6 +599,9 @@ run_wine() {
         esac
         echo
     fi
+    # 显示模式虚拟化（幂等；必须先于一切 wine 子命令——explorer 初始化
+    # 显示设置时就需要它，否则模式表写不进注册表，游戏全部报错）
+    ensure_emulate_modeset
     # dmode=f：启动前清除注册表 wine 蓝底桌面（强制窗口直出）
     if [ "$DMODE" = "f" ] && [ -n "$DMODE_RESOLUTION" ]; then
         clear_wine_blue_desktop
@@ -593,6 +641,13 @@ case "$CMD" in
     --list-backends|--backends)
         backend_list
         exit 0
+        ;;
+    --debug)
+        # 诊断模式：seh（崩溃/异常）、模块加载、vulkan/wgl 错误全开，
+        # 排障时把输出整体发回即可定位（用法: anwind-wine --debug <exe路径>）
+        shift
+        [ -n "${1:-}" ] || die "--debug 需要跟 wine 参数（例如: anwind-wine --debug <exe路径>）"
+        export WINEDEBUG="${WINEDEBUG:-+seh,+module,err+vulkan,err+wgl}"
         ;;
     --version|-V)
         version
