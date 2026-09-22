@@ -195,6 +195,19 @@ pre_setup() {
   # 3. 主构建: 配置和编译 wine
   echo "=== 主构建: 配置 wine ==="
   load_env "$targetArch"
+  # load_env 把 NDK bin 前插到 PATH（且本流程 load_env 会被调用两次：
+  # build-rootfs-arch.sh autotools 分支先调一次，pre_setup 内再调一次），
+  # 必须在这里把 llvm-mingw 重新前插回最前 —— 否则 make 阶段 winegcc
+  # 按 -b 目标名（arm64ec-windows-gcc 等）找不到专用编译器时回退解析
+  # 裸 "clang"，PATH 顺序决定命中的是 NDK clang（clang 19，不认识
+  # -marm64x）—— arm64ec/aarch64 双 arch 启用 ARM64X 混合构建时
+  # makedep 会向 winegcc 传 -marm64x（tools/makedep.c 4687 行），
+  # NDK clang 直接 "unknown argument" 报错（CI 实测 aclui.dll 链接中止）。
+  # llvm-mingw 的 clang 21 接受 -marm64x 并由 lld-link 产出 ARM64X
+  # 混合镜像，且其 bin 目录只有裸 clang/clang++，无裸 gcc/ld/ar 等可
+  # 遮蔽系统工具的名字；unix .so 侧全部走 $CC（绝对路径 ccache NDK
+  # clang），不受此 PATH 调整影响。
+  export PATH="${_llvmMingwDir}/bin:${PATH}"
   cd "${srcDir}/${pjName}"
 
   # bionic 兼容补丁（路径/互斥锁属性/Socket IPX，与 wine 配方同源）
@@ -431,12 +444,12 @@ PCMBSF
   # 链接报 "undefined symbol: libandroid_shmget" 直接失败。
   export LDFLAGS+=" -Wl,--rosegment -landroid-shmem"
 
-  # linux部分强制 ndk clang (CC部分已经指定版本与ccache)
-  export i386_CC="$CC"
-  export x86_64_CC="$CC"
-  export aarch64_CC="$CC"
-  export arm64ec_CC="$CC"
-
+  # 注意：这里不 export {i386,x86_64,aarch64,arm64ec}_CC 覆盖为 NDK clang。
+  # 这些变量是 PE 交叉编译器（非 "linux 部分"；unix .so 用的是 $CC），
+  # 且 configure.ac 815-816 行 with_mingw 以 AS_VAR_SET 无条件覆盖环境
+  # 传入的 ${arch}_CC（CI 实测：即便 export 了 NDK clang，探测仍走
+  # llvm-mingw，记录 target=arm64ec-windows）——这几个 export 是死代码，
+  # 留着只会误导排查方向。真正决定 make 期编译器的是 PATH 顺序（见上）。
   export CROSSCFLAGS="-O3 -pipe"
   export CROSSLDFLAGS="-s"
 
