@@ -171,8 +171,8 @@ android {
         // + 设置→桌面窗口 诊断中心），见 FreeformCompat.kt / AndroidApps.kt /
         // WindowEnginePage.kt 的 v2.24.0 注释与 docs/DESKTOP_WINDOW.md
         targetSdk = 28
-        versionCode = 62
-        versionName = "2.37.0"
+        versionCode = 63
+        versionName = "2.38.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {

@@ -279,6 +279,40 @@ SHMDECL
   }
   inject_shm_compat
 
+  # arm64ec PE 导出名校验清理（wdscore，proton_10.0 树实测崩溃点）：
+  # proton_10.0 的 dlls/wdscore/wdscore.spec 带 66 个 x86 32 位 MSVC 修饰名
+  # @ stub 导出（CDynamicArray 模板成员，thiscall 标记 QAE/QBE 等）。ARM64EC
+  # /ARM64X 目标的每个函数导出名都必须能被 x86-64 仿真侧按 x86-64 修饰法
+  # 解析，LLVM 对无法解析的名字直接判死 —— llvm-mingw-22（CI 同款 20251202
+  # 工具链）本地实测复现：
+  #   lld-link: error: Invalid ARM64EC function name
+  #            '??0?$CDynamicArray@GPAG@QAE@I@Z'
+  #   （CI proton_10.0 实测 dlls/wdscore/aarch64-windows/wdscore.dll 链接中止；
+  #     winebuild 生成导入库的 llvm-dlltool -m arm64ec 走同一校验，同样炸）
+  # 处理与上游 wine 完全对齐：b8de2fa524 "wdscore: Don't export C++ symbols."
+  # 删光这些 C++ 修饰名导出（hangover-11.x/official-11 树已带该提交，
+  # proton_10.0 分叉早于此 —— 删除后本树 wdscore.spec 与上游 master 逐字节
+  # 一致）。stub 本无任何实现，删除零功能损失；i386-windows 同树构建虽共用
+  # 此 spec，但上游已同样全局删除，行为一致。其余 dll 的修饰名导出（msvcp*/
+  # msvcr* 等）已经 llvm-dlltool -m arm64ec 全量逐名校验，全部合法无需处理
+  # （drmclien 的 QAE 名实测可过校验，上游亦未清理，保持不动）。x86_64 形态
+  # （i386/x86_64 PE）无 ARM64EC 校验，完全不受影响 —— 故仅本配方调用。
+  # 按行删除天然幂等；树无此文件（未来上游重构）自动跳过。
+  sanitize_arm64ec_spec() {
+    local _f _n
+    for _f in dlls/wdscore/wdscore.spec; do
+      [[ -f "$_f" ]] || continue
+      _n=$(grep -c '^@ stub ?' "$_f") || true
+      if [[ "${_n:-0}" -eq 0 ]]; then
+        echo "wdscore 无 C++ 修饰名 stub 导出，跳过"
+        continue
+      fi
+      sed -i '/^@ stub ?/d' "$_f" \
+        && echo "已删除 ${_n} 个 C++ 32位修饰名 stub 导出 => $_f（对齐上游 b8de2fa524）"
+    done
+  }
+  sanitize_arm64ec_spec
+
   # winedmo ffmpeg>=7 兼容改造（proton 树专属，官方/hangover 树无此文件）：
   # proton 的 dlls/winedmo/libavcodec/pcm_byte_order_reverse_bsf.c 是从
   # ffmpeg 内部源码拷贝的自定义 BSF，依赖 <7 的内部 ABI
