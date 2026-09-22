@@ -266,6 +266,127 @@ SHMDECL
   }
   inject_shm_compat
 
+  # winedmo ffmpeg>=7 兼容改造（proton 树专属，官方/hangover 树无此文件）：
+  # proton 的 dlls/winedmo/libavcodec/pcm_byte_order_reverse_bsf.c 是从
+  # ffmpeg 内部源码拷贝的自定义 BSF，依赖 <7 的内部 ABI
+  # （AVBSFContext.internal / ff_bsf_get_packet / AVBitStreamFilter 内部
+  # 回调字段）。rootfs 的 ffmpeg 为 n9.0，公共头只剩 name/codec_ids/
+  # priv_class 三字段，CI proton_10.0 实测 5 个编译错误直接炸掉
+  # winedmo（--with-ffmpeg 的唯一消费者）。
+  # 处理：把 BSF 文件整体重写为纯公共 API 的字节序反转 helper，并在
+  # unix_demuxer.c 中改在 demuxer_read 收包后做反转（见
+  # 0004-fix-winedmo-ffmpeg9.patch.proton；.patch.proton 后缀避开主补丁
+  # 循环的 *.patch 通配，由这里条件应用）。功能等价：BE PCM → LE +
+  # par_out 报 LE codec id（media type 构建读 filter->par_out）。
+  if [[ -f dlls/winedmo/libavcodec/pcm_byte_order_reverse_bsf.c ]] \
+     && grep -q "ctx->internal" dlls/winedmo/libavcodec/pcm_byte_order_reverse_bsf.c; then
+    if grep -q "pcm_reverse_bytes" dlls/winedmo/unix_demuxer.c 2>/dev/null; then
+      echo "winedmo ffmpeg>=7 兼容改造已应用过，跳过"
+    else
+      echo "应用 winedmo ffmpeg>=7 兼容改造（proton 自定义 BSF 使用 ffmpeg 内部 ABI）"
+      cat > dlls/winedmo/libavcodec/pcm_byte_order_reverse_bsf.c <<'PCMBSF'
+/*
+ * PCM byte order conversion helper (big-endian -> little-endian)
+ *
+ * 原版为 proton 从 ffmpeg 内部源码拷贝的自定义 BSF，依赖 ffmpeg <7 的
+ * 内部 ABI（AVBSFContext.internal / ff_bsf_get_packet / 内部回调字段）。
+ * ffmpeg >= 7 将其全部私有化，外部树无法再自定义 BSF —— 改为纯公共
+ * API 实现：unix_demuxer.c 在 demuxer_read 收包后调
+ * pcm_byte_order_reverse_packet 做同样的逐采样字节序反转，并经
+ * filter->par_out 向下游报 LE codec id（media type 构建入口）。
+ *
+ * This library is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
+ *
+ * This library is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * Lesser General Public License for more details.
+ *
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this library; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
+ */
+
+#if 0
+#pragma makedep unix
+#endif
+
+#include "config.h"
+#include "unix_private.h"
+
+#ifdef HAVE_FFMPEG
+
+/* 需要字节序反转的编解码器的每采样字节数，其余返回 0。
+ * 仅处理大端变体：WAVEFORMATEX 无端序信息，容器里的大端 PCM
+ * 统一转成小端交给 Windows 侧。 */
+unsigned int pcm_byte_order_bytes_per_sample( enum AVCodecID codec_id )
+{
+    switch (codec_id)
+    {
+    case AV_CODEC_ID_PCM_S16BE: return 2;
+    case AV_CODEC_ID_PCM_S24BE: return 3;
+    case AV_CODEC_ID_PCM_S32BE: return 4;
+    case AV_CODEC_ID_PCM_S64BE: return 8;
+    case AV_CODEC_ID_PCM_F32BE: return 4;
+    case AV_CODEC_ID_PCM_F64BE: return 8;
+    default: return 0;
+    }
+}
+
+/* 大端 codec id 的小端等价物（供下游 media type 映射使用）。 */
+enum AVCodecID pcm_byte_order_reverse_codec_id( enum AVCodecID codec_id )
+{
+    switch (codec_id)
+    {
+    case AV_CODEC_ID_PCM_S16BE: return AV_CODEC_ID_PCM_S16LE;
+    case AV_CODEC_ID_PCM_S24BE: return AV_CODEC_ID_PCM_S24LE;
+    case AV_CODEC_ID_PCM_S32BE: return AV_CODEC_ID_PCM_S32LE;
+    case AV_CODEC_ID_PCM_S64BE: return AV_CODEC_ID_PCM_S64LE;
+    case AV_CODEC_ID_PCM_F32BE: return AV_CODEC_ID_PCM_F32LE;
+    case AV_CODEC_ID_PCM_F64BE: return AV_CODEC_ID_PCM_F64LE;
+    default: return codec_id;
+    }
+}
+
+/* 原地反转包内每个采样的字节序。 */
+void pcm_byte_order_reverse_packet( AVPacket *pkt, unsigned int bytes_per_sample )
+{
+    unsigned int i, half;
+    uint8_t *buf, *end, tmp;
+
+    if (!pkt->data || !bytes_per_sample) return;
+    half = bytes_per_sample / 2u;
+    buf = pkt->data;
+    end = buf + pkt->size - (pkt->size % bytes_per_sample);
+
+    while (buf < end)
+    {
+        for (i = 0; i < half; ++i)
+        {
+            tmp = buf[i];
+            buf[i] = buf[bytes_per_sample - i - 1];
+            buf[bytes_per_sample - i - 1] = tmp;
+        }
+        buf += bytes_per_sample;
+    }
+}
+
+#endif /* HAVE_FFMPEG */
+PCMBSF
+      sed -i 's|^extern const AVBitStreamFilter ff_pcm_byte_order_reverse_bsf;|unsigned int pcm_byte_order_bytes_per_sample( enum AVCodecID codec_id );\nenum AVCodecID pcm_byte_order_reverse_codec_id( enum AVCodecID codec_id );\nvoid pcm_byte_order_reverse_packet( AVPacket *pkt, unsigned int bytes_per_sample );|' \
+        dlls/winedmo/unix_private.h \
+        && echo "已重写 winedmo 自定义 BSF 为公共 API helper"
+      if patch --silent --forward -p1 < "${wsDir}/projects/${pjName}/0004-fix-winedmo-ffmpeg9.patch.proton"; then
+        echo "已应用 winedmo demuxer 兼容补丁"
+      else
+        echo "⚠️ winedmo demuxer 兼容补丁有 hunk 未应用（树差异，继续构建）"
+      fi
+    fi
+  fi
+
   CFLAGS="${CFLAGS/-Oz/}"
   CXXFLAGS="${CXXFLAGS/-Oz/}"
   CPPFLAGS="${CPPFLAGS/-Oz/}"
