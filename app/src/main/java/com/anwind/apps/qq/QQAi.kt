@@ -38,9 +38,15 @@ object QQAi {
          * 生成回复。
          * @param contact  联系人（含人格 key；群聊时 isGroup=true）
          * @param history  该会话历史消息（时间升序，含刚发送的用户消息）
-         * @return 回复文本
+         * @param onDelta  流式增量回调：在线引擎边生成边回调（参数为本次新增的文本
+         *                 片段），实现“打字机”效果；本地引擎瞬时生成，不回调
+         * @return 完整回复文本（流式时 = 所有增量的累计结果）
          */
-        suspend fun reply(contact: QQFriend, history: List<QQMessage>): String
+        suspend fun reply(
+            contact: QQFriend,
+            history: List<QQMessage>,
+            onDelta: (String) -> Unit = {}
+        ): String
     }
 
     // ==================== 内置人格 ====================
@@ -150,12 +156,26 @@ object QQAi {
     private fun cleanKey(raw: String): String =
         raw.trim().removePrefix("Bearer ").removePrefix("bearer ").trim()
 
-    /** 发送 POST，返回 (HTTP 状态码, 响应体) */
+    /**
+     * 安全字符串提取：JSON 值为 null（或字面量 "null"）时返回 null。
+     *
+     * ⚠️ Android org.json 的 optString() 对 JSON null 返回的是字符串 "null"，
+     * 它不是空白串，能绕过 isNullOrBlank() 检查直接显示在聊天里 ——
+     * 这正是“让 AI 说长一点就回复一个 null”的元凶。
+     * 所有面向展示/入参的字符串字段一律用本函数取。
+     */
+    private fun JSONObject.safeString(name: String): String? {
+        if (isNull(name)) return null
+        val v = optString(name)
+        return if (v == "null") null else v
+    }
+
+    /** 发送 POST，返回 (HTTP 状态码, 响应体) —— 供「测试连接」等非流式调用使用 */
     private fun httpPost(endpoint: String, key: String, body: JSONObject): Pair<Int, String> {
         val conn = (URL(endpoint).openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"
             connectTimeout = 15000
-            readTimeout = 60000
+            readTimeout = 120000   // 慢服务生成大回复时不误报超时（此前 60s 不够）
             doOutput = true
             setRequestProperty("Content-Type", "application/json")
             setRequestProperty("Accept", "application/json")
@@ -210,8 +230,9 @@ object QQAi {
             val ms = System.currentTimeMillis() - t0
             if (code in 200..299) {
                 val content = JSONObject(text).optJSONArray("choices")?.optJSONObject(0)
-                    ?.optJSONObject("message")?.optString("content")
-                "连接成功（${ms}ms）${if (content != null) "，模型已正常响应" else ""}"
+                    ?.optJSONObject("message")?.safeString("content")
+                "连接成功（${ms}ms）" + if (content != null) "，模型已正常响应"
+                    else "（模型未输出内容：疑似推理模型或 max_tokens 过小，聊天可能慢/空，建议换普通对话模型）"
             } else {
                 "HTTP $code：${friendlyHttp(code)}${if (text.isNotBlank()) "\n服务返回：${text.take(160)}" else ""}"
             }
@@ -240,8 +261,13 @@ object QQAi {
             "人生得意须尽欢，莫使金樽空对月。\n天生我材必有用，千金散尽还复来。"
         )
 
-        override suspend fun reply(contact: QQFriend, history: List<QQMessage>): String =
+        override suspend fun reply(
+            contact: QQFriend,
+            history: List<QQMessage>,
+            onDelta: (String) -> Unit
+        ): String =
             withContext(Dispatchers.Default) {
+                // 本地引擎瞬时生成，无需流式；不回调 onDelta，会话层走一次性展示路径
                 if (contact.isGroup) replyGroup(contact, history)
                 else replySingle(contact, history)
             }
@@ -394,7 +420,11 @@ object QQAi {
 
     class RemoteAiEngine(private val settings: QQSettings) : ChatBackend {
 
-        override suspend fun reply(contact: QQFriend, history: List<QQMessage>): String =
+        override suspend fun reply(
+            contact: QQFriend,
+            history: List<QQMessage>,
+            onDelta: (String) -> Unit
+        ): String =
             withContext(Dispatchers.IO) {
                 val systemPrompt = buildSystemPrompt(contact)
                 val messages = JSONArray()
@@ -412,22 +442,131 @@ object QQAi {
                     .put("model", settings.apiModel)
                     .put("messages", messages)
                     .put("temperature", 0.8)
-                    .put("max_tokens", 300)
+                    // 此前 300：回复稍长就被截断；推理类模型的"思考"也计入该额度，
+                    // 全烧完后 content 返回 JSON null → 聊天里出现 "null"
+                    .put("max_tokens", 1024)
+                    // 流式输出：边生成边上屏，是"反应特别慢"体感问题的根本解法
+                    .put("stream", true)
 
-                val (code, text) = httpPost(endpointFor(settings.apiBaseUrl), cleanKey(settings.apiKey), body)
+                streamChat(endpointFor(settings.apiBaseUrl), cleanKey(settings.apiKey), body, onDelta)
+            }
+
+        /**
+         * 流式请求（SSE）：边读边回调 [onDelta]，返回完整文本。
+         * 兼容处理：
+         *  - 端点不支持 stream（返回整段 application/json）→ 按普通响应解析，一次性回调；
+         *  - 中途断流但已有部分文本 → 返回部分文本 + 截断提示，不让已生成内容白等；
+         *  - 无任何输出且 finish_reason=length → 人话提示"额度被思考耗尽"（null 问题根治后的指引）。
+         */
+        private fun streamChat(
+            endpoint: String,
+            key: String,
+            body: JSONObject,
+            onDelta: (String) -> Unit
+        ): String {
+            val conn = (URL(endpoint).openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"
+                connectTimeout = 15000
+                readTimeout = 120000   // 流式下每次收到数据都会重置；慢服务最长等 2 分钟静默
+                doOutput = true
+                setRequestProperty("Content-Type", "application/json")
+                setRequestProperty("Accept", "text/event-stream, application/json")
+                if (key.isNotBlank()) setRequestProperty("Authorization", "Bearer $key")
+            }
+            try {
+                conn.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
+                val code = conn.responseCode
                 if (code !in 200..299) {
+                    val err = conn.errorStream?.bufferedReader()?.readText() ?: ""
                     throw RuntimeException(
-                        "HTTP $code：${friendlyHttp(code)}${if (text.isNotBlank()) "\n服务返回：${text.take(160)}" else ""}"
+                        "HTTP $code：${friendlyHttp(code)}${if (err.isNotBlank()) "\n服务返回：${err.take(160)}" else ""}"
                     )
                 }
-                val root = runCatching { JSONObject(text) }.getOrElse {
-                    throw RuntimeException("响应不是合法 JSON：${text.take(120)}")
+                val contentType = conn.contentType ?: ""
+                val reader = conn.inputStream.bufferedReader(Charsets.UTF_8)
+                return if (contentType.contains("text/event-stream")) {
+                    readSse(reader, onDelta)
+                } else {
+                    // 端点不支持流式（忽略 stream 参数，返回整段 JSON）
+                    extractNonStreamContent(reader.use { it.readText() }).also(onDelta)
                 }
-                val content = root.optJSONArray("choices")?.optJSONObject(0)
-                    ?.optJSONObject("message")?.optString("content")
-                if (content.isNullOrBlank()) throw RuntimeException("API 返回为空（HTTP $code）")
-                content.trim()
+            } finally {
+                conn.disconnect()
             }
+        }
+
+        /** SSE 流式读取：逐行解析 "data: {...}"，把 delta.content 片段实时回调 */
+        private fun readSse(reader: java.io.BufferedReader, onDelta: (String) -> Unit): String {
+            val sb = StringBuilder()
+            var finishReason: String? = null
+            var sawData = false
+            try {
+                while (true) {
+                    val line = reader.readLine() ?: break
+                    val t = line.trim()
+                    if (t.isEmpty() || t.startsWith(":") || !t.startsWith("data:")) continue
+                    sawData = true
+                    val data = t.removePrefix("data:").trim()
+                    if (data == "[DONE]") break
+                    val chunk = runCatching { JSONObject(data) }.getOrNull() ?: continue
+                    chunk.optJSONObject("error")?.let { err ->
+                        throw RuntimeException("API 错误：${err.safeString("message") ?: "未知错误"}")
+                    }
+                    val choice = chunk.optJSONArray("choices")?.optJSONObject(0) ?: continue
+                    choice.safeString("finish_reason")?.let { finishReason = it }
+                    val delta = choice.optJSONObject("delta")
+                        ?: choice.optJSONObject("message")   // 个别端点流式里直接发整条 message
+                    val piece = delta?.safeString("content")
+                    if (!piece.isNullOrEmpty()) {
+                        sb.append(piece)
+                        onDelta(piece)
+                    }
+                    // reasoning_content（思维链）刻意不展示不累计
+                }
+            } catch (e: java.io.IOException) {
+                if (sb.isNotEmpty()) {
+                    // 断连/超时但已收到部分文本：展示已有部分 + 提示，比全部丢弃友好
+                    return sb.toString() + "\n\n（网络异常中断，重发消息可继续）"
+                }
+                throw e
+            }
+            if (sb.isEmpty()) {
+                throw RuntimeException(
+                    when {
+                        finishReason == "length" ->
+                            "模型没有输出正文：回复额度（max_tokens）全被模型\"思考\"耗尽。" +
+                                    "推理模型（deepseek-reasoner、o1 系列等）会这样，请在设置里换成普通对话模型"
+                        !sawData ->
+                            "流式响应为空（端点可能不支持流式输出），请更换接口地址或切换引擎后重试"
+                        else ->
+                            "API 返回内容为空${if (finishReason != null) "（finish_reason=$finishReason）" else ""}"
+                    }
+                )
+            }
+            return sb.toString()
+        }
+
+        /** 非流式响应解析（端点不支持 stream 时走这里） */
+        private fun extractNonStreamContent(text: String): String {
+            val root = runCatching { JSONObject(text) }.getOrElse {
+                throw RuntimeException("响应不是合法 JSON：${text.take(120)}")
+            }
+            root.optJSONObject("error")?.let { err ->
+                throw RuntimeException("API 错误：${err.safeString("message") ?: "未知错误"}")
+            }
+            val choice = root.optJSONArray("choices")?.optJSONObject(0)
+            val finish = choice?.safeString("finish_reason")
+            val content = choice?.optJSONObject("message")?.safeString("content")
+            if (content.isNullOrBlank()) {
+                throw RuntimeException(
+                    when (finish) {
+                        "length" -> "模型没有输出正文：回复额度（max_tokens）全被模型\"思考\"耗尽，建议换成普通对话模型"
+                        else -> "API 返回内容为空${if (finish != null) "（finish_reason=$finish）" else ""}"
+                    }
+                )
+            }
+            return content.trim()
+        }
 
         private fun buildSystemPrompt(contact: QQFriend): String {
             if (contact.isGroup) {

@@ -305,38 +305,97 @@ object QQSession {
         bumpActivity()
     }
 
-    /** 请求 AI 回复：后台执行，完成后落库 + 未读/声音由聊天界面观察 */
+    /**
+     * 请求 AI 回复：后台执行，完成/流式过程中落库 + 未读/声音由聊天界面观察。
+     *
+     * 三种呈现方式：
+     *  - 在线引擎流式：收到第一个片段就创建消息气泡上屏，后续片段原地追加
+     *    （"打字机"效果，彻底改善在线 API 的等待体感）；
+     *  - 本地引擎 / 端点不支持流式：完成后一次性显示；
+     *  - 失败且无任何内容：显示友好错误气泡（原有行为）。
+     */
     fun requestAiReply(chatId: String) {
         val acc = account ?: return
         if (!settings.autoReply) return
         val contact = friends[chatId] ?: return
         typing[chatId] = true
         aiScope.launch {
-            delay(settings.replyDelayMs.coerceAtLeast(300).toLong())
-            val replyText = runCatching {
+            // 本地引擎瞬时生成：保留一点"人在打字"的情怀延迟；
+            // 在线 API 本身就有网络与生成耗时，不再叠加人为延迟（此前白白多等 ~1 秒）
+            if (settings.aiEngine != QQSettings.ENGINE_REMOTE) {
+                delay(settings.replyDelayMs.coerceAtLeast(300).toLong())
+            }
+
+            // ---- 流式状态：片段累计 + 气泡原地更新 ----
+            var streamId = 0L
+            val streamed = StringBuilder()
+            fun appendDelta(piece: String) {
+                if (piece.isEmpty()) return
+                streamed.append(piece)
+                val list = chatMessages(chatId)
+                if (streamId == 0L) {
+                    streamId = System.currentTimeMillis()
+                    typing[chatId] = false   // 文本已开始上屏，撤掉"正在输入…"
+                    // 未读在消息上屏前先 +1：窗口开着会因新消息触发 clearUnread，
+                    // 关着则正常累计（顺序反了会出现"看着聊天却残留未读角标"）
+                    unread[chatId] = (unread[chatId] ?: 0) + 1
+                    list.add(
+                        QQMessage(
+                            id = streamId, chatId = chatId,
+                            senderId = contact.number, senderName = contact.nickname,
+                            text = streamed.toString(), time = System.currentTimeMillis(),
+                            isSelf = false
+                        )
+                    )
+                } else {
+                    val idx = list.indexOfFirst { it.id == streamId }
+                    if (idx >= 0) list[idx] = list[idx].copy(text = streamed.toString())
+                }
+            }
+
+            val replyText: String = try {
                 // AI 上下文只保留普通文本消息（系统提示/抖动不参与）
                 val history = withContext(Dispatchers.IO) {
                     QQStore.loadChat(acc.number, chatId).filter { it.type == QQMsgType.TEXT }
                 }
-                QQAi.backendFor(settings).reply(contact, history)
-            }.getOrElse {
-                "（AI 开小差了：${it.message?.take(160) ?: "未知错误"}）\n可在 系统设置 → AI 设置 中测试连接或切换引擎。"
+                QQAi.backendFor(settings).reply(contact, history) { appendDelta(it) }
+            } catch (e: Exception) {
+                if (streamId == 0L) {
+                    // 还没有任何上屏内容：按原有方式显示错误气泡
+                    "（AI 开小差了：${e.message?.take(160) ?: "未知错误"}）\n可在 系统设置 → AI 设置 中测试连接或切换引擎。"
+                } else {
+                    // 流到一半才失败：引擎已返回"部分文本+提示"，这里保持不动即可
+                    ""
+                }
+            } finally {
+                typing[chatId] = false
             }
-            typing[chatId] = false
-            val reply = QQMessage(
-                id = System.currentTimeMillis(),
-                chatId = chatId,
-                senderId = contact.number,
-                senderName = contact.nickname,
-                text = replyText,
-                time = System.currentTimeMillis(),
-                isSelf = false
-            )
-            cacheMessages(chatId, reply)
-            withContext(Dispatchers.IO) { QQStore.appendMessage(acc.number, reply) }
-            // 未读交给聊天窗口：窗口开着会立刻 clearUnread，关着则累计
-            unread[chatId] = (unread[chatId] ?: 0) + 1
-            bumpActivity()
+
+            // ---- 收尾：流式消息定稿 / 追加普通消息，统一落库 ----
+            // （未读已在消息上屏前累计：流式在首个片段、一次性回复见下方 else 分支）
+            val list = chatMessages(chatId)
+            val reply: QQMessage? = if (streamId != 0L) {
+                val idx = list.indexOfFirst { it.id == streamId }
+                if (idx >= 0) {
+                    if (replyText.isNotEmpty()) list[idx] = list[idx].copy(text = replyText)
+                    list[idx]
+                } else null
+            } else {
+                unread[chatId] = (unread[chatId] ?: 0) + 1
+                QQMessage(
+                    id = System.currentTimeMillis(),
+                    chatId = chatId,
+                    senderId = contact.number,
+                    senderName = contact.nickname,
+                    text = replyText,
+                    time = System.currentTimeMillis(),
+                    isSelf = false
+                ).also { list.add(it) }
+            }
+            if (reply != null && reply.text.isNotBlank()) {
+                withContext(Dispatchers.IO) { QQStore.appendMessage(acc.number, reply) }
+                bumpActivity()
+            }
         }
     }
 

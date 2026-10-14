@@ -2,6 +2,7 @@ package com.anwind.apps.qq
 
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.keyframes
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -104,11 +105,14 @@ fun QQChatScreen(scope: WindowContentScope, chatId: String) {
         }.onFailure { QQSession.logCrash("chatScreenLayout", it) }
     }
 
-    // 新消息到达：滚到底 + 清未读 + 提示音（跳过首帧历史加载）
+    // 滚动到底部（maxValue 为 0 时说明内容不足一屏，无需滚动）
+    suspend fun scrollBottom() {
+        if (listState.maxValue > 0) listState.animateScrollTo(listState.maxValue)
+    }
+
+    // 新消息到达：清未读 + 提示音/窗口抖动（仅按条数触发，流式增量不重复响）
     val initialSize = remember { messages.size }
     LaunchedEffect(messages.size) {
-        kotlinx.coroutines.delay(80)   // 等布局完成后再取 maxValue
-        listState.animateScrollTo(listState.maxValue)
         QQSession.clearUnread(chatId)
         if (messages.size > initialSize) {
             val last = messages.lastOrNull()
@@ -132,6 +136,24 @@ fun QQChatScreen(scope: WindowContentScope, chatId: String) {
                     }
                 )
             }
+        }
+    }
+
+    // 自动滚动：新消息必滚到底（修复“窗口满了不跟到最新消息”）。
+    // 两次滚动兑底：长消息/大字号换行会改变内容高度，等布局稳定后再补滚一次。
+    LaunchedEffect(messages.size) {
+        kotlinx.coroutines.delay(60)   // 等首帧布局完成后再取 maxValue
+        scrollBottom()
+        kotlinx.coroutines.delay(60)
+        scrollBottom()
+    }
+    // 流式输出时消息文本不断增长（条数不变）：若用户正处在底部则跟随滚动，
+    // 已向上翻阅历史时则不打扰（贴近底部约 400px 以内才跟随）
+    val lastMsgLen = messages.lastOrNull()?.text?.length ?: 0
+    LaunchedEffect(lastMsgLen) {
+        if (listState.value >= listState.maxValue - 400) {
+            kotlinx.coroutines.delay(60)
+            scrollBottom()
         }
     }
 
@@ -240,6 +262,7 @@ fun QQChatScreen(scope: WindowContentScope, chatId: String) {
                     selfNumber = acc.number,
                     fontScale = fontScale,
                     showHistory = showHistory,
+                    listState = listState,
                     modifier = Modifier.weight(1f)
                 )
                 // 右侧形象栏（仅在宽窗口显示）
@@ -494,6 +517,7 @@ private fun MessageArea(
     selfNumber: String,
     fontScale: Int,
     showHistory: Boolean,
+    listState: ScrollState,
     modifier: Modifier = Modifier
 ) {
     val timeFmt = remember { SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.CHINA) }
@@ -523,12 +547,15 @@ private fun MessageArea(
             }
             Spacer(Modifier.height(4.dp))
         }
+        // 消息列表使用外部传入的 listState（此前内部自建滚动状态，导致外层
+        // “自动滚到底”滚的是一个未挂载的孤儿状态 —— 永远滚不动，这就是
+        // “窗口满了不自动滑到最新聊天”的根因）
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .background(QQ2008.ChatAreaBg, RoundedCornerShape(4.dp))
                 .border(1.dp, QQ2008.PanelBorder.copy(alpha = 0.5f), RoundedCornerShape(4.dp))
-                .verticalScroll(rememberScrollState())
+                .verticalScroll(listState)
                 .padding(8.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
