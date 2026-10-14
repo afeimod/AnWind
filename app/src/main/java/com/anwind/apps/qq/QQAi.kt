@@ -223,14 +223,30 @@ object QQAi {
             val expr = t.replace("计算", "").replace("等于多少", "")
                 .replace("?", "").replace("？", "")
                 .replace("×", "*").replace("÷", "/").replace(" ", "").trim()
-            val result = evalSimple(expr)
+            val result = SimpleParser(expr).parse()
             if (abs(result - result.toLong()) < 1e-9) "= ${result.toLong()}" else "= $result"
         }.getOrNull()
 
-        private fun evalSimple(expr: String): Double {
-            // 递归下降：expr = term (+|- term)* ; term = factor (*|/ factor)* ; factor = num | (expr)
-            var pos = 0
-            fun parseExpr(): Double {
+        /**
+         * 极简四则运算解析器（递归下降）：
+         *   expr   = term  (("+"|"-") term)*
+         *   term   = factor (("*"|"/") factor)*
+         *   factor = ("+"|"-") factor | number | "(" expr ")"
+         *
+         * 用嵌套类而非局部函数：Kotlin 局部函数不能前向引用，
+         * 而这三个文法层级互相递归（factor → expr → term → factor），
+         * 必须是类成员函数才能互相调用。
+         */
+        private class SimpleParser(private val expr: String) {
+            private var pos = 0
+
+            fun parse(): Double {
+                val v = parseExpr()
+                if (pos < expr.length) throw IllegalArgumentException("位置 $pos 有多余字符 '${expr[pos]}'")
+                return v
+            }
+
+            private fun parseExpr(): Double {
                 var v = parseTerm()
                 while (pos < expr.length && (expr[pos] == '+' || expr[pos] == '-')) {
                     val op = expr[pos++]
@@ -239,7 +255,8 @@ object QQAi {
                 }
                 return v
             }
-            fun parseTerm(): Double {
+
+            private fun parseTerm(): Double {
                 var v = parseFactor()
                 while (pos < expr.length && (expr[pos] == '*' || expr[pos] == '/')) {
                     val op = expr[pos++]
@@ -248,18 +265,28 @@ object QQAi {
                 }
                 return v
             }
-            fun parseFactor(): Double {
+
+            private fun parseFactor(): Double {
+                if (pos >= expr.length) throw IllegalArgumentException("表达式意外结束")
+                // 一元正负号：支持 "-3+5"、"3*(-2)" 等
+                if (expr[pos] == '+' || expr[pos] == '-') {
+                    val negative = expr[pos] == '-'
+                    pos++
+                    val v = parseFactor()
+                    return if (negative) -v else v
+                }
                 if (expr[pos] == '(') {
                     pos++
                     val v = parseExpr()
+                    if (pos >= expr.length || expr[pos] != ')') throw IllegalArgumentException("缺少右括号")
                     pos++ // skip ')'
                     return v
                 }
                 val start = pos
                 while (pos < expr.length && (expr[pos].isDigit() || expr[pos] == '.')) pos++
+                if (start == pos) throw IllegalArgumentException("位置 $pos 缺少数字")
                 return expr.substring(start, pos).toDouble()
             }
-            return parseExpr()
         }
 
         private fun pick(list: List<String>): String = list[rnd.nextInt(list.size)]

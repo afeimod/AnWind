@@ -283,7 +283,7 @@ object QQSession {
         val contact = friends[chatId] ?: return
         typing[chatId] = true
         aiScope.launch {
-            delay(settings.replyDelayMs.coerceAtLeast(300))
+            delay(settings.replyDelayMs.coerceAtLeast(300).toLong())
             val replyText = runCatching {
                 // AI 上下文只保留普通文本消息（系统提示/抖动不参与）
                 val history = withContext(Dispatchers.IO) {

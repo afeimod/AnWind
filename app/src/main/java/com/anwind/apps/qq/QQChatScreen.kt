@@ -86,7 +86,7 @@ fun QQChatScreen(scope: WindowContentScope, chatId: String) {
     var emojiOpen by remember { mutableStateOf(false) }
     var showHistory by remember { mutableStateOf(false) }
     var toast by remember { mutableStateOf<String?>(null) }
-    var menuOpen by remember { mutableStateOf(false) }    // 当前打开的菜单名
+    var menuOpen by remember { mutableStateOf<String?>(null) }    // 当前打开的菜单名（null=全部关闭；"showSettings"=设置弹层）
     val shake = remember { Animatable(0f) }
     val listState = rememberScrollState()
 
