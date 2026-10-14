@@ -69,8 +69,8 @@ fun QQLoginScreen(scope: WindowContentScope) {
     var showForgot by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
 
-    // 窗口标题对齐原版
-    LaunchedEffect(Unit) { scope.onTitleChange("QQ用户登录") }
+    // 窗口标题对齐原版（runCatching：窗口创建早期标题回调异常不应炸掉整个 app）
+    LaunchedEffect(Unit) { runCatching { scope.onTitleChange("QQ用户登录") } }
 
     Column(
         modifier = Modifier

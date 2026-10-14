@@ -91,15 +91,17 @@ fun QQChatScreen(scope: WindowContentScope, chatId: String) {
     val listState = rememberScrollState()
 
     LaunchedEffect(Unit) {
-        scope.onTitleChange("与 ${contact.displayName} 聊天中")
-        scope.windowState.width = 660
-        scope.windowState.height = 530
-        wm.commitChanges()
-        // 初次打开且无记录：AI 先打招呼（2008 情怀：好友主动问好）
-        if (messages.isEmpty()) {
-            QQSession.appendSystemMessage(chatId, "已与 ${contact.displayName} 建立会话")
-            QQSession.requestAiReply(chatId)
-        }
+        runCatching {
+            scope.onTitleChange("与 ${contact.displayName} 聊天中")
+            scope.windowState.width = 660
+            scope.windowState.height = 530
+            wm.commitChanges()
+            // 初次打开且无记录：AI 先打招呼（2008 情怀：好友主动问好）
+            if (messages.isEmpty()) {
+                QQSession.appendSystemMessage(chatId, "已与 ${contact.displayName} 建立会话")
+                QQSession.requestAiReply(chatId)
+            }
+        }.onFailure { QQSession.logCrash("chatScreenLayout", it) }
     }
 
     // 新消息到达：滚到底 + 清未读 + 提示音（跳过首帧历史加载）

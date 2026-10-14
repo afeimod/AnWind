@@ -4,8 +4,12 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
+import java.net.ConnectException
 import java.net.HttpURLConnection
+import java.net.SocketTimeoutException
 import java.net.URL
+import java.net.UnknownHostException
+import javax.net.ssl.SSLException
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -121,6 +125,100 @@ object QQAi {
     fun backendFor(settings: QQSettings): ChatBackend =
         if (settings.aiEngine == QQSettings.ENGINE_REMOTE && settings.apiKey.isNotBlank())
             RemoteAiEngine(settings) else LocalAiEngine
+
+    // ==================== 远程 HTTP 公用工具（reply 与测试连接共用） ====================
+
+    /**
+     * 接口地址规范化：填 base 地址或完整端点都能用。
+     *  - "api.deepseek.com"                      → https://api.deepseek.com/v1/chat/completions
+     *  - "https://api.deepseek.com"              → https://api.deepseek.com/v1/chat/completions
+     *  - "https://api.openai.com/v1"             → https://api.openai.com/v1/chat/completions
+     *  - "https://…/v1/chat/completions"          → 原样
+     */
+    private fun endpointFor(raw: String): String {
+        var u = raw.trim().ifBlank { "https://api.openai.com/v1/chat/completions" }
+        if (!u.startsWith("http")) u = "https://$u"
+        u = u.trimEnd('/')
+        return when {
+            u.endsWith("/chat/completions") -> u
+            Regex("/v[1-9]$").containsMatchIn(u) -> "$u/chat/completions"
+            else -> "$u/v1/chat/completions"
+        }
+    }
+
+    /** 密钥清洗：去首尾空白、去误粘的 Bearer 前缀 */
+    private fun cleanKey(raw: String): String =
+        raw.trim().removePrefix("Bearer ").removePrefix("bearer ").trim()
+
+    /** 发送 POST，返回 (HTTP 状态码, 响应体) */
+    private fun httpPost(endpoint: String, key: String, body: JSONObject): Pair<Int, String> {
+        val conn = (URL(endpoint).openConnection() as HttpURLConnection).apply {
+            requestMethod = "POST"
+            connectTimeout = 15000
+            readTimeout = 60000
+            doOutput = true
+            setRequestProperty("Content-Type", "application/json")
+            setRequestProperty("Accept", "application/json")
+            if (key.isNotBlank()) setRequestProperty("Authorization", "Bearer $key")
+        }
+        try {
+            conn.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
+            val code = conn.responseCode
+            val text = (if (code in 200..299) conn.inputStream else conn.errorStream)
+                ?.bufferedReader()?.readText() ?: ""
+            return code to text
+        } finally {
+            conn.disconnect()
+        }
+    }
+
+    /** HTTP 状态码 → 人话 */
+    private fun friendlyHttp(code: Int): String = when (code) {
+        400 -> "请求格式被拒（检查模型名是否拼写正确）"
+        401 -> "密钥无效或未授权"
+        403 -> "无权访问（检查密钥权限 / 地区限制 / 是否欠费）"
+        404 -> "接口路径不存在（检查接口地址）"
+        429 -> "请求过于频繁或额度用尽"
+        in 500..599 -> "服务端错误（稍后重试）"
+        else -> ""
+    }
+
+    /** 网络异常 → 人话 */
+    private fun friendlyError(e: Throwable): String = when {
+        e is UnknownHostException -> "无法解析主机名（检查网络和地址拼写）"
+        e is ConnectException -> "连接被拒绝（服务未启动 / 端口不对 / 防火墙拦截）"
+        e is SocketTimeoutException -> "连接或读取超时（网络慢或服务无响应）"
+        e is SSLException -> "SSL/TLS 握手失败（证书或协议问题）"
+        e is java.io.IOException && e.message?.contains("Cleartext", true) == true ->
+            "明文 HTTP 被系统拦截：请改用 https:// 地址"
+        else -> "${e.javaClass.simpleName}: ${e.message ?: "未知错误"}"
+    }
+
+    /**
+     * 测试在线 API 连通性：发一个 max_tokens=8 的最小请求，
+     * 返回人话结果（供设置对话框「测试连接」按钮显示）。
+     */
+    suspend fun testConnection(settings: QQSettings): String = withContext(Dispatchers.IO) {
+        val t0 = System.currentTimeMillis()
+        try {
+            val body = JSONObject()
+                .put("model", settings.apiModel.ifBlank { "gpt-4o-mini" })
+                .put("messages", JSONArray().put(JSONObject().put("role", "user").put("content", "hi")))
+                .put("max_tokens", 8)
+            val endpoint = endpointFor(settings.apiBaseUrl)
+            val (code, text) = httpPost(endpoint, cleanKey(settings.apiKey), body)
+            val ms = System.currentTimeMillis() - t0
+            if (code in 200..299) {
+                val content = JSONObject(text).optJSONArray("choices")?.optJSONObject(0)
+                    ?.optJSONObject("message")?.optString("content")
+                "连接成功（${ms}ms）${if (content != null) "，模型已正常响应" else ""}"
+            } else {
+                "HTTP $code：${friendlyHttp(code)}${if (text.isNotBlank()) "\n服务返回：${text.take(160)}" else ""}"
+            }
+        } catch (e: Exception) {
+            friendlyError(e)
+        }
+    }
 
     // ==================== 本地离线引擎 ====================
 
@@ -316,30 +414,19 @@ object QQAi {
                     .put("temperature", 0.8)
                     .put("max_tokens", 300)
 
-                val conn = (URL(settings.apiBaseUrl).openConnection() as HttpURLConnection).apply {
-                    requestMethod = "POST"
-                    connectTimeout = 10000
-                    readTimeout = 30000
-                    doOutput = true
-                    setRequestProperty("Content-Type", "application/json")
-                    setRequestProperty("Authorization", "Bearer ${settings.apiKey}")
+                val (code, text) = httpPost(endpointFor(settings.apiBaseUrl), cleanKey(settings.apiKey), body)
+                if (code !in 200..299) {
+                    throw RuntimeException(
+                        "HTTP $code：${friendlyHttp(code)}${if (text.isNotBlank()) "\n服务返回：${text.take(160)}" else ""}"
+                    )
                 }
-                try {
-                    conn.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
-                    val code = conn.responseCode
-                    val text = (if (code in 200..299) conn.inputStream else conn.errorStream)
-                        ?.bufferedReader()?.readText() ?: ""
-                    if (code !in 200..299) {
-                        throw RuntimeException("API $code: ${text.take(200)}")
-                    }
-                    val root = JSONObject(text)
-                    val content = root.optJSONArray("choices")?.optJSONObject(0)
-                        ?.optJSONObject("message")?.optString("content")
-                    if (content.isNullOrBlank()) throw RuntimeException("API 返回为空")
-                    content.trim()
-                } finally {
-                    conn.disconnect()
+                val root = runCatching { JSONObject(text) }.getOrElse {
+                    throw RuntimeException("响应不是合法 JSON：${text.take(120)}")
                 }
+                val content = root.optJSONArray("choices")?.optJSONObject(0)
+                    ?.optJSONObject("message")?.optString("content")
+                if (content.isNullOrBlank()) throw RuntimeException("API 返回为空（HTTP $code）")
+                content.trim()
             }
 
         private fun buildSystemPrompt(contact: QQFriend): String {

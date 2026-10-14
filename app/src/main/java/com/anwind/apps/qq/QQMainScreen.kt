@@ -73,11 +73,13 @@ fun QQMainScreen(scope: WindowContentScope) {
     var remarkTarget by remember { mutableStateOf<QQFriend?>(null) }
 
     LaunchedEffect(Unit) {
-        scope.onTitleChange("QQ2008 - ${acc.nickname}")
-        // 登录后切到窄长面板尺寸（对齐原版主面板比例）
-        scope.windowState.width = 330
-        scope.windowState.height = 660
-        wm.commitChanges()
+        runCatching {
+            scope.onTitleChange("QQ2008 - ${acc.nickname}")
+            // 登录后切到窄长面板尺寸（对齐原版主面板比例）
+            scope.windowState.width = 330
+            scope.windowState.height = 660
+            wm.commitChanges()
+        }.onFailure { QQSession.logCrash("mainScreenLayout", it) }
     }
 
     // 好友按分组归集（观察 QQSession.friends）

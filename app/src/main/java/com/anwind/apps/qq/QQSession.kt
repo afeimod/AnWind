@@ -13,6 +13,10 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 /**
  * QQ2008 for AnWind —— 全局会话（进程级单例）。
@@ -66,20 +70,42 @@ object QQSession {
 
     private var appContext: Context? = null
 
+    /** QQ 包内异常落盘（filesDir/qq/crash.log），方便远程排查 */
+    fun logCrash(where: String, e: Throwable) {
+        runCatching {
+            val ctx = appContext ?: return
+            val f = File(ctx.filesDir, "qq/crash.log")
+            f.appendText(
+                "[${SimpleDateFormat("MM-dd HH:mm:ss", Locale.CHINA).format(Date())}] $where: " +
+                        "${e.javaClass.simpleName}: ${e.message}\n" +
+                        e.stackTrace.take(10).joinToString("\n") { "  at $it" } + "\n\n"
+            )
+        }
+    }
+
     /** 应用入口处调用（AnWindApp.onCreate 不侵入，改由 QQApp 首帧触发） */
     fun ensureInit(context: Context) {
         if (appContext != null) return
         appContext = context.applicationContext
-        QQStore.init(context.applicationContext)
-        settings = QQStore.loadSettings()
-        // 自动登录：异步执行，登录界面会先显示"正在登录"
-        val prefs = QQStore.loadSessionPrefs()
-        if (prefs.autoLogin && prefs.lastNumber.isNotBlank()) {
-            val acc = QQStore.findAccount(prefs.lastNumber)
-            if (acc != null) {
-                aiScope.launch { performLogin(acc.number, null, prefs.lastStatus, false) }
+        // 整体兜底：这里运行在组合期，任何异常都会直接杀掉整个 app（启动闪退），
+        // 因此全部套 runCatching，异常落盘 crash.log 供排查
+        runCatching {
+            QQStore.init(context.applicationContext)
+            settings = QQStore.loadSettings()
+            // 自动登录：异步执行，登录界面会先显示"正在登录"
+            val prefs = QQStore.loadSessionPrefs()
+            if (prefs.autoLogin && prefs.lastNumber.isNotBlank()) {
+                val acc = QQStore.findAccount(prefs.lastNumber)
+                if (acc != null) {
+                    aiScope.launch {
+                        // 保留用户勾选的自动登录开关（否则一次自动登录后开关就被关掉）
+                        runCatching {
+                            performLogin(acc.number, null, prefs.lastStatus, true)
+                        }.onFailure { logCrash("autoLogin", it) }
+                    }
+                }
             }
-        }
+        }.onFailure { logCrash("ensureInit", it) }
     }
 
     // ---------- 登录 / 退出 ----------
@@ -94,57 +120,60 @@ object QQSession {
         password: String?,
         status: QQStatus,
         autoLogin: Boolean
-    ): Boolean = withContext(Dispatchers.IO) {
+    ): Boolean {
         val num = number.trim()
         if (num.isEmpty()) {
             loginError = "请输入 QQ 账号"
-            return@withContext false
+            return false
         }
         loggingIn = true
         loginError = null
-        runCatching {
-            delay(600)   // 模拟 2008 年的登录等待，情怀拉满
-            val existing = QQStore.findAccount(num)
-            val acc = when {
-                existing != null && password != null ->
-                    if (QQCrypto.sha256(password) == existing.passwordHash) existing
-                    else {
-                        loginError = "密码不正确，请重新输入（忘了密码？可重新申请账号）"
-                        return@withContext false
+        delay(600)   // 模拟 2008 年的登录等待，情怀拉满（放 runCatching 外，取消时正常向上传播）
+        val ok = withContext(Dispatchers.IO) {
+            runCatching {
+                val existing = QQStore.findAccount(num)
+                val acc: QQAccount? = when {
+                    existing != null && password != null ->
+                        if (QQCrypto.sha256(password) == existing.passwordHash) existing
+                        else {
+                            loginError = "密码不正确，请重新输入（忘了密码？可重新申请账号）"
+                            null
+                        }
+                    existing != null -> existing
+                    else -> {
+                        // 全新号码：自动开户（2008 年注册 QQ 也是即注册即登录）
+                        loginError = null
+                        QQStore.registerAccount(
+                            nickname = "QQ用户${num.takeLast(4)}",
+                            password = password ?: "123456",
+                            avatar = "emoji:🐧",
+                            signature = "群聚精彩，共享盛世"
+                        )
                     }
-                existing != null -> existing
-                else -> {
-                    // 全新号码：自动开户（2008 年注册 QQ 也是即注册即登录）
-                    val created = QQStore.registerAccount(
-                        nickname = "QQ用户${num.takeLast(4)}",
-                        password = password ?: "123456",
-                        avatar = "emoji:🐧",
-                        signature = "群聚精彩，共享盛世"
-                    )
-                    loginError = null
-                    created
                 }
+                if (acc == null) return@runCatching false   // 密码错误等业务失败
+                val updated = acc.copy(status = status)
+                QQStore.updateAccount(updated)
+                QQStore.saveSessionPrefs(
+                    QQSessionPrefs(lastNumber = acc.number, autoLogin = autoLogin, lastStatus = status)
+                )
+                seedBuiltinContacts(acc.number)
+                // 刷新会话
+                friends.clear()
+                QQStore.loadFriends(acc.number).forEach { friends[it.number] = it }
+                unread.clear()
+                typing.clear()
+                messageCache.clear()
+                account = updated
+                true
+            }.getOrElse { e ->
+                logCrash("performLogin", e)
+                loginError = "登录失败：${e.message ?: "未知错误"}"
+                false
             }
-            val updated = acc.copy(status = status)
-            QQStore.updateAccount(updated)
-            QQStore.saveSessionPrefs(
-                QQSessionPrefs(lastNumber = num, autoLogin = autoLogin, lastStatus = status)
-            )
-            seedBuiltinContacts(num)
-            // 刷新会话
-            friends.clear()
-            QQStore.loadFriends(num).forEach { friends[it.number] = it }
-            unread.clear()
-            typing.clear()
-            messageCache.clear()
-            account = updated
-            loggingIn = false
-            true
-        }.getOrElse {
-            loggingIn = false
-            loginError = "登录失败：${it.message ?: "未知错误"}"
-            false
         }
+        loggingIn = false   // 所有路径统一复位（此前密码错误分支会永久卡在登录中）
+        return ok
     }
 
     /** 首次登录：注入内置 AI 好友与怀旧茶馆群 */
@@ -291,7 +320,7 @@ object QQSession {
                 }
                 QQAi.backendFor(settings).reply(contact, history)
             }.getOrElse {
-                "（AI 开小差了：${it.message?.take(80) ?: "未知错误"}）\n可在 系统设置 → AI 设置 中切换引擎或检查 API 配置。"
+                "（AI 开小差了：${it.message?.take(160) ?: "未知错误"}）\n可在 系统设置 → AI 设置 中测试连接或切换引擎。"
             }
             typing[chatId] = false
             val reply = QQMessage(

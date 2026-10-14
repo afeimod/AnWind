@@ -23,6 +23,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -34,6 +35,7 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.launch
 
 /**
  * QQ 通用弹窗集合：注册账号 / 系统设置(AI) / 查找好友 / 个人资料 / 信息提示。
@@ -226,6 +228,9 @@ fun QQSettingsDialog(onDismiss: () -> Unit) {
     var autoReply by remember { mutableStateOf(s.autoReply) }
     var sound by remember { mutableStateOf(s.soundEnabled) }
     var delayMs by remember { mutableStateOf(s.replyDelayMs.toString()) }
+    val coroutine = rememberCoroutineScope()
+    var testing by remember { mutableStateOf(false) }
+    var testResult by remember { mutableStateOf<String?>(null) }
 
     QQDialogFrame(title = "系统设置", onDismiss = onDismiss) {
         // --- AI 引擎 ---
@@ -258,11 +263,54 @@ fun QQSettingsDialog(onDismiss: () -> Unit) {
         Spacer(Modifier.height(10.dp))
 
         // --- 在线 API 配置 ---
-        QQFieldRow("接口", baseUrl, { baseUrl = it }, hint = "https://…/v1/chat/completions")
+        QQFieldRow("接口", baseUrl, { baseUrl = it; testResult = null },
+            hint = "api.deepseek.com 或完整 …/chat/completions 均可")
         Spacer(Modifier.height(8.dp))
-        QQFieldRow("密钥", apiKey, { apiKey = it }, isPassword = true, hint = "sk-…")
+        QQFieldRow("密钥", apiKey, { apiKey = it; testResult = null }, isPassword = true, hint = "sk-…")
         Spacer(Modifier.height(8.dp))
-        QQFieldRow("模型", model, { model = it }, hint = "gpt-4o-mini / deepseek-chat / glm-4-flash …")
+        QQFieldRow("模型", model, { model = it; testResult = null },
+            hint = "gpt-4o-mini / deepseek-chat / glm-4-flash …")
+        Spacer(Modifier.height(8.dp))
+
+        // --- 测试连接（在线模式） ---
+        if (engine == QQSettings.ENGINE_REMOTE) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                QqBeigeButton(
+                    if (testing) "测试中…" else "✉ 测试连接",
+                    {
+                        testing = true
+                        testResult = null
+                        coroutine.launch {
+                            testResult = QQAi.testConnection(
+                                QQSettings(
+                                    aiEngine = QQSettings.ENGINE_REMOTE,
+                                    apiBaseUrl = baseUrl,
+                                    apiKey = apiKey,
+                                    apiModel = model
+                                )
+                            )
+                            testing = false
+                        }
+                    },
+                    enabled = !testing, height = 26.dp, fontSize = 12.sp
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    "填 base 地址或完整接口都行，保存前可先测试",
+                    fontSize = 10.sp, color = QQ2008.TextSub
+                )
+            }
+            testResult?.let { r ->
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    (if (r.startsWith("HTTP") || !r.startsWith("连接")) "✘ " else "✔ ") + r,
+                    fontSize = 11.sp,
+                    color = if (r.startsWith("连接成功")) Color(0xFF1B7E1B) else Color(0xFF9C2B2B),
+                    lineHeight = 15.sp
+                )
+            }
+            Spacer(Modifier.height(8.dp))
+        }
         Spacer(Modifier.height(10.dp))
 
         // --- 行为开关 ---
