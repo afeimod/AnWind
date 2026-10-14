@@ -22,6 +22,7 @@ import com.anwind.core.window.WindowContentScope
  * 单 AppDef 多窗口架构：
  *  - 无 launchArgs → 登录界面（未登录）/ 主面板（已登录）
  *  - launchArgs["chat"] = 号码 → 聊天窗口（由主面板双击好友打开，可多个）
+ *  - launchArgs["game"] = 1   → QQ游戏大厅窗口（主面板 🎮 按钮打开）
  *
  * 登录状态保存在进程级 [QQSession]，多窗口共享；AI 回复运行在应用级
  * 协程域，聊天窗口关闭后回复仍会计入未读。
@@ -48,10 +49,12 @@ private fun QQRootContent(scope: WindowContentScope) {
     remember(context) { QQSession.ensureInit(context); true }
 
     val chatId = scope.windowState.launchArgs["chat"]
+    val gameId = scope.windowState.launchArgs["game"]
     val account = QQSession.account
 
     when {
         chatId != null -> QQChatScreen(scope, chatId)
+        gameId != null -> QQGameRoot(scope)
         account != null -> QQMainScreen(scope)
         else -> QQLoginScreen(scope)
     }

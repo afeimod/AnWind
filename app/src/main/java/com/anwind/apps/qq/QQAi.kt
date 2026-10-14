@@ -73,26 +73,38 @@ object QQAi {
             key = "xiaobing", number = "10001", nickname = "小冰",
             avatar = "emoji:❄️", signature = "冰雪聪明，一秒回你~",
             systemPrompt = "你是小冰（号码10001），一个活泼可爱的少女 AI。" +
-                    "喜欢用叠词、卖萌和颜文字（如 (＾▽＾)、(＞﹏＜)），语气俏皮，回答不超过 60 字。"
+                    "喜欢用叠词、卖萌和颜文字（如 (＾▽＾)、(＞﹏＜)），语气俏皮。"
         )
         val LIBAI = Persona(
             key = "libai", number = "10002", nickname = "青莲居士",
             avatar = "emoji:🍶", signature = "举杯邀明月，对影成三人",
             systemPrompt = "你是李白（号码10002），大唐诗仙穿越到网络时代。" +
-                    "说话半文半白，爱好作诗与饮酒，遇到话题常引用或即兴创作诗句，回答不超过 100 字。"
+                    "说话半文半白，爱好作诗与饮酒，遇到话题常引用或即兴创作诗句。"
         )
         val TURING = Persona(
             key = "turing", number = "10003", nickname = "图灵博士",
             avatar = "emoji:🧠", signature = "机器也会做梦吗？",
             systemPrompt = "你是图灵博士（号码10003），一位理性严谨的科学家 AI。" +
-                    "擅长科学、数学、逻辑类问题，说话条理清晰，偶尔幽默地提到图灵测试，回答不超过 100 字。"
+                    "擅长科学、数学、逻辑、编程类问题，说话条理清晰，偶尔幽默地提到图灵测试。"
+        )
+        val PIPI = Persona(
+            key = "pipi", number = "10004", nickname = "皮皮",
+            avatar = "emoji:🐵", signature = "段子手皮皮，专治不开心",
+            systemPrompt = "你是皮皮（号码10004），2008 年论坛最火的段子手。" +
+                    "幽默、爱接梗、会自嘲，擅长讲笑话、吐槽和搞笑段子，偶尔抖机灵，但不低俗不冒犯。"
+        )
+        val ZHILE = Persona(
+            key = "zhile", number = "10005", nickname = "知了",
+            avatar = "emoji:📚", signature = "行走的百科全书",
+            systemPrompt = "你是知了（号码10005），行走的百科全书。" +
+                    "擅长科普、历史、地理、生活小常识和知识问答，讲解通俗易懂，喜欢用生活化的比喻。"
         )
 
         /** 怀旧茶馆群（群聊：多个 AI 成员一起回复） */
         const val GROUP_NUMBER = "20080001"
-        val GROUP_MEMBERS = listOf(ASSISTANT, XIAOBING, LIBAI, TURING)
+        val GROUP_MEMBERS = listOf(ASSISTANT, XIAOBING, LIBAI, TURING, PIPI, ZHILE)
 
-        val all: List<Persona> = listOf(ASSISTANT, XIAOBING, LIBAI, TURING)
+        val all: List<Persona> = listOf(ASSISTANT, XIAOBING, LIBAI, TURING, PIPI, ZHILE)
 
         fun byKey(key: String): Persona =
             all.firstOrNull { it.key == key } ?: ASSISTANT
@@ -251,14 +263,67 @@ object QQAi {
             "从前有座山，山里有座庙，庙里有个老和尚在跟小和尚讲：从前有座山……",
             "程序员最讨厌的四件事：写文档、写注释、别人不写文档、别人不写注释。",
             "我问电脑：我胖吗？电脑说：你只是像素比较高。",
-            "2008 年最大的烦恼：QQ 农场的菜总被人偷。现在最大的烦恼：没有菜可偷了。"
+            "2008 年最大的烦恼：QQ 农场的菜总被人偷。现在最大的烦恼：没有菜可偷了。",
+            "面试官：你最大的缺点是什么？我：诚实。面试官：我不觉得这是缺点。我：我不在乎你怎么觉得。",
+            "医生：你得多喝水。我：喝的是奶茶。医生：那你还来看什么病。",
+            "我的钱包就像洋葱，每次打开都让我泪流满面。"
         )
 
         private val poems = listOf(
             "床前明月光，疑是地上霜。\n举头望明月，低头思故乡。",
             "故人西辞黄鹤楼，烟花三月下扬州。\n孤帆远影碧空尽，唯见长江天际流。",
             "两个黄鹂鸣翠柳，一行白鹭上青天。\n窗含西岭千秋雪，门泊东吴万里船。",
-            "人生得意须尽欢，莫使金樽空对月。\n天生我材必有用，千金散尽还复来。"
+            "人生得意须尽欢，莫使金樽空对月。\n天生我材必有用，千金散尽还复来。",
+            "落霞与孤鹜齐飞，秋水共长天一色。",
+            "海上生明月，天涯共此时。\n情人怨遥夜，竟夕起相思。"
+        )
+
+        private val riddles = listOf(
+            "什么东西越洗越脏？——水。",
+            "什么车寸步难行？——风车。",
+            "小明从不念书却得了模范生，为什么？——他是聋哑学生（用手语）。",
+            "什么东西有头无脚？——砖头。",
+            "什么门永远关不上？——球门。",
+            "什么东西天气越热它爬得越高？——温度计。"
+        )
+
+        private val idioms = listOf(
+            "塞翁失马，焉知非福 —— 比喻坏事在一定条件下可能变为好事。",
+            "画蛇添足 —— 做多余的事，反而弄巧成拙。",
+            "亡羊补牢，为时不晚 —— 出了问题及时补救，还不算迟。",
+            "守株待兔 —— 比喻不主动努力，妄想凭侥幸得到成功。",
+            "胸有成竹 —— 做事之前已有通盘考虑，很有把握。",
+            "水滴石穿 —— 只要坚持不懈，细微之力也能做出很难办的事。"
+        )
+
+        private val stories = listOf(
+            "从前有个小企鹅，天天在冰上滑来滑去。有一天它滑得太远，到了赤道，\n它摸摸脑袋说：\"原来 QQ 也可以这么热。\"后来它开了家冷饮店，生意可好了。",
+            "2008 年，有个孩子的 QQ 密码是 123456，第二天发现签名变成了：\n\"谢谢那位帮我改密码还给我充了十年会员的大哥。\"",
+            "有一只蜗牛想去环球旅行。朋友都笑它太慢。\n十年后它回来了，说：\"我没环游世界，但我看清了自家院子里的每一片叶子。\""
+        )
+
+        private val quotes = listOf(
+            "天生我材必有用，千金散尽还复来。 —— 李白",
+            "世上无难事，只怕有心人。",
+            "宝剑锋从磨砺出，梅花香自苦寒来。",
+            "不怕慢，就怕站。一步一步走，总会到的。",
+            "今天不开心没关系，反正明天也不一定开心，但总有一天真会开心。"
+        )
+
+        private val fortunes = listOf(
+            "今日运势：★★★★☆ 贵人运旺，适合抢地主！",
+            "今日运势：★★★★★ 大吉！出门捡到 Q 币的日子到了。",
+            "今日运势：★★★☆☆ 平稳。别偷菜了，先把自己的作业写完。",
+            "今日运势：★★☆☆☆ 宜潜水，忌抬杠。",
+            "今日运势：★★★★☆ 桃花运暗涌，记得把头像换好看点。"
+        )
+
+        private val phrasebook = mapOf(
+            "你好" to "hello / hi", "谢谢" to "thank you", "再见" to "goodbye / bye",
+            "我爱你" to "I love you", "早上好" to "good morning", "晚上好" to "good evening",
+            "对不起" to "sorry", "没关系" to "never mind", "加油" to "come on / go for it",
+            "你好吗" to "how are you?", "多少钱" to "how much?", "吃饭" to "have a meal",
+            "朋友" to "friend", "电脑" to "computer", "手机" to "mobile phone"
         )
 
         override suspend fun reply(
@@ -286,6 +351,11 @@ object QQAi {
                 ))
                 text.contains("你是谁") || text.contains("介绍") ->
                     "我是$flavor —— ${contact.signature} 有什么想聊的尽管说！"
+                text.contains("帮助") || text.contains("你会什么") || text.contains("什么功能") ||
+                        text.contains("功能") || text.contains("怎么玩") ->
+                    "我会的可多啦：\n· 算算术：输入 3+5*2 试试\n· 讲笑话 / 讲故事 / 作诗\n" +
+                            "· 出谜语 / 成语 / 名言\n· 报时间 / 占卜今日运势\n· 猜拳（石头剪刀布）\n" +
+                            "· 简单中译英（试试：翻译 你好）\n· 或者随便找我聊天～"
                 text.contains("几点") || text.contains("时间") || text.contains("日期") -> {
                     val now = SimpleDateFormat("yyyy年MM月dd日 HH:mm", Locale.CHINA).format(Date())
                     "现在是 $now。（别忘了 QQ 农场收菜～）"
@@ -296,6 +366,19 @@ object QQAi {
                         "出门记得带伞，毕竟 2008 年的手机还不能看天气预报～"
                     ))
                 isMath(text) -> solveMath(text) ?: "这道题有点难住我了，你算出来是多少？"
+                text.contains("谜语") || text.contains("脑筋急转弯") -> pick(riddles)
+                text.contains("成语") -> pick(idioms)
+                text.contains("故事") || text.contains("讲故事") -> pick(stories)
+                text.contains("名言") || text.contains("励志") || text.contains("鸡汤") -> pick(quotes)
+                text.contains("运势") || text.contains("占卜") || text.contains("算命") -> pick(fortunes)
+                text.contains("石头剪刀布") || text.contains("猜拳") ->
+                    pick(listOf("我出石头！你出什么？", "剪刀！耶我赢了…啊你说你出什么了？", "布！哈哈，快说你出了什么～"))
+                text.startsWith("翻译") -> {
+                    val word = text.removePrefix("翻译").trim()
+                    val hit = phrasebook.entries.firstOrNull { word.contains(it.key) }
+                    if (hit != null) "「${hit.key}」的英文是：${hit.value}"
+                    else "我的电子词典是 2008 年版的，只收录常用词～\n试试：翻译 你好 / 谢谢 / 加油"
+                }
                 text.contains("笑话") || text.contains("搞笑") -> pick(jokes)
                 text.contains("诗") || text.contains("古诗") || text.contains("念一首") ->
                     if (contact.personaKey == "libai") "即兴一首：\n" + pick(poems)
@@ -310,7 +393,7 @@ object QQAi {
                     "嗯嗯，然后呢？我听着呢～",
                     "哈哈，有意思。继续说说？",
                     "原来如此！对了，你最近都在忙什么呀？",
-                    "收到收到～（小助手已上线，输入\"笑话\"\"时间\"或算术题试试）",
+                    "收到收到～（输入\"帮助\"看我都会啥；在线 API 模式下我更聪明哦）",
                     "听着挺有意思的～多聊聊！"
                 ))
             }
@@ -429,14 +512,18 @@ object QQAi {
                 val systemPrompt = buildSystemPrompt(contact)
                 val messages = JSONArray()
                 messages.put(JSONObject().put("role", "system").put("content", systemPrompt))
-                history.takeLast(12).forEach { m ->
+                // 上下文 12 → 20 条：长对话/大任务时不容易"忘事"
+                history.takeLast(20).forEach { m ->
+                    // 单聊：双方都用纯文本（此前给 assistant 消息加"昵称："前缀，
+                    // 等于教模型给自己加前缀，还会污染上下文）；
+                    // 群聊：所有发言都带说话人名字，模型才能分清谁在说话
+                    val content = if (contact.isGroup) "${m.senderName}：${m.text}" else m.text
                     messages.put(
                         JSONObject()
                             .put("role", if (m.isSelf) "user" else "assistant")
-                            .put("content", if (m.isSelf) m.text else "${m.senderName}：${m.text}")
+                            .put("content", content)
                     )
                 }
-                // 群聊时把非当前联系人发言并入 user 视角，上面已带名字前缀
 
                 val body = JSONObject()
                     .put("model", settings.apiModel)
@@ -444,11 +531,21 @@ object QQAi {
                     .put("temperature", 0.8)
                     // 此前 300：回复稍长就被截断；推理类模型的"思考"也计入该额度，
                     // 全烧完后 content 返回 JSON null → 聊天里出现 "null"
-                    .put("max_tokens", 1024)
+                    // 1024 → 2048：让"写多一点"的长内容（作文/故事/代码）能完整输出
+                    .put("max_tokens", 2048)
                     // 流式输出：边生成边上屏，是"反应特别慢"体感问题的根本解法
                     .put("stream", true)
 
-                streamChat(endpointFor(settings.apiBaseUrl), cleanKey(settings.apiKey), body, onDelta)
+                val endpoint = endpointFor(settings.apiBaseUrl)
+                val key = cleanKey(settings.apiKey)
+                try {
+                    streamChat(endpoint, key, body, onDelta)
+                } catch (e: SocketTimeoutException) {
+                    // 部分网关对 stream 支持差（首包就超时）：换非流式重试一次，
+                    // 失败再把原异常抛出去显示人话错误
+                    val fb = JSONObject(body.toString()).put("stream", false)
+                    streamChat(endpoint, key, fb, onDelta)
+                }
             }
 
         /**
@@ -569,16 +666,25 @@ object QQAi {
         }
 
         private fun buildSystemPrompt(contact: QQFriend): String {
+            val now = SimpleDateFormat("yyyy年MM月dd日 HH:mm", Locale.CHINA).format(Date())
             if (contact.isGroup) {
                 val members = contact.groupMembers.mapNotNull { Personas.byNumber(it) }
                 return "这是 2008 年风格的 QQ 群聊「${contact.nickname}」。群成员：" +
                         members.joinToString("、") { it.nickname } +
                         "。请以其中 1~2 位成员的口吻回复，回复格式：\"昵称：内容\"，" +
-                        "保持 2008 年网络聊天氛围，回复不超过 120 字。" +
-                        members.joinToString("\n") { "人格设定 - ${it.nickname}：${it.systemPrompt}" }
+                        "保持 2008 年网络聊天氛围，回复不超过 200 字。" +
+                        members.joinToString("\n") { "人格设定 - ${it.nickname}：${it.systemPrompt} " } +
+                        "\n当前时间：$now。"
             }
             val p = Personas.byKey(contact.personaKey)
-            return "${p.systemPrompt}\n你在 QQ 上与好友聊天，直接回复消息内容，不要加自己的名字前缀。"
+            return "${p.systemPrompt}\n" +
+                    "你现在是 QQ 聊天里的好友，正在和用户聊天。直接回复消息内容，不要加自己的名字前缀。\n" +
+                    "你的能力：闲聊、讲故事、讲笑话、作诗、写作文/文案、翻译、出谜语、算数、科普、" +
+                    "角色扮演、情感陪聊、给建议等 —— 用户让你做什么就尽力做好。\n" +
+                    "用户让你写长内容（作文、故事、段子、代码、攻略等）时放开写、认真完成，" +
+                    "不要偷懒缩水；日常闲聊则自然简短，像真人打字。\n" +
+                    "不要输出 markdown 标题/列表符号，可用换行和颜文字，像 2008 年的网友一样说话。\n" +
+                    "当前时间：$now（回答时间/日期类问题时参考）。"
         }
     }
 }

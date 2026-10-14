@@ -91,6 +91,8 @@ object QQSession {
         // 因此全部套 runCatching，异常落盘 crash.log 供排查
         runCatching {
             QQStore.init(context.applicationContext)
+            QQSounds.init(context.applicationContext)     // 经典提示音池（WAV 资源）
+            QQGameScores.init(context.applicationContext) // 斗地主积分存档
             settings = QQStore.loadSettings()
             // 自动登录：异步执行，登录界面会先显示"正在登录"
             val prefs = QQStore.loadSessionPrefs()
@@ -101,6 +103,7 @@ object QQSession {
                         // 保留用户勾选的自动登录开关（否则一次自动登录后开关就被关掉）
                         runCatching {
                             performLogin(acc.number, null, prefs.lastStatus, true)
+                            if (account != null) QQSounds.cough()   // 好友都在线：咳咳一声
                         }.onFailure { logCrash("autoLogin", it) }
                     }
                 }

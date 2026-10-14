@@ -280,6 +280,7 @@ fun QQMainScreen(scope: WindowContentScope) {
         ) {
             ToolIcon("⭐", "QQ空间") { showAbout = true }
             ToolIcon("✉️", "QQ邮箱") { showAbout = true }
+            ToolIcon("🎮", "QQ游戏") { openGameWindow(wm) }
             ToolIcon("🎵", "音乐") { launchBuiltin(wm, "music", "QQ音乐") }
             ToolIcon("🌐", "浏览器") { launchBuiltin(wm, "browser", "TT浏览器") }
             ToolIcon("💣", "扫雷") { launchBuiltin(wm, "minesweeper", "扫雷") }
@@ -320,6 +321,10 @@ fun QQMainScreen(scope: WindowContentScope) {
                         onClick = { showSettings = true; mainMenu = false }
                     )
                     DropdownMenuItem(
+                        text = { Text("QQ游戏大厅", fontSize = 13.sp) },
+                        onClick = { mainMenu = false; openGameWindow(wm) }
+                    )
+                    DropdownMenuItem(
                         text = { Text("关于 QQ2008", fontSize = 13.sp) },
                         onClick = { showAbout = true; mainMenu = false }
                     )
@@ -356,9 +361,10 @@ fun QQMainScreen(scope: WindowContentScope) {
     if (showProfile) QQProfileDialog(onDismiss = { showProfile = false })
     if (showAbout) QQInfoDialog(
         title = "关于",
-        text = "QQ2008 for AnWind v1.0\n\n" +
+        text = "QQ2008 for AnWind v2.0\n\n" +
                 "经典 2008 界面复刻，AI 好友全天在线。\n" +
-                "QQ空间 / 邮箱等 2008 年的按钮还在穿越中，敬请期待。\n" +
+                "🎮 QQ游戏大厅已开业：斗地主（角色版）即点即玩。\n" +
+                "🔊 经典提示音：滴滴滴消息音、上线咳嗽、敲门登录音。\n" +
                 "音乐 / 浏览器 / 扫雷图标直通 AnWind 桌面应用。",
         onDismiss = { showAbout = false }
     )
@@ -382,6 +388,25 @@ private fun openChatWindow(wm: WindowManager, friend: QQFriend) {
             launchArgs = mapOf("chat" to friend.number),
             initialWidth = 660,
             initialHeight = 520
+        )
+    }
+}
+
+/** 打开（或聚焦）QQ游戏大厅窗口 */
+private fun openGameWindow(wm: WindowManager) {
+    val existing = wm.windows.firstOrNull {
+        it.appId == "qq" && it.launchArgs["game"] != null
+    }
+    if (existing != null) {
+        wm.focus(existing.id)
+    } else {
+        wm.open(
+            appId = "qq",
+            title = "QQ游戏2011",
+            launchMode = LaunchMode.FLOATING,
+            launchArgs = mapOf("game" to "1"),
+            initialWidth = 880,
+            initialHeight = 620
         )
     }
 }

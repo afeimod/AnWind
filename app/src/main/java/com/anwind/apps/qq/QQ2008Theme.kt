@@ -1,6 +1,7 @@
 package com.anwind.apps.qq
 
 import android.media.AudioManager
+import android.media.SoundPool
 import android.media.ToneGenerator
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -100,29 +101,106 @@ object QQ2008 {
 }
 
 /**
- * 提示音：用 ToneGenerator 模拟经典 QQ "滴滴" 声，不依赖音频资产。
+ * 提示音：QQ2008 经典音色（assets/qq_sounds/ 下 Python 合成的 WAV），
+ * SoundPool 短音效池播放；资源缺失时回落 ToneGenerator 蜂鸣。
+ *
+ * 音色对照（向经典 QQ 致敬，非官方原版音频）：
+ *  msg    来消息     滴滴滴滴滴滴
+ *  cough  好友上线   咳咳
+ *  login  登录       咚咚咚敲门
+ *  msgout 发消息     嗒
+ *  shake  窗口抖动   哐哐哐
+ *  card   斗地主出牌 啪
+ *  ding   叫地主/入座 叮
+ *  bomb   炸弹       轰
+ *  win/lose 胜/负小调
+ *  click  大厅点击
  */
 object QQSounds {
+    private var pool: SoundPool? = null
+    private val ids = mutableMapOf<String, Int>()
     private var tone: ToneGenerator? = null
+    private var inited = false
 
-    private fun beep(t: Int, durationMs: Int = 150) {
+    /** 应用初始化时调用一次（QQSession.ensureInit） */
+    fun init(context: android.content.Context) {
+        if (inited) return
+        inited = true
         runCatching {
-            val gen = tone ?: ToneGenerator(AudioManager.STREAM_MUSIC, 70).also { tone = it }
-            gen.startTone(t, durationMs)
+            val p = SoundPool.Builder()
+                .setMaxStreams(5)
+                .setAudioAttributes(
+                    android.media.AudioAttributes.Builder()
+                        .setUsage(android.media.AudioAttributes.USAGE_MEDIA)
+                        .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                        .build()
+                )
+                .build()
+            pool = p
+            listOf(
+                "msg" to "qq_sounds/msg.wav",
+                "cough" to "qq_sounds/cough.wav",
+                "login" to "qq_sounds/login.wav",
+                "msgout" to "qq_sounds/msgout.wav",
+                "shake" to "qq_sounds/shake.wav",
+                "card" to "qq_sounds/card.wav",
+                "ding" to "qq_sounds/ding.wav",
+                "bomb" to "qq_sounds/bomb.wav",
+                "win" to "qq_sounds/win.wav",
+                "lose" to "qq_sounds/lose.wav",
+                "click" to "qq_sounds/click.wav"
+            ).forEach { (name, path) ->
+                runCatching { ids[name] = p.load(context.assets.openFd(path), 1) }
+            }
         }
     }
 
-    /** 收到消息：短促滴 */
-    fun msgIn() = beep(ToneGenerator.TONE_PROP_BEEP, 80)
+    private fun play(name: String, volume: Float = 1f, toneFallback: Int = -1, toneMs: Int = 100) {
+        if (!QQSession.settings.soundEnabled) return
+        val soundId = ids[name]
+        val p = pool
+        if (p != null && soundId != null) {
+            runCatching { p.play(soundId, volume, volume, 1, 0, 1f) }
+            return
+        }
+        if (toneFallback >= 0) runCatching {
+            val gen = tone ?: ToneGenerator(AudioManager.STREAM_MUSIC, 70).also { tone = it }
+            gen.startTone(toneFallback, toneMs)
+        }
+    }
+
+    /** 收到消息：滴滴滴滴滴滴 */
+    fun msgIn() = play("msg", 0.9f, ToneGenerator.TONE_PROP_BEEP, 80)
+
+    /** 好友上线：咳咳 */
+    fun cough() = play("cough", 1f)
 
     /** 发出消息：一声确认 */
-    fun msgOut() = beep(ToneGenerator.TONE_PROP_ACK, 60)
+    fun msgOut() = play("msgout", 0.8f, ToneGenerator.TONE_PROP_ACK, 60)
 
-    /** 窗口抖动：错误音拉长当"哐哐" */
-    fun nudge() = beep(ToneGenerator.TONE_PROP_NACK, 120)
+    /** 窗口抖动：哐哐哐 */
+    fun nudge() = play("shake", 0.9f, ToneGenerator.TONE_PROP_NACK, 120)
 
-    /** 上线：确认双音 */
-    fun login() = beep(ToneGenerator.TONE_SUP_CONFIRM, 200)
+    /** 上线：咚咚咚敲门 */
+    fun login() = play("login", 1f, ToneGenerator.TONE_SUP_CONFIRM, 200)
+
+    /** 大厅/按钮点击 */
+    fun click() = play("click", 0.8f)
+
+    /** 游戏内：叮（入座/叫地主确定/提示） */
+    fun ding() = play("ding", 0.9f)
+
+    /** 游戏内：出牌 啪 */
+    fun card() = play("card", 1f, ToneGenerator.TONE_PROP_BEEP, 40)
+
+    /** 游戏内：炸弹 轰 */
+    fun bomb() = play("bomb", 1f, ToneGenerator.TONE_PROP_NACK, 200)
+
+    /** 游戏内：胜利 */
+    fun win() = play("win", 1f, ToneGenerator.TONE_SUP_CONFIRM, 300)
+
+    /** 游戏内：失败 */
+    fun lose() = play("lose", 1f, ToneGenerator.TONE_SUP_ERROR, 300)
 }
 
 /**
