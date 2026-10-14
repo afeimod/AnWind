@@ -527,6 +527,36 @@ object DdAi {
 
 enum class DdPhase { BIDDING, PLAYING, OVER }
 
+/**
+ * 游戏大厅共用随机玩家池：AI 的名字与头像相互独立、随机抽取，
+ * 同一局内名字 / 头像都不重复。
+ */
+object GamePeople {
+    val NAMES = listOf(
+        "林中漫步者", "了了", "眼暗", "问天", "冷月葬花魂", "随风而逝",
+        "一品白衫", "江湖小虾米", "半支烟", "独孤求败", "我爱斗地主", "水木清华",
+        "老衲用飘柔", "披着狼皮的羊", "糖醋里脊", "清风徐来", "夜雨声烦", "云端漫步",
+        "一壶漂泊", "傻狍子", "隔壁老王", "北巷不夏", "南街浊酒", "浪迹天涯",
+        "梦里花落", "沉默的羔羊", "奔跑的蜗牛", "橘子汽水", "蓝胖子", "豆豆龙"
+    )
+    val AVATARS = listOf(
+        "🐧", "🐱", "🐶", "🦊", "🐰", "🐻", "🐼", "🐨", "🐯", "🦁",
+        "🐮", "🐷", "🐸", "🐵", "🐔", "🦉", "🦄", "🐝", "🍀", "🌸",
+        "🌙", "⭐", "⚡", "🔥", "🍉", "🎯", "🎸", "🚀", "⚔️", "🛡️",
+        "🧙", "👻", "🎃", "🍵", "🍜", "🏔️", "🌊", "🌳", "🎈", "🦋"
+    )
+
+    fun randomName(exclude: Set<String> = emptySet()): String {
+        val pool = NAMES.filter { it !in exclude }
+        return if (pool.isNotEmpty()) pool.random() else "玩家${(1000..9999).random()}"
+    }
+
+    fun randomAvatar(exclude: Set<String> = emptySet()): String {
+        val pool = AVATARS.filter { "emoji:$it" !in exclude }
+        return "emoji:" + (if (pool.isNotEmpty()) pool.random() else AVATARS.random())
+    }
+}
+
 /** 结算结果 */
 data class DdResult(
     val landlordIdx: Int,
@@ -569,27 +599,20 @@ class DoudizhuGame(
     selfScore: Int
 ) {
     companion object {
-        private val AI_POOL = listOf(
-            "林中漫步者" to "emoji:🌳", "了了" to "emoji:🐱", "眼暗" to "emoji:😎",
-            "问天" to "emoji:🌙", "冷月葬花魂" to "emoji:🌸", "随风而逝" to "emoji:🍃",
-            "一品白衫" to "emoji:🎯", "江湖小虾米" to "emoji:🦐", "半支烟" to "emoji:🚬",
-            "独孤求败" to "emoji:⚔️", "我爱斗地主" to "emoji:🃏", "水木清华" to "emoji:🏔️",
-            "老衲用飘柔" to "emoji:🧘", "披着狼皮的羊" to "emoji:🐺", "糖醋里脊" to "emoji:🍖"
-        )
         private val rnd = kotlin.random.Random(System.currentTimeMillis())
     }
 
-    val players: List<DdPlayer> = listOf(
-        DdPlayer(selfName, selfAvatar, true, 8, selfScore),
-        run {
-            val (n, a) = AI_POOL[rnd.nextInt(AI_POOL.size)]
-            DdPlayer(n, a, false, 3 + rnd.nextInt(30), 60 + rnd.nextInt(900))
-        },
-        run {
-            val (n, a) = AI_POOL[rnd.nextInt(AI_POOL.size)]
+    /** AI 名字与头像各自随机、互不重复 */
+    val players: List<DdPlayer> = run {
+        val usedNames = mutableSetOf(selfName)
+        val usedAvatars = mutableSetOf(selfAvatar)
+        listOf(DdPlayer(selfName, selfAvatar, true, 8, selfScore)) + (1..2).map {
+            val n = GamePeople.randomName(usedNames)
+            val a = GamePeople.randomAvatar(usedAvatars)
+            usedNames.add(n); usedAvatars.add(a)
             DdPlayer(n, a, false, 3 + rnd.nextInt(30), 60 + rnd.nextInt(900))
         }
-    )
+    }
 
     var phase by mutableStateOf(DdPhase.BIDDING)
     var landlord by mutableStateOf(-1)

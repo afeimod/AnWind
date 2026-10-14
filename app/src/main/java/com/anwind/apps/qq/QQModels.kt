@@ -183,7 +183,9 @@ data class QQSettings(
     val apiModel: String = "gpt-4o-mini",
     val autoReply: Boolean = true,
     val replyDelayMs: Int = 900,
-    val soundEnabled: Boolean = true
+    val soundEnabled: Boolean = true,
+    /** 游戏大厅背景音乐开关 */
+    val musicEnabled: Boolean = true
 ) {
     companion object {
         const val ENGINE_LOCAL = "local"
@@ -196,7 +198,8 @@ data class QQSettings(
             apiModel = o.optString("apiModel", "gpt-4o-mini"),
             autoReply = o.optBoolean("autoReply", true),
             replyDelayMs = o.optInt("replyDelayMs", 900),
-            soundEnabled = o.optBoolean("soundEnabled", true)
+            soundEnabled = o.optBoolean("soundEnabled", true),
+            musicEnabled = o.optBoolean("musicEnabled", true)
         )
     }
 
@@ -208,6 +211,7 @@ data class QQSettings(
         put("autoReply", autoReply)
         put("replyDelayMs", replyDelayMs)
         put("soundEnabled", soundEnabled)
+        put("musicEnabled", musicEnabled)
     }
 }
 
