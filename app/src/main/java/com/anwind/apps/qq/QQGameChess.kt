@@ -32,8 +32,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Fill
-import androidx.compose.ui.graphics.Stroke
+import androidx.compose.ui.graphics.drawscope.Fill
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.drawText
@@ -359,7 +359,7 @@ class ChessGame(selfName: String, selfAvatar: String, selfScore: Int) {
     var ply by mutableStateOf(0)
     val log = mutableStateListOf<String>()
 
-    private var legal = ChessRules.allLegalMoves(board, RED)
+    private var legal = ChessRules.allLegalMoves(board, ChessRules.RED)
 
     init {
         addLog("—— 对局开始，你执红先行 ——")
@@ -413,7 +413,7 @@ class ChessGame(selfName: String, selfAvatar: String, selfScore: Int) {
     fun reset() {
         board = ChessRules.initial()
         turn = 0; winner = -1; lastFrom = -1; lastTo = -1; ply = 0
-        legal = ChessRules.allLegalMoves(board, RED)
+        legal = ChessRules.allLegalMoves(board, ChessRules.RED)
         log.clear()
         addLog("—— 新对局开始，你执红先行 ——")
     }
