@@ -19,7 +19,7 @@ import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.roundToInt
 
 /**
- * QQ 游戏图片素材中心（assets/qgame/**）：
+ * QQ 游戏图片素材中心（assets/qgame/）：
  *  - cards/   斗地主 54 张标准扑克牌面 + 牌背（蓝底格纹企鹅徽章）
  *  - chess/   中国象棋木纹棋盘（楚河汉界已按标准坐标烘焙）+ 14 枚楷书棋子
  *  - mahjong/ 麻将 27 张万/筒/条象牙牌面
