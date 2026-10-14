@@ -34,11 +34,12 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Fill
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.drawText
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
@@ -52,7 +53,7 @@ import kotlin.random.Random
  * 中国象棋（QQ游戏大厅 · 本地游戏）：
  *  - 完整规则：车马炮相仕帅兵全走法、蹩马腿、塞象眼、过河兵、九宫限制、
  *    白脸将（双帅不能照面）、被将死/困毙判负；
- *  - AI：alpha-beta 剪枝 3 层，吃子优先排序，子力价值 + 过河兵/占中 位置分；
+ *  - AI：迭代加深 alpha-beta（2~3 层 + 1.2s 时间预算）+ 看门狗兜底强制落子，永不卡死；
  *  - 玩家执红先行；积分存档 key = "象棋·昵称"（胜 +5 / 负 -5）。
  */
 
@@ -468,24 +469,46 @@ fun QQChessTableScreen(onExit: () -> Unit) {
     val pad = 20.dp
     val boardW = cell * 8f + pad * 2f
     val boardH = cell * 9f + pad * 2f
-    val textMeasurer = rememberTextMeasurer()
-    val redStyle = TextStyle(fontSize = 15.sp, fontWeight = FontWeight.Black, color = Color(0xFFC3272B))
-    // 黑方用墨绿字（仿经典实体棋子）
-    val blackStyle = TextStyle(fontSize = 15.sp, fontWeight = FontWeight.Black, color = Color(0xFF1A6B2E))
 
-    // ---- AI 行动（后台线程搜索；迭代加深带时间预算，最迟 ~3 秒内出手，永不卡死） ----
+    // 棋盘/棋子位图素材（assets/qgame/chess/，楚河汉界已烘焙在棋盘图上）
+    val ctx = LocalContext.current
+    val boardBmp = remember { QQGameAssets.load(ctx, "qgame/chess/board.png") }
+    val pieceBmps = remember {
+        (1..7).associate { t ->
+            t to (QQGameAssets.load(ctx, "qgame/chess/cp_r$t.png") to QQGameAssets.load(ctx, "qgame/chess/cp_b$t.png"))
+        }
+    }
+
+    // ---- AI 行动：后台搜索 + 全链路异常兜底 + 看门狗强制落子 ----
+    // 任何环节（搜索异常/协程取消/设备极慢）失效，黑方回合最多停留 ~6 秒必定走棋；
+    // play() 内部还会再校验行动方，看门狗与主路径竞争时不会出现重复走子。
     LaunchedEffect(game.turn, game.winner, game.ply) {
+        if (game.winner != -1 || game.turn != 1) return@LaunchedEffect
+        delay(Random.nextLong(400, 900))
+        if (game.winner != -1 || game.turn != 1) return@LaunchedEffect
+        val mv: Int? = try {
+            withContext(Dispatchers.Default) {
+                runCatching { ChessAi.best(game.board, ChessRules.BLACK, maxDepth = 3, budgetMs = 1200L) }
+                    .getOrNull()
+                    ?: ChessRules.allLegalMoves(game.board, ChessRules.BLACK).randomOrNull()
+            }
+        } catch (t: Throwable) {
+            runCatching { ChessRules.allLegalMoves(game.board, ChessRules.BLACK).randomOrNull() }.getOrNull()
+        }
+        if (game.winner == -1 && game.turn == 1 && mv != null) {
+            runCatching { game.play(mv / 90, mv % 90) }
+        }
+    }
+
+    // ---- 看门狗：搜索/协程任何原因失效时，6 秒后强制替 AI 走一步合法棋，绝不“一直思考” ----
+    LaunchedEffect(game.turn, game.winner, game.ply) {
+        if (game.winner != -1 || game.turn != 1) return@LaunchedEffect
+        delay(6000)
         if (game.winner == -1 && game.turn == 1) {
-            delay(Random.nextLong(500, 1000))
-            val computed = withContext(Dispatchers.Default) {
-                runCatching { ChessAi.best(game.board, ChessRules.BLACK) }.getOrNull()
-            }
-            // 双保险：搜索异常/超时返回 null 时随机走一步合法棋，绝不卡住
-            val mv = computed
-                ?: ChessRules.allLegalMoves(game.board, ChessRules.BLACK).randomOrNull()
-            if (mv != null && game.winner == -1 && game.turn == 1) {
-                game.play(mv / 90, mv % 90)
-            }
+            val mv = runCatching {
+                ChessRules.allLegalMoves(game.board, ChessRules.BLACK).randomOrNull()
+            }.getOrNull()
+            if (mv != null) runCatching { game.play(mv / 90, mv % 90) }
         }
     }
 
@@ -548,68 +571,13 @@ fun QQChessTableScreen(onExit: () -> Unit) {
                 val sy = (size.height - 2 * padPx) / 9f
                 fun px(r: Int, c: Int) = Offset(padPx + c * sx, padPx + r * sy)
 
-                drawRect(Color(0xFFE8C684))
-                // 外框
-                drawRect(
-                    Color(0xFF5C4423), topLeft = Offset(padPx - 6f, padPx - 6f),
-                    size = androidx.compose.ui.geometry.Size(size.width - 2 * padPx + 12f, size.height - 2 * padPx + 12f),
-                    style = Stroke(width = 2.5f)
+                // 木纹棋盘位图（网格/九宫/炮兵位曲尺/楚河汉界均已按标准坐标烘焙）
+                drawImage(
+                    boardBmp,
+                    dstOffset = IntOffset.Zero,
+                    dstSize = IntSize(size.width.roundToInt(), size.height.roundToInt()),
+                    filterQuality = FilterQuality.Medium
                 )
-                // 横线 10 条
-                for (r in 0..9) drawLine(Color(0xFF5C4423), px(r, 0), px(r, 8), 1.6f)
-                // 竖线：中间列在楚河汉界断开
-                for (c in 0..8) {
-                    if (c == 0 || c == 8) {
-                        drawLine(Color(0xFF5C4423), px(0, c), px(9, c), 1.6f)
-                    } else {
-                        drawLine(Color(0xFF5C4423), px(0, c), px(4, c), 1.6f)
-                        drawLine(Color(0xFF5C4423), px(5, c), px(9, c), 1.6f)
-                    }
-                }
-                // 九宫斜线
-                drawLine(Color(0xFF5C4423), px(0, 3), px(2, 5), 1.2f)
-                drawLine(Color(0xFF5C4423), px(0, 5), px(2, 3), 1.2f)
-                drawLine(Color(0xFF5C4423), px(7, 3), px(9, 5), 1.2f)
-                drawLine(Color(0xFF5C4423), px(7, 5), px(9, 3), 1.2f)
-
-                // 炮位/兵位曲尺标记（仿传统棋盘）
-                fun posMark(r: Int, c: Int) {
-                    val g = sx * 0.08f
-                    val l = sx * 0.16f
-                    val x = padPx + c * sx
-                    val y = padPx + r * sy
-                    for (dc in listOf(-1, 1)) {
-                        if (c == 0 && dc < 0) continue
-                        if (c == 8 && dc > 0) continue
-                        for (dr in listOf(-1, 1)) {
-                            drawLine(
-                                Color(0xFF5C4423),
-                                Offset(x + dc * g, y + dr * (g + l)), Offset(x + dc * g, y + dr * g), 1.1f
-                            )
-                            drawLine(
-                                Color(0xFF5C4423),
-                                Offset(x + dc * g, y + dr * g), Offset(x + dc * (g + l), y + dr * g), 1.1f
-                            )
-                        }
-                    }
-                }
-                listOf(2 to 1, 2 to 7, 7 to 1, 7 to 7).forEach { (r, c) -> posMark(r, c) }
-                for (r in listOf(3, 6)) for (c in listOf(0, 2, 4, 6, 8)) posMark(r, c)
-
-                // 楚河 / 汉界（画在河界带正中，左楚河、右汉界，仿书法题字）
-                val riverStyle = TextStyle(
-                    fontSize = 20.sp, fontWeight = FontWeight.Black,
-                    color = Color(0xB33A2B14)
-                )
-                fun drawRiverLabel(text: String, cx: Float) {
-                    val layout = textMeasurer.measure(text, riverStyle)
-                    drawText(
-                        layout,
-                        topLeft = Offset(cx - layout.size.width / 2f, padPx + 4.5f * sy - layout.size.height / 2f)
-                    )
-                }
-                drawRiverLabel("楚 河", padPx + 1.55f * sx)
-                drawRiverLabel("汉 界", padPx + 6.45f * sx)
 
                 // 选中 / 目标 / 上一手标记
                 if (selected >= 0) {
@@ -636,24 +604,19 @@ fun QQChessTableScreen(onExit: () -> Unit) {
                     )
                 }
 
-                // 棋子（米白圆底 + 描边阴影立体感）
+                // 棋子（楷书圆棋子位图，含烘焙投影；红方/黑方各 7 种）
+                val pieceSize = sx * 0.94f
                 for (i in 0..89) {
                     val p = game.board[i]
                     if (p == 0) continue
+                    val bmps = pieceBmps[abs(p)] ?: continue
                     val center = px(i / 9, i % 9)
-                    drawCircle(Color(0x40000000), radius = sx * 0.46f, center = Offset(center.x + 2f, center.y + 3f))
-                    drawCircle(Color(0xFFF7E9C6), radius = sx * 0.46f, center)
-                    drawCircle(
-                        if (selected == i) Color(0xFFFFB400) else Color(0xFF8A6B3D),
-                        radius = sx * 0.46f, center, style = Stroke(width = if (selected == i) 3f else 2f)
-                    )
-                    drawCircle(Color(0x598A6B3D), radius = sx * 0.37f, center, style = Stroke(width = 1f))
-                    val ch = ChessGame.pieceChar(p)
-                    drawText(
-                        textMeasurer = textMeasurer,
-                        text = ch,
-                        topLeft = Offset(center.x - sx * 0.36f, center.y - sy * 0.38f),
-                        style = if (p > 0) redStyle else blackStyle
+                    drawAsset(
+                        if (p > 0) bmps.first else bmps.second,
+                        center.x - pieceSize / 2f,
+                        center.y - pieceSize / 2f,
+                        pieceSize,
+                        pieceSize
                     )
                 }
             }

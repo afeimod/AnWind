@@ -27,7 +27,7 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontStyle
@@ -241,123 +241,47 @@ fun QQGameTableScreen(onExit: () -> Unit) {
     }
 }
 
-// ==================== 牌面（仿标准扑克：角标 + 中央花色点阵 + JQK 花框） ====================
+// ==================== 牌面（标准扑克位图素材 assets/qgame/cards/） ====================
+
+/** 牌面素材路径（rank 3..10/11=J/12=Q/13=K/14=A/15=2；suit 0=♠ 1=♥ 2=♣ 3=♦） */
+private fun ddCardAsset(card: DdCard): String {
+    if (card.isJoker) {
+        return if (card.rank == DdCard.JOKER_B) "qgame/cards/joker_b.png" else "qgame/cards/joker_s.png"
+    }
+    val lbl = when (card.rank) {
+        in 3..10 -> card.rank.toString()
+        11 -> "J"; 12 -> "Q"; 13 -> "K"; 14 -> "A"; else -> "2"
+    }
+    val s = when (card.suit) { 0 -> "s"; 1 -> "h"; 2 -> "c"; else -> "d" }
+    return "qgame/cards/c_${lbl}${s}.png"
+}
 
 @Composable
 private fun DdCardFace(card: DdCard, w: Dp, selected: Boolean, onClick: (() -> Unit)?) {
-    val h = w * 1.42f
-    val color = if (card.isRed) Color(0xFFD32F2F) else Color(0xFF1A1A1A)
+    val shape = RoundedCornerShape(w * 0.09f)
     Box(
         modifier = Modifier
             .width(w)
-            .height(h)
-            .background(Color.White, RoundedCornerShape(w * 0.09f))
-            .border(1.dp, if (selected) Color(0xFFFFB400) else Color(0xFFB9C4CE), RoundedCornerShape(w * 0.09f))
+            .height(w * 1.42f)
+            .clip(shape)
+            .border(1.dp, if (selected) Color(0xFFFFB400) else Color(0xFFB9C4CE), shape)
             .clickable(enabled = onClick != null) { onClick?.invoke() }
-            .padding(w * 0.05f),
-        contentAlignment = Alignment.Center
     ) {
-        // 左上角标
-        DdCorner(card, color, w, Modifier.align(Alignment.TopStart))
-        // 右下倒置角标
-        DdCorner(card, color, w, Modifier.align(Alignment.BottomEnd).rotate(180f))
-
-        // 中央图案
-        when {
-            card.isJoker -> Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Text(
-                    if (card.rank == DdCard.JOKER_B) "☀" else "🌙",
-                    color = color, fontSize = (w.value * 0.38f).sp
-                )
-            }
-            card.rank == 14 -> Text(                      // A：大花色居中
-                card.suitChar, color = color, fontSize = (w.value * 0.56f).sp
-            )
-            card.rank >= 11 -> Box(                        // J/Q/K：装饰花框
-                Modifier
-                    .size(w * 0.56f, w * 0.82f)
-                    .border(1.dp, color, RoundedCornerShape(2.dp))
-                    .padding(2.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text(
-                        card.label, color = color,
-                        fontSize = (w.value * 0.3f).sp, fontWeight = FontWeight.Black,
-                        lineHeight = (w.value * 0.32f).sp
-                    )
-                    Text(card.suitChar, color = color, fontSize = (w.value * 0.2f).sp)
-                }
-            }
-            else -> {                                      // 2~10：标准点阵
-                val r = if (card.rank == DdCard.TWO) 2 else card.rank
-                val pips: List<Pair<Float, Float>> = when (r) {
-                    2 -> listOf(0.5f to 0.16f, 0.5f to 0.84f)
-                    3 -> listOf(0.5f to 0.14f, 0.5f to 0.5f, 0.5f to 0.86f)
-                    4 -> listOf(0.3f to 0.14f, 0.7f to 0.14f, 0.3f to 0.86f, 0.7f to 0.86f)
-                    5 -> listOf(0.3f to 0.14f, 0.7f to 0.14f, 0.5f to 0.5f, 0.3f to 0.86f, 0.7f to 0.86f)
-                    6 -> listOf(0.3f to 0.14f, 0.7f to 0.14f, 0.3f to 0.5f, 0.7f to 0.5f, 0.3f to 0.86f, 0.7f to 0.86f)
-                    7 -> listOf(0.3f to 0.14f, 0.7f to 0.14f, 0.5f to 0.32f, 0.3f to 0.5f, 0.7f to 0.5f, 0.3f to 0.86f, 0.7f to 0.86f)
-                    8 -> listOf(0.3f to 0.14f, 0.7f to 0.14f, 0.5f to 0.32f, 0.3f to 0.5f, 0.7f to 0.5f, 0.5f to 0.68f, 0.3f to 0.86f, 0.7f to 0.86f)
-                    9 -> listOf(0.3f to 0.14f, 0.7f to 0.14f, 0.3f to 0.38f, 0.7f to 0.38f, 0.5f to 0.5f, 0.3f to 0.62f, 0.7f to 0.62f, 0.3f to 0.86f, 0.7f to 0.86f)
-                    else -> listOf(0.3f to 0.14f, 0.7f to 0.14f, 0.5f to 0.26f, 0.3f to 0.38f, 0.7f to 0.38f, 0.3f to 0.62f, 0.7f to 0.62f, 0.5f to 0.74f, 0.3f to 0.86f, 0.7f to 0.86f)
-                }
-                Box(Modifier.fillMaxSize()) {
-                    pips.forEach { (x, y) ->
-                        Text(
-                            card.suitChar, color = color,
-                            fontSize = (w.value * 0.22f).sp,
-                            modifier = Modifier
-                                .align(Alignment.Center)
-                                .offset(
-                                    x = ((x - 0.5f) * w.value * 0.66f).dp,
-                                    y = ((y - 0.5f) * w.value * 1.22f).dp
-                                )
-                        )
-                    }
-                }
-            }
-        }
-    }
-}
-
-/** 角标：点数 + 花色（Joker 为竖排 JOKER） */
-@Composable
-private fun DdCorner(card: DdCard, color: Color, w: Dp, modifier: Modifier) {
-    Column(modifier = modifier, horizontalAlignment = Alignment.CenterHorizontally) {
-        if (card.isJoker) {
-            "JOKER".forEach { ch ->
-                Text(
-                    ch.toString(), color = color,
-                    fontSize = (w.value * 0.15f).sp, fontWeight = FontWeight.Black,
-                    lineHeight = (w.value * 0.17f).sp
-                )
-            }
-        } else {
-            Text(
-                card.label, color = color,
-                fontSize = (w.value * 0.24f).sp, fontWeight = FontWeight.Black,
-                lineHeight = (w.value * 0.26f).sp
-            )
-            Text(card.suitChar, color = color, fontSize = (w.value * 0.2f).sp)
-        }
+        QQGameAssetImage(ddCardAsset(card), Modifier.fillMaxSize())
     }
 }
 
 @Composable
 private fun DdCardBack(w: Dp) {
+    val shape = RoundedCornerShape(3.dp)
     Box(
         modifier = Modifier
             .width(w)
             .height(w * 1.42f)
-            .background(
-                Brush.verticalGradient(listOf(Color(0xFF3E7CB8), Color(0xFF2A5A8C))),
-                RoundedCornerShape(3.dp)
-            )
-            .border(1.dp, Color(0xFFBFE4FB), RoundedCornerShape(3.dp)),
-        contentAlignment = Alignment.Center
+            .clip(shape)
+            .border(1.dp, Color(0xFFBFE4FB), shape)
     ) {
-        Text("🐧", fontSize = (w.value * 0.4f).sp)
+        QQGameAssetImage("qgame/cards/back.png", Modifier.fillMaxSize())
     }
 }
 

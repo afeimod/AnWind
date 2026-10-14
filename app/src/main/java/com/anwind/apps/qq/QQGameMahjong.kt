@@ -1,6 +1,5 @@
 package com.anwind.apps.qq
 
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -30,12 +29,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -760,147 +756,26 @@ private fun mjHint(game: MahjongGame): String = when {
     game.stage == "act" && game.turn == 0 -> "轮到你出牌"
     else -> "等待${game.players[game.turn].name}…"
 }
-// ==================== 牌面（仿标准麻将：白底 / 黑数字红萬 / 绿圆筒 / 竹节条） ====================
+// ==================== 牌面（标准麻将位图素材 assets/qgame/mahjong/） ====================
 
-/** 圆点/竹节位置（单位坐标 0~1） */
-private data class MjPip(val x: Float, val y: Float, val red: Boolean = false)
+/** 牌面素材路径（code/9：0=万 1=筒 2=条；code%9+1 = 1..9） */
+private fun mjTileAsset(code: Int): String {
+    val s = when (code / 9) { 0 -> "w"; 1 -> "t"; else -> "s" }
+    return "qgame/mahjong/mj_${s}${code % 9 + 1}.png"
+}
 
 @Composable
 private fun MjTileFace(code: Int, w: Dp, selected: Boolean = false, onClick: (() -> Unit)? = null) {
+    val shape = RoundedCornerShape(3.dp)
     Box(
         modifier = Modifier
             .width(w)
             .height(w * 1.38f)
-            .background(Color.White, RoundedCornerShape(3.dp))
-            .border(1.dp, if (selected) Color(0xFFFFB400) else Color(0xFF8FA8BC), RoundedCornerShape(3.dp))
-            .clickable(enabled = onClick != null) { onClick?.invoke() },
-        contentAlignment = Alignment.Center
+            .clip(shape)
+            .border(1.dp, if (selected) Color(0xFFFFB400) else Color(0xFF8FA8BC), shape)
+            .clickable(enabled = onClick != null) { onClick?.invoke() }
     ) {
-        when (code / 9) {
-            0 -> Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                // 万：黑色大写数字 + 红色"萬"
-                Text(
-                    MjTiles.RANKS[code % 9], color = Color(0xFF1F1F1F),
-                    fontSize = (w.value * 0.44f).sp, fontWeight = FontWeight.Black,
-                    lineHeight = (w.value * 0.48f).sp
-                )
-                Text(
-                    "萬", color = Color(0xFFC0392B),
-                    fontSize = (w.value * 0.40f).sp, fontWeight = FontWeight.Black,
-                    lineHeight = (w.value * 0.44f).sp
-                )
-            }
-            1 -> MjDotPattern(code % 9 + 1, w)
-            else -> MjBambooPattern(code % 9 + 1, w)
-        }
-    }
-}
-
-/** 筒子（圆圈阵）：一筒大同心圆，五筒/七筒/九筒带红点缀 */
-@Composable
-private fun MjDotPattern(n: Int, w: Dp) {
-    Canvas(Modifier.width(w).height(w * 1.38f)) {
-        val cw = size.width
-        val ch = size.height
-        val green = Color(0xFF1B7A3D)
-        val red = Color(0xFFC0392B)
-        val pts: List<MjPip> = when (n) {
-            1 -> listOf(MjPip(0.5f, 0.5f))
-            2 -> listOf(MjPip(0.5f, 0.30f), MjPip(0.5f, 0.70f))
-            3 -> listOf(MjPip(0.26f, 0.22f), MjPip(0.5f, 0.5f), MjPip(0.74f, 0.78f))
-            4 -> listOf(MjPip(0.30f, 0.30f), MjPip(0.70f, 0.30f), MjPip(0.30f, 0.70f), MjPip(0.70f, 0.70f))
-            5 -> listOf(
-                MjPip(0.30f, 0.28f), MjPip(0.70f, 0.28f), MjPip(0.5f, 0.5f, true),
-                MjPip(0.30f, 0.72f), MjPip(0.70f, 0.72f)
-            )
-            6 -> listOf(
-                MjPip(0.22f, 0.30f), MjPip(0.42f, 0.30f), MjPip(0.62f, 0.30f), MjPip(0.82f, 0.30f),
-                MjPip(0.34f, 0.72f), MjPip(0.66f, 0.72f)
-            )
-            7 -> listOf(
-                MjPip(0.5f, 0.16f, true), MjPip(0.26f, 0.46f), MjPip(0.5f, 0.46f), MjPip(0.74f, 0.46f),
-                MjPip(0.26f, 0.78f), MjPip(0.5f, 0.78f), MjPip(0.74f, 0.78f)
-            )
-            8 -> listOf(
-                MjPip(0.22f, 0.30f), MjPip(0.42f, 0.30f), MjPip(0.62f, 0.30f), MjPip(0.82f, 0.30f),
-                MjPip(0.22f, 0.70f), MjPip(0.42f, 0.70f), MjPip(0.62f, 0.70f), MjPip(0.82f, 0.70f)
-            )
-            else -> listOf(
-                MjPip(0.26f, 0.22f), MjPip(0.5f, 0.22f, true), MjPip(0.74f, 0.22f),
-                MjPip(0.26f, 0.5f), MjPip(0.5f, 0.5f, true), MjPip(0.74f, 0.5f),
-                MjPip(0.26f, 0.78f), MjPip(0.5f, 0.78f, true), MjPip(0.74f, 0.78f)
-            )
-        }
-        pts.forEach { p ->
-            val c = if (p.red) red else green
-            val cx = p.x * cw
-            val cy = p.y * ch
-            if (n == 1) {
-                // 一筒：大同心圆
-                drawCircle(green, radius = cw * 0.34f, center = Offset(cx, cy), style = Stroke(width = cw * 0.045f))
-                drawCircle(green, radius = cw * 0.22f, center = Offset(cx, cy), style = Stroke(width = cw * 0.04f))
-                drawCircle(green, radius = cw * 0.09f, center = Offset(cx, cy))
-            } else {
-                drawCircle(c, radius = cw * 0.105f, center = Offset(cx, cy), style = Stroke(width = cw * 0.038f))
-                drawCircle(c, radius = cw * 0.042f, center = Offset(cx, cy))
-            }
-        }
-    }
-}
-
-/** 条子（竹节阵）：一条幺鸡，其余按数量排竹节 */
-@Composable
-private fun MjBambooPattern(n: Int, w: Dp) {
-    Canvas(Modifier.width(w).height(w * 1.38f)) {
-        val cw = size.width
-        val ch = size.height
-        val green = Color(0xFF1B7A3D)
-        if (n == 1) {
-            // 幺鸡：绿色小鸟 + 红嘴
-            val cx = cw * 0.5f
-            val cy = ch * 0.52f
-            drawOval(green, topLeft = Offset(cx - cw * 0.24f, cy - ch * 0.09f), size = Size(cw * 0.46f, ch * 0.20f))
-            drawCircle(green, radius = cw * 0.115f, center = Offset(cx + cw * 0.16f, cy - ch * 0.13f))
-            drawCircle(Color(0xFFC0392B), radius = cw * 0.04f, center = Offset(cx + cw * 0.28f, cy - ch * 0.115f))
-            drawLine(green, Offset(cx - cw * 0.06f, cy + ch * 0.005f), Offset(cx + cw * 0.08f, cy - ch * 0.075f), cw * 0.03f, cap = StrokeCap.Round)
-            drawLine(green, Offset(cx - cw * 0.05f, cy + ch * 0.10f), Offset(cx - cw * 0.05f, cy + ch * 0.17f), cw * 0.025f, cap = StrokeCap.Round)
-            drawLine(green, Offset(cx + cw * 0.05f, cy + ch * 0.10f), Offset(cx + cw * 0.05f, cy + ch * 0.17f), cw * 0.025f, cap = StrokeCap.Round)
-            return@Canvas
-        }
-        val pts: List<MjPip> = when (n) {
-            2 -> listOf(MjPip(0.5f, 0.30f), MjPip(0.5f, 0.70f))
-            3 -> listOf(MjPip(0.28f, 0.24f), MjPip(0.5f, 0.5f), MjPip(0.72f, 0.76f))
-            4 -> listOf(MjPip(0.32f, 0.30f), MjPip(0.68f, 0.30f), MjPip(0.32f, 0.70f), MjPip(0.68f, 0.70f))
-            5 -> listOf(
-                MjPip(0.32f, 0.28f), MjPip(0.68f, 0.28f), MjPip(0.5f, 0.5f),
-                MjPip(0.32f, 0.72f), MjPip(0.68f, 0.72f)
-            )
-            6 -> listOf(
-                MjPip(0.32f, 0.32f), MjPip(0.5f, 0.32f), MjPip(0.68f, 0.32f),
-                MjPip(0.32f, 0.68f), MjPip(0.5f, 0.68f), MjPip(0.68f, 0.68f)
-            )
-            7 -> listOf(
-                MjPip(0.5f, 0.18f), MjPip(0.3f, 0.48f), MjPip(0.5f, 0.48f), MjPip(0.7f, 0.48f),
-                MjPip(0.3f, 0.78f), MjPip(0.5f, 0.78f), MjPip(0.7f, 0.78f)
-            )
-            8 -> listOf(
-                MjPip(0.28f, 0.30f), MjPip(0.44f, 0.26f), MjPip(0.6f, 0.26f), MjPip(0.76f, 0.30f),
-                MjPip(0.28f, 0.72f), MjPip(0.44f, 0.76f), MjPip(0.6f, 0.76f), MjPip(0.76f, 0.72f)
-            )
-            else -> listOf(
-                MjPip(0.28f, 0.22f), MjPip(0.5f, 0.22f), MjPip(0.72f, 0.22f),
-                MjPip(0.28f, 0.5f), MjPip(0.5f, 0.5f), MjPip(0.72f, 0.5f),
-                MjPip(0.28f, 0.78f), MjPip(0.5f, 0.78f), MjPip(0.72f, 0.78f)
-            )
-        }
-        pts.forEach { p ->
-            val cx = p.x * cw
-            val cy = p.y * ch
-            val seg = cw * 0.15f
-            // 竹节：圆头短竖线 + 中间白色收腰，看起来像两节竹子
-            drawLine(green, Offset(cx, cy - seg * 0.55f), Offset(cx, cy + seg * 0.55f), seg * 0.62f, cap = StrokeCap.Round)
-            drawLine(Color(0xFFFFFFFF), Offset(cx, cy - seg * 0.10f), Offset(cx, cy + seg * 0.10f), seg * 0.70f)
-        }
+        QQGameAssetImage(mjTileAsset(code), Modifier.fillMaxSize())
     }
 }
 
