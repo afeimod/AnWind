@@ -10,6 +10,7 @@ import com.anwind.apps.media.MediaPlayerApp
 import com.anwind.apps.minesweeper.MinesweeperApp
 import com.anwind.apps.music.MusicPlayerApp
 import com.anwind.apps.notepad.NotepadApp
+import com.anwind.apps.qq.QQApp
 import com.anwind.apps.settings.SettingsApp
 import com.anwind.apps.sysinfo.SysInfoApp
 import com.anwind.apps.terminal.TerminalApp
@@ -42,5 +43,7 @@ object AppBootstrap {
         AppRegistry.register(MediaPlayerApp)
         AppRegistry.register(MusicPlayerApp)
         AppRegistry.register(MinesweeperApp)
+        // v2.26.x：QQ2008 聊天（登录/主面板/聊天窗三态，内置 AI 好友，服务器版预留）
+        AppRegistry.register(QQApp)
     }
 }

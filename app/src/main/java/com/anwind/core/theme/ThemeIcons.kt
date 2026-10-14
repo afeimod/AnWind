@@ -44,7 +44,8 @@ object ThemeIcons {
         "clock" to "emoji:🕐",
         "terminal" to "emoji:💻",
         "calculator" to "emoji:🧮",
-        "sysinfo" to "emoji:📊"
+        "sysinfo" to "emoji:📊",
+        "qq" to "icons/qq.png"
     )
 
     /** 目录清单缓存：context.assets.list() 有 IO，按目录缓存一次 */
