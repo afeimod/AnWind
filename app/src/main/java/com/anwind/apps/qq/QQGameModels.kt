@@ -249,7 +249,7 @@ object DdAi {
     }
 
     /** rank -> 该 rank 的所有牌 */
-    private fun rankMap(hand: List<DdCard>): SortedMap<Int, List<DdCard>> {
+    private fun rankMap(hand: List<DdCard>): SortedMap<Int, MutableList<DdCard>> {
         val m = sortedMapOf<Int, MutableList<DdCard>>()
         hand.forEach { m.getOrPut(it.rank) { mutableListOf() }.add(it) }
         return m
@@ -433,7 +433,7 @@ object DdAi {
 
     /** 挑最小的带牌（单张或对子），不拆炸弹、不拆王炸 */
     private fun smallestKicker(
-        rm: SortedMap<Int, List<DdCard>>,
+        rm: SortedMap<Int, MutableList<DdCard>>,
         exclude: Int = -1,
         excludeTrios: IntRange? = null,
         needPairs: Int,
@@ -506,14 +506,14 @@ object DdAi {
         // 炸弹节制：敌人手牌还多时留着
         if (best.type == DdComboType.BOMB || best.type == DdComboType.ROCKET) {
             val minOpp = if (iAmLandlord)
-                min(handCounts[(idx + 1) % 3], handCounts[(idx + 2) % 3])
+                minOf(handCounts[(idx + 1) % 3], handCounts[(idx + 2) % 3])
             else handCounts[landlord]
             if (minOpp > 2 && prev.type != DdComboType.BOMB) return null
         }
 
         // 对手告急（≤2 张）：单/对尽量顶大牌
         val enemyLow = if (iAmLandlord)
-            min(handCounts[(idx + 1) % 3], handCounts[(idx + 2) % 3]) <= 2
+            minOf(handCounts[(idx + 1) % 3], handCounts[(idx + 2) % 3]) <= 2
         else handCounts[landlord] <= 2
         if (enemyLow && best.type == DdComboType.SINGLE) {
             // 换更大的单张顶
@@ -818,7 +818,7 @@ object QQGameScores {
             val scores = JSONObject()
             m.forEach { (k, s) -> scores.put(k, s) }
             obj.put("scores", scores)
-            val d = dir ?: return
+            val d = dir ?: return@runCatching
             val tmp = File(d, "game_scores.json.tmp")
             tmp.writeText(obj.toString())
             File(d, "game_scores.json").delete()
