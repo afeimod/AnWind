@@ -185,7 +185,9 @@ data class QQSettings(
     val replyDelayMs: Int = 900,
     val soundEnabled: Boolean = true,
     /** 游戏大厅背景音乐开关 */
-    val musicEnabled: Boolean = true
+    val musicEnabled: Boolean = true,
+    /** 游戏大厅背景音乐音量（0~100） */
+    val musicVolume: Int = 30
 ) {
     companion object {
         const val ENGINE_LOCAL = "local"
@@ -199,7 +201,8 @@ data class QQSettings(
             autoReply = o.optBoolean("autoReply", true),
             replyDelayMs = o.optInt("replyDelayMs", 900),
             soundEnabled = o.optBoolean("soundEnabled", true),
-            musicEnabled = o.optBoolean("musicEnabled", true)
+            musicEnabled = o.optBoolean("musicEnabled", true),
+            musicVolume = o.optInt("musicVolume", 30)
         )
     }
 
@@ -212,6 +215,7 @@ data class QQSettings(
         put("replyDelayMs", replyDelayMs)
         put("soundEnabled", soundEnabled)
         put("musicEnabled", musicEnabled)
+        put("musicVolume", musicVolume)
     }
 }
 

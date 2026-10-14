@@ -66,6 +66,7 @@ object ChessRules {
     private val ORTH = arrayOf(intArrayOf(1, 0), intArrayOf(-1, 0), intArrayOf(0, 1), intArrayOf(0, -1))
     private val DIAG1 = arrayOf(intArrayOf(1, 1), intArrayOf(1, -1), intArrayOf(-1, 1), intArrayOf(-1, -1))
     private val DIAG2 = arrayOf(intArrayOf(2, 2), intArrayOf(2, -2), intArrayOf(-2, 2), intArrayOf(-2, -2))
+    private val DIRS4 = arrayOf(intArrayOf(1, 0), intArrayOf(-1, 0), intArrayOf(0, 1), intArrayOf(0, -1))
     private val KNIGHT = arrayOf(
         intArrayOf(2, 1), intArrayOf(2, -1), intArrayOf(-2, 1), intArrayOf(-2, -1),
         intArrayOf(1, 2), intArrayOf(1, -2), intArrayOf(-1, 2), intArrayOf(-1, -2)
@@ -231,7 +232,7 @@ object ChessRules {
         // 兵/卒
         val ep = -side * 7
         val enemySide = -side
-        for (d in arrayOf(intArrayOf(1, 0), intArrayOf(-1, 0), intArrayOf(0, 1), intArrayOf(0, -1))) {
+        for (d in DIRS4) {
             val rr = kr + d[0]
             val cc = kc + d[1]
             if (!inBoard(rr, cc)) continue
@@ -272,27 +273,49 @@ object ChessRules {
 object ChessAi {
     private val VAL = intArrayOf(0, 10000, 200, 200, 400, 900, 450, 100)
     private const val INF = 1_000_000
+    private var deadline = 0L
 
-    /** 返回 side 方的最佳走法（from*90+to），无棋可走返回 null */
-    fun best(b: IntArray, side: Int, depth: Int = 3): Int? {
+    private class SearchTimeout : Exception()
+
+    /**
+     * 返回 side 方的最佳走法（from*90+to），无棋可走返回 null。
+     * 迭代加深（2→maxDepth 层）+ 时间预算：慢设备上超时自动退回浅层结果，
+     * 保证无论如何都能在 budgetMs 毫秒内返回，不会“一直思考”。
+     */
+    fun best(b: IntArray, side: Int, maxDepth: Int = 4, budgetMs: Long = 2000L): Int? {
         val moves = ChessRules.allLegalMoves(b, side)
         if (moves.isEmpty()) return null
-        val sorted = moves.sortedByDescending { abs(b[it % 90]) }
-        var alpha = -INF
-        val scored = mutableListOf<Pair<Int, Int>>()
-        for (mv in sorted) {
-            val f = mv / 90
-            val t = mv % 90
-            val p = b[f]
-            val cap = b[t]
-            b[t] = p; b[f] = 0
-            val s = -negamax(b, -side, depth - 1, -INF, -alpha)
-            b[f] = p; b[t] = cap
-            scored.add(mv to s)
-            if (s > alpha) alpha = s
+        deadline = System.currentTimeMillis() + budgetMs
+        // 兕底：吃子优先的第一步（即使第一层就超时也有解）
+        var bestMv: Int = moves.sortedByDescending { abs(b[it % 90]) }.first()
+        try {
+            for (d in 2..maxDepth) {
+                var alpha = -INF
+                var layerBest = -1
+                val sorted = moves.sortedByDescending { abs(b[it % 90]) }
+                for (mv in sorted) {
+                    val f = mv / 90
+                    val t = mv % 90
+                    val p = b[f]
+                    val cap = b[t]
+                    b[t] = p; b[f] = 0
+                    // try/finally：超时异常穿层时必须还原棋盘，否则 b 被中间状态污染
+                    val s = try {
+                        -negamax(b, -side, d - 1, -INF, -alpha)
+                    } finally {
+                        b[f] = p; b[t] = cap
+                    }
+                    if (s > alpha) { alpha = s; layerBest = mv }
+                }
+                if (layerBest >= 0) {
+                    bestMv = layerBest
+                    if (alpha > 90000) break          // 已找到将死，无需更深
+                }
+            }
+        } catch (e: SearchTimeout) {
+            // 超时：用上一个完成深度的走法
         }
-        val top = scored.maxOf { it.second }
-        return scored.filter { it.second >= top - 10 }.random().first
+        return bestMv
     }
 
     private fun evaluate(b: IntArray): Int {
@@ -320,6 +343,7 @@ object ChessAi {
 
     private fun negamax(b: IntArray, side: Int, depth: Int, alphaIn: Int, beta: Int): Int {
         var alpha = alphaIn
+        if (System.currentTimeMillis() > deadline) throw SearchTimeout()
         if (depth == 0) return side * evaluate(b)
         val moves = ChessRules.allLegalMoves(b, side)
         if (moves.isEmpty()) return -99000 - depth      // 将死/困毙
@@ -331,8 +355,11 @@ object ChessAi {
             val p = b[f]
             val cap = b[t]
             b[t] = p; b[f] = 0
-            val s = -negamax(b, -side, depth - 1, -beta, -alpha)
-            b[f] = p; b[t] = cap
+            val s = try {
+                -negamax(b, -side, depth - 1, -beta, -alpha)
+            } finally {
+                b[f] = p; b[t] = cap
+            }
             if (s > best) best = s
             if (s > alpha) alpha = s
             if (alpha >= beta) break
@@ -443,13 +470,19 @@ fun QQChessTableScreen(onExit: () -> Unit) {
     val boardH = cell * 9f + pad * 2f
     val textMeasurer = rememberTextMeasurer()
     val redStyle = TextStyle(fontSize = 15.sp, fontWeight = FontWeight.Black, color = Color(0xFFC3272B))
-    val blackStyle = TextStyle(fontSize = 15.sp, fontWeight = FontWeight.Black, color = Color(0xFF232323))
+    // 黑方用墨绿字（仿经典实体棋子）
+    val blackStyle = TextStyle(fontSize = 15.sp, fontWeight = FontWeight.Black, color = Color(0xFF1A6B2E))
 
-    // ---- AI 行动（后台线程搜索，避免卡界面） ----
+    // ---- AI 行动（后台线程搜索；迭代加深带时间预算，最迟 ~3 秒内出手，永不卡死） ----
     LaunchedEffect(game.turn, game.winner, game.ply) {
         if (game.winner == -1 && game.turn == 1) {
             delay(Random.nextLong(500, 1000))
-            val mv = withContext(Dispatchers.Default) { ChessAi.best(game.board, ChessRules.BLACK) }
+            val computed = withContext(Dispatchers.Default) {
+                runCatching { ChessAi.best(game.board, ChessRules.BLACK) }.getOrNull()
+            }
+            // 双保险：搜索异常/超时返回 null 时随机走一步合法棋，绝不卡住
+            val mv = computed
+                ?: ChessRules.allLegalMoves(game.board, ChessRules.BLACK).randomOrNull()
             if (mv != null && game.winner == -1 && game.turn == 1) {
                 game.play(mv / 90, mv % 90)
             }
@@ -539,6 +572,45 @@ fun QQChessTableScreen(onExit: () -> Unit) {
                 drawLine(Color(0xFF5C4423), px(7, 3), px(9, 5), 1.2f)
                 drawLine(Color(0xFF5C4423), px(7, 5), px(9, 3), 1.2f)
 
+                // 炮位/兵位曲尺标记（仿传统棋盘）
+                fun posMark(r: Int, c: Int) {
+                    val g = sx * 0.08f
+                    val l = sx * 0.16f
+                    val x = padPx + c * sx
+                    val y = padPx + r * sy
+                    for (dc in listOf(-1, 1)) {
+                        if (c == 0 && dc < 0) continue
+                        if (c == 8 && dc > 0) continue
+                        for (dr in listOf(-1, 1)) {
+                            drawLine(
+                                Color(0xFF5C4423),
+                                Offset(x + dc * g, y + dr * (g + l)), Offset(x + dc * g, y + dr * g), 1.1f
+                            )
+                            drawLine(
+                                Color(0xFF5C4423),
+                                Offset(x + dc * g, y + dr * g), Offset(x + dc * (g + l), y + dr * g), 1.1f
+                            )
+                        }
+                    }
+                }
+                listOf(2 to 1, 2 to 7, 7 to 1, 7 to 7).forEach { (r, c) -> posMark(r, c) }
+                for (r in listOf(3, 6)) for (c in listOf(0, 2, 4, 6, 8)) posMark(r, c)
+
+                // 楚河 / 汉界（画在河界带正中，左楚河、右汉界，仿书法题字）
+                val riverStyle = TextStyle(
+                    fontSize = 20.sp, fontWeight = FontWeight.Black,
+                    color = Color(0xB33A2B14)
+                )
+                fun drawRiverLabel(text: String, cx: Float) {
+                    val layout = textMeasurer.measure(text, riverStyle)
+                    drawText(
+                        layout,
+                        topLeft = Offset(cx - layout.size.width / 2f, padPx + 4.5f * sy - layout.size.height / 2f)
+                    )
+                }
+                drawRiverLabel("楚 河", padPx + 1.55f * sx)
+                drawRiverLabel("汉 界", padPx + 6.45f * sx)
+
                 // 选中 / 目标 / 上一手标记
                 if (selected >= 0) {
                     val (sr, sc) = selected / 9 to selected % 9
@@ -564,16 +636,18 @@ fun QQChessTableScreen(onExit: () -> Unit) {
                     )
                 }
 
-                // 棋子
+                // 棋子（米白圆底 + 描边阴影立体感）
                 for (i in 0..89) {
                     val p = game.board[i]
                     if (p == 0) continue
                     val center = px(i / 9, i % 9)
+                    drawCircle(Color(0x40000000), radius = sx * 0.46f, center = Offset(center.x + 2f, center.y + 3f))
                     drawCircle(Color(0xFFF7E9C6), radius = sx * 0.46f, center)
                     drawCircle(
                         if (selected == i) Color(0xFFFFB400) else Color(0xFF8A6B3D),
                         radius = sx * 0.46f, center, style = Stroke(width = if (selected == i) 3f else 2f)
                     )
+                    drawCircle(Color(0x598A6B3D), radius = sx * 0.37f, center, style = Stroke(width = 1f))
                     val ch = ChessGame.pieceChar(p)
                     drawText(
                         textMeasurer = textMeasurer,
@@ -582,19 +656,6 @@ fun QQChessTableScreen(onExit: () -> Unit) {
                         style = if (p > 0) redStyle else blackStyle
                     )
                 }
-            }
-
-            // 楚河汉界
-            Row(
-                modifier = Modifier
-                    .align(Alignment.TopCenter)
-                    .offset(y = pad + cell * 4.5f - 10.dp)
-                    .fillMaxWidth()
-                    .padding(horizontal = 34.dp),
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Text("楚  河", color = Color(0x995C4423), fontSize = 15.sp, fontWeight = FontWeight.Bold)
-                Text("汉  界", color = Color(0x995C4423), fontSize = 15.sp, fontWeight = FontWeight.Bold)
             }
 
             // 结算浮层

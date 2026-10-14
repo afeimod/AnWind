@@ -18,6 +18,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -227,6 +229,8 @@ fun QQSettingsDialog(onDismiss: () -> Unit) {
     var model by remember { mutableStateOf(s.apiModel) }
     var autoReply by remember { mutableStateOf(s.autoReply) }
     var sound by remember { mutableStateOf(s.soundEnabled) }
+    var musicOn by remember { mutableStateOf(s.musicEnabled) }
+    var musicVol by remember { mutableStateOf(s.musicVolume.coerceIn(0, 100)) }
     var delayMs by remember { mutableStateOf(s.replyDelayMs.toString()) }
     val coroutine = rememberCoroutineScope()
     var testing by remember { mutableStateOf(false) }
@@ -339,6 +343,36 @@ fun QQSettingsDialog(onDismiss: () -> Unit) {
                 Text(if (sound) "开" else "关", fontSize = 12.sp, color = QQ2008.TextSub)
             }
         }
+        Spacer(Modifier.height(6.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("游戏背景音乐", fontSize = 13.sp, color = QQ2008.TextMain)
+            Spacer(Modifier.weight(1f))
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.clickable { musicOn = !musicOn }
+            ) {
+                QqCheckbox(checked = musicOn)
+                Spacer(Modifier.width(4.dp))
+                Text(if (musicOn) "开" else "关", fontSize = 12.sp, color = QQ2008.TextSub)
+            }
+        }
+        if (musicOn) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("音乐音量", fontSize = 12.sp, color = QQ2008.TextSub)
+                Spacer(Modifier.width(8.dp))
+                Slider(
+                    value = musicVol / 100f,
+                    onValueChange = { musicVol = (it * 100).toInt().coerceIn(0, 100) },
+                    colors = SliderDefaults.colors(
+                        thumbColor = QQ2008.TitleBottom,
+                        activeTrackColor = QQ2008.TitleBottom,
+                        inactiveTrackColor = Color(0xFFBFD8EA)
+                    ),
+                    modifier = Modifier.weight(1f).height(20.dp)
+                )
+                Text("$musicVol%", fontSize = 11.sp, color = QQ2008.TextSub, modifier = Modifier.width(34.dp))
+            }
+        }
         Spacer(Modifier.height(8.dp))
         QQFieldRow("回复延迟", delayMs, { delayMs = it.filter { c -> c.isDigit() }.take(5) }, hint = "毫秒")
         Spacer(Modifier.height(14.dp))
@@ -351,14 +385,16 @@ fun QQSettingsDialog(onDismiss: () -> Unit) {
                 "保 存",
                 {
                     QQSession.saveSettings(
-                        QQSettings(
+                        QQSession.settings.copy(
                             aiEngine = engine,
                             apiBaseUrl = baseUrl.ifBlank { QQSettings().apiBaseUrl },
                             apiKey = apiKey.trim(),
                             apiModel = model.ifBlank { QQSettings().apiModel },
                             autoReply = autoReply,
                             soundEnabled = sound,
-                            replyDelayMs = delayMs.toIntOrNull() ?: 900
+                            replyDelayMs = delayMs.toIntOrNull() ?: 900,
+                            musicEnabled = musicOn,
+                            musicVolume = musicVol
                         )
                     )
                     onDismiss()

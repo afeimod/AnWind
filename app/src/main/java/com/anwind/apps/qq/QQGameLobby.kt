@@ -18,6 +18,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -194,23 +196,43 @@ fun QQGameRoot(scope: WindowContentScope) {
     }
 }
 
-/** 大厅/房间通用的音乐开关 */
+/** 大厅/房间通用的音乐开关（点击切换，下方滑块调音量） */
 @Composable
 fun MusicToggle(playingScene: String) {
     val context = LocalContext.current
-    val on = QQSession.settings.musicEnabled
+    var on by remember { mutableStateOf(QQSession.settings.musicEnabled) }
+    var vol by remember { mutableStateOf(QQSession.settings.musicVolume.coerceIn(0, 100)) }
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
-        modifier = Modifier
-            .clickable {
-                QQSounds.click()
-                val nowOn = QQBgm.toggle(context)
-                if (nowOn) QQBgm.scene(context, playingScene)
-            }
-            .padding(horizontal = 8.dp)
+        modifier = Modifier.width(56.dp)
     ) {
-        Text(if (on) "🎵" else "🔇", fontSize = 15.sp)
+        Text(
+            if (on) "🎵" else "🔇", fontSize = 15.sp,
+            modifier = Modifier.clickable {
+                QQSounds.click()
+                on = QQBgm.toggle(context)
+                if (on) QQBgm.scene(context, playingScene)
+            }
+        )
         Text(if (on) "音乐" else "静音", color = Color.White, fontSize = 9.sp, maxLines = 1)
+        if (on) {
+            Slider(
+                value = vol / 100f,
+                onValueChange = {
+                    vol = (it * 100).toInt().coerceIn(0, 100)
+                    QQBgm.applyVolume(vol)
+                },
+                onValueChangeFinished = {
+                    QQSession.saveSettings(QQSession.settings.copy(musicVolume = vol))
+                },
+                colors = SliderDefaults.colors(
+                    thumbColor = Color(0xFFFFE95C),
+                    activeTrackColor = Color(0xFFFFE95C),
+                    inactiveTrackColor = Color(0x66FFFFFF)
+                ),
+                modifier = Modifier.width(52.dp).height(18.dp)
+            )
+        }
     }
 }
 

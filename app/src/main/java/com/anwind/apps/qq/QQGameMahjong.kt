@@ -1,5 +1,6 @@
 package com.anwind.apps.qq
 
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -29,8 +30,13 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -445,68 +451,20 @@ fun QQMahjongTableScreen(onExit: () -> Unit) {
             modifier = Modifier
                 .weight(1f)
                 .fillMaxSize()
-                .background(Brush.verticalGradient(listOf(Color(0xFF2C5A8F), Color(0xFF1B3A61))))
+                .background(Brush.verticalGradient(listOf(Color(0xFF3D7A99), Color(0xFF2E6478))))
         ) {
             Column(Modifier.fillMaxSize().padding(8.dp)) {
-                // ---- 对家（上方）----
+                // ---- 对家（上方）：信息 + 牌墙 ----
                 MjSeatBar(game, 2)
                 Spacer(Modifier.height(4.dp))
 
-                // ---- 中区：左家 | 牌池 | 右家 ----
+                // ---- 中区：左家 | 中央牌池 | 右家 ----
                 Row(Modifier.weight(1f)) {
                     MjSeatSide(game, 3)
-                    Spacer(Modifier.width(6.dp))
-                    Column(
-                        Modifier.weight(1f).fillMaxSize(),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.Center
-                    ) {
-                        Text(
-                            "余 ${game.wall.size} 张 · 庄家：${game.players[game.dealer].name}",
-                            color = Color(0xFFBFE4FB), fontSize = 11.sp
-                        )
-                        Spacer(Modifier.height(6.dp))
-                        // 牌池：最新打出的牌
-                        if (game.stage == "claim" && game.pendingTile >= 0) {
-                            Text(
-                                "${game.players[game.pendingFrom].name} 打出：",
-                                color = Color(0xFFFFE95C), fontSize = 11.sp
-                            )
-                            Spacer(Modifier.height(3.dp))
-                            MjTileFace(game.pendingTile, 30.dp)
-                        } else {
-                            val hint = when {
-                                game.winner != -1 -> "本局结束"
-                                game.stage == "draw" && game.turn == 0 -> "轮到你摸牌…"
-                                game.stage == "act" && game.turn == 0 -> "轮到你出牌"
-                                game.stage == "claim" && game.claimQueue.firstOrNull()?.first == 0 ->
-                                    "你要" + when (game.claimQueue.first().second) {
-                                        "hu" -> "胡吗？"
-                                        "gang" -> "杠吗？"
-                                        else -> "碰吗？"
-                                    }
-                                else -> "等待${game.players[game.turn].name}…"
-                            }
-                            Text(hint, color = Color(0xFFFFE95C), fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                        }
-                    }
-                    Spacer(Modifier.width(6.dp))
+                    Spacer(Modifier.width(4.dp))
+                    MjCenterPool(game, Modifier.weight(1f))
+                    Spacer(Modifier.width(4.dp))
                     MjSeatSide(game, 1)
-                }
-                Spacer(Modifier.height(4.dp))
-
-                // ---- 我的牌河 ----
-                Column(
-                    Modifier
-                        .fillMaxWidth()
-                        .height(46.dp)
-                        .verticalScroll(rememberScrollState())
-                ) {
-                    game.rivers[0].chunked(16).forEach { row ->
-                        Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                            row.forEach { MjTileFace(it, 15.dp) }
-                        }
-                    }
                 }
                 Spacer(Modifier.height(4.dp))
 
@@ -690,7 +648,7 @@ private fun MjSeatBar(game: MahjongGame, idx: Int) {
     }
 }
 
-/** 左/右家 */
+/** 左/右家（弃牌显示在中央牌池，此处只留信息与副露） */
 @Composable
 private fun MjSeatSide(game: MahjongGame, idx: Int) {
     val p = game.players[idx]
@@ -699,20 +657,21 @@ private fun MjSeatSide(game: MahjongGame, idx: Int) {
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         modifier = Modifier
-            .width(92.dp)
+            .width(74.dp)
             .fillMaxSize()
             .background(if (active) Color(0x33FFE95C) else Color.Transparent, RoundedCornerShape(6.dp))
             .padding(vertical = 3.dp)
     ) {
+        Spacer(Modifier.height(6.dp))
         Box {
-            QqAvatar(avatar = p.avatar, size = 34.dp)
+            QqAvatar(avatar = p.avatar, size = 36.dp)
             if (game.dealer == idx) {
                 Text("👑", fontSize = 12.sp, modifier = Modifier.align(Alignment.TopStart))
             }
         }
         Text(p.name, color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
         Text("${p.score}分", color = Color(0xFFFFE95C), fontSize = 9.sp)
-        Spacer(Modifier.height(3.dp))
+        Spacer(Modifier.height(4.dp))
         // 副露
         game.melds[idx].forEach { m ->
             Row(horizontalArrangement = Arrangement.spacedBy(1.dp)) {
@@ -721,50 +680,226 @@ private fun MjSeatSide(game: MahjongGame, idx: Int) {
             Spacer(Modifier.height(1.dp))
         }
         Spacer(Modifier.weight(1f))
-        // 牌河（竖排小牌）
-        Column(
-            Modifier
-                .weight(2f)
-                .verticalScroll(rememberScrollState()),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            game.rivers[idx].chunked(3).forEach { row ->
-                Row(horizontalArrangement = Arrangement.spacedBy(1.dp)) {
-                    row.forEach { MjTileFace(it, 13.dp) }
-                }
-            }
-        }
-        Text("剩${game.hands[idx].size}张", color = Color(0xFFBFE4FB), fontSize = 9.sp)
+        Text("剩${game.hands[idx].size}张", color = Color(0xFFD8F0FA), fontSize = 9.sp)
+        Spacer(Modifier.height(4.dp))
     }
 }
 
+/** 中央牌池：四家弃牌环绕 + 最新牌 + 提示（仿经典麻将桌面） */
+@Composable
+private fun MjCenterPool(game: MahjongGame, modifier: Modifier) {
+    Column(
+        modifier
+            .fillMaxSize()
+            .background(Color(0x26FFFFFF), RoundedCornerShape(8.dp))
+            .border(1.dp, Color(0x55FFFFFF), RoundedCornerShape(8.dp))
+            .padding(horizontal = 5.dp, vertical = 4.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        // 对家弃牌（最近 10 张，一行）
+        Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+            game.rivers[2].takeLast(10).forEach { MjTileFace(it, 15.dp) }
+        }
+        Spacer(Modifier.height(5.dp))
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+            // 左家弃牌（每行 3 张）
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                game.rivers[3].takeLast(9).chunked(3).forEach { row ->
+                    Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                        row.forEach { MjTileFace(it, 13.dp) }
+                    }
+                }
+            }
+            Spacer(Modifier.weight(1f))
+            // 中央：最新打出的牌 + 提示
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                if (game.stage == "claim" && game.pendingTile >= 0) {
+                    Text(
+                        "${game.players[game.pendingFrom].name} 打出：",
+                        color = Color(0xFFFFE95C), fontSize = 10.sp
+                    )
+                    Spacer(Modifier.height(2.dp))
+                    MjTileFace(game.pendingTile, 27.dp)
+                }
+                Spacer(Modifier.height(4.dp))
+                Text("余 ${game.wall.size} 张", color = Color(0xFFD8F0FA), fontSize = 10.sp)
+                Text(
+                    mjHint(game),
+                    color = Color(0xFFFFE95C), fontSize = 11.sp, fontWeight = FontWeight.Bold,
+                    textAlign = TextAlign.Center, lineHeight = 14.sp
+                )
+            }
+            Spacer(Modifier.weight(1f))
+            // 右家弃牌（每行 3 张）
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                game.rivers[1].takeLast(9).chunked(3).forEach { row ->
+                    Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                        row.forEach { MjTileFace(it, 13.dp) }
+                    }
+                }
+            }
+        }
+        Spacer(Modifier.height(5.dp))
+        // 自己弃牌（最近 10 张，一行）
+        Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+            game.rivers[0].takeLast(10).forEach { MjTileFace(it, 15.dp) }
+        }
+    }
+}
+
+private fun mjHint(game: MahjongGame): String = when {
+    game.winner != -1 -> "本局结束"
+    game.stage == "claim" && game.claimQueue.firstOrNull()?.first == 0 ->
+        "你要" + when (game.claimQueue.first().second) {
+            "hu" -> "胡吗？"
+            "gang" -> "杠吗？"
+            else -> "碰吗？"
+        }
+    game.stage == "draw" && game.turn == 0 -> "轮到你摸牌"
+    game.stage == "act" && game.turn == 0 -> "轮到你出牌"
+    else -> "等待${game.players[game.turn].name}…"
+}
+// ==================== 牌面（仿标准麻将：白底 / 黑数字红萬 / 绿圆筒 / 竹节条） ====================
+
+/** 圆点/竹节位置（单位坐标 0~1） */
+private data class MjPip(val x: Float, val y: Float, val red: Boolean = false)
+
 @Composable
 private fun MjTileFace(code: Int, w: Dp, selected: Boolean = false, onClick: (() -> Unit)? = null) {
-    val color = when (code / 9) {
-        0 -> Color(0xFFC62828)
-        1 -> Color(0xFF1565C0)
-        else -> Color(0xFF2E7D32)
-    }
     Box(
         modifier = Modifier
             .width(w)
-            .height(w * 1.35f)
+            .height(w * 1.38f)
             .background(Color.White, RoundedCornerShape(3.dp))
-            .border(1.dp, if (selected) Color(0xFFFFB400) else Color(0xFF9DB6CC), RoundedCornerShape(3.dp))
+            .border(1.dp, if (selected) Color(0xFFFFB400) else Color(0xFF8FA8BC), RoundedCornerShape(3.dp))
             .clickable(enabled = onClick != null) { onClick?.invoke() },
         contentAlignment = Alignment.Center
     ) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Text(
-                MjTiles.RANKS[code % 9], color = color,
-                fontSize = (w.value * 0.42f).sp, fontWeight = FontWeight.Bold,
-                lineHeight = (w.value * 0.46f).sp
+        when (code / 9) {
+            0 -> Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                // 万：黑色大写数字 + 红色"萬"
+                Text(
+                    MjTiles.RANKS[code % 9], color = Color(0xFF1F1F1F),
+                    fontSize = (w.value * 0.44f).sp, fontWeight = FontWeight.Black,
+                    lineHeight = (w.value * 0.48f).sp
+                )
+                Text(
+                    "萬", color = Color(0xFFC0392B),
+                    fontSize = (w.value * 0.40f).sp, fontWeight = FontWeight.Black,
+                    lineHeight = (w.value * 0.44f).sp
+                )
+            }
+            1 -> MjDotPattern(code % 9 + 1, w)
+            else -> MjBambooPattern(code % 9 + 1, w)
+        }
+    }
+}
+
+/** 筒子（圆圈阵）：一筒大同心圆，五筒/七筒/九筒带红点缀 */
+@Composable
+private fun MjDotPattern(n: Int, w: Dp) {
+    Canvas(Modifier.width(w).height(w * 1.38f)) {
+        val cw = size.width
+        val ch = size.height
+        val green = Color(0xFF1B7A3D)
+        val red = Color(0xFFC0392B)
+        val pts: List<MjPip> = when (n) {
+            1 -> listOf(MjPip(0.5f, 0.5f))
+            2 -> listOf(MjPip(0.5f, 0.30f), MjPip(0.5f, 0.70f))
+            3 -> listOf(MjPip(0.26f, 0.22f), MjPip(0.5f, 0.5f), MjPip(0.74f, 0.78f))
+            4 -> listOf(MjPip(0.30f, 0.30f), MjPip(0.70f, 0.30f), MjPip(0.30f, 0.70f), MjPip(0.70f, 0.70f))
+            5 -> listOf(
+                MjPip(0.30f, 0.28f), MjPip(0.70f, 0.28f), MjPip(0.5f, 0.5f, true),
+                MjPip(0.30f, 0.72f), MjPip(0.70f, 0.72f)
             )
-            Text(
-                MjTiles.SUITS[code / 9], color = color,
-                fontSize = (w.value * 0.36f).sp,
-                lineHeight = (w.value * 0.40f).sp
+            6 -> listOf(
+                MjPip(0.22f, 0.30f), MjPip(0.42f, 0.30f), MjPip(0.62f, 0.30f), MjPip(0.82f, 0.30f),
+                MjPip(0.34f, 0.72f), MjPip(0.66f, 0.72f)
             )
+            7 -> listOf(
+                MjPip(0.5f, 0.16f, true), MjPip(0.26f, 0.46f), MjPip(0.5f, 0.46f), MjPip(0.74f, 0.46f),
+                MjPip(0.26f, 0.78f), MjPip(0.5f, 0.78f), MjPip(0.74f, 0.78f)
+            )
+            8 -> listOf(
+                MjPip(0.22f, 0.30f), MjPip(0.42f, 0.30f), MjPip(0.62f, 0.30f), MjPip(0.82f, 0.30f),
+                MjPip(0.22f, 0.70f), MjPip(0.42f, 0.70f), MjPip(0.62f, 0.70f), MjPip(0.82f, 0.70f)
+            )
+            else -> listOf(
+                MjPip(0.26f, 0.22f), MjPip(0.5f, 0.22f, true), MjPip(0.74f, 0.22f),
+                MjPip(0.26f, 0.5f), MjPip(0.5f, 0.5f, true), MjPip(0.74f, 0.5f),
+                MjPip(0.26f, 0.78f), MjPip(0.5f, 0.78f, true), MjPip(0.74f, 0.78f)
+            )
+        }
+        pts.forEach { p ->
+            val c = if (p.red) red else green
+            val cx = p.x * cw
+            val cy = p.y * ch
+            if (n == 1) {
+                // 一筒：大同心圆
+                drawCircle(green, radius = cw * 0.34f, center = Offset(cx, cy), style = Stroke(width = cw * 0.045f))
+                drawCircle(green, radius = cw * 0.22f, center = Offset(cx, cy), style = Stroke(width = cw * 0.04f))
+                drawCircle(green, radius = cw * 0.09f, center = Offset(cx, cy))
+            } else {
+                drawCircle(c, radius = cw * 0.105f, center = Offset(cx, cy), style = Stroke(width = cw * 0.038f))
+                drawCircle(c, radius = cw * 0.042f, center = Offset(cx, cy))
+            }
+        }
+    }
+}
+
+/** 条子（竹节阵）：一条幺鸡，其余按数量排竹节 */
+@Composable
+private fun MjBambooPattern(n: Int, w: Dp) {
+    Canvas(Modifier.width(w).height(w * 1.38f)) {
+        val cw = size.width
+        val ch = size.height
+        val green = Color(0xFF1B7A3D)
+        if (n == 1) {
+            // 幺鸡：绿色小鸟 + 红嘴
+            val cx = cw * 0.5f
+            val cy = ch * 0.52f
+            drawOval(green, topLeft = Offset(cx - cw * 0.24f, cy - ch * 0.09f), size = Size(cw * 0.46f, ch * 0.20f))
+            drawCircle(green, radius = cw * 0.115f, center = Offset(cx + cw * 0.16f, cy - ch * 0.13f))
+            drawCircle(Color(0xFFC0392B), radius = cw * 0.04f, center = Offset(cx + cw * 0.28f, cy - ch * 0.115f))
+            drawLine(green, Offset(cx - cw * 0.06f, cy + ch * 0.005f), Offset(cx + cw * 0.08f, cy - ch * 0.075f), cw * 0.03f, cap = StrokeCap.Round)
+            drawLine(green, Offset(cx - cw * 0.05f, cy + ch * 0.10f), Offset(cx - cw * 0.05f, cy + ch * 0.17f), cw * 0.025f, cap = StrokeCap.Round)
+            drawLine(green, Offset(cx + cw * 0.05f, cy + ch * 0.10f), Offset(cx + cw * 0.05f, cy + ch * 0.17f), cw * 0.025f, cap = StrokeCap.Round)
+            return@Canvas
+        }
+        val pts: List<MjPip> = when (n) {
+            2 -> listOf(MjPip(0.5f, 0.30f), MjPip(0.5f, 0.70f))
+            3 -> listOf(MjPip(0.28f, 0.24f), MjPip(0.5f, 0.5f), MjPip(0.72f, 0.76f))
+            4 -> listOf(MjPip(0.32f, 0.30f), MjPip(0.68f, 0.30f), MjPip(0.32f, 0.70f), MjPip(0.68f, 0.70f))
+            5 -> listOf(
+                MjPip(0.32f, 0.28f), MjPip(0.68f, 0.28f), MjPip(0.5f, 0.5f),
+                MjPip(0.32f, 0.72f), MjPip(0.68f, 0.72f)
+            )
+            6 -> listOf(
+                MjPip(0.32f, 0.32f), MjPip(0.5f, 0.32f), MjPip(0.68f, 0.32f),
+                MjPip(0.32f, 0.68f), MjPip(0.5f, 0.68f), MjPip(0.68f, 0.68f)
+            )
+            7 -> listOf(
+                MjPip(0.5f, 0.18f), MjPip(0.3f, 0.48f), MjPip(0.5f, 0.48f), MjPip(0.7f, 0.48f),
+                MjPip(0.3f, 0.78f), MjPip(0.5f, 0.78f), MjPip(0.7f, 0.78f)
+            )
+            8 -> listOf(
+                MjPip(0.28f, 0.30f), MjPip(0.44f, 0.26f), MjPip(0.6f, 0.26f), MjPip(0.76f, 0.30f),
+                MjPip(0.28f, 0.72f), MjPip(0.44f, 0.76f), MjPip(0.6f, 0.76f), MjPip(0.76f, 0.72f)
+            )
+            else -> listOf(
+                MjPip(0.28f, 0.22f), MjPip(0.5f, 0.22f), MjPip(0.72f, 0.22f),
+                MjPip(0.28f, 0.5f), MjPip(0.5f, 0.5f), MjPip(0.72f, 0.5f),
+                MjPip(0.28f, 0.78f), MjPip(0.5f, 0.78f), MjPip(0.72f, 0.78f)
+            )
+        }
+        pts.forEach { p ->
+            val cx = p.x * cw
+            val cy = p.y * ch
+            val seg = cw * 0.15f
+            // 竹节：圆头短竖线 + 中间白色收腰，看起来像两节竹子
+            drawLine(green, Offset(cx, cy - seg * 0.55f), Offset(cx, cy + seg * 0.55f), seg * 0.62f, cap = StrokeCap.Round)
+            drawLine(Color(0xFFFFFFFF), Offset(cx, cy - seg * 0.10f), Offset(cx, cy + seg * 0.10f), seg * 0.70f)
         }
     }
 }
@@ -774,16 +909,13 @@ private fun MjTileBack(w: Dp) {
     Box(
         modifier = Modifier
             .width(w)
-            .height(w * 1.35f)
+            .height(w * 1.38f)
             .background(
-                Brush.verticalGradient(listOf(Color(0xFF3E7CB8), Color(0xFF2A5A8C))),
+                Brush.verticalGradient(listOf(Color(0xFF2E9C4E), Color(0xFF1E7C3A))),
                 RoundedCornerShape(2.dp)
             )
-            .border(0.5.dp, Color(0xFFBFE4FB), RoundedCornerShape(2.dp)),
-        contentAlignment = Alignment.Center
-    ) {
-        Text("🀄", fontSize = (w.value * 0.5f).sp)
-    }
+            .border(0.5.dp, Color(0xFFD8E8DC), RoundedCornerShape(2.dp))
+    )
 }
 
 @Composable

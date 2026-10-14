@@ -12,7 +12,8 @@ import java.io.File
  *      bgm_ddz    斗地主   紧张明快
  *      bgm_board  象棋/五子棋 古风拨弦
  *      bgm_mj     麻将     喜庆国风
- *  - 开关持久化在 settings.musicEnabled，大厅/房间右上角 🎵 可切换；
+ *  - 开关持久化在 settings.musicEnabled，音量在 settings.musicVolume（0~100），
+ *    大厅/房间右上角 🎵 可切换，下方滑块可调音量；
  *  - 想用自己喜欢的歌：把网上搜到的 mp3/ogg 命名为 bgm_lobby.mp3 等，
  *    放到 filesDir/qq/bgm/ 目录即可自动替换内置曲目。
  */
@@ -26,6 +27,9 @@ object QQBgm {
         .build()
 
     private fun enabled(): Boolean = QQSession.settings.musicEnabled
+
+    /** 音量（0~100 线性映射到 MediaPlayer 的 0~1） */
+    private fun vol(): Float = QQSession.settings.musicVolume.coerceIn(0, 100) / 100f
 
     /**
      * 播放/切换背景音乐（name 形如 "bgm_lobby"）。
@@ -51,7 +55,8 @@ object QQBgm {
             }
             mp.setAudioAttributes(attrs)
             mp.isLooping = true
-            mp.setVolume(0.38f, 0.38f)
+            val v = vol()
+            mp.setVolume(v, v)
             mp.setOnPreparedListener { p ->
                 runCatching { if (current == name) p.start() }
             }
@@ -68,6 +73,12 @@ object QQBgm {
             player = null
             current = null
         }
+    }
+
+    /** 实时调节音量（滑块拖动时调用，无需重播）；pct 0~100 */
+    fun applyVolume(pct: Int) {
+        val v = pct.coerceIn(0, 100) / 100f
+        runCatching { player?.setVolume(v, v) }
     }
 
     /** 停止背景音乐（离开游戏窗口 / 关闭开关时） */
