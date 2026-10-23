@@ -824,12 +824,15 @@ private fun QQGameRoomScreen(room: QQGameRoom, onBack: () -> Unit, onSit: () -> 
                 .padding(horizontal = 10.dp, vertical = 5.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            QqGreenButton("快速加入游戏") {
-                QQSounds.ding()
-                onSit()
-            }
+            QqGreenButton(
+                "快速加入游戏",
+                {
+                    QQSounds.ding()
+                    onSit()
+                }
+            )
             Spacer(Modifier.width(8.dp))
-            QqWhiteButton("邀请好友") { QQSounds.click() }
+            QqWhiteButton("邀请好友", { QQSounds.click() })
             Spacer(Modifier.weight(1f))
             Text(
                 "双击桌子上的空位即可加入游戏",

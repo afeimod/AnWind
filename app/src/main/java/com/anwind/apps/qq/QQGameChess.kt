@@ -32,8 +32,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Fill
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.FilterQuality
@@ -797,7 +799,7 @@ private fun DrawScope.drawChessBoard() {
     }
 
     // 炮位 / 兵位曲尺标记
-    val marks = listOf(
+    val marks: List<Pair<Int, Int>> = listOf(
         1 to 2, 7 to 2,   // 黑炮
         1 to 7, 7 to 7,   // 红炮
         0 to 3, 2 to 3, 4 to 3, 6 to 3, 8 to 3,     // 黑卒

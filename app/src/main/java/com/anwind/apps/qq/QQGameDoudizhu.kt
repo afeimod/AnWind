@@ -24,6 +24,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -252,10 +253,14 @@ fun QQGameTableScreen(onExit: () -> Unit) {
                         }
                         Spacer(Modifier.height(14.dp))
                         Row {
-                            QqGreenButton("再来一局", height = 32.dp) {
-                                selected.clear()
-                                game.dealAndStartBid()
-                            }
+                            QqGreenButton(
+                                "再来一局",
+                                {
+                                    selected.clear()
+                                    game.dealAndStartBid()
+                                },
+                                height = 32.dp
+                            )
                             Spacer(Modifier.width(10.dp))
                             QqWhiteButton("退出牌桌", onExit, height = 32.dp)
                         }
@@ -357,7 +362,7 @@ private fun DdSidePlayer(game: DoudizhuGame, idx: Int) {
         Box(
             Modifier
                 .width(18.dp)
-                .height(26.dp + (stackN - 1) * 3.dp)
+                .height(26.dp + 3.dp * (stackN - 1))
         ) {
             repeat(stackN) { i ->
                 Box(Modifier.align(Alignment.TopStart).offset(y = (i * 3).dp)) {
