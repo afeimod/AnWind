@@ -675,6 +675,7 @@ class DoudizhuGame(
         bottomCards.addAll(deck.subList(51, 54))
 
         addLog("—— 新一局开始，发牌完毕 ——")
+        QQGameSound.ddzDealCards()          // 参考APK整段发牌音（一局一次）
         bidTurn = rnd.nextInt(3)
         phase = DdPhase.BIDDING
         addLog("等待${players[bidTurn].name}叫分…")
@@ -685,6 +686,7 @@ class DoudizhuGame(
         if (phase != DdPhase.BIDDING || idx != bidTurn) return
         val s = if (score > bidMax) score else 0
         addLog("${players[idx].name}：" + if (s == 0) "不叫" else "叫 $s 分")
+        if (s > 0) QQGameSound.ddzJiao() else QQGameSound.ddzBuYao()   // 叫/不叫语音
         if (s > bidMax) { bidMax = s; bidWinner = idx }
         bidCount++
         if (s == 3 || bidCount == 3) {
@@ -734,10 +736,29 @@ class DoudizhuGame(
 
         if (play.type == DdComboType.BOMB || play.type == DdComboType.ROCKET) {
             multiplier *= 2
-            QQSounds.bomb()
+            QQGameSound.ddzBomb()
+            if (play.type == DdComboType.ROCKET) QQGameSound.ddzRocket()
         } else {
-            QQSounds.card()
+            QQGameSound.ddzPlay()
         }
+        // 报牌语音（参考APK男声）：单张/对子报点数，牌型报名称
+        when (play.type) {
+            DdComboType.SINGLE -> QQGameSound.ddzCardVoice(play.keyRank)
+            DdComboType.PAIR -> QQGameSound.ddzPairVoice(play.keyRank)
+            DdComboType.BOMB -> QQGameSound.ddzTypeVoice("zhadan_strong")
+            DdComboType.ROCKET -> QQGameSound.ddzTypeVoice("wangzha_strong")
+            DdComboType.STRAIGHT -> QQGameSound.ddzTypeVoice("shunzi")
+            DdComboType.PAIR_STRAIGHT -> QQGameSound.ddzTypeVoice("liandui")
+            DdComboType.TRIO_ONE -> QQGameSound.ddzTypeVoice("sandai1")
+            DdComboType.TRIO_PAIR -> QQGameSound.ddzTypeVoice("sandai2")
+            DdComboType.PLANE, DdComboType.PLANE_ONE, DdComboType.PLANE_PAIR -> {
+                QQGameSound.ddzPlane(); QQGameSound.ddzTypeVoice("feiji_strong")
+            }
+            DdComboType.FOUR_TWO, DdComboType.FOUR_TWO_PAIRS -> QQGameSound.ddzTypeVoice("sidai2")
+            else -> {}
+        }
+        // 报警：出手后仅剩 ≤2 张
+        if (hand.isNotEmpty() && hand.size <= 2) QQGameSound.ddzBaoJing()
 
         addLog("${players[idx].name}：${play.describe()}" + if (multiplier > 1 && (play.type == DdComboType.BOMB || play.type == DdComboType.ROCKET)) "（倍数 ×$multiplier）" else "")
 
@@ -753,6 +774,7 @@ class DoudizhuGame(
         passed[idx] = true
         passCount++
         addLog("${players[idx].name}：不出")
+        if (players[idx].isHuman) QQGameSound.ddzBuYao()   // “不要”语音
         if (passCount >= 2) {
             // 一圈没人要 → 清桌，上家继续领出
             lastPlay = null
@@ -794,6 +816,7 @@ class DoudizhuGame(
         }
         deltas.forEachIndexed { i, d -> players[i].score += d }
         result = DdResult(landlord, landlordWon, deltas, spring, baseScore, finalMult)
+        if (spring) QQGameSound.spring()
         addLog(
             (if (landlordWon) "地主胜" else "农民胜") +
                     "（底分 $baseScore × 倍数 $finalMult${if (spring) "，春天！" else ""}）"

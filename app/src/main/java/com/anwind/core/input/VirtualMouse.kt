@@ -165,7 +165,7 @@ fun MouseCursorOverlay() {
     // v2.19：触控板模式下指针就是鼠标本体，强制显示
     val controlMode by app.settingsStore.mouseControlMode.collectAsState(initial = "touch")
     val themeId by app.settingsStore.mouseCursorTheme.collectAsState(initial = "white")
-    val sizeDp by app.settingsStore.mouseCursorSize.collectAsState(initial = 26f)
+    val sizeDp by app.settingsStore.mouseCursorSize.collectAsState(initial = 20f)
 
     if ((!enabled && controlMode != "trackpad") || !MouseController.initialized) return
 

@@ -60,6 +60,10 @@ fun QQGameTableScreen(onExit: () -> Unit) {
     val game = remember { DoudizhuGame(selfName, acc?.avatar ?: "emoji:🐧", selfScore) }
     val selected = remember { mutableStateListOf<DdCard>() }
 
+    // 游戏音效/语音系统就绪（参考APK素材）
+    val sndCtx = androidx.compose.ui.platform.LocalContext.current
+    remember { QQGameSound.ensureInit(sndCtx); true }
+
     // ---- 倒计时（我的回合从 30 起跳；非我回合显示 AI 思考剩余） ----
     var countdown by remember { mutableStateOf(30) }
     LaunchedEffect(game.phase, game.turn, game.bidTurn) {
@@ -104,22 +108,17 @@ fun QQGameTableScreen(onExit: () -> Unit) {
         val r = game.result ?: return@LaunchedEffect
         val delta = r.deltas[0]
         runCatching { QQGameScores.add(selfName, delta) }
-        if (delta > 0) QQSounds.win() else QQSounds.lose()
+        if (delta > 0) QQGameSound.win() else QQGameSound.lose()
     }
 
     Row(Modifier.fillMaxSize()) {
-        // ================= 桌面区（截图2：深青径向渐变）=================
+        // ================= 桌面区（参考APK牌桌背景图，超宽时裁切） =================
         Box(
             modifier = Modifier
                 .weight(1f)
                 .fillMaxSize()
-                .background(
-                    Brush.radialGradient(
-                        listOf(QqGame.DdzFeltCenter, QqGame.DdzFeltEdge),
-                        radius = 900f
-                    )
-                )
         ) {
+            QQGameAssetImage("qgame/bg/ddz_table.jpg", Modifier.fillMaxSize())
             Column(Modifier.fillMaxSize().padding(8.dp)) {
                 // ---- 顶行：左家 | 底牌+局况 | 右家 ----
                 Row(verticalAlignment = Alignment.Top, modifier = Modifier.fillMaxWidth()) {

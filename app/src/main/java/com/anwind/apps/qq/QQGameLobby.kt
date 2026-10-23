@@ -720,11 +720,13 @@ private fun QQGameRoomScreen(room: QQGameRoom, onBack: () -> Unit, onSit: () -> 
     }
     val watchers = remember(room) { 1 + Random.nextInt(14) }   // "N人正在看"
 
-    Column(
-        Modifier
-            .fillMaxSize()
-            .background(Brush.verticalGradient(listOf(QqGame.RoomBgTop, QqGame.RoomBgBottom)))
-    ) {
+    Box(Modifier.fillMaxSize()) {
+        // 参考APK大厅背景图
+        QQGameAssetImage("qgame/bg/hall.jpg", Modifier.fillMaxSize())
+        Column(
+            Modifier
+                .fillMaxSize()
+        ) {
         // ===== 顶部信息栏（截图1：企鹅头像 + 游戏名 + QQ号/积分/胜率）=====
         Row(
             modifier = Modifier
@@ -888,6 +890,7 @@ private fun QQGameRoomScreen(room: QQGameRoom, onBack: () -> Unit, onSit: () -> 
                 color = Color(0xFF8FB8D8),
                 fontSize = 10.sp
             )
+        }
         }
     }
 }

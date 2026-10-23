@@ -32,11 +32,13 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
@@ -49,32 +51,17 @@ import com.anwind.data.model.DesktopItemType
 import com.anwind.data.model.Shortcut
 import kotlinx.coroutines.launch
 import java.io.IOException
+import kotlin.math.roundToInt
 
 /**
- * 桌面图标网格：靠左上角、**先竖向填充再横向换列**排列（Windows 桌面真实样式）。
+ * 桌面图标网格（v3 自由定位版）：Windows 式随意拖放。
  *
- * 与之前用 FlowRow 不同：Windows 桌面图标是按列组织的——从上到下铺满一列后再
- * 跳到右边下一列继续从上到下，而不是从左到右铺满一行后再换行。
- * 这样在窄屏（手机竖屏）下也能合理利用屏幕高度。
- *
- * 数据来源：
- * 1. AppRegistry 中 pinnedToDesktop=true 的内置应用
- * 2. 数据库中保存的快捷方式
- *
- * v2.11：
- * - sortMode：右键菜单"排序方式"（default 默认 / name 按名称 / type 按类型，
- *   与设置中心共用 DataStore 持久化）；
- * - iconBounds：上报每个图标的屏幕边界，供双指右键手势命中检测
- *   （命中图标 → 图标菜单，否则 → 桌面菜单）。
- *
- * v2.13：
- * - clickMode：图标打开方式（single 单击打开 / double 双击打开，
- *   与鼠标设置共用 DataStore 持久化）。
- *
- * v2.14：
- * - 长按拖动排序：长按图标 400ms 触发（震动反馈），图标跟随手指，
- *   松手时与落点最近的图标交换位置，顺序持久化到 DataStore（desktop_icon_order）。
- *   仅 sortMode = default（默认排序）时启用；按名称/类型排序时拖动禁用。
+ * - 长按图标 400ms（震动反馈）进入拖动，图标跟手自由移动；
+ * - 松手时吸附到最近的网格单元并持久化位置（desktop_icon_positions）；
+ * - 若目标格已有图标则与之交换位置（Windows 同款行为）；
+ * - 未拖过/新出现的图标自动流式排到剩余空格（先列后行，同 Windows）；
+ * - 排序方式 name/type 时忽略自定义位置按序排列，拖动禁用；
+ * - iconBounds 上报每个图标边界，供双指右键手势命中检测。
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -87,9 +74,12 @@ fun DesktopIconGrid(
     val shortcuts by app.database.shortcutDao().observeAll().collectAsState(initial = emptyList())
     val builtinApps = remember { AppRegistry.desktopApps() }
     val iconSize by app.settingsStore.iconSize.collectAsState(initial = 48f)
-    // v2.14：自定义图标顺序（长按拖动后持久化）
+    // v2.14：自定义图标顺序（未拖动过的图标自动布局时沿用）
     val iconOrder by app.settingsStore.desktopIconOrder.collectAsState(initial = "")
+    // v3：自由定位坐标
+    val iconPositions by app.settingsStore.desktopIconPositions.collectAsState(initial = "")
     val scope = rememberCoroutineScope()
+    val density = LocalDensity.current
 
     // 合并桌面项
     val items: List<DesktopItem> = remember(shortcuts, builtinApps) {
@@ -151,41 +141,114 @@ fun DesktopIconGrid(
         }
     }
 
-    // 使用 FlowColumn：先竖向（从上到下）填充，超出屏幕高度后自动换到下一列
-    // （从左到右），完整还原 Windows 桌面图标的排列方式。
-    // 外层 horizontalScroll 让超出屏幕右边界的列可水平滚动访问。
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .horizontalScroll(rememberScrollState())
-    ) {
-        FlowColumn(
-            modifier = Modifier
-                .padding(8.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            sortedItems.forEach { item ->
-                DesktopIcon(
-                    item = item,
-                    iconSize = iconSize,
-                    boundsRegistry = iconBounds,
-                    clickMode = clickMode,
-                    dragEnabled = sortMode == "default",
-                    onMoveItem = { fromId, toId ->
-                        // 基于当前显示顺序重建 id 序列，把 fromId 移到 toId 的位置
-                        val ids = sortedItems.map { it.id }
-                        val f = ids.indexOf(fromId)
-                        val t = ids.indexOf(toId)
-                        if (f >= 0 && t >= 0 && f != t) {
-                            val m = ids.toMutableList()
-                            m.removeAt(f)
-                            m.add(t, fromId)
-                            scope.launch { app.settingsStore.setDesktopIconOrder(m.joinToString(",")) }
-                        }
+    // ============ v3：自由定位布局（Windows 式） ============
+
+    // 网格几何（px）：单元 = 图标单元宽/高 + 8dp 间距；边距 8dp
+    val cellWpx = with(density) { ((iconSize + 24f).dp + 8.dp).toPx() }
+    val cellHpx = with(density) { ((iconSize + 46f).dp + 8.dp).toPx() }
+    val gridMarginPx = with(density) { 8.dp.toPx() }
+
+    // 解析持久化位置："id:x,y;id:x,y"
+    val customPos = remember(iconPositions) {
+        val m = mutableMapOf<String, Offset>()
+        iconPositions.split(';').forEach { seg ->
+            seg.trim().takeIf { it.isNotBlank() }?.let { s ->
+                val idx = s.lastIndexOf(':')
+                if (idx > 0) {
+                    val id = s.substring(0, idx)
+                    val xy = s.substring(idx + 1).split(',')
+                    if (xy.size == 2) {
+                        val x = xy[0].toFloatOrNull(); val y = xy[1].toFloatOrNull()
+                        if (x != null && y != null) m[id] = Offset(x, y)
                     }
+                }
+            }
+        }
+        m
+    }
+    val freeDrag = sortMode == "default"
+
+    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+        val gridWpx = constraints.maxWidth.toFloat()
+        val gridHpx = constraints.maxHeight.toFloat()
+        val perCol = (((gridHpx - 2 * gridMarginPx) / cellHpx).toInt()).coerceAtLeast(1)
+        val perRow = (((gridWpx - 2 * gridMarginPx) / cellWpx).toInt()).coerceAtLeast(1)
+
+        // 网格单元坐标 → 像素
+        fun cellPx(col: Int, row: Int): Offset {
+            val c = col.coerceIn(0, perRow - 1)
+            val r = row.coerceIn(0, perCol - 1)
+            return Offset(gridMarginPx + c * cellWpx, gridMarginPx + r * cellHpx)
+        }
+
+        // 像素 → 最近网格单元（列/行）
+        fun cellOf(p: Offset): Pair<Int, Int> {
+            val col = ((p.x - gridMarginPx + cellWpx / 2f) / cellWpx).toInt().coerceIn(0, perRow - 1)
+            val row = ((p.y - gridMarginPx + cellHpx / 2f) / cellHpx).toInt().coerceIn(0, perCol - 1)
+            return col to row
+        }
+
+        // 已占格（自定义位置吸附后的单元）
+        val occupiedCells = remember(customPos, perRow, perCol) {
+            customPos.values.map { cellOf(it) }.toSet()
+        }
+
+        // 未定位图标自动流入剩余空格（先列后行，同 Windows 新图标落位）
+        val positions = remember(sortedItems, customPos, occupiedCells, perRow, perCol, freeDrag) {
+            val m = mutableMapOf<String, Offset>()
+            if (freeDrag) {
+                sortedItems.forEach { if (customPos.containsKey(it.id)) m[it.id] = customPos[it.id]!! }
+                val freeCells = buildList {
+                    for (c in 0 until perRow) for (r in 0 until perCol) {
+                        val cell = c to r
+                        if (cell !in occupiedCells) add(cell)
+                    }
+                }
+                sortedItems.filter { !customPos.containsKey(it.id) }.forEachIndexed { i, item ->
+                    if (i < freeCells.size) m[item.id] = cellPx(freeCells[i].first, freeCells[i].second)
+                }
+            } else {
+                // 排序模式：全部按序自动排列（忽略自定义位置）
+                sortedItems.forEachIndexed { i, item ->
+                    val col = i / perCol
+                    val row = i % perCol
+                    m[item.id] = cellPx(col, row)
+                }
+            }
+            m
+        }
+
+        // 拖动落格：吸附 + 占位交换 + 持久化
+        fun onDropIcon(item: DesktopItem, basePx: Offset, deltaPx: Offset) {
+            if (deltaPx == Offset.Zero) return
+            val newCenter = basePx + deltaPx
+            val (col, row) = cellOf(newCenter)
+            val snapped = cellPx(col, row)
+            // 目标格占用者（按吸附后坐标精确匹配）
+            val occupant = sortedItems.firstOrNull { other ->
+                other.id != item.id && positions[other.id] == snapped
+            }
+            val updated = customPos.toMutableMap()
+            updated[item.id] = snapped
+            if (occupant != null) updated[occupant.id] = basePx   // 被占者换到我原来的格
+            scope.launch {
+                app.settingsStore.setDesktopIconPositions(
+                    updated.entries.joinToString(";") { "${it.key}:${it.value.x},${it.value.y}" }
                 )
             }
+        }
+
+        sortedItems.forEach { item ->
+            val pos = positions[item.id] ?: cellPx(0, 0)
+            DesktopIcon(
+                item = item,
+                iconSize = iconSize,
+                basePx = pos,
+                boundsRegistry = iconBounds,
+                clickMode = clickMode,
+                dragEnabled = freeDrag,
+                onDrop = { delta -> onDropIcon(item, pos, delta) }
+            )
         }
     }
 }
@@ -249,10 +312,11 @@ fun launchDesktopItem(item: DesktopItem, wm: WindowManager) {
 private fun DesktopIcon(
     item: DesktopItem,
     iconSize: Float,
+    basePx: Offset,
     boundsRegistry: SnapshotStateMap<String, Pair<DesktopItem, Rect>>? = null,
     clickMode: String = "double",
     dragEnabled: Boolean = false,
-    onMoveItem: (String, String) -> Unit = { _, _ -> }
+    onDrop: (Offset) -> Unit = { }
 ) {
     val theme = LocalWinTheme.current
     val wm = remember { WindowManager.get() }
@@ -260,13 +324,15 @@ private fun DesktopIcon(
     val cellWidth = (iconSize + 24).dp
     val haptic = LocalHapticFeedback.current
 
-    // v2.14 长按拖动状态：拖动中偏移（px），松手归零
+    // v3 自由拖动状态：拖动中的累计偏移（px），松手归零并上报父级计算落格
     var dragOffset by remember { mutableStateOf(Offset.Zero) }
     val dragging = dragOffset != Offset.Zero
 
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         modifier = Modifier
+            // v3：绝对定位（父级计算的网格坐标）
+            .offset { IntOffset(basePx.x.roundToInt(), basePx.y.roundToInt()) }
             .width(cellWidth)
             // 拖动中置顶 + 轻微放大，视觉上"拎起来"
             .zIndex(if (dragging) 10f else 0f)
@@ -278,9 +344,9 @@ private fun DesktopIcon(
                 scaleY = s
                 alpha = if (dragging) 0.85f else 1f
             }
-            // 上报图标边界（根坐标）：供双指右键手势命中检测 + 拖动落点计算；
+            // 上报图标边界（根坐标）：供双指右键手势命中检测；
             // 值未变化时不重复写入，避免无谓的快照失效。
-            // 注意：上报的是【布局位置】（不含拖动偏移），落点计算时手动叠加偏移。
+            // 注意：上报的是【布局位置】（不含拖动偏移），松手落格后自动更新。
             .onGloballyPositioned { coords ->
                 if (boundsRegistry != null) {
                     val rect = coords.boundsInRoot()
@@ -290,7 +356,7 @@ private fun DesktopIcon(
                     }
                 }
             }
-            // v2.14：长按 400ms 进入拖动 → 图标跟随手指 → 松手与最近图标换位
+            // v3：长按 400ms 进入自由拖动 → 图标跟手 → 松手吸附最近网格落位
             .pointerInput(item.id, dragEnabled) {
                 if (!dragEnabled) return@pointerInput
                 detectDragGesturesAfterLongPress(
@@ -302,25 +368,7 @@ private fun DesktopIcon(
                         dragOffset += dragAmount
                     },
                     onDragEnd = {
-                        // 落点 = 布局位置 + 累计偏移
-                        val myRect = boundsRegistry?.get(item.id)?.second
-                        if (myRect != null && dragOffset != Offset.Zero) {
-                            val dropCenter = Offset(
-                                myRect.center.x + dragOffset.x,
-                                myRect.center.y + dragOffset.y
-                            )
-                            // 找到中心距离落点最近的其他图标（拖动自身偏移不参与）
-                            val target = boundsRegistry.entries
-                                .filter { it.key != item.id }
-                                .minByOrNull { entry ->
-                                    val c = entry.value.second.center
-                                    (c.x - dropCenter.x) * (c.x - dropCenter.x) +
-                                        (c.y - dropCenter.y) * (c.y - dropCenter.y)
-                                }
-                            if (target != null) {
-                                onMoveItem(item.id, target.key)
-                            }
-                        }
+                        if (dragOffset != Offset.Zero) onDrop(dragOffset)
                         dragOffset = Offset.Zero
                     },
                     onDragCancel = { dragOffset = Offset.Zero }

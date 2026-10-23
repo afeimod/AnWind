@@ -1545,7 +1545,7 @@ private fun AccessibilitySection() {
     // v2.17：全部改为对 AnWind 桌面真实生效的设置（不再跳转手机系统辅助功能）
     val fontScale by app.settingsStore.fontScale.collectAsState(initial = 1f)
     val uiScale by app.settingsStore.uiScale.collectAsState(initial = 1f)
-    val cursorSize by app.settingsStore.mouseCursorSize.collectAsState(initial = 26f)
+    val cursorSize by app.settingsStore.mouseCursorSize.collectAsState(initial = 20f)
     val cursorTheme by app.settingsStore.mouseCursorTheme.collectAsState(initial = "white")
     val clickMode by app.settingsStore.mouseClickMode.collectAsState(initial = "single")
     val rightClick by app.settingsStore.mouseRightClick.collectAsState(initial = "twofinger")

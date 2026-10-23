@@ -391,6 +391,9 @@ class ChessGame(selfName: String, selfAvatar: String, selfScore: Int) {
     var lastFrom by mutableStateOf(-1)
     var lastTo by mutableStateOf(-1)
     var ply by mutableStateOf(0)
+    /** 棋盘内容版本号：每次落子/重置递增。Canvas 读取它 → 任何棋盘变化必然触发重绘 */
+    var boardVersion by mutableStateOf(0)
+        private set
     val log = mutableStateListOf<String>()
 
     private var legal = ChessRules.allLegalMoves(board, ChessRules.RED)
@@ -411,12 +414,16 @@ class ChessGame(selfName: String, selfAvatar: String, selfScore: Int) {
     fun canSelect(from: Int): Boolean =
         winner == -1 && board[from] != 0 && ((board[from] > 0) == (turn == 0))
 
-    /** 走棋（含合法性校验） */
+    /** 走棋（含合法性校验）。legal 缓存与棋盘不一致时自愈重算，绝不误拒合法看步 */
     fun play(from: Int, to: Int): Boolean {
         if (winner != -1) return false
         if ((board[from] > 0) != (turn == 0) || board[from] == 0) return false
         val mv = from * 90 + to
-        if (mv !in legal) return false
+        if (mv !in legal) {
+            // 自愈：缓存过期时按当前棋盘重算一遍再判（防任何不可预见的状怇不同步）
+            legal = ChessRules.allLegalMoves(board, turn)
+            if (mv !in legal) return false
+        }
 
         val mover = turn
         val p = board[from]
@@ -425,6 +432,7 @@ class ChessGame(selfName: String, selfAvatar: String, selfScore: Int) {
         board[from] = 0
         lastFrom = from; lastTo = to
         ply++
+        boardVersion++
         turn = 1 - turn
         legal = ChessRules.allLegalMoves(board, turn)
 
@@ -447,6 +455,7 @@ class ChessGame(selfName: String, selfAvatar: String, selfScore: Int) {
     fun reset() {
         board = ChessRules.initial()
         turn = 0; winner = -1; lastFrom = -1; lastTo = -1; ply = 0
+        boardVersion++
         legal = ChessRules.allLegalMoves(board, ChessRules.RED)
         log.clear()
         addLog("—— 新对局开始，你执红先行 ——")
@@ -527,34 +536,33 @@ fun QQChessTableScreen(onExit: () -> Unit) {
         }
     }
 
-    // ---- AI 行动：后台搜索 + 全链路异常兜底 + 看门狗强制落子 ----
-    LaunchedEffect(game.turn, game.winner, game.ply) {
+    // ---- AI 行动（与五子棋同款同步驱动） ----
+    // v3 根治重构：不再使用 withContext(Dispatchers.Default)+runCatching（该组合在取消
+    // 场景会吞掉 CancellationException 令协程僵死，是"AI 不走棋"的元凶）；改为与
+    // 五子棋完全一致的主线程同步搜索——引擎自带硬性时间预算（800ms 超时自动降层），
+    // 实测毫秒级返回，既不卡 UI 也绝不停摆。取消防护性 runCatching，取消异常正常上抛。
+    LaunchedEffect(game.turn, game.winner, game.ply, game.boardVersion) {
         if (game.winner != -1 || game.turn != 1) return@LaunchedEffect
         delay(Random.nextLong(400, 900))
         if (game.winner != -1 || game.turn != 1) return@LaunchedEffect
-        val mv: Int? = try {
-            withContext(Dispatchers.Default) {
-                runCatching { ChessAi.best(game.board, ChessRules.BLACK, maxDepth = 3, budgetMs = 1200L) }
-                    .getOrNull()
-                    ?: ChessRules.allLegalMoves(game.board, ChessRules.BLACK).randomOrNull()
-            }
-        } catch (t: Throwable) {
-            runCatching { ChessRules.allLegalMoves(game.board, ChessRules.BLACK).randomOrNull() }.getOrNull()
-        }
+        val mv = ChessAi.best(game.board, ChessRules.BLACK, maxDepth = 3, budgetMs = 800L)
+            ?: ChessRules.allLegalMoves(game.board, ChessRules.BLACK).randomOrNull()
         if (game.winner == -1 && game.turn == 1 && mv != null) {
-            runCatching { game.play(mv / 90, mv % 90) }
+            if (!game.play(mv / 90, mv % 90)) {
+                // 引擎走法被拒（理论不可达）：随机合法着法兜底，绝不停摆
+                val fallback = ChessRules.allLegalMoves(game.board, ChessRules.BLACK).randomOrNull()
+                if (fallback != null) game.play(fallback / 90, fallback % 90)
+            }
         }
     }
 
-    // ---- 看门狗 ----
-    LaunchedEffect(game.turn, game.winner, game.ply) {
+    // ---- 看门狗：任何原因导致 AI 回合停留超 8 秒，直接强制落子 ----
+    LaunchedEffect(game.turn, game.winner, game.ply, game.boardVersion) {
         if (game.winner != -1 || game.turn != 1) return@LaunchedEffect
-        delay(6000)
+        delay(8000)
         if (game.winner == -1 && game.turn == 1) {
-            val mv = runCatching {
-                ChessRules.allLegalMoves(game.board, ChessRules.BLACK).randomOrNull()
-            }.getOrNull()
-            if (mv != null) runCatching { game.play(mv / 90, mv % 90) }
+            val mv = ChessRules.allLegalMoves(game.board, ChessRules.BLACK).randomOrNull()
+            if (mv != null) game.play(mv / 90, mv % 90)
         }
     }
 
@@ -647,6 +655,8 @@ fun QQChessTableScreen(onExit: () -> Unit) {
                             }
                     ) {
                         drawChessBoard()
+                        // 读取版本号：棋盘任何变化（含 AI 落子）必然触发本次重绘
+                        val boardVer = game.boardVersion
                         val padPx = pad.toPx()
                         val sx = (size.width - 2 * padPx) / 8f
                         val sy = (size.height - 2 * padPx) / 9f
@@ -676,7 +686,7 @@ fun QQChessTableScreen(onExit: () -> Unit) {
                         // 棋子（楷书圆棋子位图，红方/黑方各 7 种）
                         val pieceSize = sx * 0.94f
                         for (i in 0..89) {
-                            val p = game.board[i]
+                            val p = game.board[i]   // boardVersion 已读，棋盘变化必然重绘
                             if (p == 0) continue
                             val bmps = pieceBmps[abs(p)] ?: continue
                             val center = px(i / 9, i % 9)

@@ -49,7 +49,12 @@ object QQBgm {
             if (user != null) {
                 mp.setDataSource(user.absolutePath)
             } else {
-                val afd = context.assets.openFd("qq_sounds/$name.wav")
+                // 内置曲目：按 wav → mp3 → ogg 顺序探测（v2 起新增参考 APK 的 mp3 曲目）
+                val builtin = listOf("wav", "mp3", "ogg")
+                    .map { "qq_sounds/$name.$it" }
+                    .firstOrNull { runCatching { context.assets.open(it).close() }.isSuccess }
+                    ?: "qq_sounds/$name.wav"
+                val afd = context.assets.openFd(builtin)
                 mp.setDataSource(afd.fileDescriptor, afd.startOffset, afd.length)
                 afd.close()
             }

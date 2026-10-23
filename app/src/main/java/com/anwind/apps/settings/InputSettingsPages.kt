@@ -145,7 +145,7 @@ internal fun MouseSettingsPage(onBack: () -> Unit) {
 
     val cursorEnabled by app.settingsStore.mouseCursorEnabled.collectAsState(initial = true)
     val cursorTheme by app.settingsStore.mouseCursorTheme.collectAsState(initial = "white")
-    val cursorSize by app.settingsStore.mouseCursorSize.collectAsState(initial = 26f)
+    val cursorSize by app.settingsStore.mouseCursorSize.collectAsState(initial = 20f)
     val clickMode by app.settingsStore.mouseClickMode.collectAsState(initial = "single")
     val rightClick by app.settingsStore.mouseRightClick.collectAsState(initial = "twofinger")
     val speed by app.settingsStore.mousePointerSpeed.collectAsState(initial = 1.0f)
@@ -218,7 +218,7 @@ internal fun MouseSettingsPage(onBack: () -> Unit) {
                             .clickable { scope.launch { app.settingsStore.setMouseCursorTheme(id) } }
                             .padding(horizontal = 12.dp, vertical = 8.dp)
                     ) {
-                        MouseCursorPreview(themeId = id, sizeDp = 26f)
+                        MouseCursorPreview(themeId = id, sizeDp = 20f)
                         Spacer(Modifier.height(6.dp))
                         Text(
                             label,

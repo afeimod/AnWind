@@ -90,6 +90,8 @@ class SettingsStore(private val context: Context) {
         val DESKTOP_SORT = stringPreferencesKey("desktop_sort")
         // v2.14：桌面图标自定义顺序（长按拖动排序后保存，逗号分隔的 item id 列表）
         val DESKTOP_ICON_ORDER = stringPreferencesKey("desktop_icon_order")
+        // v3：桌面图标自由定位（Windows 式随意拖放，"id:x,y;id:x,y" 像素坐标）
+        val DESKTOP_ICON_POSITIONS = stringPreferencesKey("desktop_icon_positions")
 
         // === 蓝牙与设备 ===
         val BLUETOOTH_ENABLED = booleanPreferencesKey("bluetooth_enabled")
@@ -210,6 +212,9 @@ class SettingsStore(private val context: Context) {
     // v2.14：自定义图标顺序（空串 = 未自定义，按默认序）
     val desktopIconOrder: Flow<String> = context.appPrefs.data.map { it[Keys.DESKTOP_ICON_ORDER] ?: "" }
 
+    // v3：桌面图标自由定位（Windows 式随意拖放）
+    val desktopIconPositions: Flow<String> = context.appPrefs.data.map { it[Keys.DESKTOP_ICON_POSITIONS] ?: "" }
+
     // === v2.14：个性化 ===
     val appColorMode: Flow<String> = context.appPrefs.data.map { it[Keys.APP_COLOR_MODE] ?: "auto" }
     val appAccent: Flow<String> = context.appPrefs.data.map { it[Keys.APP_ACCENT] ?: "default" }
@@ -227,7 +232,7 @@ class SettingsStore(private val context: Context) {
     // === 虚拟鼠标（v2.13） ===
     val mouseCursorEnabled: Flow<Boolean> = context.appPrefs.data.map { it[Keys.MOUSE_CURSOR_ENABLED] ?: true }
     val mouseCursorTheme: Flow<String> = context.appPrefs.data.map { it[Keys.MOUSE_CURSOR_THEME] ?: "white" }
-    val mouseCursorSize: Flow<Float> = context.appPrefs.data.map { it[Keys.MOUSE_CURSOR_SIZE] ?: 26f }
+    val mouseCursorSize: Flow<Float> = context.appPrefs.data.map { it[Keys.MOUSE_CURSOR_SIZE] ?: 20f }
     val mouseClickMode: Flow<String> = context.appPrefs.data.map { it[Keys.MOUSE_CLICK_MODE] ?: "single" }
     val mouseRightClick: Flow<String> = context.appPrefs.data.map { it[Keys.MOUSE_RIGHT_CLICK] ?: "twofinger" }
     // v2.18 指针移动方式：touch 跟随手指 / trackpad 触控板（默认 touch）
@@ -374,6 +379,11 @@ class SettingsStore(private val context: Context) {
 
     suspend fun setDesktopIconOrder(order: String) {
         context.appPrefs.edit { it[Keys.DESKTOP_ICON_ORDER] = order }
+    }
+
+    // v3：保存桌面图标自由定位（"id:x,y;…"）
+    suspend fun setDesktopIconPositions(positions: String) {
+        context.appPrefs.edit { it[Keys.DESKTOP_ICON_POSITIONS] = positions }
     }
 
     // === v2.14：个性化 setter ===

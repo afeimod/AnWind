@@ -212,6 +212,7 @@ class MahjongGame(selfName: String, selfAvatar: String, selfScore: Int) {
         turn = dealer
         stage = "draw"
         bump()
+        QQGameSound.mjXiPai(); QQGameSound.mjFaPai(); QQGameSound.mjDice()   // 洗牌+发牌+骰子
         addLog("—— 新一局开始，庄家：${players[dealer].name} ——")
     }
 
@@ -226,6 +227,7 @@ class MahjongGame(selfName: String, selfAvatar: String, selfScore: Int) {
         lastDrawn = t
         stage = "act"
         bump()
+        QQGameSound.mjMoPai()   // 摸牌音
     }
 
     // ---------- 出牌（自摸后 / 碰后） ----------
@@ -245,7 +247,8 @@ class MahjongGame(selfName: String, selfAvatar: String, selfScore: Int) {
         pendingTile = tile
         pendingFrom = i
         bump()
-        QQSounds.card()
+        QQGameSound.mjDaPai()              // 打牌音
+        QQGameSound.mjTileVoice(tile)      // 报牌语音（万/筒/条）
         addLog("${players[i].name} 打 ${MjTiles.label(tile)}")
 
         // 优先胡
@@ -288,6 +291,7 @@ class MahjongGame(selfName: String, selfAvatar: String, selfScore: Int) {
                 if (p == 0) selfDelta += 1
                 if (pendingFrom == 0) selfDelta -= 1
                 addLog("${players[p].name} 明杠 ${MjTiles.label(pendingTile)}（${players[pendingFrom].name} 付 1 分）")
+                QQGameSound.mjActionVoice("gang")
                 claimQueue = emptyList()
                 pendingTile = -1; pendingFrom = -1
                 turn = p
@@ -299,6 +303,7 @@ class MahjongGame(selfName: String, selfAvatar: String, selfScore: Int) {
                 melds[p].add(MjMeld("peng", pendingTile))
                 rivers[pendingFrom].remove(pendingTile)
                 addLog("${players[p].name} 碰 ${MjTiles.label(pendingTile)}")
+                QQGameSound.mjActionVoice("peng")
                 claimQueue = emptyList()
                 pendingTile = -1; pendingFrom = -1
                 turn = p
@@ -306,7 +311,6 @@ class MahjongGame(selfName: String, selfAvatar: String, selfScore: Int) {
                 bump()
             }
         }
-        QQSounds.card()
     }
 
     // ---------- 自摸动作 ----------
@@ -328,10 +332,10 @@ class MahjongGame(selfName: String, selfAvatar: String, selfScore: Int) {
         players[turn].score += 3
         if (turn == 0) selfDelta += 3
         addLog("${players[turn].name} 暗杠 ${MjTiles.label(tile)}（每家付 1 分）")
+        QQGameSound.mjActionVoice("gang")
         lastDrawn = -1
         stage = "draw"                           // 补摸
         bump()
-        QQSounds.card()
     }
 
     // ---------- 结算 ----------
@@ -350,6 +354,7 @@ class MahjongGame(selfName: String, selfAvatar: String, selfScore: Int) {
         winTile = tile
         winSelfDrawn = selfDrawn
         winPayer = payer
+        QQGameSound.mjActionVoice("hu")   // “胡了！”语音
         if (selfDrawn) {
             players[w].score += 6
             if (w == 0) selfDelta += 6
@@ -400,6 +405,10 @@ fun QQMahjongTableScreen(onExit: () -> Unit) {
     val selfScore = remember { QQGameScores.load()["麻将·$selfName"] ?: 0 }
     val game = remember { MahjongGame(selfName, acc?.avatar ?: "emoji:🐧", selfScore) }
     var selIdx by remember { mutableStateOf(-1) }
+
+    // 游戏音效/语音系统就绪（参考APK素材）
+    val sndCtx = androidx.compose.ui.platform.LocalContext.current
+    remember { QQGameSound.ensureInit(sndCtx); true }
 
     // ---- 倒计时（截图3 中央 LED 09；行动方从 15 起跳） ----
     var countdown by remember { mutableStateOf(15) }
@@ -456,9 +465,9 @@ fun QQMahjongTableScreen(onExit: () -> Unit) {
     // ---- 结算：音效 + 积分落盘 ----
     LaunchedEffect(game.winner) {
         when (game.winner) {
-            0 -> QQSounds.win()
-            in 1..3 -> QQSounds.lose()
-            4 -> QQSounds.ding()
+            0 -> QQGameSound.win()
+            in 1..3 -> QQGameSound.lose()
+            4 -> QQGameSound.mjTuipai()
         }
         if (game.winner != -1 && game.selfDelta != 0) {
             runCatching { QQGameScores.add("麻将·$selfName", game.selfDelta) }
@@ -466,18 +475,13 @@ fun QQMahjongTableScreen(onExit: () -> Unit) {
     }
 
     Row(Modifier.fillMaxSize()) {
-        // ================= 桌面区（截图3：深青牌桌 + 绿牌墙围合）=================
+        // ================= 桌面区（参考APK麻将桌面背景图） =================
         Box(
             modifier = Modifier
                 .weight(1f)
                 .fillMaxSize()
-                .background(
-                    Brush.radialGradient(
-                        listOf(QqGame.MjFeltCenter, QqGame.MjFeltEdge),
-                        radius = 800f
-                    )
-                )
         ) {
+            QQGameAssetImage("qgame/bg/mj_table.jpg", Modifier.fillMaxSize())
             Column(Modifier.fillMaxSize().padding(4.dp)) {
                 // ---- 对家（上方）：信息 + 牌墙（截图3 顶部横排牌墙，随摸牌减少）----
                 MjSeatTop(game, 2)
@@ -893,12 +897,12 @@ private fun MjTileBack(w: Dp) {
         modifier = Modifier
             .width(w)
             .height(w * 1.38f)
-            .background(
-                Brush.verticalGradient(listOf(QqGame.TileBackGreen, QqGame.TileBackDark)),
-                RoundedCornerShape(2.dp)
-            )
-            .border(0.5.dp, Color(0xFFD8E8DC), RoundedCornerShape(2.dp))
-    )
+            .clip(RoundedCornerShape(2.dp))
+            .border(0.5.dp, Color(0x33D8E8DC), RoundedCornerShape(2.dp))
+    ) {
+        // 参考APK牌背贴图（qgame/mahjong/back.png）
+        QQGameAssetImage("qgame/mahjong/back.png", Modifier.fillMaxSize())
+    }
 }
 
 // ==================== 右侧面板（截图3 经典样式） ====================
