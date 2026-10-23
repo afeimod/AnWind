@@ -37,7 +37,9 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.anwind.core.window.WindowContentScope
@@ -152,8 +154,8 @@ fun QQGameRoot(scope: WindowContentScope) {
             scope.onTitleChange(
                 when (screen) {
                     "login" -> "QQ游戏2011"
-                    "table" -> "QQ游戏 - ${gameDef.title}"
-                    else -> "QQ游戏 - ${room.area} · ${room.name}"
+                    "table" -> "QQ游戏 - ${gameDef.title} 角色版"
+                    else -> "QQ游戏 - ${gameDef.title}[${room.name}]"
                 }
             )
         }
@@ -677,205 +679,317 @@ private fun TreeRow(text: String, indent: Int = 10, gray: Boolean = false, onCli
     )
 }
 
-// ==================== 房间（桌子按人数排列 + 玩家列表） ====================
+// ==================== 房间（截图1：橙色木桌大厅 + 企鹅头像座位） ====================
+
+/** 截图1 大厅桌位上的经典昵称池 */
+private val LOBBY_NICKS = listOf(
+    "金木", "好心情", "天空", "大鱼儿", "李学霸", "子龙", "山人", "老牛",
+    "华哥", "懒散", "玉谦", "郭军", "龙蔡", "风雨同路", "笑看人生", "沉默是金",
+    "快乐男孩", "一生有你", "淡然", "追梦人", "逍遥子", "小虾米", "夜风", "独孤剑"
+)
 
 @Composable
 private fun QQGameRoomScreen(room: QQGameRoom, onBack: () -> Unit, onSit: () -> Unit) {
     val def = GAME_DEFS.first { it.id == room.gameId }
+    val acc = QQSession.account
+    val scores = remember { QQGameScores.load() }
+    val myScore = when (def.id) {
+        "ddz" -> scores[acc?.nickname] ?: -327
+        "chess" -> scores["象棋·${acc?.nickname}"] ?: 411
+        "gomoku" -> scores["五子棋·${acc?.nickname}"] ?: -84
+        else -> scores["麻将·${acc?.nickname}"] ?: -20
+    }
+    // 胜率 38%（截图1 顶栏样式，取个 2008 味的数）
+    val winRate = remember { 35 + Random.nextInt(20) }
 
-    // 12 张桌子，随机已入座人数（保证至少一张有空位）
+    // 20 张桌子（5 列 × 4 行，对应截图1 的桌子阵列）
     val tables = remember(room) {
-        val list = List(12) { Random.nextInt(0, def.seats + 1) }
+        val list = List(20) { Random.nextInt(0, def.seats + 1) }
         if (list.all { it >= def.seats }) list.toMutableList().also { it[0] = def.seats - 1 } else list
     }
-    // 房间玩家：名字与头像都随机
-    val roomPlayers = remember(room) {
-        val used = mutableSetOf<String>()
-        List(Random.nextInt(12, 25)) {
-            val n = GamePeople.randomName(used)
-            used.add(n)
-            n to GamePeople.randomAvatar()
+    // 每桌座位上的昵称（同一桌内不重复）
+    val tableNicks = remember(room, tables) {
+        tables.map { occ ->
+            val used = mutableSetOf<String>()
+            List(occ) {
+                val pool = LOBBY_NICKS.filter { it !in used }
+                val n = if (pool.isNotEmpty()) pool.random() else "玩家${(1000..9999).random()}"
+                used.add(n); n
+            }
         }
     }
+    val watchers = remember(room) { 1 + Random.nextInt(14) }   // "N人正在看"
 
-    Column(Modifier.fillMaxSize().background(Color(0xFF1E4E86))) {
-        // ===== 顶部 =====
+    Column(
+        Modifier
+            .fillMaxSize()
+            .background(Brush.verticalGradient(listOf(QqGame.RoomBgTop, QqGame.RoomBgBottom)))
+    ) {
+        // ===== 顶部信息栏（截图1：企鹅头像 + 游戏名 + QQ号/积分/胜率）=====
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .background(QQ2008.titleBrush())
-                .padding(horizontal = 10.dp, vertical = 6.dp),
+                .background(Brush.verticalGradient(listOf(Color(0xFF2D9AC7), Color(0xFFA6DBE9))))
+                .padding(horizontal = 10.dp, vertical = 5.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            // 白色描边头像框
+            Box(
+                modifier = Modifier
+                    .size(44.dp)
+                    .background(Color.White, RoundedCornerShape(4.dp))
+                    .border(2.dp, Color(0xFF2E86D5), RoundedCornerShape(4.dp))
+                    .padding(2.dp)
+            ) {
+                QqPenguinAvatar(size = 40.dp, modifier = Modifier.fillMaxSize())
+            }
+            Spacer(Modifier.width(8.dp))
+            Column {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        def.title,
+                        color = Color.White,
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        "⬅ 返回大厅",
+                        color = Color(0xFF123A5E),
+                        fontSize = 11.sp,
+                        modifier = Modifier.clickable { QQSounds.click(); onBack() }
+                    )
+                }
+                Text(
+                    "昵称：${acc?.nickname ?: "游客"}   QQ号：${acc?.number ?: "17713"}",
+                    color = Color(0xFF123A5E),
+                    fontSize = 11.sp
+                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("积分：", color = Color(0xFF123A5E), fontSize = 11.sp)
+                    Text("$myScore", color = Color(0xFFC3272B), fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    Spacer(Modifier.width(10.dp))
+                    Text("胜率：", color = Color(0xFF123A5E), fontSize = 11.sp)
+                    Text("$winRate%", color = Color(0xFF2E7D32), fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                }
+            }
+            Spacer(Modifier.weight(1f))
+            MusicToggle(playingScene = "bgm_room")
+            Spacer(Modifier.width(6.dp))
+            // 右上：负分清零 / 更多功能（截图1 顶栏右侧）
+            Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.clickable { QQSounds.click() }) {
+                Text("💰", fontSize = 14.sp)
+                Text("负分清零", color = Color(0xFF123A5E), fontSize = 9.sp)
+            }
+            Spacer(Modifier.width(8.dp))
+            Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.clickable { QQSounds.click() }) {
+                Text("⚙️", fontSize = 14.sp)
+                Text("更多功能", color = Color(0xFF123A5E), fontSize = 9.sp)
+            }
+        }
+
+        // ===== 导航路径条（截图1：斗地主＞普通防作弊场＞防作弊房间3）=====
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(Color(0xFFE8F4F8))
+                .border(0.5.dp, Color(0xFF6FA6D8))
+                .padding(horizontal = 10.dp, vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
-                "⬅ 返回大厅",
-                color = Color.White,
-                fontSize = 13.sp,
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier.clickable { QQSounds.click(); onBack() }
+                "当前位置：",
+                color = Color(0xFF5B7B99),
+                fontSize = 11.sp
+            )
+            Text(
+                "${def.title}＞${room.area}＞${room.name}",
+                color = Color(0xFF123A5E),
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold
             )
             Spacer(Modifier.weight(1f))
-            Text("$room · ${roomPlayers.size}人在线", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+            Text(
+                "${def.emoji} ${def.seats}人桌 · ${tableNicks.sumOf { it.size }}人游戏中",
+                color = Color(0xFF5B7B99),
+                fontSize = 10.sp
+            )
+        }
+
+        // ===== 功能按钮行（截图1：绿色"快速加入游戏" + 白底"邀请好友"）=====
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(Color(0xFFF2F8FC))
+                .padding(horizontal = 10.dp, vertical = 5.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            QqGreenButton("快速加入游戏") {
+                QQSounds.ding()
+                onSit()
+            }
+            Spacer(Modifier.width(8.dp))
+            QqWhiteButton("邀请好友") { QQSounds.click() }
             Spacer(Modifier.weight(1f))
-            Text("${def.emoji} ${def.title}", color = Color(0xFFFFE95C), fontSize = 12.sp)
-            Spacer(Modifier.width(6.dp))
-            MusicToggle(playingScene = "bgm_room")
+            Text(
+                "双击桌子上的空位即可加入游戏",
+                color = Color(0xFF8FA8BE),
+                fontSize = 10.sp
+            )
         }
 
-        Row(Modifier.weight(1f)) {
-            // ===== 桌子区（纵向滚动网格，每行 3 桌） =====
-            Column(
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxSize()
-                    .verticalScroll(rememberScrollState())
-                    .padding(10.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                tables.chunked(3).forEachIndexed { rowIdx, row ->
-                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        row.forEachIndexed { colIdx, occupied ->
-                            val tableNo = rowIdx * 3 + colIdx + 1
-                            GameTableItem(
-                                def = def,
-                                no = tableNo,
-                                occupied = occupied,
-                                onSit = {
-                                    QQSounds.ding()
-                                    onSit()
-                                }
-                            )
-                        }
-                    }
-                }
-                Spacer(Modifier.height(4.dp))
-            }
-
-            // ===== 右侧玩家列表 =====
-            Column(
-                modifier = Modifier
-                    .width(150.dp)
-                    .fillMaxSize()
-                    .background(Color(0xFFEAF6FE))
-                    .border(1.dp, QQ2008.PanelBorder)
-            ) {
-                QqSectionBar(title = "房间内玩家", leading = "👥")
-                Column(
-                    Modifier
-                        .weight(1f)
-                        .verticalScroll(rememberScrollState())
-                ) {
-                    roomPlayers.forEachIndexed { i, (name, avatar) ->
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 8.dp, vertical = 3.dp)
-                        ) {
-                            Text(avatar.removePrefix("emoji:"), fontSize = 13.sp)
-                            Spacer(Modifier.width(5.dp))
-                            Text(
-                                name,
-                                fontSize = 11.sp,
-                                color = QQ2008.TextMain,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                            Spacer(Modifier.weight(1f))
-                            Text(ddTitle(3 + (i * 7) % 35), fontSize = 9.sp, color = QQ2008.TextSub)
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-/** 桌上的一个座位：有人显示随机头像，空位显示 ＋ */
-@Composable
-private fun SeatSlot(occupiedHere: Boolean, avatar: String) {
-    if (occupiedHere) {
-        Text(avatar, fontSize = 15.sp)
-    } else {
-        Box(
+        // ===== 桌子区（5 列橙色木桌，纵向滚动）=====
+        Column(
             modifier = Modifier
-                .size(22.dp)
-                .background(Color.White.copy(alpha = 0.25f), RoundedCornerShape(50)),
-            contentAlignment = Alignment.Center
+                .weight(1f)
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 6.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            Text("＋", color = Color(0xFFFFE95C), fontSize = 13.sp, fontWeight = FontWeight.Bold)
+            tables.chunked(5).forEachIndexed { rowIdx, row ->
+                Row(horizontalArrangement = Arrangement.SpaceEvenly, modifier = Modifier.fillMaxWidth()) {
+                    row.forEachIndexed { colIdx, occupied ->
+                        GameTableItem(
+                            def = def,
+                            no = rowIdx * 5 + colIdx + 1,
+                            occupied = occupied,
+                            nicks = tableNicks[rowIdx * 5 + colIdx],
+                            onSit = {
+                                QQSounds.ding()
+                                onSit()
+                            }
+                        )
+                    }
+                }
+            }
+            Spacer(Modifier.height(4.dp))
+        }
+
+        // ===== 底部状态栏（截图1 左下："2人正在看"）=====
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(Brush.verticalGradient(listOf(Color(0xFF164B7E), Color(0xFF0A3358))))
+                .padding(horizontal = 10.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                "👁 $watchers 人正在看",
+                color = Color(0xFFBFE4FB),
+                fontSize = 11.sp
+            )
+            Spacer(Modifier.weight(1f))
+            Text(
+                "${def.title} · ${room.area}${room.name}",
+                color = Color(0xFF8FB8D8),
+                fontSize = 10.sp
+            )
         }
     }
 }
 
-/** 桌子缩略图：按游戏人数排列 —— 3人三角 / 4人方形 / 2人对坐 */
+/** 桌上的一个座位（截图1）：有人显示经典企鹅头像 + 昵称，空位显示半透明虚位 ＋ */
 @Composable
-private fun GameTableItem(def: GameDef, no: Int, occupied: Int, onSit: () -> Unit) {
+private fun SeatSlot(
+    occupiedHere: Boolean,
+    nick: String,
+    modifier: Modifier = Modifier,
+    seatSize: Dp = 26.dp
+) {
+    Column(modifier = modifier, horizontalAlignment = Alignment.CenterHorizontally) {
+        if (occupiedHere) {
+            Box(
+                modifier = Modifier
+                    .size(seatSize)
+                    .background(Color.White, RoundedCornerShape(3.dp))
+                    .border(1.dp, Color(0xFF6FA6D8), RoundedCornerShape(3.dp))
+                    .padding(1.dp)
+            ) {
+                QqPenguinAvatar(size = seatSize - 2.dp, modifier = Modifier.fillMaxSize())
+            }
+            Spacer(Modifier.height(1.dp))
+            Text(
+                nick,
+                color = Color.White,
+                fontSize = 9.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.width(44.dp),
+                textAlign = TextAlign.Center
+            )
+        } else {
+            Box(
+                modifier = Modifier
+                    .size(seatSize)
+                    .background(Color.White.copy(alpha = 0.14f), RoundedCornerShape(3.dp))
+                    .border(1.dp, Color.White.copy(alpha = 0.35f), RoundedCornerShape(3.dp)),
+                contentAlignment = Alignment.Center
+            ) {
+                Text("＋", color = Color(0xFFFFE95C), fontSize = 14.sp, fontWeight = FontWeight.Bold)
+            }
+            Spacer(Modifier.height(1.dp))
+            Text("空位", color = Color(0xFF8FB8D8), fontSize = 9.sp)
+        }
+    }
+}
+
+/** 大厅一张桌（截图1）：橙色透视木桌 + 周围座位（3人左上/右上/底中，2人左右，4人四角） */
+@Composable
+private fun GameTableItem(
+    def: GameDef,
+    no: Int,
+    occupied: Int,
+    nicks: List<String>,
+    onSit: () -> Unit
+) {
     val full = occupied >= def.seats
-    // 每个座位的随机头像（同一桌内不重复）
-    val seatAvatars = remember(def.id, no) {
-        val used = mutableSetOf<String>()
-        List(def.seats) {
-            val a = GamePeople.randomAvatar(used)
-            used.add(a)
-            a.removePrefix("emoji:")
-        }
-    }
-    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Box(
+    Box(modifier = Modifier.size(width = 148.dp, height = 104.dp)) {
+        // ---- 桌号徽章 ----
+        Text(
+            "$no",
+            color = Color(0xFFFFE95C),
+            fontSize = 10.sp,
+            fontWeight = FontWeight.Bold,
             modifier = Modifier
-                .size(width = 132.dp, height = 78.dp)
-                .background(
-                    Brush.verticalGradient(listOf(Color(0xFF3E7CB8), Color(0xFF2A5A8C))),
-                    RoundedCornerShape(50)
-                )
-                .border(2.dp, if (full) Color(0xFF7C93A8) else Color(0xFFBFE4FB), RoundedCornerShape(50))
-                .clickable(enabled = !full) { onSit() },
-            contentAlignment = Alignment.Center
-        ) {
-            when (def.seats) {
-                3 -> Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    SeatSlot(occupied > 0, seatAvatars[0])
-                    Spacer(Modifier.height(3.dp))
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        SeatSlot(occupied > 1, seatAvatars[1])
-                        Spacer(Modifier.width(16.dp))
-                        Text(def.emoji, fontSize = 15.sp)
-                        Spacer(Modifier.width(16.dp))
-                        SeatSlot(occupied > 2, seatAvatars[2])
-                    }
-                }
-                4 -> Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(3.dp)
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        SeatSlot(occupied > 0, seatAvatars[0])
-                        Spacer(Modifier.width(14.dp))
-                        SeatSlot(occupied > 1, seatAvatars[1])
-                    }
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(def.emoji, fontSize = 13.sp)
-                        Spacer(Modifier.width(14.dp))
-                        SeatSlot(occupied > 2, seatAvatars[2])
-                        Spacer(Modifier.width(14.dp))
-                        SeatSlot(occupied > 3, seatAvatars[3])
-                    }
-                }
-                else -> Row(verticalAlignment = Alignment.CenterVertically) {
-                    SeatSlot(occupied > 0, seatAvatars[0])
-                    Spacer(Modifier.width(18.dp))
-                    Text(def.emoji, fontSize = 15.sp)
-                    Spacer(Modifier.width(18.dp))
-                    SeatSlot(occupied > 1, seatAvatars[1])
-                }
+                .align(Alignment.TopStart)
+                .background(Color(0x88123A5E), RoundedCornerShape(4.dp))
+                .padding(horizontal = 4.dp, vertical = 1.dp)
+        )
+        // ---- 橙色木桌（透视梯形，点击入座）----
+        QqOrangeTable(
+            width = 92.dp,
+            height = 54.dp,
+            modifier = Modifier.align(Alignment.Center).padding(top = 12.dp),
+            onClick = { if (!full) onSit() }
+        )
+        // ---- 座位（截图1：左上 / 右上 / 底中）----
+        val nickAt = { i: Int -> nicks.getOrNull(i) ?: "" }
+        when (def.seats) {
+            3 -> {
+                SeatSlot(occupied > 0, nickAt(0), Modifier.align(Alignment.TopStart).padding(start = 4.dp))
+                SeatSlot(occupied > 1, nickAt(1), Modifier.align(Alignment.TopEnd).padding(end = 4.dp))
+                SeatSlot(occupied > 2, nickAt(2), Modifier.align(Alignment.BottomCenter))
+            }
+            2 -> {
+                SeatSlot(occupied > 0, nickAt(0), Modifier.align(Alignment.CenterStart))
+                SeatSlot(occupied > 1, nickAt(1), Modifier.align(Alignment.CenterEnd))
+            }
+            else -> {
+                SeatSlot(occupied > 0, nickAt(0), Modifier.align(Alignment.TopStart).padding(start = 4.dp))
+                SeatSlot(occupied > 1, nickAt(1), Modifier.align(Alignment.TopEnd).padding(end = 4.dp))
+                SeatSlot(occupied > 2, nickAt(2), Modifier.align(Alignment.BottomStart).padding(start = 4.dp))
+                SeatSlot(occupied > 3, nickAt(3), Modifier.align(Alignment.BottomEnd).padding(end = 4.dp))
             }
         }
-        Spacer(Modifier.height(3.dp))
-        Text(
-            "桌 $no · ${if (full) "满员" else "$occupied/${def.seats}人 · 点击空位加入"}",
-            fontSize = 10.sp,
-            color = if (full) Color(0xFF9DB6CC) else Color(0xFFFFE95C)
-        )
+        // 满员标记（桌角灰字）
+        if (full) {
+            Text(
+                "游戏中",
+                color = Color(0xFF9DB6CC),
+                fontSize = 8.sp,
+                modifier = Modifier.align(Alignment.BottomEnd)
+            )
+        }
     }
 }

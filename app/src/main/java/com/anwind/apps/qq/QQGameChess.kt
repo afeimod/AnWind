@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -29,6 +30,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -38,6 +40,8 @@ import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
@@ -455,7 +459,38 @@ class ChessGame(selfName: String, selfAvatar: String, selfScore: Int) {
     }
 }
 
-// ==================== 牌桌 UI ====================
+// ==================== 牌桌 UI（截图4：QQ中国象棋 复刻） ====================
+
+/** 象棋级别称号（截图4：县丞 / 都尉…官职体系） */
+private fun chessTitle(level: Int): String = when {
+    level < 5 -> "县丞"
+    level < 10 -> "驿丞"
+    level < 15 -> "主簿"
+    level < 20 -> "县尉"
+    level < 25 -> "都尉"
+    level < 30 -> "校尉"
+    else -> "将军"
+}
+
+/** LCD 计时器（截图4：浅黄绿底电子表） */
+@Composable
+private fun ChessLcdClock(text: String, red: Boolean) {
+    Box(
+        modifier = Modifier
+            .size(width = 74.dp, height = 24.dp)
+            .background(Color(0xFFF0F0D0))
+            .border(1.dp, Color(0xFF8A8A6A)),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text,
+            color = if (red) Color(0xFFCC2222) else Color(0xFF333333),
+            fontSize = 13.sp,
+            fontWeight = FontWeight.Bold,
+            letterSpacing = 1.sp
+        )
+    }
+}
 
 @Composable
 fun QQChessTableScreen(onExit: () -> Unit) {
@@ -465,14 +500,25 @@ fun QQChessTableScreen(onExit: () -> Unit) {
     val game = remember { ChessGame(selfName, acc?.avatar ?: "emoji:🐧", selfScore) }
     var selected by mutableStateOf(-1)
 
+    // ---- 局时（截图4：双方各自局时 LCD 00:03 / 00:00）----
+    var elapsed by remember { mutableStateOf(0) }
+    LaunchedEffect(game.winner) {
+        if (game.winner == -1) {
+            while (true) {
+                delay(1000)
+                elapsed++
+            }
+        }
+    }
+    fun fmt(sec: Int) = String.format("%02d:%02d", sec / 60, sec % 60)
+
     val cell = 33.dp
     val pad = 20.dp
     val boardW = cell * 8f + pad * 2f
     val boardH = cell * 9f + pad * 2f
 
-    // 棋盘/棋子位图素材（assets/qgame/chess/，楚河汉界已烘焙在棋盘图上）
+    // 棋子位图素材（assets/qgame/chess/，红字/黑字圆棋子）
     val ctx = LocalContext.current
-    val boardBmp = remember { QQGameAssets.load(ctx, "qgame/chess/board.png") }
     val pieceBmps = remember {
         (1..7).associate { t ->
             t to (QQGameAssets.load(ctx, "qgame/chess/cp_r$t.png") to QQGameAssets.load(ctx, "qgame/chess/cp_b$t.png"))
@@ -480,8 +526,6 @@ fun QQChessTableScreen(onExit: () -> Unit) {
     }
 
     // ---- AI 行动：后台搜索 + 全链路异常兜底 + 看门狗强制落子 ----
-    // 任何环节（搜索异常/协程取消/设备极慢）失效，黑方回合最多停留 ~6 秒必定走棋；
-    // play() 内部还会再校验行动方，看门狗与主路径竞争时不会出现重复走子。
     LaunchedEffect(game.turn, game.winner, game.ply) {
         if (game.winner != -1 || game.turn != 1) return@LaunchedEffect
         delay(Random.nextLong(400, 900))
@@ -500,7 +544,7 @@ fun QQChessTableScreen(onExit: () -> Unit) {
         }
     }
 
-    // ---- 看门狗：搜索/协程任何原因失效时，6 秒后强制替 AI 走一步合法棋，绝不“一直思考” ----
+    // ---- 看门狗 ----
     LaunchedEffect(game.turn, game.winner, game.ply) {
         if (game.winner != -1 || game.turn != 1) return@LaunchedEffect
         delay(6000)
@@ -530,94 +574,146 @@ fun QQChessTableScreen(onExit: () -> Unit) {
         }
     }
 
-    Row(Modifier.fillMaxSize()) {
+    Row(Modifier.fillMaxSize().background(QqGame.ChessBg)) {
+        // ===== 左侧玩家信息面板（截图4：上下两个玩家卡 + 局时 LCD）=====
+        Column(
+            Modifier
+                .width(150.dp)
+                .fillMaxSize()
+                .background(QqGame.ChessPanel)
+                .border(1.dp, Color(0xFF8A8A72))
+                .padding(4.dp)
+        ) {
+            ChessPlayerCard(
+                game = game, idx = 1, red = false,
+                clock = fmt(if (game.turn == 1 && game.winner == -1) elapsed else 0)
+            )
+            Spacer(Modifier.height(6.dp))
+            ChessPlayerCard(
+                game = game, idx = 0, red = true,
+                clock = fmt(if (game.turn == 0 && game.winner == -1) elapsed else 0)
+            )
+            Spacer(Modifier.weight(1f))
+            // 表情按钮（截图4 面板底部）
+            QqStoneButton("表 情", { QQSounds.click() }, modifier = Modifier.fillMaxWidth())
+            Spacer(Modifier.height(4.dp))
+            QqStoneButton("重新开局", { QQSounds.click(); game.reset() }, modifier = Modifier.fillMaxWidth())
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "QQ游戏 - 中国象棋 角色版 在线",
+                fontSize = 8.sp,
+                color = Color(0xFF8A8A72),
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
+
+        // ===== 中央棋盘（截图4：米黄木纹 + 楚河漢界）=====
         Box(
             modifier = Modifier
                 .weight(1f)
-                .fillMaxSize()
-                .background(Brush.verticalGradient(listOf(Color(0xFF2C5A8F), Color(0xFF1B3A61)))),
+                .fillMaxSize(),
             contentAlignment = Alignment.Center
         ) {
-            Canvas(
-                modifier = Modifier
-                    .width(boardW)
-                    .height(boardH)
-                    .pointerInput(Unit) {
-                        detectTapGestures { pos ->
-                            if (game.winner != -1 || game.turn != 0) return@detectTapGestures
-                            val padPx = pad.toPx()
-                            val sx = (size.width - 2 * padPx) / 8f
-                            val sy = (size.height - 2 * padPx) / 9f
-                            val c = ((pos.x - padPx) / sx).roundToInt()
-                            val r = ((pos.y - padPx) / sy).roundToInt()
-                            if (r !in 0..9 || c !in 0..8) { selected = -1; return@detectTapGestures }
-                            // 容差：点得偏离交叉点太远不响应
-                            val dx = abs(pos.x - (padPx + c * sx))
-                            val dy = abs(pos.y - (padPx + r * sy))
-                            if (dx > sx * 0.48f || dy > sy * 0.48f) return@detectTapGestures
-                            val idx = r * 9 + c
-                            when {
-                                selected >= 0 && game.legalTargets(selected).contains(idx) -> {
-                                    if (game.play(selected, idx)) selected = -1
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Box {
+                    Canvas(
+                        modifier = Modifier
+                            .width(boardW)
+                            .height(boardH)
+                            .pointerInput(Unit) {
+                                detectTapGestures { pos ->
+                                    if (game.winner != -1 || game.turn != 0) return@detectTapGestures
+                                    val padPx = pad.toPx()
+                                    val sx = (size.width - 2 * padPx) / 8f
+                                    val sy = (size.height - 2 * padPx) / 9f
+                                    val c = ((pos.x - padPx) / sx).roundToInt()
+                                    val r = ((pos.y - padPx) / sy).roundToInt()
+                                    if (r !in 0..9 || c !in 0..8) { selected = -1; return@detectTapGestures }
+                                    val dx = abs(pos.x - (padPx + c * sx))
+                                    val dy = abs(pos.y - (padPx + r * sy))
+                                    if (dx > sx * 0.48f || dy > sy * 0.48f) return@detectTapGestures
+                                    val idx = r * 9 + c
+                                    when {
+                                        selected >= 0 && game.legalTargets(selected).contains(idx) -> {
+                                            if (game.play(selected, idx)) selected = -1
+                                        }
+                                        game.canSelect(idx) -> { selected = idx; QQSounds.click() }
+                                        else -> selected = -1
+                                    }
                                 }
-                                game.canSelect(idx) -> { selected = idx; QQSounds.click() }
-                                else -> selected = -1
+                            }
+                    ) {
+                        drawChessBoard()
+                        val padPx = pad.toPx()
+                        val sx = (size.width - 2 * padPx) / 8f
+                        val sy = (size.height - 2 * padPx) / 9f
+                        fun px(r: Int, c: Int) = Offset(padPx + c * sx, padPx + r * sy)
+
+                        // 选中 / 目标 / 上一手标记
+                        if (selected >= 0) {
+                            val (sr, sc) = selected / 9 to selected % 9
+                            drawCircle(Color(0xFFFFB400), radius = sx * 0.52f, center = px(sr, sc), style = Stroke(width = 3f))
+                            game.legalTargets(selected).forEach { t ->
+                                val tr = t / 9
+                                val tc = t % 9
+                                val capture = game.board[t] != 0
+                                drawCircle(
+                                    if (capture) Color(0xFFE53935) else Color(0xFF66BB6A),
+                                    radius = sx * (if (capture) 0.48f else 0.14f),
+                                    center = px(tr, tc),
+                                    style = if (capture) Stroke(width = 3f) else Fill
+                                )
                             }
                         }
+                        if (game.lastFrom >= 0) {
+                            drawCircle(Color(0x88E53935), radius = sx * 0.12f, center = px(game.lastFrom / 9, game.lastFrom % 9))
+                            drawCircle(Color(0x88E53935), radius = sx * 0.12f, center = px(game.lastTo / 9, game.lastTo % 9))
+                        }
+
+                        // 棋子（楷书圆棋子位图，红方/黑方各 7 种）
+                        val pieceSize = sx * 0.94f
+                        for (i in 0..89) {
+                            val p = game.board[i]
+                            if (p == 0) continue
+                            val bmps = pieceBmps[abs(p)] ?: continue
+                            val center = px(i / 9, i % 9)
+                            drawAsset(
+                                if (p > 0) bmps.first else bmps.second,
+                                center.x - pieceSize / 2f,
+                                center.y - pieceSize / 2f,
+                                pieceSize,
+                                pieceSize
+                            )
+                        }
                     }
-            ) {
-                val padPx = pad.toPx()
-                val sx = (size.width - 2 * padPx) / 8f
-                val sy = (size.height - 2 * padPx) / 9f
-                fun px(r: Int, c: Int) = Offset(padPx + c * sx, padPx + r * sy)
-
-                // 木纹棋盘位图（网格/九宫/炮兵位曲尺/楚河汉界均已按标准坐标烘焙）
-                drawImage(
-                    boardBmp,
-                    dstOffset = IntOffset.Zero,
-                    dstSize = IntSize(size.width.roundToInt(), size.height.roundToInt()),
-                    filterQuality = FilterQuality.Medium
-                )
-
-                // 选中 / 目标 / 上一手标记
-                if (selected >= 0) {
-                    val (sr, sc) = selected / 9 to selected % 9
-                    drawCircle(Color(0xFFFFB400), radius = sx * 0.52f, center = px(sr, sc), style = Stroke(width = 3f))
-                    game.legalTargets(selected).forEach { t ->
-                        val tr = t / 9
-                        val tc = t % 9
-                        val capture = game.board[t] != 0
-                        drawCircle(
-                            if (capture) Color(0xFFE53935) else Color(0xFF66BB6A),
-                            radius = sx * (if (capture) 0.48f else 0.14f),
-                            center = px(tr, tc),
-                            style = if (capture) Stroke(width = 3f) else Fill
-                        )
-                    }
-                }
-                if (game.lastFrom >= 0) {
-                    drawCircle(
-                        Color(0x88E53935), radius = sx * 0.12f, center = px(game.lastFrom / 9, game.lastFrom % 9)
+                    // 楚河漢界（截图4：左漢界 右楚河，书法体）
+                    Text(
+                        "漢 界",
+                        fontSize = 19.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color(0xFF3B2A18),
+                        modifier = Modifier
+                            .align(Alignment.CenterStart)
+                            .padding(start = pad + cell * 1.1f)
                     )
-                    drawCircle(
-                        Color(0x88E53935), radius = sx * 0.12f, center = px(game.lastTo / 9, game.lastTo % 9)
+                    Text(
+                        "楚 河",
+                        fontSize = 19.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color(0xFF3B2A18),
+                        modifier = Modifier
+                            .align(Alignment.CenterEnd)
+                            .padding(end = pad + cell * 1.1f)
                     )
                 }
-
-                // 棋子（楷书圆棋子位图，含烘焙投影；红方/黑方各 7 种）
-                val pieceSize = sx * 0.94f
-                for (i in 0..89) {
-                    val p = game.board[i]
-                    if (p == 0) continue
-                    val bmps = pieceBmps[abs(p)] ?: continue
-                    val center = px(i / 9, i % 9)
-                    drawAsset(
-                        if (p > 0) bmps.first else bmps.second,
-                        center.x - pieceSize / 2f,
-                        center.y - pieceSize / 2f,
-                        pieceSize,
-                        pieceSize
-                    )
+                Spacer(Modifier.height(10.dp))
+                // ---- 底部按钮（截图4：悔棋 求和 道具 认输 石质浮雕）----
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    QqStoneButton("悔 棋", { QQSounds.click() })
+                    QqStoneButton("求 和", { QQSounds.click() })
+                    QqStoneButton("道 具", { QQSounds.click() })
+                    QqStoneButton("认 输", { QQSounds.click() })
                 }
             }
 
@@ -632,26 +728,26 @@ fun QQChessTableScreen(onExit: () -> Unit) {
                     Column(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         modifier = Modifier
-                            .background(Color(0xFF12365C).copy(alpha = 0.95f), RoundedCornerShape(10.dp))
-                            .border(2.dp, Color(0xFFFFE95C), RoundedCornerShape(10.dp))
+                            .background(Color(0xFFF5F0E0).copy(alpha = 0.97f), RoundedCornerShape(10.dp))
+                            .border(2.dp, Color(0xFF8A6A2A), RoundedCornerShape(10.dp))
                             .padding(horizontal = 26.dp, vertical = 18.dp)
                     ) {
                         val myWin = game.winner == 0
                         Text(
                             if (myWin) "🎉 胜 利 🎉" else "😅 失 败",
-                            color = if (myWin) Color(0xFFFFE95C) else Color(0xFFBFE4FB),
+                            color = if (myWin) Color(0xFFC3272B) else Color(0xFF444444),
                             fontSize = 26.sp, fontWeight = FontWeight.Black
                         )
                         Spacer(Modifier.height(8.dp))
                         Text(
                             if (myWin) "黑方被将死，红方胜" else "红方被将死，黑方胜",
-                            color = Color.White, fontSize = 12.sp
+                            color = Color(0xFF5A4A2A), fontSize = 12.sp
                         )
                         Spacer(Modifier.height(14.dp))
                         Row {
-                            QqBeigeButton("再来一局", { QQSounds.click(); game.reset() }, height = 32.dp)
+                            QqStoneButton("再来一局", { QQSounds.click(); game.reset() }, height = 32.dp)
                             Spacer(Modifier.width(10.dp))
-                            QqBeigeButton("退出牌桌", onExit, height = 32.dp)
+                            QqStoneButton("退出牌桌", onExit, height = 32.dp)
                         }
                     }
                 }
@@ -662,73 +758,227 @@ fun QQChessTableScreen(onExit: () -> Unit) {
     }
 }
 
+/** 米黄木纹棋盘绘制（截图4：#E8D4A0 底 + 深褐线 + 九宫 + 炮兵位曲尺） */
+private fun DrawScope.drawChessBoard() {
+    val w = size.width
+    val h = size.height
+    val padPx = 20.dp.toPx()
+    val sx = (w - 2 * padPx) / 8f
+    val sy = (h - 2 * padPx) / 9f
+
+    // 木底（米黄渐变 + 横向木纹）
+    drawRoundRect(
+        Brush.verticalGradient(listOf(QqGame.ChessBoard, QqGame.ChessBoardDark)),
+        cornerRadius = CornerRadius(6f, 6f)
+    )
+    // 木纹（横线若干，半透明深色）
+    for (i in 1..9) {
+        val y = h * i / 10f
+        drawLine(Color(0x14A08040), Offset(0f, y), Offset(w, y), 1.5f)
+    }
+    // 外框（深褐厚边）
+    drawRoundRect(Color(0xFF6B4A26), cornerRadius = CornerRadius(6f, 6f), style = Stroke(width = 4f))
+    drawRect(Color(0xFF4A3B2A), topLeft = Offset(padPx - 3f, padPx - 3f), size = Size(w - 2 * padPx + 6f, h - 2 * padPx + 6f), style = Stroke(2.5f))
+
+    // 网格（10 行横线全部完整画出——楚河汉界处横线不断，只有纵线断开）
+    for (r in 0..9) {
+        drawLine(QqGame.ChessLine, Offset(padPx, padPx + r * sy), Offset(w - padPx, padPx + r * sy), 1.4f)
+    }
+    for (c in 0..8) {
+        // 纵线在界河（第4~5行之间）断开
+        drawLine(QqGame.ChessLine, Offset(padPx + c * sx, padPx), Offset(padPx + c * sx, padPx + 4 * sy), 1.4f)
+        drawLine(QqGame.ChessLine, Offset(padPx + c * sx, padPx + 5 * sy), Offset(padPx + c * sx, h - padPx), 1.4f)
+    }
+
+    // 九宫斜线（上下）
+    for (top in listOf(0f, 7f)) {
+        drawLine(QqGame.ChessLine, Offset(padPx + 3 * sx, padPx + top * sy), Offset(padPx + 5 * sx, padPx + (top + 2f) * sy), 1.2f)
+        drawLine(QqGame.ChessLine, Offset(padPx + 5 * sx, padPx + top * sy), Offset(padPx + 3 * sx, padPx + (top + 2f) * sy), 1.2f)
+    }
+
+    // 炮位 / 兵位曲尺标记
+    val marks = listOf(
+        1 to 2, 7 to 2,   // 黑炮
+        1 to 7, 7 to 7,   // 红炮
+        0 to 3, 2 to 3, 4 to 3, 6 to 3, 8 to 3,     // 黑卒
+        0 to 6, 2 to 6, 4 to 6, 6 to 6, 8 to 6      // 红兵
+    )
+    marks.forEach { (c, r) ->
+        val x = padPx + c * sx
+        val y = padPx + r * sy
+        val d = 4.5f
+        val gap = 3f
+        for ((dx, dy) in listOf(-1 to -1, 1 to -1, -1 to 1, 1 to 1)) {
+            if (c == 0 && dx < 0) continue
+            if (c == 8 && dx > 0) continue
+            val x0 = x + dx * gap
+            val y0 = y + dy * gap
+            drawLine(QqGame.ChessLine, Offset(x0, y0), Offset(x0 + dx * d, y0), 1.2f)
+            drawLine(QqGame.ChessLine, Offset(x0, y0), Offset(x0, y0 + dy * d), 1.2f)
+        }
+    }
+}
+
+/** 左侧玩家卡（截图4：头像 + 昵称[QQ号] + 积分/级别 + 局时 LCD） */
+@Composable
+private fun ChessPlayerCard(game: ChessGame, idx: Int, red: Boolean, clock: String) {
+    val p = game.players[idx]
+    val myTurn = game.winner == -1 && game.turn == idx
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(if (myTurn) Color(0xFFFFF3D6) else Color.White)
+            .border(1.dp, if (myTurn) Color(0xFFC8A03C) else Color(0xFFB0AC9A))
+            .padding(5.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            // 头像
+            Box(
+                modifier = Modifier
+                    .size(42.dp)
+                    .background(Color(0xFFE8E8E0), RoundedCornerShape(3.dp))
+                    .border(1.dp, Color(0xFF9A9A8A), RoundedCornerShape(3.dp))
+                    .padding(2.dp)
+            ) {
+                QqPenguinAvatar(size = 38.dp, modifier = Modifier.fillMaxSize())
+            }
+            Spacer(Modifier.width(6.dp))
+            Column(Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        p.name,
+                        color = if (red) Color(0xFFCC2222) else Color(0xFF222222),
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                Text(
+                    "[${100000000 + (p.name.hashCode() and 0x7FFFFFFF) % 899999999}]",
+                    color = Color(0xFF8A8A72),
+                    fontSize = 9.sp,
+                    maxLines = 1
+                )
+            }
+            // 执子标记（红帥 / 黑將）
+            Box(
+                modifier = Modifier
+                    .size(24.dp)
+                    .background(
+                        Brush.radialGradient(listOf(Color(0xFFF5E6C8), Color(0xFFD4B878)))
+                    )
+                    .border(1.dp, Color(0xFF8B7355), RoundedCornerShape(50)),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    if (red) "帥" else "將",
+                    color = if (red) Color(0xFFCC0000) else Color(0xFF000000),
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Black
+                )
+            }
+        }
+        Spacer(Modifier.height(4.dp))
+        // 积分 / 级别 / 局时（截图4：积分411 级别都尉 局时00:03）
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("积分: ${p.score}", fontSize = 10.sp, color = Color(0xFF444444))
+                Text("级别: ${chessTitle(p.level)}    总局数: ${30 + (p.level * 7)}", fontSize = 10.sp, color = Color(0xFF444444))
+            }
+            ChessLcdClock(clock, red = red)
+        }
+    }
+}
+
 @Composable
 private fun ChessSidePanel(game: ChessGame, selfName: String, onExit: () -> Unit) {
     val logScroll = rememberScrollState()
     Column(
         modifier = Modifier
-            .width(196.dp)
+            .width(186.dp)
             .fillMaxSize()
-            .background(QQ2008.panelBrush())
-            .border(1.dp, QQ2008.PanelBorder)
+            .background(QqGame.PanelLightBg)
+            .border(1.dp, Color(0xFF6FA6D8))
     ) {
+        // ---- 顶部信息条 ----
+        QqPanelHeader(
+            nickname = game.players[0].name,
+            scoreText = "${game.players[0].score}",
+            coinText = "游戏币: 0"
+        )
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .background(QQ2008.titleBrush())
-                .padding(horizontal = 8.dp, vertical = 5.dp),
+                .background(Color(0xFFDCEFFB))
+                .padding(horizontal = 8.dp, vertical = 2.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text("♟️ 中国象棋", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+            Text("级别: ${chessTitle(game.players[0].level)}", color = Color(0xFF2E6288), fontSize = 10.sp)
             Spacer(Modifier.weight(1f))
             Text(
-                "退出", color = Color.White, fontSize = 12.sp,
+                "退出",
+                color = Color(0xFF0B62C4),
+                fontSize = 11.sp,
                 modifier = Modifier.clickable { QQSounds.click(); onExit() }
             )
         }
 
-        QqSectionBar(title = "对局双方", leading = "👥")
+        // ---- 房间玩家列表（截图4 右侧：玩家 + 积分 + 胜率）----
+        QqPanelSection("房间内玩家")
         game.players.forEachIndexed { i, p ->
             val myTurn = game.winner == -1 && game.turn == i
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .background(if (myTurn) QQ2008.SelectedRow else Color.Transparent)
+                    .background(if (myTurn) Color(0xFFBFE4FB) else Color.White)
                     .padding(horizontal = 8.dp, vertical = 4.dp)
             ) {
-                QqAvatar(avatar = p.avatar, size = 34.dp)
+                QqPenguinAvatar(size = 28.dp)
                 Spacer(Modifier.width(6.dp))
-                Column {
+                Column(Modifier.weight(1f)) {
                     Text(
                         p.name + if (p.isHuman) "（你）" else "",
                         fontSize = 11.sp, color = QQ2008.TextMain,
-                        fontWeight = FontWeight.Bold, maxLines = 1
+                        fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis
                     )
                     Text(
-                        "执${if (i == 0) "红 🔴" else "黑 ⚫"} · ${ddTitle(p.level)}·Lv${p.level}",
+                        "积分 ${p.score} · 胜率 ${55 + (i * 13) % 40}%",
                         fontSize = 9.sp, color = QQ2008.TextSub
                     )
                 }
-                Spacer(Modifier.weight(1f))
-                Text("${p.score}", fontSize = 12.sp, color = Color(0xFFC3272B), fontWeight = FontWeight.Bold)
+            }
+        }
+        // 观战玩家（截图4：房间还有 gfhgfo 等）
+        listOf("观战：金木", "观战：好心情").forEach { n ->
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 8.dp, vertical = 2.dp)
+            ) {
+                Text("👁", fontSize = 10.sp)
+                Spacer(Modifier.width(6.dp))
+                Text(n, fontSize = 10.sp, color = QQ2008.TextSub)
             }
         }
 
-        QqSectionBar(title = "对局状态", leading = "📣")
-        val status = when {
-            game.winner == 0 -> "🎉 你赢了（黑方被将死）"
-            game.winner == 1 -> "AI 获胜（红方被将死）"
-            game.turn == 0 -> "轮到你（红）走棋"
-            else -> "AI 思考中…"
+        // ---- 道具 / 商城 ----
+        QqPanelSection("道具")
+        QqPropsBar(title = "公共道具", propCount = 2)
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 6.dp, vertical = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            QqBlueDiamondButton("蓝钻贵族", diamond = true, onClick = { QQSounds.click() }, modifier = Modifier.weight(1f))
+            QqBlueDiamondButton("游戏商城", diamond = false, onClick = { QQSounds.click() }, modifier = Modifier.weight(1f))
         }
-        Text(
-            status,
-            color = if (game.winner == -1) QQ2008.TextMain else Color(0xFFC3272B),
-            fontSize = 12.sp, fontWeight = FontWeight.Bold,
-            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-        )
 
+        // ---- 聊天 / 系统消息（截图4："欢迎进入QQ游戏中心"）----
+        QqPanelSection("聊天")
         LaunchedEffect(game.log.size) {
             runCatching { logScroll.animateScrollTo(logScroll.maxValue) }
         }
@@ -736,21 +986,38 @@ private fun ChessSidePanel(game: ChessGame, selfName: String, onExit: () -> Unit
             Modifier
                 .weight(1f)
                 .verticalScroll(logScroll)
-                .padding(horizontal = 8.dp)
+                .background(Color.White)
+                .padding(horizontal = 6.dp, vertical = 3.dp)
         ) {
+            Text(
+                "系统消息：欢迎进入QQ游戏中心 - 中国象棋角色版，祝你游戏愉快！",
+                fontSize = 10.sp, lineHeight = 14.sp, color = Color(0xFF2E7D32)
+            )
             game.log.forEach { line ->
                 Text(line, fontSize = 10.sp, lineHeight = 14.sp, color = QQ2008.TextMain)
             }
             Spacer(Modifier.height(4.dp))
         }
-
+        // 输入行
         Row(
             Modifier
                 .fillMaxWidth()
-                .background(Color(0xFFE8F4FD))
-                .padding(horizontal = 8.dp, vertical = 6.dp)
+                .background(Color(0xFFEAF6FE))
+                .padding(horizontal = 6.dp, vertical = 3.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            QqBeigeButton("重新开局", { QQSounds.click(); game.reset() }, height = 30.dp)
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .height(20.dp)
+                    .background(Color.White, RoundedCornerShape(3.dp))
+                    .border(1.dp, Color(0xFF9FC2DC), RoundedCornerShape(3.dp)),
+                contentAlignment = Alignment.CenterStart
+            ) {
+                Text("和大家打个招呼吧…", fontSize = 9.sp, color = Color(0xFF9AAFC2), modifier = Modifier.padding(horizontal = 4.dp))
+            }
+            Spacer(Modifier.width(4.dp))
+            Text("😊", fontSize = 13.sp, modifier = Modifier.clickable { QQSounds.msgOut() })
         }
     }
 }

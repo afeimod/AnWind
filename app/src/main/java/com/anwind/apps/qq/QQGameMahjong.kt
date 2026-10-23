@@ -377,7 +377,21 @@ class MahjongGame(selfName: String, selfAvatar: String, selfScore: Int) {
     }
 }
 
-// ==================== 牌桌 UI ====================
+// ==================== 牌桌 UI（截图3：QQ欢乐麻将 复刻） ====================
+
+/** 麻将级别称号（截图3：白板 / 一万…九万） */
+private fun mjTitle(level: Int): String = when {
+    level < 3 -> "白板"
+    level < 6 -> "一万"
+    level < 9 -> "二万"
+    level < 12 -> "三万"
+    level < 15 -> "四万"
+    level < 18 -> "五万"
+    level < 21 -> "六万"
+    level < 24 -> "七万"
+    level < 30 -> "八万"
+    else -> "九万"
+}
 
 @Composable
 fun QQMahjongTableScreen(onExit: () -> Unit) {
@@ -386,6 +400,16 @@ fun QQMahjongTableScreen(onExit: () -> Unit) {
     val selfScore = remember { QQGameScores.load()["麻将·$selfName"] ?: 0 }
     val game = remember { MahjongGame(selfName, acc?.avatar ?: "emoji:🐧", selfScore) }
     var selIdx by remember { mutableStateOf(-1) }
+
+    // ---- 倒计时（截图3 中央 LED 09；行动方从 15 起跳） ----
+    var countdown by remember { mutableStateOf(15) }
+    LaunchedEffect(game.turn, game.stage) {
+        countdown = 15
+        while (countdown > 0) {
+            delay(1000)
+            countdown--
+        }
+    }
 
     // ---- AI 驱动（摸牌 / 出牌 / 应答） ----
     LaunchedEffect(game.turn, game.stage, game.pendingTile, game.claimQueue, game.lastDrawn, game.winner, game.tick) {
@@ -442,27 +466,56 @@ fun QQMahjongTableScreen(onExit: () -> Unit) {
     }
 
     Row(Modifier.fillMaxSize()) {
-        // ================= 桌面区 =================
+        // ================= 桌面区（截图3：深青牌桌 + 绿牌墙围合）=================
         Box(
             modifier = Modifier
                 .weight(1f)
                 .fillMaxSize()
-                .background(Brush.verticalGradient(listOf(Color(0xFF3D7A99), Color(0xFF2E6478))))
+                .background(
+                    Brush.radialGradient(
+                        listOf(QqGame.MjFeltCenter, QqGame.MjFeltEdge),
+                        radius = 800f
+                    )
+                )
         ) {
-            Column(Modifier.fillMaxSize().padding(8.dp)) {
-                // ---- 对家（上方）：信息 + 牌墙 ----
-                MjSeatBar(game, 2)
-                Spacer(Modifier.height(4.dp))
+            Column(Modifier.fillMaxSize().padding(4.dp)) {
+                // ---- 对家（上方）：信息 + 牌墙（截图3 顶部横排牌墙，随摸牌减少）----
+                MjSeatTop(game, 2)
+                MjWallRow(count = (game.wall.size / 4 + 1).coerceAtMost(14), tileW = 12.dp)
+                Spacer(Modifier.height(2.dp))
 
-                // ---- 中区：左家 | 中央牌池 | 右家 ----
+                // ---- 中区：左家 | 弃牌池+LED | 右家 ----
                 Row(Modifier.weight(1f)) {
-                    MjSeatSide(game, 3)
-                    Spacer(Modifier.width(4.dp))
-                    MjCenterPool(game, Modifier.weight(1f))
-                    Spacer(Modifier.width(4.dp))
-                    MjSeatSide(game, 1)
+                    // 左家 + 纵向牌墙
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        MjSeatSide(game, 3)
+                        Spacer(Modifier.height(2.dp))
+                        MjWallColumn(count = (game.wall.size / 4 + 1).coerceAtMost(8), tileW = 12.dp)
+                    }
+                    Spacer(Modifier.width(2.dp))
+
+                    // 中央弃牌池（截图3：牌墙围出的中央区，弃牌按行整齐排列）
+                    Box(Modifier.weight(1f).fillMaxSize()) {
+                        MjDiscardPool(game, Modifier.fillMaxSize())
+                        // 中央 LED 倒计时（截图3：黑底黄字 09 + 黄色指示三角）
+                        QqLedTimer(
+                            seconds = countdown,
+                            modifier = Modifier.align(Alignment.Center)
+                        )
+                    }
+                    Spacer(Modifier.width(2.dp))
+
+                    // 右家 + 纵向牌墙
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        MjSeatSide(game, 1)
+                        Spacer(Modifier.height(2.dp))
+                        MjWallColumn(count = (game.wall.size / 4 + 1).coerceAtMost(8), tileW = 12.dp)
+                    }
                 }
-                Spacer(Modifier.height(4.dp))
+                Spacer(Modifier.height(2.dp))
+
+                // ---- 下侧牌墙 ----
+                MjWallRow(count = (game.wall.size / 4).coerceAtMost(14), tileW = 12.dp)
 
                 // ---- 应答 / 操作按钮 ----
                 Row(
@@ -473,24 +526,24 @@ fun QQMahjongTableScreen(onExit: () -> Unit) {
                     when {
                         game.stage == "claim" && game.claimQueue.firstOrNull()?.first == 0 -> {
                             when (game.claimQueue.first().second) {
-                                "hu" -> QqBeigeButton("胡！", { game.resolveClaim(true) }, height = 32.dp)
-                                "gang" -> QqBeigeButton("杠", { game.resolveClaim(true) }, height = 32.dp)
-                                else -> QqBeigeButton("碰", { game.resolveClaim(true) }, height = 32.dp)
+                                "hu" -> QqGreenButton("胡！", { game.resolveClaim(true) }, height = 30.dp)
+                                "gang" -> QqGreenButton("杠", { game.resolveClaim(true) }, height = 30.dp)
+                                else -> QqGreenButton("碰", { game.resolveClaim(true) }, height = 30.dp)
                             }
                             Spacer(Modifier.width(8.dp))
-                            QqBeigeButton("过", { game.resolveClaim(false) }, height = 32.dp)
+                            QqWhiteButton("过", { game.resolveClaim(false) }, height = 30.dp)
                         }
                         game.stage == "act" && game.turn == 0 -> {
                             if (game.canSelfHu(0)) {
-                                QqBeigeButton("自摸胡！", { game.selfHu() }, height = 32.dp)
+                                QqGreenButton("自摸胡！", { game.selfHu() }, height = 30.dp)
                                 Spacer(Modifier.width(8.dp))
                             }
                             val gangs = game.canAnGang(0)
                             if (gangs.isNotEmpty()) {
-                                QqBeigeButton("暗杠 ${MjTiles.label(gangs.first())}", { game.selfGang(gangs.first()) }, height = 32.dp)
+                                QqGreenButton("暗杠 ${MjTiles.label(gangs.first())}", { game.selfGang(gangs.first()) }, height = 30.dp)
                                 Spacer(Modifier.width(8.dp))
                             }
-                            QqBeigeButton(
+                            QqGreenButton(
                                 "出 牌",
                                 {
                                     if (selIdx in game.hands[0].indices) {
@@ -499,19 +552,18 @@ fun QQMahjongTableScreen(onExit: () -> Unit) {
                                         game.playerDiscard(0, t)
                                     }
                                 },
-                                enabled = selIdx >= 0,
-                                height = 32.dp
+                                height = 30.dp
                             )
                         }
                         else -> Text(
-                            if (game.winner != -1) "" else "…",
-                            color = Color(0xFFBFE4FB), fontSize = 12.sp
+                            if (game.winner != -1) "" else mjHint(game),
+                            color = Color(0xFFD8F0FA), fontSize = 11.sp
                         )
                     }
                 }
                 Spacer(Modifier.height(4.dp))
 
-                // ---- 我的手牌 ----
+                // ---- 我的信息 + 手牌（截图3 底部）----
                 Row(verticalAlignment = Alignment.Bottom) {
                     MjSelfBadge(game)
                     Spacer(Modifier.width(8.dp))
@@ -572,38 +624,51 @@ fun QQMahjongTableScreen(onExit: () -> Unit) {
                         )
                         Spacer(Modifier.height(14.dp))
                         Row {
-                            QqBeigeButton("再来一局", { QQSounds.click(); selIdx = -1; game.startDeal() }, height = 32.dp)
+                            QqGreenButton("再来一局", { QQSounds.click(); selIdx = -1; game.startDeal() }, height = 32.dp)
                             Spacer(Modifier.width(10.dp))
-                            QqBeigeButton("退出牌桌", onExit, height = 32.dp)
+                            QqWhiteButton("退出牌桌", onExit, height = 32.dp)
                         }
                     }
                 }
             }
         }
 
-        // ================= 右侧面板 =================
+        // ================= 右侧面板（截图3 经典样式）=================
         MjSidePanel(game, onExit)
     }
 }
 
+// ==================== 座位（截图3 样式） ====================
+
+/** 我的徽标（手牌左侧：头像 + 昵称 + 欢乐豆） */
 @Composable
 private fun MjSelfBadge(game: MahjongGame) {
     val p = game.players[0]
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Box {
-            QqAvatar(avatar = p.avatar, size = 40.dp)
+        Box(
+            modifier = Modifier
+                .size(44.dp)
+                .background(Color.White, RoundedCornerShape(4.dp))
+                .border(2.dp, if (game.turn == 0 && game.winner == -1) Color(0xFFFFE95C) else Color(0xFFBFE4FB), RoundedCornerShape(4.dp))
+                .padding(2.dp)
+        ) {
+            QqPenguinAvatar(
+                size = 40.dp,
+                modifier = Modifier.fillMaxSize(),
+                scarf = if (game.dealer == 0) Color(0xFFC3272B) else Color(0xFF2E7D32)
+            )
             if (game.dealer == 0) {
-                Text("👑", fontSize = 13.sp, modifier = Modifier.align(Alignment.TopStart))
+                Text("👑", fontSize = 12.sp, modifier = Modifier.align(Alignment.TopStart).offset(x = (-3).dp, y = (-3).dp))
             }
         }
         Text(p.name, color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold, maxLines = 1)
-        Text("副露 ${game.melds[0].size}", color = Color(0xFFBFE4FB), fontSize = 9.sp)
+        Text("欢乐豆 2480", color = Color(0xFFFFE95C), fontSize = 9.sp)
     }
 }
 
-/** 上方玩家条 */
+/** 对家（上方玩家条：头像 + 昵称 + 等级 + 花数 + 手牌背，截图3 顶部） */
 @Composable
-private fun MjSeatBar(game: MahjongGame, idx: Int) {
+private fun MjSeatTop(game: MahjongGame, idx: Int) {
     val p = game.players[idx]
     val active = game.winner == -1 && (game.turn == idx) &&
             (game.stage == "draw" || game.stage == "act" || (game.stage == "claim" && game.pendingFrom == idx))
@@ -614,16 +679,29 @@ private fun MjSeatBar(game: MahjongGame, idx: Int) {
             .padding(horizontal = 6.dp, vertical = 3.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Box {
-            QqAvatar(avatar = p.avatar, size = 36.dp)
+        Box(
+            modifier = Modifier
+                .size(38.dp)
+                .background(Color.White, RoundedCornerShape(4.dp))
+                .border(2.dp, Color(0xFFBFE4FB), RoundedCornerShape(4.dp))
+                .padding(2.dp)
+        ) {
+            QqPenguinAvatar(
+                size = 34.dp, modifier = Modifier.fillMaxSize(),
+                scarf = if (game.dealer == idx) Color(0xFFC3272B) else Color(0xFF1E6CB4)
+            )
             if (game.dealer == idx) {
-                Text("👑", fontSize = 12.sp, modifier = Modifier.align(Alignment.TopStart))
+                Text("👑", fontSize = 11.sp, modifier = Modifier.align(Alignment.TopStart).offset(x = (-3).dp, y = (-3).dp))
             }
         }
         Spacer(Modifier.width(6.dp))
-        Column(Modifier.width(92.dp)) {
+        Column(Modifier.width(96.dp)) {
             Text(p.name, color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Text("${ddTitle(p.level)}·Lv${p.level} · ${p.score}分", color = Color(0xFFFFE95C), fontSize = 9.sp)
+            Row {
+                Text("等级: ${mjTitle(p.level)}", color = Color(0xFFFFE95C), fontSize = 9.sp)
+                Spacer(Modifier.width(4.dp))
+                Text("花 x 0", color = Color(0xFFBDE3FF), fontSize = 9.sp)
+            }
         }
         Spacer(Modifier.weight(1f))
         // 副露
@@ -640,11 +718,11 @@ private fun MjSeatBar(game: MahjongGame, idx: Int) {
             repeat(game.hands[idx].size.coerceAtMost(13)) { MjTileBack(13.dp) }
         }
         Spacer(Modifier.width(6.dp))
-        Text("剩${game.hands[idx].size}张", color = Color(0xFFBFE4FB), fontSize = 10.sp)
+        Text("剩${game.hands[idx].size}张", color = Color(0xFFD8F0FA), fontSize = 10.sp)
     }
 }
 
-/** 左/右家（弃牌显示在中央牌池，此处只留信息与副露） */
+/** 左/右家（截图3：头像 + 昵称 + 等级 + 花数） */
 @Composable
 private fun MjSeatSide(game: MahjongGame, idx: Int) {
     val p = game.players[idx]
@@ -653,93 +731,122 @@ private fun MjSeatSide(game: MahjongGame, idx: Int) {
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         modifier = Modifier
-            .width(74.dp)
-            .fillMaxSize()
+            .width(72.dp)
             .background(if (active) Color(0x33FFE95C) else Color.Transparent, RoundedCornerShape(6.dp))
-            .padding(vertical = 3.dp)
+            .padding(vertical = 3.dp, horizontal = 2.dp)
     ) {
-        Spacer(Modifier.height(6.dp))
-        Box {
-            QqAvatar(avatar = p.avatar, size = 36.dp)
+        Spacer(Modifier.height(4.dp))
+        Box(
+            modifier = Modifier
+                .size(38.dp)
+                .background(Color.White, RoundedCornerShape(4.dp))
+                .border(2.dp, Color(0xFFBFE4FB), RoundedCornerShape(4.dp))
+                .padding(2.dp)
+        ) {
+            QqPenguinAvatar(
+                size = 34.dp, modifier = Modifier.fillMaxSize(),
+                scarf = if (game.dealer == idx) Color(0xFFC3272B) else Color(0xFF1E6CB4)
+            )
             if (game.dealer == idx) {
-                Text("👑", fontSize = 12.sp, modifier = Modifier.align(Alignment.TopStart))
+                Text("👑", fontSize = 11.sp, modifier = Modifier.align(Alignment.TopStart).offset(x = (-3).dp, y = (-3).dp))
             }
         }
         Text(p.name, color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        Text("${p.score}分", color = Color(0xFFFFE95C), fontSize = 9.sp)
+        Text("等级: ${mjTitle(p.level)}", color = Color(0xFFFFE95C), fontSize = 9.sp)
+        Text("花 x ${game.melds[idx].count { it.type == "gang" }}", color = Color(0xFFBDE3FF), fontSize = 9.sp)
         Spacer(Modifier.height(4.dp))
-        // 副露
+        // 副露（小牌）
         game.melds[idx].forEach { m ->
             Row(horizontalArrangement = Arrangement.spacedBy(1.dp)) {
-                repeat(if (m.type == "angang") 4 else 3) { MjTileFace(m.tile, 13.dp) }
+                repeat(if (m.type == "angang") 4 else 3) { MjTileFace(m.tile, 12.dp) }
             }
             Spacer(Modifier.height(1.dp))
         }
-        Spacer(Modifier.weight(1f))
-        Text("剩${game.hands[idx].size}张", color = Color(0xFFD8F0FA), fontSize = 9.sp)
-        Spacer(Modifier.height(4.dp))
     }
 }
 
-/** 中央牌池：四家弃牌环绕 + 最新牌 + 提示（仿经典麻将桌面） */
+// ==================== 牌墙（截图3：绿色牌背围合） ====================
+
+/** 横向牌墙（上/下两侧） */
 @Composable
-private fun MjCenterPool(game: MahjongGame, modifier: Modifier) {
+private fun MjWallRow(count: Int, tileW: Dp) {
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(1.dp),
+        modifier = Modifier.padding(horizontal = 2.dp)
+    ) {
+        repeat(count) { MjTileBack(tileW) }
+    }
+}
+
+/** 纵向牌墙（左/右两侧） */
+@Composable
+private fun MjWallColumn(count: Int, tileW: Dp) {
+    Column(
+        verticalArrangement = Arrangement.spacedBy(1.dp),
+        modifier = Modifier.padding(vertical = 2.dp)
+    ) {
+        repeat(count) { MjTileBack(tileW) }
+    }
+}
+
+/** 中央弃牌池（截图3：四家弃牌分区整齐排列，每行 6 张） */
+@Composable
+private fun MjDiscardPool(game: MahjongGame, modifier: Modifier) {
     Column(
         modifier
             .fillMaxSize()
-            .background(Color(0x26FFFFFF), RoundedCornerShape(8.dp))
-            .border(1.dp, Color(0x55FFFFFF), RoundedCornerShape(8.dp))
-            .padding(horizontal = 5.dp, vertical = 4.dp),
+            .background(Color(0x1EFFFFFF), RoundedCornerShape(8.dp))
+            .padding(horizontal = 6.dp, vertical = 5.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
-        // 对家弃牌（最近 10 张，一行）
-        Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-            game.rivers[2].takeLast(10).forEach { MjTileFace(it, 15.dp) }
+        // 对家弃牌（每行 6 张）
+        game.rivers[2].chunked(6).forEach { row ->
+            Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                row.forEach { MjTileFace(it, 15.dp) }
+            }
+            Spacer(Modifier.height(2.dp))
         }
-        Spacer(Modifier.height(5.dp))
+        Spacer(Modifier.height(4.dp))
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-            // 左家弃牌（每行 3 张）
+            // 左家弃牌（每行 2 张）
             Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                game.rivers[3].takeLast(9).chunked(3).forEach { row ->
+                game.rivers[3].takeLast(8).chunked(2).forEach { col ->
                     Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                        row.forEach { MjTileFace(it, 13.dp) }
+                        col.forEach { MjTileFace(it, 13.dp) }
                     }
                 }
             }
-            Spacer(Modifier.weight(1f))
-            // 中央：最新打出的牌 + 提示
+            Spacer(Modifier.weight(0.6f))
+            // 中央信息（最新打出的牌 + 余牌数）
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 if (game.stage == "claim" && game.pendingTile >= 0) {
                     Text(
                         "${game.players[game.pendingFrom].name} 打出：",
-                        color = Color(0xFFFFE95C), fontSize = 10.sp
+                        color = Color(0xFFFFE95C), fontSize = 9.sp
                     )
                     Spacer(Modifier.height(2.dp))
-                    MjTileFace(game.pendingTile, 27.dp)
+                    MjTileFace(game.pendingTile, 24.dp)
                 }
-                Spacer(Modifier.height(4.dp))
-                Text("余 ${game.wall.size} 张", color = Color(0xFFD8F0FA), fontSize = 10.sp)
-                Text(
-                    mjHint(game),
-                    color = Color(0xFFFFE95C), fontSize = 11.sp, fontWeight = FontWeight.Bold,
-                    textAlign = TextAlign.Center, lineHeight = 14.sp
-                )
+                Text("余 ${game.wall.size} 张", color = Color(0xFFD8F0FA), fontSize = 9.sp)
             }
-            Spacer(Modifier.weight(1f))
-            // 右家弃牌（每行 3 张）
+            Spacer(Modifier.weight(0.6f))
+            // 右家弃牌（每行 2 张）
             Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                game.rivers[1].takeLast(9).chunked(3).forEach { row ->
+                game.rivers[1].takeLast(8).chunked(2).forEach { col ->
                     Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                        row.forEach { MjTileFace(it, 13.dp) }
+                        col.forEach { MjTileFace(it, 13.dp) }
                     }
                 }
             }
         }
-        Spacer(Modifier.height(5.dp))
-        // 自己弃牌（最近 10 张，一行）
-        Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-            game.rivers[0].takeLast(10).forEach { MjTileFace(it, 15.dp) }
+        Spacer(Modifier.height(4.dp))
+        // 我的弃牌（每行 6 张）
+        game.rivers[0].chunked(6).forEach { row ->
+            Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                row.forEach { MjTileFace(it, 15.dp) }
+            }
+            Spacer(Modifier.height(2.dp))
         }
     }
 }
@@ -756,6 +863,7 @@ private fun mjHint(game: MahjongGame): String = when {
     game.stage == "act" && game.turn == 0 -> "轮到你出牌"
     else -> "等待${game.players[game.turn].name}…"
 }
+
 // ==================== 牌面（标准麻将位图素材 assets/qgame/mahjong/） ====================
 
 /** 牌面素材路径（code/9：0=万 1=筒 2=条；code%9+1 = 1..9） */
@@ -786,60 +894,116 @@ private fun MjTileBack(w: Dp) {
             .width(w)
             .height(w * 1.38f)
             .background(
-                Brush.verticalGradient(listOf(Color(0xFF2E9C4E), Color(0xFF1E7C3A))),
+                Brush.verticalGradient(listOf(QqGame.TileBackGreen, QqGame.TileBackDark)),
                 RoundedCornerShape(2.dp)
             )
             .border(0.5.dp, Color(0xFFD8E8DC), RoundedCornerShape(2.dp))
     )
 }
 
+// ==================== 右侧面板（截图3 经典样式） ====================
+
 @Composable
 private fun MjSidePanel(game: MahjongGame, onExit: () -> Unit) {
     val logScroll = rememberScrollState()
+    val self = game.players[0]
     Column(
         modifier = Modifier
-            .width(196.dp)
+            .width(200.dp)
             .fillMaxSize()
-            .background(QQ2008.panelBrush())
-            .border(1.dp, QQ2008.PanelBorder)
+            .background(QqGame.PanelLightBg)
+            .border(1.dp, Color(0xFF6FA6D8))
     ) {
+        // ---- 顶部浅蓝信息条（截图3：企鹅头像 + 昵称 + 积分/级别/欢乐豆）----
+        QqPanelHeader(
+            nickname = self.name,
+            scoreText = "${self.score}",
+            coinText = "欢乐豆: 2480"
+        )
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .background(QQ2008.titleBrush())
-                .padding(horizontal = 8.dp, vertical = 5.dp),
+                .background(Color(0xFFDCEFFB))
+                .padding(horizontal = 8.dp, vertical = 2.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text("🀄 欢乐麻将", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+            Text("级别: ${mjTitle(self.level)}", color = Color(0xFF2E6288), fontSize = 10.sp)
             Spacer(Modifier.weight(1f))
             Text(
-                "退出", color = Color.White, fontSize = 12.sp,
+                "退出",
+                color = Color(0xFF0B62C4),
+                fontSize = 11.sp,
                 modifier = Modifier.clickable { QQSounds.click(); onExit() }
             )
         }
 
-        QqSectionBar(title = "积分排名", leading = "🏆")
-        game.players.sortedByDescending { it.score }.forEachIndexed { i, p ->
+        // ---- 积分排行（截图3：昵称 | 欢乐豆 | 积分）----
+        QqPanelSection("积分排行")
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .background(Color(0xFFE4EFF7))
+                .padding(horizontal = 8.dp, vertical = 2.dp)
+        ) {
+            Text("昵称", fontSize = 10.sp, color = Color(0xFF5B7B99), modifier = Modifier.weight(1.4f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text("欢乐豆", fontSize = 10.sp, color = Color(0xFF5B7B99), modifier = Modifier.weight(0.9f), textAlign = TextAlign.End)
+            Text("积分", fontSize = 10.sp, color = Color(0xFF5B7B99), modifier = Modifier.weight(0.8f), textAlign = TextAlign.End)
+        }
+        game.players.sortedByDescending { it.score }.forEach { p ->
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 8.dp, vertical = 2.dp)
+                    .background(if (p.isHuman) Color(0xFFBFE4FB) else Color.White)
+                    .padding(horizontal = 8.dp, vertical = 3.dp)
             ) {
-                Text("${i + 1}.", fontSize = 11.sp, color = QQ2008.TextSub, fontWeight = FontWeight.Bold)
-                Spacer(Modifier.width(4.dp))
-                Text(p.avatar.removePrefix("emoji:"), fontSize = 12.sp)
+                QqPenguinAvatar(size = 16.dp)
                 Spacer(Modifier.width(4.dp))
                 Text(
                     p.name + if (p.isHuman) "（你）" else "",
-                    fontSize = 11.sp, color = QQ2008.TextMain, maxLines = 1
+                    fontSize = 10.sp, color = QQ2008.TextMain, maxLines = 1,
+                    overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1.4f)
                 )
-                Spacer(Modifier.weight(1f))
-                Text("${p.score}", fontSize = 11.sp, color = Color(0xFFC3272B), fontWeight = FontWeight.Bold)
+                Text(
+                    "${1200 + (p.score * 37).coerceAtLeast(0)}",
+                    fontSize = 10.sp, color = QQ2008.TextSub,
+                    modifier = Modifier.weight(0.9f), textAlign = TextAlign.End, maxLines = 1
+                )
+                Text(
+                    "${p.score}",
+                    fontSize = 10.sp, color = Color(0xFFC3272B), fontWeight = FontWeight.Bold,
+                    modifier = Modifier.weight(0.8f), textAlign = TextAlign.End
+                )
             }
         }
 
-        QqSectionBar(title = "游戏动态", leading = "📣")
+        // ---- 道具栏（截图3：公共道具 / 专属道具 + 翻页箭头）----
+        QqPanelSection("道具")
+        QqPropsBar(title = "公共道具", propCount = 1)
+        QqPropsBar(title = "专属道具", propCount = 0)
+
+        // ---- 蓝钻 / 商城（截图3）----
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 6.dp, vertical = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            QqBlueDiamondButton("蓝钻贵族", diamond = true, onClick = { QQSounds.click() }, modifier = Modifier.weight(1f))
+            QqBlueDiamondButton("游戏商城", diamond = false, onClick = { QQSounds.click() }, modifier = Modifier.weight(1f))
+        }
+        // 获取欢乐豆（截图3 手牌区上方蓝色高亮按钮）
+        QqBlueDiamondButton(
+            "获取欢乐豆",
+            diamond = false,
+            onClick = { QQSounds.click() },
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 6.dp, vertical = 2.dp)
+        )
+
+        // ---- 聊天区（截图3："快点吧，我等到花儿也谢了"）----
+        QqPanelSection("聊天")
         LaunchedEffect(game.log.size) {
             runCatching { logScroll.animateScrollTo(logScroll.maxValue) }
         }
@@ -847,30 +1011,58 @@ private fun MjSidePanel(game: MahjongGame, onExit: () -> Unit) {
             Modifier
                 .weight(1f)
                 .verticalScroll(logScroll)
-                .padding(horizontal = 8.dp)
+                .background(Color.White)
+                .padding(horizontal = 6.dp, vertical = 3.dp)
         ) {
             game.log.forEach { line ->
                 Text(line, fontSize = 10.sp, lineHeight = 14.sp, color = QQ2008.TextMain)
             }
+            Text(
+                "顽石：快点吧，我等到花儿也谢了",
+                fontSize = 10.sp, lineHeight = 14.sp,
+                color = Color(0xFFC3272B)
+            )
             Spacer(Modifier.height(4.dp))
         }
-
+        // 输入行 + 表情按钮（截图3 底部）
         Row(
             Modifier
                 .fillMaxWidth()
-                .background(Color(0xFFE8F4FD))
-                .padding(horizontal = 6.dp, vertical = 4.dp),
-            horizontalArrangement = Arrangement.SpaceEvenly
+                .background(Color(0xFFEAF6FE))
+                .padding(horizontal = 6.dp, vertical = 3.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            listOf("👍", "😂", "🙏", "😎", "🀄", "🔥").forEach { e ->
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .height(20.dp)
+                    .background(Color.White, RoundedCornerShape(3.dp))
+                    .border(1.dp, Color(0xFF9FC2DC), RoundedCornerShape(3.dp)),
+                contentAlignment = Alignment.CenterStart
+            ) {
+                Text("Hi~，快出牌吧！", fontSize = 9.sp, color = Color(0xFF9AAFC2), modifier = Modifier.padding(horizontal = 4.dp))
+            }
+            Spacer(Modifier.width(4.dp))
+            listOf("😊", "🀄").forEach { e ->
                 Text(
-                    e, fontSize = 16.sp,
+                    e, fontSize = 13.sp,
                     modifier = Modifier.clickable {
-                        game.log.add("${game.players[0].name}：[$e]")
+                        game.log.add("${game.players[0].name}：$e")
                         QQSounds.msgOut()
                     }
                 )
+                Spacer(Modifier.width(2.dp))
             }
+        }
+
+        // ---- 任务提示（截图3：番种任务 / 吃碰牌任务）----
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .background(Color(0xFFFFF7E0))
+                .padding(horizontal = 6.dp, vertical = 3.dp)
+        ) {
+            Text("📌 任务：番种任务 · 吃碰牌任务", fontSize = 9.sp, color = Color(0xFF8A6D2B), maxLines = 1)
         }
     }
 }
