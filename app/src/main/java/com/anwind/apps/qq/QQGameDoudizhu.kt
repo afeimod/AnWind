@@ -89,7 +89,7 @@ fun QQGameTableScreen(onExit: () -> Unit) {
                     lastWinner = game.lastWinner,
                     handCounts = counts
                 )
-                if (move == null) { QQSounds.pass(); game.passTurn(idx) } else game.playCards(idx, move)
+                if (move == null) game.passTurn(idx) else game.playCards(idx, move)
             }
         }
     }
@@ -99,29 +99,10 @@ fun QQGameTableScreen(onExit: () -> Unit) {
         if (game.phase == DdPhase.BIDDING && game.bidCount == 0) selected.clear()
     }
 
-    // ---- 结算：音效 + 积分落盘 ----
+    // ---- 结算：积分落盘（胜负音效由逻辑层 settle() 统一播放）----
     LaunchedEffect(game.result) {
         val r = game.result ?: return@LaunchedEffect
-        val delta = r.deltas[0]
-        runCatching { QQGameScores.add(selfName, delta) }
-        if (delta > 0) QQSounds.win() else QQSounds.lose()
-    }
-
-    // ---- 入桌洗牌/发牌音效 ----
-    LaunchedEffect(Unit) {
-        QQSounds.shuffle()
-        delay(500)
-        QQSounds.deal()
-    }
-
-    // ---- 出牌音效：王炸 / 炸弹 / 普通出牌 ----
-    LaunchedEffect(game.lastPlay) {
-        val lp = game.lastPlay ?: return@LaunchedEffect
-        when {
-            lp.cards.size == 2 && lp.cards.all { it.isJoker } -> QQSounds.wangzha()
-            lp.cards.size == 4 && lp.cards.map { it.rank }.distinct().size == 1 -> QQSounds.bomb()
-            else -> QQSounds.card()
-        }
+        runCatching { QQGameScores.add(selfName, r.deltas[0]) }
     }
 
     // ---- 方向自适应（根治竖屏显示不完整）：真实桌面底图 + 经典桌角贴边侧位玩家 ----
@@ -297,7 +278,6 @@ fun QQGameTableScreen(onExit: () -> Unit) {
                                 "再来一局",
                                 {
                                     selected.clear()
-                                    QQSounds.shuffle()
                                     game.dealAndStartBid()
                                 },
                                 height = 32.dp

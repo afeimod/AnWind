@@ -21,6 +21,60 @@ import java.util.SortedMap
  *  - 地主赢：地主 +2×底分×倍数，每农民 -1×…；农民赢：反之。
  */
 
+// ==================== 游戏音效门面 ====================
+
+/**
+ * 游戏逻辑层统一音效入口（对 QQSounds 的语义封装）。
+ *
+ * 职责划分（杜绝同一事件双重发声）：
+ *  - 逻辑层（本文件）：洗牌 / 发牌 / 叫分 / 定庄 / 出牌 / 过牌 / 胜负 —— 全部走 QQGameSound；
+ *  - UI 层（QQGameDoudizhu）：只保留按钮 click 与快捷短语 msgOut，不再监听游戏状态补音效。
+ *
+ * 定义在本文件的原因：斗地主是唯一"逻辑与 UI 分离"的游戏（麻将 / 象棋 / 五子棋
+ * 的逻辑与音效同在各自 UI 文件内），门面跟着逻辑走 —— 替换本文件即获得完整
+ * 音效链路，不引入任何跨文件依赖。
+ */
+object QQGameSound {
+    /** 逻辑层音效总开关（QQSounds 内部仍会校验全局设置 soundEnabled） */
+    var enabled = true
+
+    /** 叫地主确定 / 入座确认 */
+    fun ding() { if (enabled) QQSounds.ding() }
+
+    /** 发牌 */
+    fun deal() { if (enabled) QQSounds.deal() }
+
+    /** 洗牌 */
+    fun shuffle() { if (enabled) QQSounds.shuffle() }
+
+    /** 出牌 */
+    fun card() { if (enabled) QQSounds.card() }
+
+    /** 不出 / 不叫 / 过牌 */
+    fun pass() { if (enabled) QQSounds.pass() }
+
+    /** 炸弹 */
+    fun bomb() { if (enabled) QQSounds.bomb() }
+
+    /** 王炸 */
+    fun wangzha() { if (enabled) QQSounds.wangzha() }
+
+    /** 胜利 */
+    fun win() { if (enabled) QQSounds.win() }
+
+    /** 失败 */
+    fun lose() { if (enabled) QQSounds.lose() }
+
+    /** 出牌音效：王炸 / 炸弹 / 普通出牌 三档 */
+    fun playCombo(type: DdComboType) {
+        when (type) {
+            DdComboType.ROCKET -> wangzha()
+            DdComboType.BOMB -> bomb()
+            else -> card()
+        }
+    }
+}
+
 // ==================== 扑克牌 ====================
 
 /**
@@ -674,8 +728,10 @@ class DoudizhuGame(
         }
         bottomCards.addAll(deck.subList(51, 54))
 
+        QQGameSound.shuffle()
+        QQGameSound.deal()
+
         addLog("—— 新一局开始，发牌完毕 ——")
-        QQGameSound.ddzDealCards()          // 参考APK整段发牌音（一局一次）
         bidTurn = rnd.nextInt(3)
         phase = DdPhase.BIDDING
         addLog("等待${players[bidTurn].name}叫分…")
@@ -686,7 +742,7 @@ class DoudizhuGame(
         if (phase != DdPhase.BIDDING || idx != bidTurn) return
         val s = if (score > bidMax) score else 0
         addLog("${players[idx].name}：" + if (s == 0) "不叫" else "叫 $s 分")
-        if (s > 0) QQGameSound.ddzJiao() else QQGameSound.ddzBuYao()   // 叫/不叫语音
+        if (s == 0) QQGameSound.pass() else QQGameSound.ding()
         if (s > bidMax) { bidMax = s; bidWinner = idx }
         bidCount++
         if (s == 3 || bidCount == 3) {
@@ -712,7 +768,7 @@ class DoudizhuGame(
         phase = DdPhase.PLAYING
         addLog("${players[idx].name} 以 $score 分当选地主，获得底牌！")
         addLog("地主先出牌")
-        QQSounds.ding()
+        QQGameSound.ding()
     }
 
     /** 当前行动者是否必须压上一手（领出者不用） */
@@ -736,29 +792,8 @@ class DoudizhuGame(
 
         if (play.type == DdComboType.BOMB || play.type == DdComboType.ROCKET) {
             multiplier *= 2
-            QQGameSound.ddzBomb()
-            if (play.type == DdComboType.ROCKET) QQGameSound.ddzRocket()
-        } else {
-            QQGameSound.ddzPlay()
         }
-        // 报牌语音（参考APK男声）：单张/对子报点数，牌型报名称
-        when (play.type) {
-            DdComboType.SINGLE -> QQGameSound.ddzCardVoice(play.keyRank)
-            DdComboType.PAIR -> QQGameSound.ddzPairVoice(play.keyRank)
-            DdComboType.BOMB -> QQGameSound.ddzTypeVoice("zhadan_strong")
-            DdComboType.ROCKET -> QQGameSound.ddzTypeVoice("wangzha_strong")
-            DdComboType.STRAIGHT -> QQGameSound.ddzTypeVoice("shunzi")
-            DdComboType.PAIR_STRAIGHT -> QQGameSound.ddzTypeVoice("liandui")
-            DdComboType.TRIO_ONE -> QQGameSound.ddzTypeVoice("sandai1")
-            DdComboType.TRIO_PAIR -> QQGameSound.ddzTypeVoice("sandai2")
-            DdComboType.PLANE, DdComboType.PLANE_ONE, DdComboType.PLANE_PAIR -> {
-                QQGameSound.ddzPlane(); QQGameSound.ddzTypeVoice("feiji_strong")
-            }
-            DdComboType.FOUR_TWO, DdComboType.FOUR_TWO_PAIRS -> QQGameSound.ddzTypeVoice("sidai2")
-            else -> {}
-        }
-        // 报警：出手后仅剩 ≤2 张
-        if (hand.isNotEmpty() && hand.size <= 2) QQGameSound.ddzBaoJing()
+        QQGameSound.playCombo(play.type)
 
         addLog("${players[idx].name}：${play.describe()}" + if (multiplier > 1 && (play.type == DdComboType.BOMB || play.type == DdComboType.ROCKET)) "（倍数 ×$multiplier）" else "")
 
@@ -774,7 +809,7 @@ class DoudizhuGame(
         passed[idx] = true
         passCount++
         addLog("${players[idx].name}：不出")
-        if (players[idx].isHuman) QQGameSound.ddzBuYao()   // “不要”语音
+        QQGameSound.pass()
         if (passCount >= 2) {
             // 一圈没人要 → 清桌，上家继续领出
             lastPlay = null
@@ -816,7 +851,7 @@ class DoudizhuGame(
         }
         deltas.forEachIndexed { i, d -> players[i].score += d }
         result = DdResult(landlord, landlordWon, deltas, spring, baseScore, finalMult)
-        if (spring) QQGameSound.spring()
+        if (deltas[0] > 0) QQGameSound.win() else QQGameSound.lose()
         addLog(
             (if (landlordWon) "地主胜" else "农民胜") +
                     "（底分 $baseScore × 倍数 $finalMult${if (spring) "，春天！" else ""}）"
