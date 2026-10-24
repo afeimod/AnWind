@@ -1,0 +1,6 @@
+revision="vulkan-sdk-1.4.357.0"
+url="https://github.com/KhronosGroup/SPIRV-Headers.git"
+urlType="git"
+arch="aarch64 x86_64"
+buildSys="cmake"
+license="Apache-2.0"
