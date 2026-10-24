@@ -257,6 +257,11 @@ fun QQGomokuTableScreen(onExit: () -> Unit) {
     // v4 竖屏自适应：窄窗口（<560dp）紧凑纵向布局，棋盘完整可见
     BoxWithConstraints(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(QqGame.GmBgTop, QqGame.GmBgBottom)))) {
         val compact = maxWidth < 560.dp
+        // 修复：maxWidth 只能在 BoxWithConstraints 的直接作用域内经隐式接收者访问；
+        // 进入嵌套的 Box/Row/Column 等子 lambda 后，Kotlin 无法再经外层隐式接收者
+        // 解析（can't be called in this context by implicit receiver），
+        // 故在作用域顶层捕获为局部 val，嵌套布局统一使用 maxW。
+        val maxW = maxWidth
         if (compact) {
             Column(
                 Modifier
@@ -302,7 +307,7 @@ fun QQGomokuTableScreen(onExit: () -> Unit) {
                         .padding(4.dp),
                     contentAlignment = Alignment.Center
                 ) {
-                    GmBoardArea(game, cell = ((maxWidth - 16.dp) / 16.1f).coerceAtMost(26.dp))
+                    GmBoardArea(game, cell = ((maxW - 16.dp) / 16.1f).coerceAtMost(26.dp))
                 }
                 Row(
                     Modifier

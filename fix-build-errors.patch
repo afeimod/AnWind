@@ -1,0 +1,69 @@
+diff --git a/app/src/main/java/com/anwind/apps/qq/QQGameChess.kt b/app/src/main/java/com/anwind/apps/qq/QQGameChess.kt
+index 6be3558..d7c5ea6 100644
+--- a/app/src/main/java/com/anwind/apps/qq/QQGameChess.kt
++++ b/app/src/main/java/com/anwind/apps/qq/QQGameChess.kt
+@@ -499,12 +499,15 @@ class ChessGame(selfName: String, selfAvatar: String, selfScore: Int) {
+                 MAIN.post {
+                     if (token != aiToken.get()) return@post
+                     if (winner == -1 && turn == 1) {
+-                        var m = mv
++                        // 修复：原 var m 先判空再用、随后又被重新赋值，被 runCatching 闭包捕获后
++                        // Kotlin 拒绝 smart cast（captured by a changing closure）。
++                        // 改为不可变 val：主走法取只读副本，回退走法用独立变量，语义完全不变。
++                        val m = mv
+                         if (m == null || !runCatching { play(m / 90, m % 90) }.isSuccess) {
+-                            m = runCatching {
++                            val fallback = runCatching {
+                                 ChessRules.allLegalMoves(board, ChessRules.BLACK).randomOrNull()
+                             }.getOrNull()
+-                            if (m != null) runCatching { play(m / 90, m % 90) }
++                            if (fallback != null) runCatching { play(fallback / 90, fallback % 90) }
+                         }
+                     }
+                 }
+@@ -609,6 +612,11 @@ fun QQChessTableScreen(onExit: () -> Unit) {
+     // v4 竖屏自适应：窄窗口（<560dp）切换紧凑纵向布局，棋盘完整可见不裁切
+     BoxWithConstraints(Modifier.fillMaxSize().background(QqGame.ChessBg)) {
+         val compact = maxWidth < 560.dp
++        // 修复：maxWidth 只能在 BoxWithConstraints 的直接作用域内经隐式接收者访问；
++        // 进入嵌套的 Box/Row/Column 等子 lambda 后，Kotlin 无法再经外层隐式接收者
++        // 解析（can't be called in this context by implicit receiver），
++        // 故在作用域顶层捕获为局部 val，嵌套布局统一使用 maxW。
++        val maxW = maxWidth
+         if (compact) {
+             Column(
+                 Modifier
+@@ -653,7 +661,7 @@ fun QQChessTableScreen(onExit: () -> Unit) {
+                         .padding(horizontal = 4.dp),
+                     contentAlignment = Alignment.Center
+                 ) {
+-                    ChessBoardArea(game, cell = ((maxWidth - 24.dp) / 8f).coerceAtMost(40.dp))
++                    ChessBoardArea(game, cell = ((maxW - 24.dp) / 8f).coerceAtMost(40.dp))
+                 }
+                 Row(
+                     Modifier
+diff --git a/app/src/main/java/com/anwind/apps/qq/QQGameGomoku.kt b/app/src/main/java/com/anwind/apps/qq/QQGameGomoku.kt
+index 295442d..fd140bb 100644
+--- a/app/src/main/java/com/anwind/apps/qq/QQGameGomoku.kt
++++ b/app/src/main/java/com/anwind/apps/qq/QQGameGomoku.kt
+@@ -257,6 +257,11 @@ fun QQGomokuTableScreen(onExit: () -> Unit) {
+     // v4 竖屏自适应：窄窗口（<560dp）紧凑纵向布局，棋盘完整可见
+     BoxWithConstraints(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(QqGame.GmBgTop, QqGame.GmBgBottom)))) {
+         val compact = maxWidth < 560.dp
++        // 修复：maxWidth 只能在 BoxWithConstraints 的直接作用域内经隐式接收者访问；
++        // 进入嵌套的 Box/Row/Column 等子 lambda 后，Kotlin 无法再经外层隐式接收者
++        // 解析（can't be called in this context by implicit receiver），
++        // 故在作用域顶层捕获为局部 val，嵌套布局统一使用 maxW。
++        val maxW = maxWidth
+         if (compact) {
+             Column(
+                 Modifier
+@@ -302,7 +307,7 @@ fun QQGomokuTableScreen(onExit: () -> Unit) {
+                         .padding(4.dp),
+                     contentAlignment = Alignment.Center
+                 ) {
+-                    GmBoardArea(game, cell = ((maxWidth - 16.dp) / 16.1f).coerceAtMost(26.dp))
++                    GmBoardArea(game, cell = ((maxW - 16.dp) / 16.1f).coerceAtMost(26.dp))
+                 }
+                 Row(
+                     Modifier
