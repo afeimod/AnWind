@@ -31,7 +31,9 @@ pkgSrcDir="${wsDir}/projects/glibc-x86_64"
 UBUNTU_POOL="http://archive.ubuntu.com/ubuntu/pool/main"
 GLIBC_VER="${ANWIND_GLIBC_VER:-2.39-0ubuntu8.9}"
 GCC_VER="${ANWIND_GCC_VER:-14.2.0-4ubuntu2~24.04.1}"
-ZLIB_VER="${ANWIND_ZLIB_VER:-1.3.dfsg-3.1ubuntu2.2}"
+# ⚠ Ubuntu pool 会清理旧修订（1.3.dfsg-3.1ubuntu2.2 已 404，导致 CI 整轮报废），
+#   版本漂移时可用环境变量 ANWIND_ZLIB_VER 覆盖，无需改脚本。
+ZLIB_VER="${ANWIND_ZLIB_VER:-1.3.dfsg-3.1ubuntu2.3}"
 
 DEBS="
 ${UBUNTU_POOL}/g/glibc/libc6_${GLIBC_VER}_amd64.deb

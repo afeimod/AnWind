@@ -73,9 +73,8 @@ debianPkgs=(
   autopoint
   libfreetype-dev
   locales
-  # glib 构建在 Ubuntu 24.04 需要 gio-querymodules / glib-mkenums 等工具，
-  # 其已从 libglib2.0-dev-bin 拆分到独立包 libgio-2.0-dev-bin
-  libgio-2.0-dev-bin
+  # 注意：glib 开发工具（glib-mkenums/gdbus-codegen/gio-querymodules）所在
+  # 包名不写死在这里——它在不同发行版上包名不同，见下方安装前的动态探测。
   python3-setuptools
   python3-dev
   python3-mako
@@ -100,12 +99,35 @@ if [[ -f /etc/os-release ]]; then
     ;;
   debian|ubuntu)
     echo "当前为 $ID"
-    echo "需要安装 ${debianPkgs[@]}"
     echo "交互式将取消,自动完成安装"
     export DEBIAN_FRONTEND=noninteractive
     apt update || exit 1
-    apt upgrade -y || exit 1
-    apt install -y ${debianPkgs[@]} || exit 1
+    # 不做全量 apt upgrade：CI runner 上会下载 300MB+ 更新并触发
+    # firefox→snap 转换（连带下载 snapd/core24/mesa-2404/bare 等 snap），
+    # 既拖慢构建又可能在受限环境失败；runner 镜像已预置可用工具链，
+    # 本脚本只需补装下面的构建依赖即可。
+
+    # glib 开发工具（glib-mkenums / gdbus-codegen / gio-querymodules）
+    # 所在包名随发行版而异，写死任何一个都会在别的发行版上
+    # "Unable to locate package" 直接失败：
+    #   - Ubuntu 22.04/24.04(noble): libglib2.0-dev-bin（工具都在里面）
+    #   - Debian trixie 及更新(glib>=2.84): 拆分为 libgio-2.0-dev-bin
+    #     （此时 libglib2.0-dev-bin 只剩 gi-* 工具）
+    # 因此改为安装前动态探测：存在哪个装哪个，两个都在就都装。
+    GLIB_DEV_BIN_PKGS=()
+    for cand in libglib2.0-dev-bin libgio-2.0-dev-bin; do
+      if apt-cache show "${cand}" >/dev/null 2>&1; then
+        GLIB_DEV_BIN_PKGS+=("${cand}")
+        echo "检测到 glib 开发工具包: ${cand}"
+      fi
+    done
+    if [[ ${#GLIB_DEV_BIN_PKGS[@]} -eq 0 ]]; then
+      echo "错误: 当前 apt 源中既无 libglib2.0-dev-bin 也无 libgio-2.0-dev-bin!"
+      exit 1
+    fi
+
+    echo "需要安装 ${debianPkgs[@]} ${GLIB_DEV_BIN_PKGS[@]}"
+    apt install -y ${debianPkgs[@]} ${GLIB_DEV_BIN_PKGS[@]} || exit 1
     # meson 通过 pip 安装较新版本（GitHub Actions 的 ubuntu-24.04 自带
     # meson 1.3.x，部分包如新版 mesa/xorgproto 需要更高版本）
     # 注意：

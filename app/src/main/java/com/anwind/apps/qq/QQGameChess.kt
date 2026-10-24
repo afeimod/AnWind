@@ -197,11 +197,14 @@ object ChessRules {
         val kr = ks / 9
         val kc = ks % 9
 
-        // 双帅照面
+        // 双帅照面（白脸将）：两将同【列】且中间无子。红帅行7-9、
+        // 黑将行0-2，永不同行——旧代码按行比较导致该规则从未生效，
+        // “对脸”着法不会被过滤为非法。
         val os = kingSquare(b, -side)
         if (os >= 0) {
             val or = os / 9
-            if (or == kr) {
+            val oc = os % 9
+            if (oc == kc) {
                 var clear = true
                 for (rr in (minOf(kr, or) + 1) until maxOf(kr, or)) {
                     if (b[rr * 9 + kc] != 0) { clear = false; break }
@@ -426,6 +429,17 @@ class ChessGame(selfName: String, selfAvatar: String, selfScore: Int) {
         winner == -1 && board[from] != 0 && ((board[from] > 0) == (turn == 0))
 
     /**
+     * turn(0红/1黑) → 规则引擎棋方代号 RED(1)/BLACK(-1)。
+     * 规则引擎按棋子符号正负过滤阵营，而本类回合号是 0/1 ——
+     * 历史上直接把 turn 传给 allLegalMoves/inCheck，导致玩家走完
+     * (turn=1)后 legal 装的是【红方】走法表，AI 的黑方着法永远
+     * 不在表内，被 play() 的合法性校验静默拒绝 → “对面不走棋子”。
+     * （修了很多次都无效的真正根因：AI 驱动/搜索/看门狗链路全部
+     * 正常，着法也正确算出并送达，坏在 play() 入口的阵营换算。）
+     */
+    private fun sideNow() = if (turn == 0) ChessRules.RED else ChessRules.BLACK
+
+    /**
      * 走棋（含合法性校验）。
      * legal 缓存与棋盘不一致时自愈重算一次再判，绝不误拒合法着法
      * （防御任何不可预见的状态不同步导致 AI/看门狗的落子被静默吞掉）。
@@ -435,7 +449,7 @@ class ChessGame(selfName: String, selfAvatar: String, selfScore: Int) {
         if ((board[from] > 0) != (turn == 0) || board[from] == 0) return false
         val mv = from * 90 + to
         if (mv !in legal) {
-            legal = ChessRules.allLegalMoves(board, turn)
+            legal = ChessRules.allLegalMoves(board, sideNow())
             if (mv !in legal) return false
         }
 
@@ -447,7 +461,7 @@ class ChessGame(selfName: String, selfAvatar: String, selfScore: Int) {
         lastFrom = from; lastTo = to
         ply++
         turn = 1 - turn
-        legal = ChessRules.allLegalMoves(board, turn)
+        legal = ChessRules.allLegalMoves(board, sideNow())
 
         val sideName = if (mover == 0) "红" else "黑"
         val ch = pieceChar(p)
@@ -457,7 +471,7 @@ class ChessGame(selfName: String, selfAvatar: String, selfScore: Int) {
         if (legal.isEmpty()) {
             winner = mover
             addLog(if (mover == 0) "对方无路可走，你赢了 🎉" else "你无路可走，AI 获胜")
-        } else if (ChessRules.inCheck(board, turn)) {
+        } else if (ChessRules.inCheck(board, sideNow())) {
             addLog("将军！")
             QQSounds.ding()
         }

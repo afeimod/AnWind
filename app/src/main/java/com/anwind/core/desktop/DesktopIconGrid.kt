@@ -16,6 +16,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshots.SnapshotStateMap
 import androidx.compose.runtime.mutableStateMapOf
@@ -83,8 +84,11 @@ fun DesktopIconGrid(
     val iconSize by app.settingsStore.iconSize.collectAsState(initial = 48f)
     // v2.14：自定义图标顺序（未拖动过的图标自动布局时沿用）
     val iconOrder by app.settingsStore.desktopIconOrder.collectAsState(initial = "")
-    // v4：稳定单元格位置
-    val iconPositions by app.settingsStore.desktopIconPositions.collectAsState(initial = "")
+    // v4：稳定单元格位置。
+    // v4.1 修复：initial 必须用 null（而非 ""）—— DataStore 首次发射前
+    // "" 占位帧会把 first-fit 布局当成"已加载的空布局"立即落盘，覆盖
+    // 用户拖动保存的自定义位置（冷启动后图标"跑回"默认排列的竞态根源）。
+    val iconPositions by app.settingsStore.desktopIconPositions.collectAsState(initial = null)
     val scope = rememberCoroutineScope()
     val density = LocalDensity.current
 
@@ -212,14 +216,14 @@ fun DesktopIconGrid(
 
         // 解析持久化位置（iconPositions / 网格几何 变化时重算，旧像素自动迁移）
         val savedCells = remember(iconPositions, perRow, perCol) {
-            parsePositions(iconPositions)
+            parsePositions(iconPositions ?: "")
         }
 
         // 即时覆盖层：拖拽落格后同步生效，不等 DataStore 写回（消除闪跳）
         // 外部清空（设置里恢复默认布局）时一并清空本地层
         val liveCells = remember { mutableStateMapOf<String, Pair<Int, Int>>() }
         LaunchedEffect(iconPositions) {
-            if (iconPositions.isBlank()) liveCells.clear()
+            if (iconPositions?.isBlank() != false) liveCells.clear()
         }
 
         // ---- 完整布局计算：有格的保持（live 优先），缺格的先列后行 first-fit ----
@@ -275,9 +279,13 @@ fun DesktopIconGrid(
             }
         }
 
-        // 首次布局分配的格立即持久化（此后位置永久稳定，不再随其它变化重排）
-        LaunchedEffect(newlyAssigned) {
-            if (newlyAssigned.isNotEmpty()) persistPositions(cells)
+        // 首次布局分配的格立即持久化（此后位置永久稳定，不再随其它变化重排）。
+        // v4.1 修复：必须等 DataStore 真正发射（iconPositions != null）才允许落盘，
+        // 否则启动占位帧的 first-fit 会把用户保存的布局覆盖掉；
+        // iconPositions 也作为 key：null→""（无存量布局）时重跑一次把
+        // first-fit 固化下来（新用户首次布局仍立即稳定）。
+        LaunchedEffect(newlyAssigned, iconPositions) {
+            if (iconPositions != null && newlyAssigned.isNotEmpty()) persistPositions(cells)
         }
 
         // 清理消失图标的幽灵占位（删除快捷方式后不留空洞记录）
@@ -291,8 +299,12 @@ fun DesktopIconGrid(
         }
 
         // ---- 拖动落格：按图标中心定位目标格 + 占位交换 + 即时生效 + 持久化 ----
-        fun onDropIcon(item: DesktopItem, baseCell: Pair<Int, Int>, deltaPx: Offset) {
+        // v4.1 修复：不再信任调用方传入的 baseCell —— pointerInput 手势协程
+        // 持有的是首次组合时的闭包，传入的 baseCell 可能是过期快照（这是
+        // “拖动后位置乱跑”的根源之一）；这里直接从当前 cells 表取真实基准格。
+        fun onDropIcon(item: DesktopItem, deltaPx: Offset) {
             if (deltaPx == Offset.Zero) return
+            val baseCell = cells[item.id] ?: return
             // 图标中心松手位置 → 目标格（与 Windows 的光标落点语义最接近）
             val base = cellPx(baseCell.first, baseCell.second)
             val center = Offset(
@@ -323,7 +335,7 @@ fun DesktopIconGrid(
                 boundsRegistry = iconBounds,
                 clickMode = clickMode,
                 dragEnabled = freeDrag,
-                onDrop = { delta -> onDropIcon(item, cell, delta) }
+                onDrop = { delta -> onDropIcon(item, delta) }
             )
         }
     }
@@ -404,6 +416,13 @@ private fun DesktopIcon(
     var dragOffset by remember { mutableStateOf(Offset.Zero) }
     val dragging = dragOffset != Offset.Zero
 
+    // v4.1 修复（核心）：pointerInput 的手势协程只在 key 变化时重启，
+    // 块内直接引用的 onDrop 会停留在【首次组合时】的闭包里 —— 图标
+    // 落格/加载保存布局后 cells 已变，但手势回调仍拿旧 cell/旧 cells
+    // 计算，从第二次拖动起落点全错（“位置乱跑”的真正根源）。
+    // rememberUpdatedState 让回调永远调用最新一次重组的 onDrop。
+    val currentOnDrop by rememberUpdatedState(onDrop)
+
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         modifier = Modifier
@@ -444,7 +463,7 @@ private fun DesktopIcon(
                         dragOffset += dragAmount
                     },
                     onDragEnd = {
-                        if (dragOffset != Offset.Zero) onDrop(dragOffset)
+                        if (dragOffset != Offset.Zero) currentOnDrop(dragOffset)
                         dragOffset = Offset.Zero
                     },
                     onDragCancel = { dragOffset = Offset.Zero }

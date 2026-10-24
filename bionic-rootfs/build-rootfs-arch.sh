@@ -300,7 +300,22 @@ ensure_ndk() {
   if [[ ! -d "${ndkDir}/toolchains/llvm/prebuilt/linux-x86_64/bin" ]]; then
     info "NDK 不存在，开始下载..."
     mkdir -p "$ndkDir"
-    wget -O "/tmp/ndk.zip" "$ndkURL"
+    # 783MB 大文件：--timeout 限制单次连接/读取阻塞时长，--tries 自动重试，
+    # 断点续传 -c；此前无任何容错参数，CI 网络一次抖动就废掉整轮构建。
+    # 且下载后必须校验完整性（unzip 对损坏 zip 会中途报错但 wget 已返回 0）。
+    local _ndkTries=0
+    local _ndkOk=0
+    while (( _ndkTries < 3 )); do
+      (( _ndkTries++ ))
+      if wget -c -nv --timeout=120 --tries=3 --waitretry=5 -O "/tmp/ndk.zip" "$ndkURL" \
+          && unzip -t /tmp/ndk.zip >/dev/null 2>&1; then
+        _ndkOk=1
+        break
+      fi
+      warn "NDK 下载/校验失败（第 ${_ndkTries}/3 次），重试..."
+      rm -f /tmp/ndk.zip
+    done
+    [[ "${_ndkOk}" == "1" ]] || { err "NDK 下载或完整性校验失败 => ${ndkURL}"; return 1; }
 
     rm -rf /tmp/ndk-tmp
     mkdir /tmp/ndk-tmp
