@@ -266,7 +266,14 @@ fun DesktopIconGrid(
                 sortedItems.forEachIndexed { i, item ->
                     m[item.id] = (i / perCol) to (i % perCol)
                 }
-                m to emptyMap()
+                // v4.2 修复（CI 编译错误）：emptyMap() 必须带显式类型参数。
+                // Kotlin 1.9 推断器把无参 emptyMap() 的 K/V 留成未推断变量，
+                // 与另一分支 newOnes 的 MutableMap<String, Pair<Int,Int>> 无法
+                // 统一，run 块的公共超类型求解失败 → "Type mismatch: inferred
+                // type is Map<???, ???> but MutableMap<String, Pair<Int, Int>>
+                // was expected"（233/269 三处报错）。显式类型参数后两分支统一
+                // 为 Pair<MutableMap<...>, Map<String, Pair<Int,Int>>，编译通过。
+                m to emptyMap<String, Pair<Int, Int>>()
             }
         }
 
