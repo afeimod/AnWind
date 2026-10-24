@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -31,7 +32,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.font.FontWeight
@@ -213,7 +213,6 @@ class MahjongGame(selfName: String, selfAvatar: String, selfScore: Int) {
         turn = dealer
         stage = "draw"
         bump()
-        QQGameSound.mjXiPai(); QQGameSound.mjFaPai(); QQGameSound.mjDice()   // 洗牌+发牌+骰子
         addLog("—— 新一局开始，庄家：${players[dealer].name} ——")
     }
 
@@ -228,7 +227,6 @@ class MahjongGame(selfName: String, selfAvatar: String, selfScore: Int) {
         lastDrawn = t
         stage = "act"
         bump()
-        QQGameSound.mjMoPai()   // 摸牌音
     }
 
     // ---------- 出牌（自摸后 / 碰后） ----------
@@ -248,8 +246,7 @@ class MahjongGame(selfName: String, selfAvatar: String, selfScore: Int) {
         pendingTile = tile
         pendingFrom = i
         bump()
-        QQGameSound.mjDaPai()              // 打牌音
-        QQGameSound.mjTileVoice(tile)      // 报牌语音（万/筒/条）
+        QQSounds.card()
         addLog("${players[i].name} 打 ${MjTiles.label(tile)}")
 
         // 优先胡
@@ -292,7 +289,6 @@ class MahjongGame(selfName: String, selfAvatar: String, selfScore: Int) {
                 if (p == 0) selfDelta += 1
                 if (pendingFrom == 0) selfDelta -= 1
                 addLog("${players[p].name} 明杠 ${MjTiles.label(pendingTile)}（${players[pendingFrom].name} 付 1 分）")
-                QQGameSound.mjActionVoice("gang")
                 claimQueue = emptyList()
                 pendingTile = -1; pendingFrom = -1
                 turn = p
@@ -304,7 +300,6 @@ class MahjongGame(selfName: String, selfAvatar: String, selfScore: Int) {
                 melds[p].add(MjMeld("peng", pendingTile))
                 rivers[pendingFrom].remove(pendingTile)
                 addLog("${players[p].name} 碰 ${MjTiles.label(pendingTile)}")
-                QQGameSound.mjActionVoice("peng")
                 claimQueue = emptyList()
                 pendingTile = -1; pendingFrom = -1
                 turn = p
@@ -312,6 +307,7 @@ class MahjongGame(selfName: String, selfAvatar: String, selfScore: Int) {
                 bump()
             }
         }
+        QQSounds.card()
     }
 
     // ---------- 自摸动作 ----------
@@ -333,10 +329,10 @@ class MahjongGame(selfName: String, selfAvatar: String, selfScore: Int) {
         players[turn].score += 3
         if (turn == 0) selfDelta += 3
         addLog("${players[turn].name} 暗杠 ${MjTiles.label(tile)}（每家付 1 分）")
-        QQGameSound.mjActionVoice("gang")
         lastDrawn = -1
         stage = "draw"                           // 补摸
         bump()
+        QQSounds.card()
     }
 
     // ---------- 结算 ----------
@@ -355,7 +351,6 @@ class MahjongGame(selfName: String, selfAvatar: String, selfScore: Int) {
         winTile = tile
         winSelfDrawn = selfDrawn
         winPayer = payer
-        QQGameSound.mjActionVoice("hu")   // “胡了！”语音
         if (selfDrawn) {
             players[w].score += 6
             if (w == 0) selfDelta += 6
@@ -407,10 +402,6 @@ fun QQMahjongTableScreen(onExit: () -> Unit) {
     val game = remember { MahjongGame(selfName, acc?.avatar ?: "emoji:🐧", selfScore) }
     var selIdx by remember { mutableStateOf(-1) }
 
-    // 游戏音效/语音系统就绪（参考APK素材）
-    val sndCtx = androidx.compose.ui.platform.LocalContext.current
-    remember { QQGameSound.ensureInit(sndCtx); true }
-
     // ---- 倒计时（截图3 中央 LED 09；行动方从 15 起跳） ----
     var countdown by remember { mutableStateOf(15) }
     LaunchedEffect(game.turn, game.stage) {
@@ -440,6 +431,7 @@ fun QQMahjongTableScreen(onExit: () -> Unit) {
                     if (gangs.isNotEmpty()) { game.selfGang(gangs.first()); return@LaunchedEffect }
                     val t = MjAi.discard(game.hands[me], game.melds[me])
                     game.playerDiscard(me, t)
+                    QQSounds.card()
                 }
             }
             "act" -> {
@@ -449,6 +441,7 @@ fun QQMahjongTableScreen(onExit: () -> Unit) {
                     if (game.stage != "act" || game.winner != -1) return@LaunchedEffect
                     val t = MjAi.discard(game.hands[me], game.melds[me])
                     game.playerDiscard(me, t)
+                    QQSounds.card()
                 }
             }
             "claim" -> {
@@ -466,42 +459,54 @@ fun QQMahjongTableScreen(onExit: () -> Unit) {
     // ---- 结算：音效 + 积分落盘 ----
     LaunchedEffect(game.winner) {
         when (game.winner) {
-            0 -> QQGameSound.win()
-            in 1..3 -> QQGameSound.lose()
-            4 -> QQGameSound.mjTuipai()
+            0 -> QQSounds.win()
+            in 1..3 -> QQSounds.lose()
+            4 -> QQSounds.ding()
         }
         if (game.winner != -1 && game.selfDelta != 0) {
             runCatching { QQGameScores.add("麻将·$selfName", game.selfDelta) }
         }
     }
 
-    // v4 竖屏自适应：窄窗口（<560dp）隐藏右侧面板；手牌宽度随桌面区自适应
+    // ---- 入桌洗牌/发牌音效 ----
+    LaunchedEffect(Unit) {
+        QQSounds.shuffle()
+        delay(600)
+        QQSounds.deal()
+    }
+
+    // ---- 方向自适应 + 真实桌面底图 + 经典四家立牌（其他玩家排列修正）----
     BoxWithConstraints(Modifier.fillMaxSize()) {
-        val compact = maxWidth < 560.dp
-        val tableW = if (compact) maxWidth else maxWidth - 200.dp
-        val tileW = ((tableW - 84.dp) / 14f).coerceIn(28.dp, 38.dp)
+        val cw = maxWidth
+        val ch = maxHeight
+        val portrait = cw < ch
+        val tableW = if (portrait) cw else cw - 200.dp
+        // 我的立牌尺寸：按桌宽自适配（13~14 张一手）
+        val myTileW = ((tableW - 64.dp) / 14.5f).coerceIn(22.dp, 40.dp)
+        // 侧家（左/右）立牌尺寸：整列 13 张竖排按可用高度自适配
+        val sideAvailH = ch - 46.dp - 24.dp - 18.dp - 34.dp - (myTileW * 1.38f + 16.dp) - 26.dp
+        val sideTileW = (sideAvailH / 13f / 1.42f).coerceIn(6.dp, 13.dp)
+
         Row(Modifier.fillMaxSize()) {
-        // ================= 桌面区（参考APK麻将桌面背景图） =================
+        // ================= 桌面区（真实麻将桌面底图，缺失回退纯色）=================
         Box(
             modifier = Modifier
                 .weight(1f)
                 .fillMaxSize()
+                .background(QqGame.MjFeltEdge)
         ) {
-            QQGameAssetImage("qgame/bg/mj_table.jpg", Modifier.fillMaxSize())
+            QQGameAssetImage("qgame/mj_table.jpg", Modifier.fillMaxSize())
             Column(Modifier.fillMaxSize().padding(4.dp)) {
-                // ---- 对家（上方）：信息 + 牌墙（截图3 顶部横排牌墙，随摸牌减少）----
+                // ---- 对家（上方）：信息条 + 顶部牌墙（真实卧倒墙砖，随摸牌减少）----
                 MjSeatTop(game, 2)
-                MjWallRow(count = (game.wall.size / 4 + 1).coerceAtMost(14), tileW = 12.dp)
+                Spacer(Modifier.height(1.dp))
+                MjWallRow(count = (game.wall.size / 4 + 1).coerceAtMost(14))
                 Spacer(Modifier.height(2.dp))
 
-                // ---- 中区：左家 | 弃牌池+LED | 右家 ----
+                // ---- 中区：左家竖排立牌 | 弃牌池+LED | 右家竖排立牌（经典排列）----
                 Row(Modifier.weight(1f)) {
-                    // 左家 + 纵向牌墙
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        MjSeatSide(game, 3)
-                        Spacer(Modifier.height(2.dp))
-                        MjWallColumn(count = (game.wall.size / 4 + 1).coerceAtMost(8), tileW = 12.dp)
-                    }
+                    // 左家：紧凑座位 + 整列立牌背（张数=手牌数，随出牌减少）
+                    MjSideSeat(game, 3, tileW = sideTileW)
                     Spacer(Modifier.width(2.dp))
 
                     // 中央弃牌池（截图3：牌墙围出的中央区，弃牌按行整齐排列）
@@ -515,17 +520,13 @@ fun QQMahjongTableScreen(onExit: () -> Unit) {
                     }
                     Spacer(Modifier.width(2.dp))
 
-                    // 右家 + 纵向牌墙
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        MjSeatSide(game, 1)
-                        Spacer(Modifier.height(2.dp))
-                        MjWallColumn(count = (game.wall.size / 4 + 1).coerceAtMost(8), tileW = 12.dp)
-                    }
+                    // 右家：紧凑座位 + 整列立牌背
+                    MjSideSeat(game, 1, tileW = sideTileW)
                 }
                 Spacer(Modifier.height(2.dp))
 
                 // ---- 下侧牌墙 ----
-                MjWallRow(count = (game.wall.size / 4).coerceAtMost(14), tileW = 12.dp)
+                MjWallRow(count = (game.wall.size / 4).coerceAtMost(14))
 
                 // ---- 应答 / 操作按钮 ----
                 Row(
@@ -560,15 +561,26 @@ fun QQMahjongTableScreen(onExit: () -> Unit) {
                                         val t = game.hands[0][selIdx]
                                         selIdx = -1
                                         game.playerDiscard(0, t)
+                                        QQSounds.card()
                                     }
                                 },
                                 height = 30.dp
                             )
                         }
-                        else -> Text(
-                            if (game.winner != -1) "" else mjHint(game),
-                            color = Color(0xFFD8F0FA), fontSize = 11.sp
-                        )
+                        else -> Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                if (game.winner != -1) "" else mjHint(game),
+                                color = Color(0xFFD8F0FA), fontSize = 11.sp
+                            )
+                            if (portrait) {
+                                Spacer(Modifier.width(8.dp))
+                                Text(
+                                    "« 退出牌桌",
+                                    color = Color(0xFFFFE95C), fontSize = 11.sp,
+                                    modifier = Modifier.clickable { QQSounds.click(); onExit() }
+                                )
+                            }
+                        }
                     }
                 }
                 Spacer(Modifier.height(4.dp))
@@ -585,7 +597,7 @@ fun QQMahjongTableScreen(onExit: () -> Unit) {
                     ) {
                         game.hands[0].forEachIndexed { i, c ->
                             Box(Modifier.offset(y = if (selIdx == i) (-10).dp else 0.dp)) {
-                                MjTileFace(c, tileW, selected = selIdx == i) { selIdx = if (selIdx == i) -1 else i }
+                                MjTileFace(c, myTileW, selected = selIdx == i) { selIdx = if (selIdx == i) -1 else i }
                             }
                         }
                     }
@@ -634,7 +646,7 @@ fun QQMahjongTableScreen(onExit: () -> Unit) {
                         )
                         Spacer(Modifier.height(14.dp))
                         Row {
-                            QqGreenButton("再来一局", { QQSounds.click(); selIdx = -1; game.startDeal() }, height = 32.dp)
+                            QqGreenButton("再来一局", { QQSounds.click(); QQSounds.shuffle(); selIdx = -1; game.startDeal() }, height = 32.dp)
                             Spacer(Modifier.width(10.dp))
                             QqWhiteButton("退出牌桌", onExit, height = 32.dp)
                         }
@@ -643,10 +655,8 @@ fun QQMahjongTableScreen(onExit: () -> Unit) {
             }
         }
 
-        // ================= 右侧面板（截图3 经典样式；竖屏隐藏）=================
-        if (!compact) {
-            MjSidePanel(game, onExit)
-        }
+        // ================= 右侧面板（截图3 经典样式；竖屏收纳让位牌桌）=================
+        if (!portrait) MjSidePanel(game, onExit)
         }
     }
 }
@@ -735,71 +745,70 @@ private fun MjSeatTop(game: MahjongGame, idx: Int) {
     }
 }
 
-/** 左/右家（截图3：头像 + 昵称 + 等级 + 花数） */
+/** 左/右家（经典竖排列）：紧凑座位卡在上 + 整列立牌背（真实牌背贴图，张数=手牌数）+ 底部副露 */
 @Composable
-private fun MjSeatSide(game: MahjongGame, idx: Int) {
+private fun MjSideSeat(game: MahjongGame, idx: Int, tileW: Dp) {
     val p = game.players[idx]
     val active = game.winner == -1 && (game.turn == idx) &&
             (game.stage == "draw" || game.stage == "act" || (game.stage == "claim" && game.pendingFrom == idx))
+    val seatW = (tileW * 3.4f).coerceIn(30.dp, 48.dp)
+    val av = (tileW * 2.4f).coerceAtLeast(24.dp)
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         modifier = Modifier
-            .width(72.dp)
-            .background(if (active) Color(0x33FFE95C) else Color.Transparent, RoundedCornerShape(6.dp))
-            .padding(vertical = 3.dp, horizontal = 2.dp)
+            .width(seatW)
+            .fillMaxHeight()
+            .background(if (active) Color(0x33FFE95C) else Color(0x22000000), RoundedCornerShape(4.dp))
+            .padding(vertical = 2.dp, horizontal = 1.dp)
     ) {
-        Spacer(Modifier.height(4.dp))
+        // 头像（庄家红围巾 + 皇冠）
         Box(
             modifier = Modifier
-                .size(38.dp)
-                .background(Color.White, RoundedCornerShape(4.dp))
-                .border(2.dp, Color(0xFFBFE4FB), RoundedCornerShape(4.dp))
-                .padding(2.dp)
+                .size(av)
+                .background(Color.White, RoundedCornerShape(3.dp))
+                .border(1.dp, Color(0xFFBFE4FB), RoundedCornerShape(3.dp))
+                .padding(1.dp)
         ) {
             QqPenguinAvatar(
-                size = 34.dp, modifier = Modifier.fillMaxSize(),
+                size = av - 2.dp, modifier = Modifier.fillMaxSize(),
                 scarf = if (game.dealer == idx) Color(0xFFC3272B) else Color(0xFF1E6CB4)
             )
             if (game.dealer == idx) {
-                Text("👑", fontSize = 11.sp, modifier = Modifier.align(Alignment.TopStart).offset(x = (-3).dp, y = (-3).dp))
+                Text("👑", fontSize = 9.sp, modifier = Modifier.align(Alignment.TopStart).offset(x = (-3).dp, y = (-3).dp))
             }
         }
-        Text(p.name, color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        Text("等级: ${mjTitle(p.level)}", color = Color(0xFFFFE95C), fontSize = 9.sp)
-        Text("花 x ${game.melds[idx].count { it.type == "gang" }}", color = Color(0xFFBDE3FF), fontSize = 9.sp)
-        Spacer(Modifier.height(4.dp))
-        // 副露（v4 经典竖排：每副一列，从上到下）
-        Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-            game.melds[idx].forEach { m ->
-                Column(verticalArrangement = Arrangement.spacedBy(1.dp)) {
-                    repeat(if (m.type == "angang") 4 else 3) { MjTileFace(m.tile, 12.dp) }
-                }
+        Text(p.name, color = Color.White, fontSize = 8.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Text("剩${game.hands[idx].size}张", color = Color(0xFFFFE95C), fontSize = 8.sp, maxLines = 1)
+        Spacer(Modifier.height(2.dp))
+        // 整列立牌背（真实贴图，随出牌实时减少）
+        Column(
+            verticalArrangement = Arrangement.spacedBy(0.5.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            repeat(game.hands[idx].size) { MjTileBack(tileW) }
+        }
+        Spacer(Modifier.weight(1f))
+        // 副露（碰/杠小牌，底部竖排）
+        game.melds[idx].forEach { m ->
+            Row(horizontalArrangement = Arrangement.spacedBy(0.5.dp)) {
+                repeat(if (m.type == "angang") 4 else 3) { MjTileFace(m.tile, tileW * 0.8f) }
             }
         }
     }
 }
 
-// ==================== 牌墙（截图3：绿色牌背围合） ====================
+// ==================== 牌墙（真实卧倒墙砖贴图，截图3 绿牌墙围合） ====================
 
-/** 横向牌墙（上/下两侧） */
+/** 横向牌墙（上/下两侧，真实墙砖） */
 @Composable
-private fun MjWallRow(count: Int, tileW: Dp) {
+private fun MjWallRow(count: Int) {
     Row(
         horizontalArrangement = Arrangement.spacedBy(1.dp),
         modifier = Modifier.padding(horizontal = 2.dp)
     ) {
-        repeat(count) { MjTileBack(tileW) }
-    }
-}
-
-/** 纵向牌墙（左/右两侧） */
-@Composable
-private fun MjWallColumn(count: Int, tileW: Dp) {
-    Column(
-        verticalArrangement = Arrangement.spacedBy(1.dp),
-        modifier = Modifier.padding(vertical = 2.dp)
-    ) {
-        repeat(count) { MjTileBack(tileW) }
+        repeat(count) {
+            QQGameAssetImage("qgame/mahjong/mj_wall_h.png", Modifier.size(15.dp, 10.dp))
+        }
     }
 }
 
@@ -823,10 +832,10 @@ private fun MjDiscardPool(game: MahjongGame, modifier: Modifier) {
         }
         Spacer(Modifier.height(4.dp))
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-            // 左家弃牌（v4 经典竖排：每列 6 张从上到下，满列向右换列）
-            Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                game.rivers[3].takeLast(12).chunked(6).forEach { col ->
-                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            // 左家弃牌（每行 2 张）
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                game.rivers[3].takeLast(8).chunked(2).forEach { col ->
+                    Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
                         col.forEach { MjTileFace(it, 13.dp) }
                     }
                 }
@@ -845,10 +854,10 @@ private fun MjDiscardPool(game: MahjongGame, modifier: Modifier) {
                 Text("余 ${game.wall.size} 张", color = Color(0xFFD8F0FA), fontSize = 9.sp)
             }
             Spacer(Modifier.weight(0.6f))
-            // 右家弃牌（v4 经典竖排：每列 6 张从上到下，满列向左换列）
-            Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                game.rivers[1].takeLast(12).chunked(6).reversed().forEach { col ->
-                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            // 右家弃牌（每行 2 张）
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                game.rivers[1].takeLast(8).chunked(2).forEach { col ->
+                    Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
                         col.forEach { MjTileFace(it, 13.dp) }
                     }
                 }
@@ -907,11 +916,8 @@ private fun MjTileBack(w: Dp) {
         modifier = Modifier
             .width(w)
             .height(w * 1.38f)
-            .clip(RoundedCornerShape(2.dp))
-            .border(0.5.dp, Color(0x33D8E8DC), RoundedCornerShape(2.dp))
     ) {
-        // 参考APK牌背贴图（qgame/mahjong/back.png）
-        QQGameAssetImage("qgame/mahjong/back.png", Modifier.fillMaxSize())
+        QQGameAssetImage("qgame/mahjong/mj_back.png", Modifier.fillMaxSize())
     }
 }
 

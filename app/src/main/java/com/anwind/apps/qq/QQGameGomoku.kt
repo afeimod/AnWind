@@ -254,215 +254,35 @@ fun QQGomokuTableScreen(onExit: () -> Unit) {
         }
     }
 
-    // v4 竖屏自适应：窄窗口（<560dp）紧凑纵向布局，棋盘完整可见
+    // ---- 方向自适应（根治竖屏显示不完整）：15 路棋盘格距按可用空间自适配 ----
     BoxWithConstraints(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(QqGame.GmBgTop, QqGame.GmBgBottom)))) {
-        val compact = maxWidth < 560.dp
-        // 修复：maxWidth 只能在 BoxWithConstraints 的直接作用域内经隐式接收者访问；
-        // 进入嵌套的 Box/Row/Column 等子 lambda 后，Kotlin 无法再经外层隐式接收者
-        // 解析（can't be called in this context by implicit receiver），
-        // 故在作用域顶层捕获为局部 val，嵌套布局统一使用 maxW。
-        val maxW = maxWidth
-        if (compact) {
-            Column(
-                Modifier
-                    .fillMaxSize()
-                    .verticalScroll(rememberScrollState())
-            ) {
-                // 顶部：双玩家卡横排
-                Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 4.dp, vertical = 3.dp),
-                    horizontalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    Box(Modifier.weight(1f)) {
-                        GmPlayerCard(
-                            game = game, idx = 0, black = true,
-                            remain = fmtClock(remainSec[0]),
-                            active = game.turn == 1 && game.winner == 0
-                        )
-                    }
-                    Box(Modifier.weight(1f)) {
-                        GmPlayerCard(
-                            game = game, idx = 1, black = false,
-                            remain = fmtClock(remainSec[1]),
-                            active = game.turn == 2 && game.winner == 0
-                        )
-                    }
-                }
-                Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 6.dp, vertical = 2.dp),
-                    horizontalArrangement = Arrangement.Center
-                ) {
-                    QqStoneButton("重新开局", { QQSounds.click(); game.reset() })
-                    Spacer(Modifier.width(8.dp))
-                    QqStoneButton("退出牌桌", { QQSounds.click(); onExit() })
-                }
-                // 棋盘自适应：15 路 + 边距 ≈ 16.1 倍格宽
-                Box(
-                    Modifier
-                        .fillMaxWidth()
-                        .padding(4.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    GmBoardArea(game, cell = ((maxW - 16.dp) / 16.1f).coerceAtMost(26.dp))
-                }
-                Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 5.dp),
-                    horizontalArrangement = Arrangement.Center
-                ) {
-                    QqStoneButton("悔 棋", { QQSounds.click() })
-                    Spacer(Modifier.width(8.dp))
-                    QqStoneButton("和 棋", { QQSounds.click() })
-                    Spacer(Modifier.width(8.dp))
-                    QqStoneButton("认 输", { QQSounds.click() })
-                }
-                // 聊天区（紧凑高度）
-                val chatScroll = rememberScrollState()
-                LaunchedEffect(game.log.size) {
-                    runCatching { chatScroll.animateScrollTo(chatScroll.maxValue) }
-                }
-                Column(
-                    Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 4.dp)
-                        .height(64.dp)
-                        .background(Color(0xCC0A3358), RoundedCornerShape(4.dp))
-                        .border(1.dp, Color(0xFF2E86D5), RoundedCornerShape(4.dp))
-                        .padding(horizontal = 8.dp, vertical = 4.dp)
-                        .verticalScroll(chatScroll)
-                ) {
-                    Text(
-                        "系统消息：欢迎进入QQ游戏 - 五子棋2.01 Beta3 Build7",
-                        fontSize = 10.sp, lineHeight = 14.sp, color = Color(0xFF9AD1F0)
-                    )
-                    game.log.forEach { line ->
-                        Text(line, fontSize = 10.sp, lineHeight = 14.sp, color = Color(0xFFD8F0FA))
-                    }
-                }
-                Spacer(Modifier.height(6.dp))
-            }
-        } else {
-            Row(Modifier.fillMaxSize()) {
-                // ===== 左侧玩家面板（截图5：小晖 / 潇潇春雨 双卡 + 倒计时 + 局时）=====
-                Column(
-                    Modifier
-                        .width(148.dp)
-                        .fillMaxSize()
-                        .background(Color(0xFF12467A))
-                        .border(1.dp, Color(0xFF2E86D5))
-                        .padding(4.dp)
-                ) {
-                    GmPlayerCard(
-                        game = game, idx = 0, black = true,
-                        remain = fmtClock(remainSec[0]),
-                        active = game.turn == 1 && game.winner == 0
-                    )
-                    Spacer(Modifier.height(6.dp))
-                    GmPlayerCard(
-                        game = game, idx = 1, black = false,
-                        remain = fmtClock(remainSec[1]),
-                        active = game.turn == 2 && game.winner == 0
-                    )
-                    Spacer(Modifier.weight(1f))
-                    Text(
-                        "局时 10:00 / 方",
-                        fontSize = 9.sp,
-                        color = Color(0xFFBDE3FF),
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    Spacer(Modifier.height(4.dp))
-                    QqStoneButton("重新开局", { QQSounds.click(); game.reset() }, modifier = Modifier.fillMaxWidth())
-                }
+        val cw = maxWidth
+        val ch = maxHeight
+        val portrait = cw < ch
+        val centerW = if (portrait) cw - 16.dp else cw - 344.dp
+        val centerH = if (portrait) ch - 268.dp else ch - 150.dp
+        val cell = (minOf(centerW, centerH) / 16.1f).coerceIn(12.dp, 30.dp)
+        val pad = cell * 0.55f
+        val boardSize = cell * 15f + pad * 2f
 
-                // ===== 中央：棋盘 + 底部按钮 + 聊天（截图5）=====
-                Column(
-                    Modifier
-                        .weight(1f)
-                        .fillMaxSize()
-                        .padding(8.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
-                        GmBoardArea(game, cell = 24.dp)
-                    }
-                    Spacer(Modifier.height(8.dp))
-
-                    // ---- 底部按钮（截图5：悔棋 和棋 开始 认输）----
-                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        QqStoneButton("悔 棋", { QQSounds.click() })
-                        QqStoneButton("和 棋", { QQSounds.click() })
-                        QqStoneButton("开 始", { QQSounds.click(); game.reset() })
-                        QqStoneButton("认 输", { QQSounds.click() })
-                    }
-                    Spacer(Modifier.height(6.dp))
-
-                    // ---- 聊天区（截图5：玩家进出房间的系统消息）----
-                    val chatScroll = rememberScrollState()
-                    LaunchedEffect(game.log.size) {
-                        runCatching { chatScroll.animateScrollTo(chatScroll.maxValue) }
-                    }
-                    Column(
-                        Modifier
-                            .fillMaxWidth()
-                            .height(76.dp)
-                            .background(Color(0xCC0A3358), RoundedCornerShape(4.dp))
-                            .border(1.dp, Color(0xFF2E86D5), RoundedCornerShape(4.dp))
-                            .padding(horizontal = 8.dp, vertical = 4.dp)
-                            .verticalScroll(chatScroll)
-                    ) {
-                        Text(
-                            "系统消息：欢迎进入QQ游戏 - 五子棋2.01 Beta3 Build7",
-                            fontSize = 10.sp, lineHeight = 14.sp, color = Color(0xFF9AD1F0)
-                        )
-                        Text(
-                            "系统消息：${game.players[0].name}进入了房间。",
-                            fontSize = 10.sp, lineHeight = 14.sp, color = Color(0xFF9AD1F0)
-                        )
-                        Text(
-                            "系统消息：${game.players[1].name}进入了房间。",
-                            fontSize = 10.sp, lineHeight = 14.sp, color = Color(0xFF9AD1F0)
-                        )
-                        game.log.forEach { line ->
-                            Text(line, fontSize = 10.sp, lineHeight = 14.sp, color = Color(0xFFD8F0FA))
+        // ===== 中央棋盘 + 按钮 + 聊天（横竖屏共用；boardBox 由调用方带 weight）=====
+        @Composable
+        fun BoardArea(boardBox: Modifier, chatH: Dp) {
+            Box(boardBox, contentAlignment = Alignment.Center) {
+                Canvas(
+                    modifier = Modifier
+                        .size(boardSize)
+                        .pointerInput(Unit) {
+                            detectTapGestures { pos ->
+                                if (game.winner != 0 || game.turn != 1) return@detectTapGestures
+                                val padPx = pad.toPx()
+                                val stepPx = (size.width - 2 * padPx) / 14f
+                                val c = ((pos.x - padPx) / stepPx).roundToInt()
+                                val r = ((pos.y - padPx) / stepPx).roundToInt()
+                                if (r in 0..14 && c in 0..14) game.place(r * 15 + c)
+                            }
                         }
-                    }
-                }
-
-                // ===== 右侧信息面板（截图5；竖屏隐藏）=====
-                GmSidePanel(game, selfName, onExit)
-            }
-        }
-    }
-}
-
-/**
- * 棋盘区域（v4 抽取）：木纹棋盘 + 立体棋子 + 点选交互。
- * 横屏/竖屏共用；cell 由调用方按可用宽度自适应传入。
- */
-@Composable
-private fun GmBoardArea(game: GomokuGame, cell: Dp) {
-    val pad = cell * 0.55f
-    val boardSize = cell * 15f + pad * 2f
-    Canvas(
-        modifier = Modifier
-            .size(boardSize)
-            .pointerInput(Unit) {
-                detectTapGestures { pos ->
-                    if (game.winner != 0 || game.turn != 1) return@detectTapGestures
-                    val padPx = pad.toPx()
-                    val stepPx = (size.width - 2 * padPx) / 14f
-                    val c = ((pos.x - padPx) / stepPx).roundToInt()
-                    val r = ((pos.y - padPx) / stepPx).roundToInt()
-                    if (r in 0..14 && c in 0..14) game.place(r * 15 + c)
-                }
-            }
-    ) {
+                ) {
                     val padPx = pad.toPx()
                     val step = (size.width - 2 * padPx) / 14f
                     // 木底（截图5：浅暖黄 #E8C98E + 横向木纹）
@@ -539,16 +359,155 @@ private fun GmBoardArea(game: GomokuGame, cell: Dp) {
                             strokeWidth = 4f, cap = StrokeCap.Round
                         )
                     }
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+
+            // ---- 底部按钮（截图5：悔棋 和棋 开始 认输）----
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                QqStoneButton("悔 棋", { QQSounds.click() })
+                QqStoneButton("和 棋", { QQSounds.click() })
+                QqStoneButton("开 始", { QQSounds.click(); game.reset() })
+                QqStoneButton("认 输", { QQSounds.click() })
+            }
+            Spacer(Modifier.height(6.dp))
+
+            // ---- 聊天区（截图5：玩家进出房间的系统消息）----
+            val chatScroll = rememberScrollState()
+            LaunchedEffect(game.log.size) {
+                runCatching { chatScroll.animateScrollTo(chatScroll.maxValue) }
+            }
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .height(chatH)
+                    .background(Color(0xCC0A3358), RoundedCornerShape(4.dp))
+                    .border(1.dp, Color(0xFF2E86D5), RoundedCornerShape(4.dp))
+                    .padding(horizontal = 8.dp, vertical = 4.dp)
+                    .verticalScroll(chatScroll)
+            ) {
+                Text(
+                    "系统消息：欢迎进入QQ游戏 - 五子棋2.01 Beta3 Build7",
+                    fontSize = 10.sp, lineHeight = 14.sp, color = Color(0xFF9AD1F0)
+                )
+                Text(
+                    "系统消息：${game.players[0].name}进入了房间。",
+                    fontSize = 10.sp, lineHeight = 14.sp, color = Color(0xFF9AD1F0)
+                )
+                Text(
+                    "系统消息：${game.players[1].name}进入了房间。",
+                    fontSize = 10.sp, lineHeight = 14.sp, color = Color(0xFF9AD1F0)
+                )
+                game.log.forEach { line ->
+                    Text(line, fontSize = 10.sp, lineHeight = 14.sp, color = Color(0xFFD8F0FA))
+                }
+            }
+        }
+
+        if (portrait) {
+            // ===== 竖屏：双玩家卡顶条 + 棋盘主体 + 底部操作条（完整显示不裁剪）=====
+            Column(Modifier.fillMaxSize()) {
+                Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 2.dp)) {
+                    GmPlayerCard(
+                        game = game, idx = 0, black = true,
+                        remain = fmtClock(remainSec[0]),
+                        active = game.turn == 1 && game.winner == 0,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    GmPlayerCard(
+                        game = game, idx = 1, black = false,
+                        remain = fmtClock(remainSec[1]),
+                        active = game.turn == 2 && game.winner == 0,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+                Column(
+                    Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .padding(horizontal = 4.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    BoardArea(boardBox = Modifier.weight(1f).fillMaxWidth(), chatH = 54.dp)
+                }
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 4.dp),
+                    horizontalArrangement = Arrangement.Center
+                ) {
+                    QqStoneButton("« 退 出", { QQSounds.click(); onExit() })
+                    Spacer(Modifier.width(10.dp))
+                    QqStoneButton("重新开局", { QQSounds.click(); game.reset() })
+                }
+            }
+        } else {
+            // ===== 横屏：经典三栏（左玩家面板 | 棋盘+聊天 | 右侧信息面板）=====
+            Row(Modifier.fillMaxSize()) {
+                // 左侧玩家面板（截图5：小晖 / 潇潇春雨 双卡 + 倒计时 + 局时）
+                Column(
+                    Modifier
+                        .width(148.dp)
+                        .fillMaxSize()
+                        .background(Color(0xFF12467A))
+                        .border(1.dp, Color(0xFF2E86D5))
+                        .padding(4.dp)
+                ) {
+                    GmPlayerCard(
+                        game = game, idx = 0, black = true,
+                        remain = fmtClock(remainSec[0]),
+                        active = game.turn == 1 && game.winner == 0
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    GmPlayerCard(
+                        game = game, idx = 1, black = false,
+                        remain = fmtClock(remainSec[1]),
+                        active = game.turn == 2 && game.winner == 0
+                    )
+                    Spacer(Modifier.weight(1f))
+                    Text(
+                        "局时 10:00 / 方",
+                        fontSize = 9.sp,
+                        color = Color(0xFFBDE3FF),
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    QqStoneButton("重新开局", { QQSounds.click(); game.reset() }, modifier = Modifier.fillMaxWidth())
+                }
+
+                // 中央：棋盘 + 底部按钮 + 聊天（截图5）
+                Column(
+                    Modifier
+                        .weight(1f)
+                        .fillMaxSize()
+                        .padding(8.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    BoardArea(boardBox = Modifier.weight(1f).fillMaxWidth(), chatH = 76.dp)
+                }
+
+                // 右侧信息面板（截图5）
+                GmSidePanel(game, selfName, onExit)
+            }
+        }
     }
 }
 
-
-/** 左侧玩家卡（截图5：头像 + 昵称 + 大字倒计时 + 局时） */
+/** 左侧玩家卡（截图5：头像 + 昵称 + 大字倒计时 + 局时；竖屏顶条用 weight 版） */
 @Composable
-private fun GmPlayerCard(game: GomokuGame, idx: Int, black: Boolean, remain: String, active: Boolean) {
+private fun GmPlayerCard(
+    game: GomokuGame,
+    idx: Int,
+    black: Boolean,
+    remain: String,
+    active: Boolean,
+    modifier: Modifier = Modifier
+) {
     val p = game.players[idx]
     Column(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .background(if (active) Color(0xFF1E6CB4) else Color(0xFF0A3358))
             .border(1.dp, if (active) Color(0xFFFFE95C) else Color(0xFF2E86D5))

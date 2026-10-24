@@ -148,7 +148,11 @@ object QQSounds {
                 "bomb" to "qq_sounds/bomb.wav",
                 "win" to "qq_sounds/win.wav",
                 "lose" to "qq_sounds/lose.wav",
-                "click" to "qq_sounds/click.wav"
+                "click" to "qq_sounds/click.mp3",
+                "deal" to "qq_sounds/deal.wav",
+                "shuffle" to "qq_sounds/shuffle.wav",
+                "pass" to "qq_sounds/pass.wav",
+                "wangzha" to "qq_sounds/wangzha.wav"
             ).forEach { (name, path) ->
                 runCatching { ids[name] = p.load(context.assets.openFd(path), 1) }
             }
@@ -201,6 +205,18 @@ object QQSounds {
 
     /** 游戏内：失败 */
     fun lose() = play("lose", 1f, ToneGenerator.TONE_SUP_ERROR, 300)
+
+    /** 游戏内：发牌 */
+    fun deal() = play("deal", 1f, ToneGenerator.TONE_PROP_BEEP, 120)
+
+    /** 游戏内：洗牌 */
+    fun shuffle() = play("shuffle", 0.9f)
+
+    /** 游戏内：不出/过牌 */
+    fun pass() = play("pass", 0.9f)
+
+    /** 游戏内：王炸 */
+    fun wangzha() = play("wangzha", 1f)
 }
 
 /**

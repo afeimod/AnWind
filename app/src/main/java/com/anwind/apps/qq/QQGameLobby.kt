@@ -721,13 +721,11 @@ private fun QQGameRoomScreen(room: QQGameRoom, onBack: () -> Unit, onSit: () -> 
     }
     val watchers = remember(room) { 1 + Random.nextInt(14) }   // "N人正在看"
 
-    Box(Modifier.fillMaxSize()) {
-        // 参考APK大厅背景图
-        QQGameAssetImage("qgame/bg/hall.jpg", Modifier.fillMaxSize())
-        Column(
-            Modifier
-                .fillMaxSize()
-        ) {
+    Column(
+        Modifier
+            .fillMaxSize()
+            .background(Brush.verticalGradient(listOf(QqGame.RoomBgTop, QqGame.RoomBgBottom)))
+    ) {
         // ===== 顶部信息栏（截图1：企鹅头像 + 游戏名 + QQ号/积分/胜率）=====
         Row(
             modifier = Modifier
@@ -844,39 +842,40 @@ private fun QQGameRoomScreen(room: QQGameRoom, onBack: () -> Unit, onSit: () -> 
             )
         }
 
-        // ===== 桌子区（v4 列数自适应：窄窗口自动减列，纵向滚动）=====
+        // ===== 桌子区（列数随屏宽自适应：宽屏 5 列经典 / 窄屏竖屏 2~3 列，纵向滚动）=====
         BoxWithConstraints(
-            modifier = Modifier
+            Modifier
                 .weight(1f)
                 .fillMaxSize()
         ) {
-            val tableCols = (maxWidth / 170.dp).toInt().coerceIn(2, 5)
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 6.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
-            tables.chunked(tableCols).forEachIndexed { rowIdx, row ->
-                Row(horizontalArrangement = Arrangement.SpaceEvenly, modifier = Modifier.fillMaxWidth()) {
-                    row.forEachIndexed { colIdx, occupied ->
-                        GameTableItem(
-                            def = def,
-                            no = rowIdx * tableCols + colIdx + 1,
-                            occupied = occupied,
-                            nicks = tableNicks[rowIdx * tableCols + colIdx],
-                            onSit = {
-                                QQSounds.ding()
-                                onSit()
-                            }
-                        )
+            val cw = maxWidth
+            val cols = (cw / 152.dp).toInt().coerceIn(2, 5)
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 6.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                tables.chunked(cols).forEachIndexed { rowIdx, row ->
+                    Row(horizontalArrangement = Arrangement.SpaceEvenly, modifier = Modifier.fillMaxWidth()) {
+                        row.forEachIndexed { colIdx, occupied ->
+                            GameTableItem(
+                                def = def,
+                                no = rowIdx * cols + colIdx + 1,
+                                occupied = occupied,
+                                nicks = tableNicks[rowIdx * cols + colIdx],
+                                onSit = {
+                                    QQSounds.ding()
+                                    onSit()
+                                }
+                            )
+                        }
                     }
                 }
+                Spacer(Modifier.height(4.dp))
             }
-            Spacer(Modifier.height(4.dp))
         }
-        }   // v4 桌子区 BoxWithConstraints 结束（底部状态栏保持在外层）
 
         // ===== 底部状态栏（截图1 左下："2人正在看"）=====
         Row(
@@ -898,7 +897,6 @@ private fun QQGameRoomScreen(room: QQGameRoom, onBack: () -> Unit, onSit: () -> 
                 fontSize = 10.sp
             )
         }
-        }   // 外层 Column 结束
     }
 }
 

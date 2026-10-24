@@ -6,12 +6,13 @@ import java.io.File
 
 /**
  * QQ游戏大厅背景音乐：
- *  - 每个场景一首循环曲（assets/qq_sounds/ 下 mp3，v4 全部重制为原创轻音乐）：
- *      bgm_lobby  大厅     C大调 112BPM 明快欢迎曲（八音盒+贝斯+轻鼓）
- *      bgm_room   房间     F大调 88BPM  舒缓等待曲（电钢+柔和垫音）
- *      bgm_ddz    斗地主   G大调 122BPM 俏皮紧张曲（八音盒+拨弦贝斯）
- *      bgm_board  象棋/五子棋 G宫五声 72BPM 静谧对弈曲（古筝+云雾垫音）
- *      bgm_mj     麻将     D宫五声 108BPM 喜庆国风（古筝拨弦+国风鼓）
+ *  - 每个场景一首循环曲（assets/qq_sounds/ 下，取自经典老乡 DDZ 项目的真实乐曲）：
+ *      bgm_lobby  大厅     大厅主题曲（mp3）
+ *      bgm_room   房间     轻快等待曲（mp3）
+ *      bgm_ddz    斗地主   游戏主题曲（mp3）
+ *      bgm_board  象棋/五子棋 悠扬棋类曲（ogg）
+ *      bgm_mj     麻将     喜庆麻将曲（ogg）
+ *  - 加载时自动按 mp3 / ogg / wav 顺序尝试（旧版本仅支持 wav）；
  *  - 开关持久化在 settings.musicEnabled，音量在 settings.musicVolume（0~100），
  *    大厅/房间右上角 🎵 可切换，下方滑块可调音量；
  *  - 想用自己喜欢的歌：把网上搜到的 mp3/ogg 命名为 bgm_lobby.mp3 等，
@@ -49,14 +50,18 @@ object QQBgm {
             if (user != null) {
                 mp.setDataSource(user.absolutePath)
             } else {
-                // 内置曲目：按 wav → mp3 → ogg 顺序探测（v2 起新增参考 APK 的 mp3 曲目）
-                val builtin = listOf("wav", "mp3", "ogg")
-                    .map { "qq_sounds/$name.$it" }
-                    .firstOrNull { runCatching { context.assets.open(it).close() }.isSuccess }
-                    ?: "qq_sounds/$name.wav"
-                val afd = context.assets.openFd(builtin)
-                mp.setDataSource(afd.fileDescriptor, afd.startOffset, afd.length)
-                afd.close()
+                // 内置曲目：按 mp3 / ogg / wav 顺序在 assets/qq_sounds/ 里找
+                var opened = false
+                for (ext in listOf("mp3", "ogg", "wav")) {
+                    val afd = runCatching { context.assets.openFd("qq_sounds/$name.$ext") }.getOrNull()
+                        ?: continue
+                    runCatching {
+                        mp.setDataSource(afd.fileDescriptor, afd.startOffset, afd.length)
+                    }.onFailure { afd.close() }
+                        .onSuccess { opened = true }
+                    if (opened) { afd.close(); break }
+                }
+                check(opened) { "bgm asset not found: $name" }
             }
             mp.setAudioAttributes(attrs)
             mp.isLooping = true

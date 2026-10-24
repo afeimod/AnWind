@@ -31,7 +31,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -60,10 +59,6 @@ fun QQGameTableScreen(onExit: () -> Unit) {
     val selfScore = remember { QQGameScores.load()[selfName] ?: 0 }
     val game = remember { DoudizhuGame(selfName, acc?.avatar ?: "emoji:🐧", selfScore) }
     val selected = remember { mutableStateListOf<DdCard>() }
-
-    // 游戏音效/语音系统就绪（参考APK素材）
-    val sndCtx = androidx.compose.ui.platform.LocalContext.current
-    remember { QQGameSound.ensureInit(sndCtx); true }
 
     // ---- 倒计时（我的回合从 30 起跳；非我回合显示 AI 思考剩余） ----
     var countdown by remember { mutableStateOf(30) }
@@ -94,7 +89,7 @@ fun QQGameTableScreen(onExit: () -> Unit) {
                     lastWinner = game.lastWinner,
                     handCounts = counts
                 )
-                if (move == null) game.passTurn(idx) else game.playCards(idx, move)
+                if (move == null) { QQSounds.pass(); game.passTurn(idx) } else game.playCards(idx, move)
             }
         }
     }
@@ -109,194 +104,217 @@ fun QQGameTableScreen(onExit: () -> Unit) {
         val r = game.result ?: return@LaunchedEffect
         val delta = r.deltas[0]
         runCatching { QQGameScores.add(selfName, delta) }
-        if (delta > 0) QQGameSound.win() else QQGameSound.lose()
+        if (delta > 0) QQSounds.win() else QQSounds.lose()
     }
 
-    // v4 竖屏自适应：窄窗口隐藏右侧经典面板，牌桌占满全宽
-    BoxWithConstraints(Modifier.fillMaxSize()) {
-        val compact = maxWidth < 520.dp
-        Row(Modifier.fillMaxSize()) {
-            // ================= 桌面区（参考APK牌桌背景图，超宽时裁切） =================
-            Box(
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxSize()
-            ) {
-                QQGameAssetImage("qgame/bg/ddz_table.jpg", Modifier.fillMaxSize())
-                BoxWithConstraints(Modifier.fillMaxSize()) {
-                    // ---- v4 手牌自适应放大：17 张牌 + 60% 重叠 ≈ 10.6 倍牌宽 ----
-                    val badgeW = 56.dp
-                    val handZoneW = maxWidth - badgeW - 20.dp
-                    val cardW = (handZoneW / 10.6f).coerceIn(40.dp, 62.dp)
-                    val step = cardW * 0.6f
-                    val handH = cardW * 1.42f + 14.dp
-                    // 出牌区卡宽（窄屏防溢出）
-                    val playCardW = if (maxWidth < 420.dp) 19.dp else 24.dp
-                    val sideBackW = if (maxWidth < 420.dp) 16.dp else 20.dp
+    // ---- 入桌洗牌/发牌音效 ----
+    LaunchedEffect(Unit) {
+        QQSounds.shuffle()
+        delay(500)
+        QQSounds.deal()
+    }
 
-                    Column(Modifier.fillMaxSize().padding(8.dp)) {
-                        // ---- 顶行：底牌 + 局况（居中；左右对手已移至两侧中部）----
-                        Row(verticalAlignment = Alignment.Top, modifier = Modifier.fillMaxWidth()) {
-                            Spacer(Modifier.weight(1f))
-                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                // 底牌（截图2 顶部）
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Text("底牌", color = Color(0xFFFFE95C), fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                                    Spacer(Modifier.width(4.dp))
-                                    Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                                        game.bottomCards.forEach { c ->
-                                            if (game.bottomRevealed) DdCardFace(c, 20.dp, selected = false, onClick = null)
-                                            else DdCardBack(20.dp)
-                                        }
-                                    }
+    // ---- 出牌音效：王炸 / 炸弹 / 普通出牌 ----
+    LaunchedEffect(game.lastPlay) {
+        val lp = game.lastPlay ?: return@LaunchedEffect
+        when {
+            lp.cards.size == 2 && lp.cards.all { it.isJoker } -> QQSounds.wangzha()
+            lp.cards.size == 4 && lp.cards.map { it.rank }.distinct().size == 1 -> QQSounds.bomb()
+            else -> QQSounds.card()
+        }
+    }
+
+    // ---- 方向自适应（根治竖屏显示不完整）：真实桌面底图 + 经典桌角贴边侧位玩家 ----
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        val cw = maxWidth
+        val ch = maxHeight
+        val portrait = cw < ch
+        // 手牌规格：横屏大版 56dp / 竖屏 46dp；步距按可用宽度自适配，尽量整手一次看全
+        val cardW = if (portrait) 46.dp else 56.dp
+        val handAreaW = if (portrait) cw - 12.dp else cw - 278.dp
+        val step = ((handAreaW - cardW) / 16f).coerceIn(18.dp, cardW * 0.62f)
+        val handH = cardW * 1.45f + 16.dp
+
+        Row(Modifier.fillMaxSize()) {
+        // ================= 桌面区（真实绿桌底图，缺失自动回退纯色）=================
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxSize()
+                .background(QqGame.DdzFeltEdge)
+        ) {
+            QQGameAssetImage("qgame/ddz_table.jpg", Modifier.fillMaxSize())
+            Column(Modifier.fillMaxSize().padding(6.dp)) {
+                // ---- 顶行：底牌 + 局况（居中；左右家改为桌角贴边竖排，经典样式）----
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        // 底牌（截图2 顶部）
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("底牌", color = Color(0xFFFFE95C), fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            Spacer(Modifier.width(4.dp))
+                            Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                                game.bottomCards.forEach { c ->
+                                    if (game.bottomRevealed) DdCardFace(c, 24.dp, selected = false, onClick = null)
+                                    else DdCardBack(24.dp)
                                 }
-                                Spacer(Modifier.height(4.dp))
-                                Text(
-                                    "底分 ${game.baseScore}  倍数 ${game.multiplier}",
-                                    color = Color.White,
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.Bold
-                                )
                             }
-                            Spacer(Modifier.weight(1f))
                         }
                         Spacer(Modifier.height(4.dp))
-
-                        // ---- 中区：左家 | 三家出牌+倒计时 | 右家（经典 QQ 座位）----
-                        Box(Modifier.weight(1f).fillMaxWidth()) {
-                            // 左家（贴左缘垂直居中）
-                            Box(Modifier.align(Alignment.CenterStart)) {
-                                DdSidePlayer(game, 2, backW = sideBackW)
-                            }
-                            // 右家（贴右缘垂直居中）
-                            Box(Modifier.align(Alignment.CenterEnd)) {
-                                DdSidePlayer(game, 1, backW = sideBackW)
-                            }
-                            // 三家出牌（居中竖排：右家上 / 左家中 / 我下）
-                            Column(
-                                Modifier.align(Alignment.Center).fillMaxWidth(),
-                                horizontalAlignment = Alignment.CenterHorizontally
-                            ) {
-                                DdPlaySlot(game, 1, cardW = playCardW)      // 右家出的牌（上）
-                                Spacer(Modifier.height(10.dp))
-                                DdPlaySlot(game, 2, cardW = playCardW)      // 左家出的牌（中）
-                                Spacer(Modifier.height(10.dp))
-                                DdPlaySlot(game, 0, cardW = playCardW)      // 我出的牌（下）
-                            }
-                            // 倒计时闹钟（我的回合才亮，截图2 左下黄色闹钟29）
-                            val myAction = (game.phase == DdPhase.PLAYING && game.turn == 0) ||
-                                    (game.phase == DdPhase.BIDDING && game.bidTurn == 0)
-                            if (myAction) {
-                                QqAlarmTimer(
-                                    seconds = countdown,
-                                    modifier = Modifier.align(Alignment.BottomStart).padding(start = 24.dp, bottom = 10.dp)
-                                )
-                            }
+                        Text(
+                            "底分 ${game.baseScore}  倍数 ${game.multiplier}",
+                            color = Color.White,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        if (portrait) {
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                "« 退出牌桌",
+                                color = Color(0xFFFFE95C),
+                                fontSize = 11.sp,
+                                modifier = Modifier.clickable { QQSounds.click(); onExit() }
+                            )
                         }
-                        Spacer(Modifier.height(6.dp))
+                    }
+                }
+                Spacer(Modifier.height(4.dp))
 
-                        // ---- 我的出牌/身份行 + 手牌（v4 自适应大牌）----
-                        Row(verticalAlignment = Alignment.Bottom) {
-                            DdSelfBadge(game)
-                            Spacer(Modifier.width(8.dp))
-                            Box(
-                                Modifier
-                                    .weight(1f)
-                                    .height(handH)
-                                    .horizontalScroll(rememberScrollState())
-                            ) {
-                                val hand = game.players[0].hand
+                // ---- 中区：三家出牌 + 倒计时闹钟（截图2 中央）----
+                Box(Modifier.weight(1f).fillMaxWidth()) {
+                    Column(
+                        Modifier.align(Alignment.Center).fillMaxWidth(),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        DdPlaySlot(game, 1)      // 右家出的牌（上）
+                        Spacer(Modifier.height(10.dp))
+                        DdPlaySlot(game, 2)      // 左家出的牌（中）
+                        Spacer(Modifier.height(10.dp))
+                        DdPlaySlot(game, 0)      // 我出的牌（下）
+                    }
+                    // 倒计时闹钟（我的回合才亮，截图2 左下黄色闹钟29）
+                    val myAction = (game.phase == DdPhase.PLAYING && game.turn == 0) ||
+                            (game.phase == DdPhase.BIDDING && game.bidTurn == 0)
+                    if (myAction) {
+                        QqAlarmTimer(
+                            seconds = countdown,
+                            modifier = Modifier.align(Alignment.BottomStart).padding(start = 24.dp, bottom = 10.dp)
+                        )
+                    }
+                }
+                Spacer(Modifier.height(6.dp))
+
+                // ---- 我的出牌/身份行 + 手牌（放大版大班牌，可滑动）----
+                Row(verticalAlignment = Alignment.Bottom) {
+                    if (!portrait) DdSelfBadge(game)
+                    Box(
+                        Modifier
+                            .weight(1f)
+                            .height(handH)
+                            .horizontalScroll(rememberScrollState())
+                    ) {
+                        val hand = game.players[0].hand
+                        Box(
+                            Modifier
+                                .width(step * (hand.size.coerceAtLeast(1) - 1) + cardW)
+                                .height(handH)
+                        ) {
+                            hand.forEachIndexed { i, c ->
+                                val isSel = selected.contains(c)
                                 Box(
                                     Modifier
-                                        .width(step * (hand.size.coerceAtLeast(1) - 1) + cardW)
-                                        .height(handH)
+                                        .align(Alignment.BottomStart)
+                                        .offset(x = step * i, y = if (isSel) (-16).dp else 0.dp)
                                 ) {
-                                    hand.forEachIndexed { i, c ->
-                                        val isSel = selected.contains(c)
-                                        Box(
-                                            Modifier
-                                                .align(Alignment.BottomStart)
-                                                .offset(x = step * i, y = if (isSel) (-12).dp else 0.dp)
-                                        ) {
-                                            DdCardFace(c, cardW, selected = isSel) {
-                                                if (isSel) selected.remove(c) else selected.add(c)
-                                            }
-                                        }
+                                    DdCardFace(c, cardW, selected = isSel) {
+                                        if (isSel) selected.remove(c) else selected.add(c)
                                     }
                                 }
                             }
                         }
-                        Spacer(Modifier.height(8.dp))
-
-                        // ---- 操作按钮（截图2：绿色出牌按钮）----
-                        DdActionButtons(game, selected)
                     }
                 }
+                Spacer(Modifier.height(8.dp))
 
-                // ---- 结算浮层 ----
-                game.result?.let { r ->
-                    Box(
-                        Modifier
-                            .fillMaxSize()
-                            .background(Color.Black.copy(alpha = 0.5f)),
-                        contentAlignment = Alignment.Center
+                // ---- 操作按钮（截图2：绿色出牌按钮）----
+                DdActionButtons(game, selected)
+            }
+
+            // ---- 左右家：桌角贴边竖排（经典：头像在上，整摞牌背沿桌边下垂，随出牌减少）----
+            DdSidePlayer(
+                game, 2, compact = portrait,
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(start = 8.dp, top = 8.dp)
+            )
+            DdSidePlayer(
+                game, 1, compact = portrait,
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(end = 8.dp, top = 8.dp)
+            )
+
+            // ---- 结算浮层 ----
+            game.result?.let { r ->
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .background(Color.Black.copy(alpha = 0.5f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier
+                            .background(Color(0xFF12365C).copy(alpha = 0.95f), RoundedCornerShape(10.dp))
+                            .border(2.dp, Color(0xFFFFE95C), RoundedCornerShape(10.dp))
+                            .padding(horizontal = 26.dp, vertical = 18.dp)
                     ) {
-                        Column(
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            modifier = Modifier
-                                .background(Color(0xFF12365C).copy(alpha = 0.95f), RoundedCornerShape(10.dp))
-                                .border(2.dp, Color(0xFFFFE95C), RoundedCornerShape(10.dp))
-                                .padding(horizontal = 26.dp, vertical = 18.dp)
-                        ) {
-                            val myWin = r.deltas[0] > 0
+                        val myWin = r.deltas[0] > 0
+                        Text(
+                            if (myWin) "🎉 胜 利 🎉" else "😅 失 败",
+                            color = if (myWin) Color(0xFFFFE95C) else Color(0xFFBFE4FB),
+                            fontSize = 26.sp,
+                            fontWeight = FontWeight.Black
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            "${if (r.landlordWon) "地主" else "农民"}阵营获胜 · 底分${r.base} × 倍数${r.multiplier}" +
+                                    if (r.spring) " · 春天！" else "",
+                            color = Color.White, fontSize = 12.sp
+                        )
+                        Spacer(Modifier.height(10.dp))
+                        game.players.forEachIndexed { i, p ->
+                            val d = r.deltas[i]
                             Text(
-                                if (myWin) "🎉 胜 利 🎉" else "😅 失 败",
-                                color = if (myWin) Color(0xFFFFE95C) else Color(0xFFBFE4FB),
-                                fontSize = 26.sp,
-                                fontWeight = FontWeight.Black
+                                "${p.name}  ${if (d >= 0) "+" else ""}$d 分",
+                                color = if (d >= 0) Color(0xFF7CE87C) else Color(0xFFFF9A9A),
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Bold
                             )
-                            Spacer(Modifier.height(8.dp))
-                            Text(
-                                "${if (r.landlordWon) "地主" else "农民"}阵营获胜 · 底分${r.base} × 倍数${r.multiplier}" +
-                                        if (r.spring) " · 春天！" else "",
-                                color = Color.White, fontSize = 12.sp
+                        }
+                        Spacer(Modifier.height(14.dp))
+                        Row {
+                            QqGreenButton(
+                                "再来一局",
+                                {
+                                    selected.clear()
+                                    QQSounds.shuffle()
+                                    game.dealAndStartBid()
+                                },
+                                height = 32.dp
                             )
-                            Spacer(Modifier.height(10.dp))
-                            game.players.forEachIndexed { i, p ->
-                                val d = r.deltas[i]
-                                Text(
-                                    "${p.name}  ${if (d >= 0) "+" else ""}$d 分",
-                                    color = if (d >= 0) Color(0xFF7CE87C) else Color(0xFFFF9A9A),
-                                    fontSize = 13.sp,
-                                    fontWeight = FontWeight.Bold
-                                )
-                            }
-                            Spacer(Modifier.height(14.dp))
-                            Row {
-                                QqGreenButton(
-                                    "再来一局",
-                                    {
-                                        selected.clear()
-                                        game.dealAndStartBid()
-                                    },
-                                    height = 32.dp
-                                )
-                                Spacer(Modifier.width(10.dp))
-                                QqWhiteButton("退出牌桌", onExit, height = 32.dp)
-                            }
+                            Spacer(Modifier.width(10.dp))
+                            QqWhiteButton("退出牌桌", onExit, height = 32.dp)
                         }
                     }
                 }
             }
+        }
 
-            // ================= 右侧面板（截图2 经典样式；竖屏隐藏）=================
-            if (!compact) {
-                DdSidePanel(game, onExit)
-            }
+        // ================= 右侧面板（截图2 经典样式；竖屏收纳以让位手牌）=================
+        if (!portrait) DdSidePanel(game, onExit)
         }
     }
 }
-
 
 // ==================== 牌面（标准扑克位图素材 assets/qgame/cards/） ====================
 
@@ -319,7 +337,7 @@ private fun DdCardFace(card: DdCard, w: Dp, selected: Boolean, onClick: (() -> U
     Box(
         modifier = Modifier
             .width(w)
-            .height(w * 1.42f)
+            .height(w * 1.45f)
             .clip(shape)
             .border(1.dp, if (selected) Color(0xFFFFB400) else Color(0xFFB9C4CE), shape)
             .clickable(enabled = onClick != null) { onClick?.invoke() }
@@ -334,7 +352,7 @@ private fun DdCardBack(w: Dp) {
     Box(
         modifier = Modifier
             .width(w)
-            .height(w * 1.42f)
+            .height(w * 1.5f)
             .clip(shape)
             .border(1.dp, Color(0xFFBFE4FB), shape)
     ) {
@@ -344,74 +362,71 @@ private fun DdCardBack(w: Dp) {
 
 // ==================== 座位面板（截图2 样式） ====================
 
-/** 侧位玩家（左家 2 / 右家 1）：头像 + 昵称 + 等级 + 竖叠牌背 + 剩余张数 */
-/** 侧位玩家（左家 2 / 右家 1）—— v4 经典布局：贴桌侧垂直居中，
- * 头像+昵称在上，其下是全量竖向牌背堆（剩余几张显示几张），最下"剩余 N 张牌" */
+/** 侧位玩家（左家 2 / 右家 1）：桌角贴边竖排 —— 头像+昵称在上，整摞牌背沿桌边下垂（经典样式） */
 @Composable
-private fun DdSidePlayer(game: DoudizhuGame, idx: Int, backW: Dp = 20.dp) {
+private fun DdSidePlayer(game: DoudizhuGame, idx: Int, compact: Boolean = false, modifier: Modifier = Modifier) {
     val p = game.players[idx]
     val isTurn = game.phase == DdPhase.PLAYING && game.turn == idx
     val isBidding = game.phase == DdPhase.BIDDING && game.bidTurn == idx
-    val backH = backW * 1.42f
-    val stackStep = backH * 0.38f          // 竖向堆叠步进（38% 露出）
-    val n = p.hand.size.coerceAtMost(20)  // 剩余牌全量显示（经典 QQ 样式）
+    val av = if (compact) 32.dp else 40.dp
+    val backW = if (compact) 16.dp else 22.dp
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
-        modifier = Modifier
-            .width(78.dp)
+        modifier = modifier
+            .width(if (compact) 52.dp else 62.dp)
             .background(
-                if (isTurn || isBidding) Color(0x33FFE95C) else Color.Transparent,
+                if (isTurn || isBidding) Color(0x33FFE95C) else Color(0x2E000000),
                 RoundedCornerShape(6.dp)
             )
-            .padding(vertical = 4.dp)
+            .padding(3.dp)
     ) {
         // 头像（白边框，截图2 角色头像位）
         Box(
             modifier = Modifier
-                .size(44.dp)
+                .size(av)
                 .background(Color.White, RoundedCornerShape(4.dp))
                 .border(2.dp, Color(0xFFBFE4FB), RoundedCornerShape(4.dp))
-                .padding(2.dp)
+                .padding(1.dp)
         ) {
             QqPenguinAvatar(
-                size = 40.dp,
+                size = av - 2.dp,
                 modifier = Modifier.fillMaxSize(),
                 scarf = if (game.landlord == idx) Color(0xFFC3272B) else Color(0xFF1E6CB4)
             )
             if (game.landlord == idx) {
-                Text("👑", fontSize = 13.sp, modifier = Modifier.align(Alignment.TopStart).offset(x = (-4).dp, y = (-4).dp))
+                Text("👑", fontSize = 11.sp, modifier = Modifier.align(Alignment.TopStart).offset(x = (-4).dp, y = (-4).dp))
             }
         }
         Spacer(Modifier.height(3.dp))
         Text(p.name, color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        Text("等级: ${ddTitle(p.level)}", color = Color(0xFFFFE95C), fontSize = 9.sp)
+        Text("等级:${ddTitle(p.level)}", color = Color(0xFFFFE95C), fontSize = 8.sp, maxLines = 1)
         Spacer(Modifier.height(4.dp))
-        // 竖向牌背堆（经典 QQ：剩余牌全部竖着叠出，从上往下）
+        // 整摞牌背竖排（真实企鹅牌背贴图，张数随出牌实时减少）
+        val n = p.hand.size
         Box(
             Modifier
                 .width(backW)
-                .height(backH + stackStep * (n - 1))
+                .height(backW * 1.5f + 3.dp * n.coerceAtLeast(1))
         ) {
             repeat(n) { i ->
-                Box(Modifier.align(Alignment.TopStart).offset(y = stackStep * i)) {
+                Box(Modifier.align(Alignment.TopStart).offset(y = (i * 3).dp)) {
                     DdCardBack(backW)
                 }
             }
         }
-        Spacer(Modifier.height(5.dp))
+        Spacer(Modifier.height(4.dp))
         // 剩余张数（截图2：数字红色加粗）
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("剩余 ", color = Color.White, fontSize = 10.sp)
+            Text("剩 ", color = Color.White, fontSize = 9.sp)
             Text("${p.hand.size}", color = Color(0xFFFF6B6B), fontSize = 12.sp, fontWeight = FontWeight.Black)
-            Text(" 张", color = Color.White, fontSize = 10.sp)
+            Text(" 张", color = Color.White, fontSize = 9.sp)
         }
         if (game.passed[idx] == true && game.phase == DdPhase.PLAYING) {
             Spacer(Modifier.height(2.dp))
-            Text("不出", color = Color(0xFFFFE95C), fontSize = 12.sp, fontStyle = FontStyle.Italic)
+            Text("不出", color = Color(0xFFFFE95C), fontSize = 11.sp, fontStyle = FontStyle.Italic)
         }
     }
 }
-
 
 /** 我的信息（手牌左侧，截图2 底部左角） */
 @Composable
@@ -442,9 +457,8 @@ private fun DdSelfBadge(game: DoudizhuGame) {
 }
 
 /** 桌面上某家最近出的牌（或"不出"） */
-/** 桌面上某家最近出的牌（或"不出"）；v4：卡宽自适应 */
 @Composable
-private fun DdPlaySlot(game: DoudizhuGame, idx: Int, cardW: Dp = 24.dp) {
+private fun DdPlaySlot(game: DoudizhuGame, idx: Int) {
     val cards = game.shown[idx]
     val who = game.players[idx].name
     when {
@@ -458,7 +472,7 @@ private fun DdPlaySlot(game: DoudizhuGame, idx: Int, cardW: Dp = 24.dp) {
             Text(who, color = Color(0xFFBFE4FB), fontSize = 9.sp)
             Spacer(Modifier.height(2.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                cards.forEach { DdCardFace(it, cardW, selected = false, onClick = null) }
+                cards.forEach { DdCardFace(it, 28.dp, selected = false, onClick = null) }
             }
         }
         game.landlord == idx && game.phase == DdPhase.PLAYING -> Text(
