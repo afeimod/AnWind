@@ -6,12 +6,12 @@ import java.io.File
 
 /**
  * QQ游戏大厅背景音乐：
- *  - 每个场景一首循环曲（assets/qq_sounds/ 下 Python 合成的 WAV）：
- *      bgm_lobby  大厅     轻快欢畅
- *      bgm_room   房间     舒缓等待
- *      bgm_ddz    斗地主   紧张明快
- *      bgm_board  象棋/五子棋 古风拨弦
- *      bgm_mj     麻将     喜庆国风
+ *  - 每个场景一首循环曲（assets/qq_sounds/ 下 mp3，v4 全部重制为原创轻音乐）：
+ *      bgm_lobby  大厅     C大调 112BPM 明快欢迎曲（八音盒+贝斯+轻鼓）
+ *      bgm_room   房间     F大调 88BPM  舒缓等待曲（电钢+柔和垫音）
+ *      bgm_ddz    斗地主   G大调 122BPM 俏皮紧张曲（八音盒+拨弦贝斯）
+ *      bgm_board  象棋/五子棋 G宫五声 72BPM 静谧对弈曲（古筝+云雾垫音）
+ *      bgm_mj     麻将     D宫五声 108BPM 喜庆国风（古筝拨弦+国风鼓）
  *  - 开关持久化在 settings.musicEnabled，音量在 settings.musicVolume（0~100），
  *    大厅/房间右上角 🎵 可切换，下方滑块可调音量；
  *  - 想用自己喜欢的歌：把网上搜到的 mp3/ogg 命名为 bgm_lobby.mp3 等，

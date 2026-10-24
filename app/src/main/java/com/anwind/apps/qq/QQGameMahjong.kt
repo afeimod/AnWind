@@ -6,6 +6,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -474,7 +475,12 @@ fun QQMahjongTableScreen(onExit: () -> Unit) {
         }
     }
 
-    Row(Modifier.fillMaxSize()) {
+    // v4 竖屏自适应：窄窗口（<560dp）隐藏右侧面板；手牌宽度随桌面区自适应
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        val compact = maxWidth < 560.dp
+        val tableW = if (compact) maxWidth else maxWidth - 200.dp
+        val tileW = ((tableW - 84.dp) / 14f).coerceIn(28.dp, 38.dp)
+        Row(Modifier.fillMaxSize()) {
         // ================= 桌面区（参考APK麻将桌面背景图） =================
         Box(
             modifier = Modifier
@@ -579,7 +585,7 @@ fun QQMahjongTableScreen(onExit: () -> Unit) {
                     ) {
                         game.hands[0].forEachIndexed { i, c ->
                             Box(Modifier.offset(y = if (selIdx == i) (-10).dp else 0.dp)) {
-                                MjTileFace(c, 34.dp, selected = selIdx == i) { selIdx = if (selIdx == i) -1 else i }
+                                MjTileFace(c, tileW, selected = selIdx == i) { selIdx = if (selIdx == i) -1 else i }
                             }
                         }
                     }
@@ -637,8 +643,11 @@ fun QQMahjongTableScreen(onExit: () -> Unit) {
             }
         }
 
-        // ================= 右侧面板（截图3 经典样式）=================
-        MjSidePanel(game, onExit)
+        // ================= 右侧面板（截图3 经典样式；竖屏隐藏）=================
+        if (!compact) {
+            MjSidePanel(game, onExit)
+        }
+        }
     }
 }
 
@@ -759,12 +768,13 @@ private fun MjSeatSide(game: MahjongGame, idx: Int) {
         Text("等级: ${mjTitle(p.level)}", color = Color(0xFFFFE95C), fontSize = 9.sp)
         Text("花 x ${game.melds[idx].count { it.type == "gang" }}", color = Color(0xFFBDE3FF), fontSize = 9.sp)
         Spacer(Modifier.height(4.dp))
-        // 副露（小牌）
-        game.melds[idx].forEach { m ->
-            Row(horizontalArrangement = Arrangement.spacedBy(1.dp)) {
-                repeat(if (m.type == "angang") 4 else 3) { MjTileFace(m.tile, 12.dp) }
+        // 副露（v4 经典竖排：每副一列，从上到下）
+        Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+            game.melds[idx].forEach { m ->
+                Column(verticalArrangement = Arrangement.spacedBy(1.dp)) {
+                    repeat(if (m.type == "angang") 4 else 3) { MjTileFace(m.tile, 12.dp) }
+                }
             }
-            Spacer(Modifier.height(1.dp))
         }
     }
 }
@@ -813,10 +823,10 @@ private fun MjDiscardPool(game: MahjongGame, modifier: Modifier) {
         }
         Spacer(Modifier.height(4.dp))
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-            // 左家弃牌（每行 2 张）
-            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                game.rivers[3].takeLast(8).chunked(2).forEach { col ->
-                    Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+            // 左家弃牌（v4 经典竖排：每列 6 张从上到下，满列向右换列）
+            Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                game.rivers[3].takeLast(12).chunked(6).forEach { col ->
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                         col.forEach { MjTileFace(it, 13.dp) }
                     }
                 }
@@ -835,10 +845,10 @@ private fun MjDiscardPool(game: MahjongGame, modifier: Modifier) {
                 Text("余 ${game.wall.size} 张", color = Color(0xFFD8F0FA), fontSize = 9.sp)
             }
             Spacer(Modifier.weight(0.6f))
-            // 右家弃牌（每行 2 张）
-            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                game.rivers[1].takeLast(8).chunked(2).forEach { col ->
-                    Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+            // 右家弃牌（v4 经典竖排：每列 6 张从上到下，满列向左换列）
+            Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                game.rivers[1].takeLast(12).chunked(6).reversed().forEach { col ->
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                         col.forEach { MjTileFace(it, 13.dp) }
                     }
                 }

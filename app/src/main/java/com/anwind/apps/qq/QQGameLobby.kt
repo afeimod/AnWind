@@ -5,6 +5,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -843,23 +844,28 @@ private fun QQGameRoomScreen(room: QQGameRoom, onBack: () -> Unit, onSit: () -> 
             )
         }
 
-        // ===== 桌子区（5 列橙色木桌，纵向滚动）=====
-        Column(
+        // ===== 桌子区（v4 列数自适应：窄窗口自动减列，纵向滚动）=====
+        BoxWithConstraints(
             modifier = Modifier
                 .weight(1f)
+                .fillMaxSize()
+        ) {
+            val tableCols = (maxWidth / 170.dp).toInt().coerceIn(2, 5)
+        Column(
+            modifier = Modifier
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState())
                 .padding(horizontal = 6.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            tables.chunked(5).forEachIndexed { rowIdx, row ->
+            tables.chunked(tableCols).forEachIndexed { rowIdx, row ->
                 Row(horizontalArrangement = Arrangement.SpaceEvenly, modifier = Modifier.fillMaxWidth()) {
                     row.forEachIndexed { colIdx, occupied ->
                         GameTableItem(
                             def = def,
-                            no = rowIdx * 5 + colIdx + 1,
+                            no = rowIdx * tableCols + colIdx + 1,
                             occupied = occupied,
-                            nicks = tableNicks[rowIdx * 5 + colIdx],
+                            nicks = tableNicks[rowIdx * tableCols + colIdx],
                             onSit = {
                                 QQSounds.ding()
                                 onSit()
@@ -870,6 +876,7 @@ private fun QQGameRoomScreen(room: QQGameRoom, onBack: () -> Unit, onSit: () -> 
             }
             Spacer(Modifier.height(4.dp))
         }
+        }   // v4 桌子区 BoxWithConstraints 结束（底部状态栏保持在外层）
 
         // ===== 底部状态栏（截图1 左下："2人正在看"）=====
         Row(
@@ -891,7 +898,7 @@ private fun QQGameRoomScreen(room: QQGameRoom, onBack: () -> Unit, onSit: () -> 
                 fontSize = 10.sp
             )
         }
-        }
+        }   // 外层 Column 结束
     }
 }
 
