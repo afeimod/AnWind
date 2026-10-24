@@ -239,6 +239,65 @@ if [[ -d "${_rootfsRoot}/usr" ]]; then
   done
 fi
 
+# ---- SONAME 版本别名兜底 ----
+# 构建系统遵循 Termux/Android 惯例产出无版本号 .so（bionic 按文件名加载），
+# 但 wine 等预编译产物的 DT_NEEDED 记录上游标准 SONAME（libX11.so.6 等），
+# 缺别名即加载失败。各项目的 install() 现已在包内携带别名；此处再按映射表
+# 统一补一遍：兼容【别名修复前产出的存量包】，也让"只重建个别包"的组装
+# 场景无需全量重编。版本号全部取自上游源码：
+#   X11 系  : <lib>/src/Makefile.am 的 libtool -version-number major:minor:micro
+#   libxcb 系: src/Makefile.am 的 -version-info current:revision:age（SONAME=current-age）
+#   meson 系 : 各 meson.build 的 version/soversion 字段
+declare -A _sonameMap_=(
+  [libX11.so]="libX11.so.6"
+  [libX11-xcb.so]="libX11-xcb.so.1"
+  [libXext.so]="libXext.so.6"
+  [libXrender.so]="libXrender.so.1"
+  [libXfixes.so]="libXfixes.so.3"
+  [libXrandr.so]="libXrandr.so.2"
+  [libXi.so]="libXi.so.6"
+  [libXcursor.so]="libXcursor.so.1"
+  [libXinerama.so]="libXinerama.so.1"
+  [libXcomposite.so]="libXcomposite.so.1"
+  [libXxf86vm.so]="libXxf86vm.so.1"
+  [libXv.so]="libXv.so.1"
+  [libXdamage.so]="libXdamage.so.1"
+  [libxshmfence.so]="libxshmfence.so.1"
+  [libXau.so]="libXau.so.6"
+  [libXdmcp.so]="libXdmcp.so.6"
+  [libxkbcommon.so]="libxkbcommon.so.0"
+  [libxkbcommon-x11.so]="libxkbcommon-x11.so.0"
+  [libdrm.so]="libdrm.so.2"
+  [libdrm_amdgpu.so]="libdrm_amdgpu.so.1"
+  [libdrm_freedreno.so]="libdrm_freedreno.so.1"
+  [libGL.so]="libGL.so.1"
+  [libEGL.so]="libEGL.so.1"
+  [libGLESv2.so]="libGLESv2.so.2"
+  [libgbm.so]="libgbm.so.1"
+)
+_libFixes=0
+for _base in "${!_sonameMap_[@]}"; do
+  _soname="${_sonameMap_[${_base}]}"
+  if [[ -e "${_rootfsRoot}/usr/lib/${_base}" && ! -e "${_rootfsRoot}/usr/lib/${_soname}" ]]; then
+    ln -sf -- "$_base" "${_rootfsRoot}/usr/lib/${_soname}"
+    _libFixes=$((_libFixes + 1))
+  fi
+done
+# libxcb 核心与全部扩展库（上游 -version-info：核心/sync/xkb → .1，其余 → .0）
+for _f in "${_rootfsRoot}"/usr/lib/libxcb*.so; do
+  [[ -f "$_f" ]] || continue
+  _base="$(basename "$_f")"
+  case "$_base" in
+    libxcb.so | libxcb-sync.so | libxcb-xkb.so) _v=1 ;;
+    *) _v=0 ;;
+  esac
+  if [[ ! -e "${_rootfsRoot}/usr/lib/${_base}.${_v}" ]]; then
+    ln -sf -- "$_base" "${_rootfsRoot}/usr/lib/${_base}.${_v}"
+    _libFixes=$((_libFixes + 1))
+  fi
+done
+info "SONAME 版本别名: 本次补建 ${_libFixes} 个（包内已携带的自动跳过）"
+
 # ---- 绝对符号链接重写：让导出树自包含 ----
 # meson 的 install_symlink（如 xkeyboard-config compat-rules 的
 # share/X11/xkb -> <prefix>/share/xkeyboard-config-2）会生成指向设备最终

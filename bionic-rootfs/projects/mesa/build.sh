@@ -201,3 +201,17 @@ ANWIND_SHIM
     fi
   fi
 }
+
+install() {
+  DESTDIR="${destDir}" PREFIX="${prefix}" meson install -C build
+  # SONAME 版本别名：本构建系统按 Termux/Android 惯例产无版本 .so（meson 的
+  # android 分支同样去版本化，见 libdrm meson.build "Build an unversioned so
+  # on android"），但 wine 等预编译产物的 DT_NEEDED 记录上游标准 SONAME。
+  cd "${destDir}/${prefix}/lib"
+  # 上游 meson.build：glx gl_lib_version='1.2.0'→.so.1；egl soversion='1'；
+  # es2api soversion='2'；gbm version='1.0.0'→.so.1
+  ln -sf libGL.so libGL.so.1
+  ln -sf libEGL.so libEGL.so.1
+  ln -sf libGLESv2.so libGLESv2.so.2
+  ln -sf libgbm.so libgbm.so.1
+}

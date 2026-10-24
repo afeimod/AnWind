@@ -79,3 +79,14 @@ args="
 pre_setup() {
   CFLAGS+=" -DANDROID"
 }
+install() {
+  DESTDIR="${destDir}" PREFIX="${prefix}" meson install -C build
+  # SONAME 版本别名：本构建系统按 Termux/Android 惯例产无版本 .so（meson 的
+  # android 分支同样去版本化，见 libdrm meson.build "Build an unversioned so
+  # on android"），但 wine 等预编译产物的 DT_NEEDED 记录上游标准 SONAME。
+  cd "${destDir}/${prefix}/lib"
+  # 上游 meson.build：libdrm version '2.x.0'→.so.2；amdgpu/freedreno '1.x.0'→.so.1
+  ln -sf libdrm.so libdrm.so.2
+  [[ -f libdrm_amdgpu.so ]] && ln -sf libdrm_amdgpu.so libdrm_amdgpu.so.1 || true
+  [[ -f libdrm_freedreno.so ]] && ln -sf libdrm_freedreno.so libdrm_freedreno.so.1 || true
+}

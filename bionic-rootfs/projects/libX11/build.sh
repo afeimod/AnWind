@@ -14,3 +14,13 @@ args="
   --without-fop
   --without-xsltproc
 "
+
+install() {
+  make install DESTDIR="${destDir}"
+  # SONAME 版本别名：本构建系统按 Termux/Android 惯例产无版本 .so（bionic
+  # 按文件名加载），但 wine 等预编译产物的 DT_NEEDED 记录上游标准 SONAME。
+  # 版本号取自上游 src/Makefile.am 的 libtool -version-number <major>:*:*
+  cd "${destDir}/${prefix}/lib"
+  ln -sf libX11.so libX11.so.6
+  ln -sf libX11-xcb.so libX11-xcb.so.1
+}
