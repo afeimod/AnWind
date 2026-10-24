@@ -20,8 +20,27 @@
 > 3. X11 unix socket 路径补丁：AnWind 内置 X 服务（libXlorie / termux-x11）
 >    在 **App 侧前缀** `$APP_PREFIX/tmp/.X11-unix/Xn`
 >    （`/data/data/com.anwind/files/usr/tmp/.X11-unix/X1`，默认显示号 `:1`）
->    监听，xtrans / libxcb 已补丁对齐该路径（见 `patch-rules.sed`
+>    监听，xtrans / libxcb 已补丁对齐该路径（见 `patch-rules.conf`
 >    的 `@APP_PREFIX@` 规则与 `projects/libxcb/build.sh`）。
+> 4. **已同步参考构建系统（rootfsbc）的基础设施**（不含 wayland）：
+>    - NDK 升级 r28b → **r29**（ndk_patches/r29 全套补丁随仓）
+>    - `utils/log.sh`（info/warn/err/ok 彩色日志）与 `utils/notices.sh`
+>      （THIRD_PARTY_NOTICES 在导出阶段生成）
+>    - `patch-rules.sed` → `patch-rules.conf`：占位符替换由 bash 层
+>      `expand_patch_placeholders()` 完成（防 patsub_replacement 误展开、
+>      未定义变量/残留占位符即中止），并保留 AnWind 的 `@APP_PREFIX@`
+>    - 源码复用：`prepare_src()` 按 revision/补丁指纹判断，未变化时跳过
+>      重新获取与打补丁；NDK 补丁状态键带指纹，配置变化自动重下
+>    - `--has-prefix`（复用已有 prefix）、`--update-ndk`、动作类选项
+>      先登记后执行（`--arch` 写在 `--build` 后同样生效）
+>    - 新增包：`fluidsynth`（MIDI 合成）、`libtheora`（Theora 编解码，
+>      gstreamer theora 插件同步启用）、`libresolv`（resolv_wrapper，
+>      配合 CMAKE_FIND_ROOT_PATH_MODE_LIBRARY=BOTH 的交叉探测修复）
+>    - `make-rootfs.sh`：同名包多 revision 去重、usr-merge 软链接、
+>      `--lite` 精简模式、gen_notices；保留 AnWind 的磁盘预检、逐包失败
+>      汇总与绝对符号链接重写（xkeyboard-config 断链修复）
+>    - mesa：0011 TLS 符号补丁改为幂等应用（双架构源码复用下二次应用
+>      不再失败），X11 平台其余 shim（NDK 平台私有头）保持不变
 
 ## rootfs 运行时布局
 
@@ -121,7 +140,7 @@ install() { ... }
 ## 补丁机制
 
 `apply_patches`（项目补丁）与 `apply_ndk_patches`（NDK sysroot 补丁）共用根目录
-[patch-rules.sed](./patch-rules.sed) 中的规则，应用前对补丁内容做占位符替换：
+[patch-rules.conf](./patch-rules.conf) 中的规则，应用前对补丁内容做占位符替换：
 
 | 规则 | 替换为 |
 |---|---|
@@ -130,7 +149,7 @@ install() { ... }
 | `@APP_PREFIX@` | `${appPrefix}`（App 侧 termux 前缀，X11 socket 所在） |
 
 **关于 `__TERMUX__` 宏**：`__TERMUX__` / `__TERMUX_PREFIX__` 是编译期宏，由 NDK sysroot
-补丁（`ndk_patches/*/sys-cdefs.h.patch`）定义，不要在 `patch-rules.sed` 中做文本替换。
+补丁（`ndk_patches/*/sys-cdefs.h.patch`）定义，不要在 `patch-rules.conf` 中做文本替换。
 
 ## 开源协议处理
 

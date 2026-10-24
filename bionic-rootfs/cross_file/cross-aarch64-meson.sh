@@ -4,14 +4,19 @@
 _cOnly="${CC#ccache }"
 _cppOnly="${CXX#ccache }"
 
-# Use PKG_CONFIG_SYSROOT_DIR or default prefix
-_prefix="${PKG_CONFIG_SYSROOT_DIR:-/tmp/bionic-prefix}"
+# 仅 sysroot 模式（PKG_CONFIG_SYSROOT_DIR 指向 sysroot 树）时追加 sysroot 头文件目录；
+# 无 sysroot 时 CFLAGS/CXXFLAGS 已含 -I${prefix}/include，避免无效 -I 触发
+# clang -Wmissing-include-dirs 警告
 
 # [built-in options] are derived from the current environment,
 # so flags appended to CFLAGS/CXXFLAGS/LDFLAGS (e.g. in pre_setup) land in the cross file
-_cArgs="-I${_prefix}/usr/include -I${_prefix}/include ${CFLAGS:-}"
-_cppArgs="-I${_prefix}/usr/include -I${_prefix}/include ${CXXFLAGS:-}"
-_linkArgs="${LDFLAGS:--L${_prefix}/lib}"
+_cArgs="${CFLAGS:-}"
+_cppArgs="${CXXFLAGS:-}"
+_linkArgs="${LDFLAGS:--L${prefix}/lib}"
+if [[ -n "${PKG_CONFIG_SYSROOT_DIR:-}" ]]; then
+  _cArgs="-I${PKG_CONFIG_SYSROOT_DIR}/usr/include -I${PKG_CONFIG_SYSROOT_DIR}/include ${_cArgs}"
+  _cppArgs="-I${PKG_CONFIG_SYSROOT_DIR}/usr/include -I${PKG_CONFIG_SYSROOT_DIR}/include ${_cppArgs}"
+fi
 
 # join words into a quoted meson array string, e.g. 'a', 'b'
 meson_args() {
@@ -33,7 +38,7 @@ ranlib = '${RANLIB}'
 ld = '${LD}'
 
 [host_machine]
-system = 'linux'
+system = '${mesonHostSystem:-android}'
 cpu_family = 'aarch64'
 cpu = 'aarch64'
 endian = 'little'

@@ -48,6 +48,7 @@ args="
   -Dgst-plugins-base:gio=disabled
   -Dgst-plugins-base:examples=disabled
   -Dgst-plugins-base:alsa=enabled
+  -Dgst-plugins-base:theora=enabled
   -Dgst-plugins-base:pango=disabled
   -Dgst-plugins-base:x11=enabled
   -Dgst-plugins-base:gl=enabled
@@ -115,8 +116,9 @@ args="
   -Dpackage-origin=anwind-bionic-rootfs
 "
 # mesa：gst-plugins-base 的 gl 库需要 GL/gl.h、GLES2、EGL/egl.h 头与
-# libGL/libEGL（均由 mesa 配方装入 prefix），必须先于 gstreamer 构建
-deps="libandroid-shmem alsa-lib libpng pulseaudio gmp pcre2 glib libogg libflac libopus libvorbis mp3lame mpg123 libdrm libcairo nettle libopus libjpeg-turbo libde265 openh264 libvpx orc ffmpeg libfdk-aac mesa xorgproto libxcb libX11 libXext libXfixes libXdamage"
+# libGL/libEGL（均由 mesa 配方装入 prefix），必须先于 gstreamer 构建；
+# libtheora：theora 编解码（对齐参考构建系统的完整组件清单）
+deps="libandroid-shmem alsa-lib libpng pulseaudio gmp pcre2 glib libogg libflac libopus libvorbis mp3lame mpg123 libdrm libcairo nettle libopus libjpeg-turbo libde265 openh264 libvpx orc ffmpeg libfdk-aac libtheora mesa xorgproto libxcb libX11 libXext libXfixes libXdamage"
 
 pre_setup() {
   LDFLAGS+=" -landroid-shmem"

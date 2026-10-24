@@ -141,12 +141,15 @@ custom_configure() { ... }
 ## 4.1 核心变量（default.conf）
 
 ```bash
-ndkURL="..."           # NDK 下载地址
+ndkURL="..."           # NDK 下载地址（当前 r29）
 ndkDir="${wsDir}/ndk"  # NDK 本地路径
 srcDir="${wsDir}/src"  # 源码目录
 pkgDir="${wsDir}/pkgs" # 打包输出目录
 prefix="/data/data/com.anwind/files/rootfs/usr"
-api="29"               # NDK API 版本
+rootfsBase="/data/data/com.anwind/files/rootfs"
+rootfsHome="/data/data/com.anwind/files/rootfs/home"
+appPrefix="/data/data/com.anwind/files/usr"   # App 侧前缀（X11 socket 所在）
+api="28"               # NDK API 版本
 ```
 
 ## 4.2 load_env() 导出的环境变量
@@ -182,16 +185,20 @@ cmakeBaseArgs=(-DCMAKE_BUILD_TYPE=Release -DCMAKE_SYSTEM_NAME=Android ...)
 
 `projects/<pjName>/*.patch`，按文件名排序应用。
 
-## 5.2 占位符替换（patch-rules.sed）
+## 5.2 占位符替换（patch-rules.conf）
 
 | 规则 | 替换为 |
 |---|---|
 | `@TERMUX_PREFIX@` | `${prefix}` |
 | `@TERMUX_PREFIX_CLASSICAL@` | `${prefix}` |
 | `@ROOTFS_PREFIX@` | `${prefix}` |
-| `@TERMUX_HOME@` | `${prefix}/home` |
+| `@ROOTFS_BASE@` | `${rootfsBase}` |
+| `@TERMUX_BASE_DIR@` | `${rootfsBase}` |
+| `@TERMUX_HOME@` | `${rootfsHome}` |
+| `@APP_PREFIX@` | `${appPrefix}`（App 侧 termux 前缀，X11 socket 所在） |
 
-- 规则中的 `${prefix}` 在运行时由 `expand_patch_rules()` 展开
+- 规则文件格式为 `@占位符@ 变量名`，由 `expand_patch_placeholders()` 运行时替换，不写死任何路径
+- 变量未定义、或替换后仍残留 `@TERMUX_*@`/`@ROOTFS_*@` 占位符时展开失败并中止
 - 不要在补丁中做 `__TERMUX__` → `__ANDROID__` 的文本替换
 
 ## 5.3 NDK 补丁

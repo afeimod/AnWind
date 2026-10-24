@@ -115,7 +115,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: bionic-rootfs/ndk
-          key: anwind-ndk-r28b-v1
+          key: anwind-ndk-r29-v1
 
       - name: 缓存 ccache
         uses: actions/cache@v4
@@ -383,11 +383,11 @@ jobs:
           body: |
             **AnWind Bionic Rootfs (X11)** — `${{ matrix.arch }}`
 
-            基于 Android NDK r28b 交叉编译的 Bionic rootfs，供 AnWind（com.anwind）使用。
+            基于 Android NDK r29 交叉编译的 Bionic rootfs，供 AnWind（com.anwind）使用。
 
             ## 构建信息
             - **架构**: ${{ matrix.arch }}
-            - **NDK**: r28b（API 28）
+            - **NDK**: r29（API 28）
             - **显示协议**: X11（termux-x11 / libXlorie），无 weston/wayland
             - **Mesa**: 26.2.1（platforms=x11, glx=dri；aarch64 附带 freedreno 硬件加速）
             - **Wine**: hangover 11.16（--with-x，完整 X11 驱动）

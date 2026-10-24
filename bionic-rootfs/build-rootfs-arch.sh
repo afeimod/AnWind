@@ -1,16 +1,42 @@
+#!/bin/bash
 wsDir="$(dirname $(readlink -f "$0"))"
+. "${wsDir}/utils/log.sh"
+
+# 固定 UTC：源码/工具的日志与内嵌时间戳不随构建者时区变化，便于跨机器比对产物
+export TZ=UTC
+
+# 固定 UTF-8 locale：宿主未导出 LC_ALL 时各发行版默认不同（C / POSIX / C.UTF-8），
+# 凡是把字节当字符处理的地方（日志、文件名、sort/grep 输出）都会随环境分叉。
+# 首选 en_US.UTF-8：host-deps.sh 已在两个分支跑过 locale-gen 生成它，wine 的
+# UTF-8 代码页转换与 gettext 目录都以它为准，退到 C.UTF-8 会让 wine 按另一套
+# 区域设置走。仍做可用性探测是防 host-deps.sh 没跑过——设一个本机不存在的
+# locale，glibc 会给每条外部命令打 setlocale 警告，反而污染日志。
+# 比较前先去掉连字符并转小写，因为 locale -a 的名字在各 glibc 上是
+# en_US.utf8 或 en_US.UTF-8 两种写法。
+if [[ -z "${LC_ALL}" ]]; then
+  _locales="$(locale -a 2>/dev/null | LC_ALL=C tr -d '-' | tr '[:upper:]' '[:lower:]')"
+  for _lc in en_US.UTF-8 C.UTF-8 C; do
+    _key="${_lc,,}"
+    _key="${_key//-/}"
+    if printf '%s\n' "${_locales}" | grep -qx "${_key}"; then
+      export LC_ALL="${_lc}"
+      break
+    fi
+  done
+  unset _locales _lc _key
+fi
 
 guard_dev_null() {
   if [[ ! -c /dev/null ]]; then
-    echo "/dev/null 不是字符设备，正在修复..."
+    warn "/dev/null 不是字符设备，正在修复..."
     rm -rf /dev/null
-    mknod -m 666 /dev/null c 1 3 || { echo "无法创建 /dev/null" && exit 1; }
+    mknod -m 666 /dev/null c 1 3 || { err "无法创建 /dev/null" && exit 1; }
   fi
 }
 guard_dev_null
 
 if [[ -f ${wsDir}/custom.conf ]]; then
-  echo "加载自定义配置文件"
+  info "加载自定义配置文件"
   . ${wsDir}/custom.conf
 elif [[ -f ${wsDir}/default.conf ]]; then
   . ${wsDir}/default.conf
@@ -26,6 +52,10 @@ rebuildTarget=""
 
 # 跳过源码获取标志（--has-src 时使用，src 下已有源码则跳过 get_src）
 hasSrc=false
+# 复用已有 prefix 标志（--has-prefix 时使用，跳过依赖收集与包解压）
+hasPrefix=false
+# 强制重新下载 NDK 标志（--update-ndk 时使用）
+updateNdk=false
 
 mkdir -p "${pkgDir}"
 mkdir -p "${srcDir}"
@@ -44,46 +74,31 @@ declare -a _buildOrder_
 
 
 # @license
-# 扫描所有 projects/*/build.sh, 汇总第三方组件协议清单
-# 输出到 ${prefix}/share/licenses/THIRD_PARTY_NOTICES
-
-gen_notices() {
-  local _noticesDir="${prefix}/share/licenses"
-  mkdir -p "${_noticesDir}"
-  local _notices="${_noticesDir}/THIRD_PARTY_NOTICES"
-
-  {
-    echo "AnWind Bionic Rootfs 第三方组件协议清单"
-    echo "本文件由 build-rootfs-arch.sh 自动生成"
-    echo
-    printf "%-24s %-24s %s\n" "组件" "协议" "来源"
-    echo "---------------------------------------------------------------"
-    local _pjName
-    for _pjName in "${_buildOrder_[@]}"; do
-      local _buildFile="${wsDir}/projects/${_pjName}/build.sh"
-      [[ -f "$_buildFile" ]] || continue
-      . "${wsDir}/empty.sh"
-      . "$_buildFile"
-      printf "%-24s %-24s %s\n" "${_pjName}" "${license:-未知}" "${url:-无}"
-    done
-  } >"${_notices}"
-  echo "第三方组件协议清单已生成 => ${_notices}"
-}
+# 第三方协议清单由 utils/notices.sh 的 gen_notices 生成, 在 make-rootfs.sh 导出 rootfs
+# 时写入 ${prefix}/share/licenses/THIRD_PARTY_NOTICES —— 不在这里生成: package() 只把
+# ${destDir} 打进 tar, 而 ${prefix} 是构建机上的临时目录, 写在那里既进不了任何包, 也会
+# 在宿主机上遗留一棵空的 /data/data/... 目录树
 
 # @help
+# 用法: usage [退出码] —— 参数错误时传 1, 让脚本以失败退出
 usage() {
   echo "用法: $0 [选项]"
   echo "选项:"
-  echo "  --build <pjName|all>         构建指定包或所有包"
-  echo "  --rebuild <pjName|all>       仅重建指定包（依赖不解构）"
-  echo "  --rebuild-deps <pjName|all>  重建指定包及其所有依赖"
+  echo "  --build <pjName|all>         构建指定包或所有包 (可空格分隔多个)"
+  echo "  --rebuild <pjName|all>       仅重建指定包 (可空格分隔多个, 依赖不解构)"
+  echo "  --rebuild-deps <pjName|all>  重建指定包及其所有依赖 (可空格分隔多个)"
   echo "  --arch <archs>              指定目标架构 (arm64|aarch64 x86_64|amd64|all), 默认 all"
   echo "  --has-src               src 下已有对应源码时跳过代码获取"
+  echo "  --has-prefix            复用已有 prefix，跳过依赖构建与包解压"
+  echo "  --update-ndk          删除并重新下载 NDK 后应用补丁"
   echo "  --load-env [arch]     加载环境变量用于调试, 默认 aarch64"
   echo "  --clean-ccache        清理 ccache 缓存"
   echo "  --update-host-deps    更新主机依赖"
   echo "  --help                显示此帮助信息"
-  exit 0
+  echo ""
+  echo "以上选项可任意先后顺序书写: 动作类选项(--build/--rebuild/--rebuild-deps)只登记,"
+  echo "解析完整个命令行才执行, 因此 --arch 写在 --build 后面同样生效。"
+  exit "${1:-0}"
 }
 
 # 架构名归一化: arm64->aarch64, amd64->x86_64
@@ -128,75 +143,132 @@ filter_archs() {
 }
 
 clean_ccache() {
-  echo "清理 ccache 缓存..."
+  info "清理 ccache 缓存..."
   local _ccDir
-  for _ccDir in "${wsDir}/bionic_ccache" "${wsDir}/host_ccache"; do
+  for _ccDir in "${wsDir}/bionic_ccache" "${wsDir}/host_ccache" "${wsDir}/cross_ccache"; do
     if [[ -d "$_ccDir" ]] && cd "$_ccDir"; then
       rm -rf ./*
       cd "$wsDir"
     fi
   done
-  echo "ccache 缓存已清理"
+  ok "ccache 缓存已清理"
 }
 
 # @ndk-patch
 
-# 展开 patch-rules.sed 中的 ${prefix} 变量，输出实际 sed 规则（供 sed -f 使用）。
-# 仅替换 ${prefix} 字面量，规则里的其他 $ 字符（如行尾锚 x$）原样保留；
-# 在 bash 层做展开，因此 prefix 值含 & 等字符也不会被 sed 当作特殊含义
-expand_patch_rules() {
-  local _rules
-  _rules="$(<"${wsDir}/patch-rules.sed")"
-  printf '%s\n' "${_rules//\$\{prefix\}/${prefix}}"
+# 将 stdin 中的 @占位符@ 按 patch-rules.conf 映射替换为配置变量值，写到 stdout。
+# 映射格式: @占位符@ 变量名（变量须已在 default.conf/custom.conf 定义）。
+# 替换在 bash 层完成；bash 5.2+ 的 patsub_replacement 会把替换串里的 & 展开为
+# 匹配文本，函数内临时禁用以免路径值被误解释；
+# 变量未定义、或替换后仍残留 @TERMUX_*/@ROOTFS_* 占位符时返回失败，
+# 避免把字面量写进源码/sysroot（libsndfile 的 @AUTOGEN_BIN@ 等
+# automake 自动替换变量不在残留检查范围）。
+expand_patch_placeholders() {
+  local _rulesFile="${wsDir}/patch-rules.conf"
+  local _content _placeholder _varName
+  local _patsubWas=""
+  # bash < 5.2 无此选项，shopt -p 失败时 _patsubWas 保持空、跳过恢复
+  _patsubWas="$(shopt -p patsub_replacement 2>/dev/null)" && shopt -u patsub_replacement
+
+  if [[ ! -f "$_rulesFile" ]]; then
+    err "缺少补丁替换规则文件 => ${_rulesFile}" >&2
+    [[ -n "$_patsubWas" ]] && eval "$_patsubWas"
+    return 1
+  fi
+
+  _content="$(cat)"
+
+  while read -r _placeholder _varName; do
+    [[ -z "${_placeholder:-}" || "$_placeholder" == \#* ]] && continue
+    if [[ -z "${_varName:-}" ]]; then
+      err "补丁规则缺少变量名 => ${_placeholder}" >&2
+      [[ -n "$_patsubWas" ]] && eval "$_patsubWas"
+      return 1
+    fi
+    if [[ ! -v "$_varName" ]]; then
+      err "补丁规则引用了未定义变量 => ${_placeholder} -> \${${_varName}}" >&2
+      [[ -n "$_patsubWas" ]] && eval "$_patsubWas"
+      return 1
+    fi
+    _content="${_content//${_placeholder}/${!_varName}}"
+  done < "$_rulesFile"
+
+  if [[ "$_content" =~ @(TERMUX|ROOTFS)_[A-Za-z0-9_]+@ ]]; then
+    err "补丁占位符未被替换 => ${BASH_REMATCH[0]}（patch-rules.conf 缺少该规则）" >&2
+    [[ -n "$_patsubWas" ]] && eval "$_patsubWas"
+    return 1
+  fi
+
+  [[ -n "$_patsubWas" ]] && eval "$_patsubWas"
+  printf '%s\n' "$_content"
 }
 
 apply_ndk_patches() {
   local _ndkVersion
   # 从ndkURL中提取版本号，例如"r29"
   _ndkVersion=$(echo "$ndkURL" | grep -oP 'r\d+[a-z]*' | head -1)
-  [[ -z "$_ndkVersion" ]] && { echo "无法从ndkURL中提取NDK版本" && exit 1; }
+  [[ -z "$_ndkVersion" ]] && { err "无法从ndkURL中提取NDK版本" && exit 1; }
 
   local _patchDir="${wsDir}/ndk_patches/${_ndkVersion}"
-  [[ ! -d "$_patchDir" ]] && { echo "NDK补丁目录不存在: $_patchDir" && return 0; }
+  [[ ! -d "$_patchDir" ]] && { warn "NDK补丁目录不存在: $_patchDir" && return 0; }
 
   local _patchFiles
-  _patchFiles=($(ls "$_patchDir"/*.patch 2>/dev/null))
-  [[ ${#_patchFiles[@]} -eq 0 ]] && { echo "NDK版本 $_ndkVersion 无需应用任何补丁" && return 0; }
+  # 按文件名字典序应用：目录读取顺序不保证，且下方状态指纹由补丁内容拼接得出，
+  # 顺序漂移会让指纹变化、误判为补丁已变更而重下 NDK，故用 LC_ALL=C 固定排序
+  _patchFiles=($(ls "$_patchDir"/*.patch 2>/dev/null | LC_ALL=C sort))
+  [[ ${#_patchFiles[@]} -eq 0 ]] && { info "NDK版本 $_ndkVersion 无需应用任何补丁" && return 0; }
 
   local _ndkSysroot="${ndkDir}/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
-  [[ ! -d "$_ndkSysroot" ]] && { echo "NDK sysroot不存在: $_ndkSysroot" && return 0; }
+  [[ ! -d "$_ndkSysroot" ]] && { warn "NDK sysroot不存在: $_ndkSysroot" && return 0; }
 
-  # 补丁占位符替换规则与 apply_patches 共用 patch-rules.sed
-  [[ -f "${wsDir}/patch-rules.sed" ]] || { echo "缺少补丁替换规则文件 => ${wsDir}/patch-rules.sed" && exit 1; }
+  # 补丁占位符替换规则与 apply_patches 共用 patch-rules.conf
+  [[ -f "${wsDir}/patch-rules.conf" ]] || { err "缺少补丁替换规则文件 => ${wsDir}/patch-rules.conf" && exit 1; }
 
-  # 检查是否需要重新应用补丁（prefix变化或首次应用）
+  # 状态键 = 路径配置 + 补丁/规则内容指纹；任一变化都需重新下载并打补丁。
+  # 旧状态文件只存 prefix，格式不匹配会触发一次全量重下，顺带修复历史坏补丁
+  # （旧双层 sed 规则漏展开 ${rootfsHome} 时写进 pwd.h 的字面量）。
+  # 指纹排除 patch-rules.conf 注释行，改注释不会触发重下 NDK。
+  local _fingerprint
+  _fingerprint="$(
+    {
+      cat "${_patchFiles[@]}"
+      sed -e 's/#.*$//' -e '/^[[:space:]]*$/d' "${wsDir}/patch-rules.conf"
+    } | sha256sum | cut -d' ' -f1
+  )"
+  local _stateKey="v2|${prefix}|${rootfsHome}|${rootfsBase}|${_fingerprint}"
+
   local _stateFile="${ndkDir}/.ndk_patches_state"
-  local _lastPrefix=""
-  [[ -f "$_stateFile" ]] && _lastPrefix=$(cat "$_stateFile")
+  local _lastState=""
+  [[ -f "$_stateFile" ]] && _lastState="$(<"$_stateFile")"
 
-  if [[ "$_lastPrefix" == "$prefix" ]]; then
-    echo "NDK补丁已应用，prefix未变化，跳过"
+  if [[ "$_lastState" == "$_stateKey" ]]; then
+    info "NDK补丁已应用，配置与补丁未变化，跳过"
     return 0
   fi
 
-  # prefix变化时，需要重新下载NDK并应用补丁
-  if [[ -n "$_lastPrefix" ]]; then
-    echo "NDK prefix从$_lastPrefix变化为$prefix，需要重新下载NDK..."
+  # 状态变化（含旧版仅存 prefix 的状态）时重新下载 NDK：
+  # 补丁无法在已污染的 sysroot 上安全重打，只能整包重来
+  if [[ -n "$_lastState" ]]; then
+    info "NDK补丁状态变化（路径配置或补丁内容变更），重新下载NDK..."
     rm -rf "$ndkDir"
     return 0
   fi
 
-  echo "首次应用NDK补丁..."
+  info "首次应用NDK补丁..."
 
   cd "$_ndkSysroot"
 
+  local _patch _expanded
   for _patch in "${_patchFiles[@]}"; do
-    if patch -p1 --dry-run <"$_patch" >/dev/null 2>&1; then
-      echo "测试通过=> $_patch"
-      echo "应用NDK补丁=> $_patch"
-      patch --no-backup-if-mismatch -N -p1 <<<$(cat "$_patch" | sed -f <(expand_patch_rules)) || { echo "NDK补丁应用失败=> $_patch" && exit 1; }
+    if ! _expanded="$(expand_patch_placeholders < "$_patch")"; then
+      err "补丁占位符展开失败=> $_patch" && exit 1
+    fi
+    if printf '%s\n' "$_expanded" | patch -p1 --dry-run >/dev/null 2>&1; then
+      info "测试通过=> $_patch"
+      info "应用NDK补丁=> $_patch"
+      printf '%s\n' "$_expanded" | patch --no-backup-if-mismatch -N -p1 || { err "NDK补丁应用失败=> $_patch" && exit 1; }
     else
-      echo "NDK补丁应用失败=> $_patch" && exit 1
+      err "NDK补丁应用失败=> $_patch" && exit 1
     fi
   done
 
@@ -212,50 +284,54 @@ apply_ndk_patches() {
   #   done
   # fi
 
-  # 保存当前prefix到状态文件
-  echo "$prefix" >"$_stateFile"
+  # 保存状态键到状态文件
+  printf '%s\n' "$_stateKey" >"$_stateFile"
 
   cd -
 }
 
-# 应用NDK补丁（会在prefix变化时重新下载NDK）
-apply_ndk_patches
-
-# 如果NDK目录不存在（可能被apply_ndk_patches删除），则下载
-if [[ ! -d "${ndkDir}/toolchains/llvm/prebuilt/linux-x86_64/bin" ]]; then
-  echo "NDK 不存在，开始下载..."
-  mkdir -p "$ndkDir"
-  wget -nv -O "/tmp/ndk.zip" "$ndkURL"
-
-  rm -rf /tmp/ndk-tmp
-  mkdir /tmp/ndk-tmp
-
-  #7z x /tmp/ndk.zip -o/tmp/ndk-tmp
-  # 7z 解压可能导致链接损坏
-  unzip /tmp/ndk.zip -d /tmp/ndk-tmp
-
-  mv /tmp/ndk-tmp/*/* "${ndkDir}/"
-
-  rm -f /tmp/ndk.zip
-  rm -rf /tmp/ndk-tmp
-
-  # 下载后重新应用补丁
+# 校验/补齐 NDK：补丁状态变化或 NDK 缺失时才下载。
+# 只在真正要构建或显式 --update-ndk 时调用，避免 --help 之类的命令触发下载。
+ensure_ndk() {
+  # 应用NDK补丁（会在prefix变化时重新下载NDK）
   apply_ndk_patches
-fi  
+
+  # 如果NDK目录不存在（可能被apply_ndk_patches删除），则下载
+  if [[ ! -d "${ndkDir}/toolchains/llvm/prebuilt/linux-x86_64/bin" ]]; then
+    info "NDK 不存在，开始下载..."
+    mkdir -p "$ndkDir"
+    wget -O "/tmp/ndk.zip" "$ndkURL"
+
+    rm -rf /tmp/ndk-tmp
+    mkdir /tmp/ndk-tmp
+
+    #7z x /tmp/ndk.zip -o/tmp/ndk-tmp
+    # 7z 解压可能导致链接损坏
+    unzip /tmp/ndk.zip -d /tmp/ndk-tmp
+
+    mv /tmp/ndk-tmp/*/* "${ndkDir}/"
+
+    rm -f /tmp/ndk.zip
+    rm -rf /tmp/ndk-tmp
+
+    # 下载后重新应用补丁
+    apply_ndk_patches
+  fi
+}
 
 # 提取独立工具链
 extract_standalone() {
   local _toolchainArch="$1"
   local _toolchainDir="${wsDir}/toolchain-${_toolchainArch}"
   if [[ -d "${_toolchainDir}/bin" ]]; then
-    echo "独立工具链已存在: ${_toolchainDir}"
+    info "独立工具链已存在: ${_toolchainDir}"
     return
   fi
-  echo "提取独立工具链: ${_toolchainArch} ..."
+  info "提取独立工具链: ${_toolchainArch} ..."
   python3 "${ndkDir}/build/tools/make_standalone_toolchain.py" \
     --arch "${_toolchainArch}" \
     --api "${api}" \
-    --install-dir "${_toolchainDir}" || { echo "错误: 独立工具链提取失败! => $_toolchainArch" && exit 1; }
+    --install-dir "${_toolchainDir}" || { err "独立工具链提取失败! => $_toolchainArch" && exit 1; }
 }
 
 #for _arch in arm64 x86_64; do
@@ -342,6 +418,7 @@ load_env_host() {
 
 dl_src() {
   # 支持备用下载源：项目可在 build.sh 中定义 backupUrls=(...) 数组，主源失败时按序回退
+  # （AnWind：bzip2/gmp/gnutls/libiconv 等包依赖此机制绕开上游对 CI 出口 IP 的限流）
   local _urls=("$url")
   local _u
   if [[ -n "${backupUrls[*]:-}" ]]; then
@@ -350,17 +427,17 @@ dl_src() {
   rm -rf /tmp/download-src
   mkdir -p /tmp/download-src
   for _u in "${_urls[@]}"; do
-    echo "下载 => $_u"
+    info "下载 => $_u"
     # 快速失败：--timeout 限制单次连接/读取最长 60s，避免对被墙/屏蔽的源傻等半小时
     # -nv：单行进度输出（完整进度条逐 KB 刷屏对排查无益，纯日志膨胀）
     if wget -nv --timeout=60 --tries=2 --waitretry=3 -P /tmp/download-src/ "$_u"; then
       return 0
     fi
-    echo "下载 $_u 失败，切换下一个源..."
+    warn "下载 $_u 失败，切换下一个源..."
     rm -rf /tmp/download-src
     mkdir -p /tmp/download-src
   done
-  echo "错误: 全部下载源均失败 => ${_urls[*]}" >&2
+  err "全部下载源均失败 => ${_urls[*]}"
   return 1
 }
 
@@ -374,28 +451,28 @@ get_src() {
     local _gitRetries=5
     local _gitTry
     for ((_gitTry = 1; _gitTry <= _gitRetries; _gitTry++)); do
-      echo "克隆 ${pjName} (第 ${_gitTry}/${_gitRetries} 次尝试)"
+      info "克隆 ${pjName} (第 ${_gitTry}/${_gitRetries} 次尝试)"
       # -c advice.detachedHead=false: 约12行 detached HEAD 提示对每个 git 包都会刷一遍
       if git -c advice.detachedHead=false clone --recursive --depth=1 -b "${revision}" "${url}" $pjName; then
         _gitTry=0
         break
       fi
       if [[ $_gitTry -lt $_gitRetries ]]; then
-        echo "源码克隆失败,5秒后重试..."
+        warn "源码克隆失败,5秒后重试..."
         rm -rf $pjName
         sleep 5
       fi
     done
     if [[ $_gitTry -ne 0 ]]; then
-      echo "源码克隆失败!" && exit 1
+      err "源码克隆失败!" && exit 1
     fi
     ;;
   tar)
     if dl_src; then
       cd "${srcDir}"
-      tar --strip-components=1 -xf /tmp/download-src/$(ls /tmp/download-src/) -C $pjName/ || { echo "文件解压失败！" && exit 1; }
+      tar --strip-components=1 -xf /tmp/download-src/$(ls /tmp/download-src/) -C $pjName/ || { err "文件解压失败！" && exit 1; }
     else
-      echo "源码处理失败!" && exit 1
+      err "源码处理失败!" && exit 1
     fi
     ;;
   7z)
@@ -403,33 +480,95 @@ get_src() {
       cd "${srcDir}"
       rm -rf /tmp/7z-tmp
       mkdir /tmp/7z-tmp
-      unzip /tmp/downlaod-src/$(ls /tmp/downlaod-src) -d /tmp/7z-tmp/ || { echo "文件解压失败！" && exit 1; }
+      unzip /tmp/downlaod-src/$(ls /tmp/downlaod-src) -d /tmp/7z-tmp/ || { err "文件解压失败！" && exit 1; }
       mv /tmp/7z-tmp/*/* $pjName/
     else
-      echo "源码下载失败!" && exit 1
+      err "源码下载失败!" && exit 1
     fi
     ;;
   wget)
     if dl_src; then
-      echo "源码下载完成"
-    else
-      echo "源码下载失败!" && exit 1
+      info "源码下载完成"
     fi
     ;;
   local)
-    echo "此项目源码类型为本地"
+    info "此项目源码类型为本地"
     return 0
     ;;
   others)
     if ! declare -F custom_url >/dev/null; then
-      echo "如果urlType为others,请定义custom_url函数!"
+      err "如果urlType为others,请定义custom_url函数!"
       exit 1
     else
-      echo "存在自定义URL方法,开始执行"
-      custom_url || { echo "源码下载失败!" && exit 1; }
+      info "存在自定义URL方法,开始执行"
+      custom_url || { err "源码下载失败!" && exit 1; }
     fi
     ;;
   esac
+}
+
+# 源码准备状态指纹：revision、补丁内容、补丁规则与占位符变量任一变化都必须重新获取源码
+src_state_fingerprint() {
+  local _patches=()
+  _patches=($(ls "${wsDir}"/projects/"${pjName}"/*.patch 2>/dev/null | LC_ALL=C sort || true))
+  [[ ! -f "${_patches[0]:-}" ]] && _patches=()
+
+  local _manifest
+  _manifest="$(
+    printf 'v1\nrevision=%s\ndoNotApplyPatch=%s\nprefix=%s\nrootfsBase=%s\nrootfsHome=%s\n' \
+      "${revision}" "${doNotApplyPatch:-0}" "${prefix}" "${rootfsBase}" "${rootfsHome}"
+    if declare -F custom_patch >/dev/null; then
+      sha256sum "${wsDir}/projects/${pjName}/build.sh" || true
+    else
+      [[ ${#_patches[@]} -gt 0 ]] && sha256sum "${_patches[@]}" || true
+      [[ -f "${wsDir}/patch-rules.conf" ]] && sha256sum "${wsDir}/patch-rules.conf" || true
+    fi
+  )"
+  printf '%s' "${_manifest}" | sha256sum | cut -d' ' -f1
+}
+
+# 可复用源码的构建系统：它们各自会清理上一次的构建产物（cmake/meson 删 build，
+# autotools/make 走 make distclean），跨架构复用不会混入上一架构的目标文件
+src_reuse_supported() {
+  case "${buildSys}" in
+  cmake | meson | autotools | make) return 0 ;;
+  *) return 1 ;;
+  esac
+}
+
+# 状态文件集中放在 ${srcDir}/.state 下，避免往源码目录（含 projects/ 下的本地源码）写隐藏文件
+src_state_file() {
+  printf '%s\n' "${srcDir}/.state/${pjName}"
+}
+
+can_reuse_src() {
+  local _srcDir="$1"
+  [[ -d "${_srcDir}" ]] || return 1
+  src_reuse_supported || return 1
+  local _stateFile
+  _stateFile="$(src_state_file)"
+  [[ -f "${_stateFile}" ]] || return 1
+  [[ "$(cat "${_stateFile}")" == "$(src_state_fingerprint)" ]]
+}
+
+# 获取并准备源码：状态未变时复用，否则重新获取并重新打补丁
+prepare_src() {
+  local _srcDir="${pkgSrcDir:-${srcDir}/${pjName}}"
+  if can_reuse_src "${_srcDir}"; then
+    info "复用源码: ${_srcDir} (revision 与补丁均未变化，跳过获取与打补丁)"
+    return 0
+  fi
+  get_src
+  if [[ "${doNotApplyPatch:-0}" != 1 ]]; then
+    apply_patches
+  fi
+  # 打完补丁再记录状态，避免补丁失败时留下"已准备好"的假状态
+  if src_reuse_supported; then
+    local _stateFile
+    _stateFile="$(src_state_file)"
+    mkdir -p "${srcDir}/.state"
+    src_state_fingerprint > "${_stateFile}"
+  fi
 }
 
 # @patch
@@ -439,18 +578,19 @@ apply_patches() {
   local _patch
 
   if declare -F custom_patch >/dev/null; then
-    echo "使用自定义补丁"
-    custom_patch || { echo "自定义补丁应用失败!" && exit 1; }
+    info "使用自定义补丁"
+    custom_patch || { err "自定义补丁应用失败!" && exit 1; }
     return 0
   fi
 
-  [[ -z $pjName ]] && { echo "pjName 未定义！" && exit 1; }
-  _patchFiles=("${wsDir}"/projects/"${pjName}"/*.patch)
+  [[ -z $pjName ]] && { err "pjName 未定义！" && exit 1; }
+  # 扫描项目补丁目录并按文件名字典序排序（LC_ALL=C，不受 locale 影响）
+  _patchFiles=($(ls "${wsDir}"/projects/"${pjName}"/*.patch 2>/dev/null | LC_ALL=C sort))
   [[ ! -f "${_patchFiles[0]}" ]] && _patchFiles=()
-  [[ ${#_patchFiles[@]} -eq 0 ]] && { echo "$pjName 无需应用任何补丁" && return 0; }
+  [[ ${#_patchFiles[@]} -eq 0 ]] && { info "$pjName 无需应用任何补丁" && return 0; }
 
-  # 占位符替换规则统一在 patch-rules.sed 中维护（${prefix} 由 expand_patch_rules 运行时展开）
-  [[ -f "${wsDir}/patch-rules.sed" ]] || { echo "缺少补丁替换规则文件 => ${wsDir}/patch-rules.sed" && exit 1; }
+  # 占位符映射统一在 patch-rules.conf 中维护（expand_patch_placeholders 运行时替换）
+  [[ -f "${wsDir}/patch-rules.conf" ]] || { err "缺少补丁替换规则文件 => ${wsDir}/patch-rules.conf" && exit 1; }
 
   local _srcDir
   if [[ -n "${pkgSrcDir:-}" ]]; then
@@ -460,15 +600,17 @@ apply_patches() {
   fi
   cd "$_srcDir"
 
-  # <<< $(cat $_patch | sed "s/@TERMUX_PREFIX@/${prefix}/g" | sed "s/@ROOTFS_PREFIX@/${prefix}/g")
-
-  for _patch in ${_patchFiles[@]}; do
-    if patch -p1 --dry-run <"$_patch"; then
-      echo "测试通过=> $_patch"
-      echo "应用补丁=> $_patch"
-      patch --no-backup-if-mismatch -N -p1 <<<$(cat "$_patch" | sed -f <(expand_patch_rules)) || { echo "补丁应用失败=> $_patch" && exit 1; }
+  local _patch _expanded
+  for _patch in "${_patchFiles[@]}"; do
+    if ! _expanded="$(expand_patch_placeholders < "$_patch")"; then
+      err "补丁占位符展开失败=> $_patch" && exit 1
+    fi
+    if printf '%s\n' "$_expanded" | patch -p1 --dry-run; then
+      info "测试通过=> $_patch"
+      info "应用补丁=> $_patch"
+      printf '%s\n' "$_expanded" | patch --no-backup-if-mismatch -N -p1 || { err "补丁应用失败=> $_patch" && exit 1; }
     else
-      echo "补丁应用失败=> $_patch" && exit 1
+      err "补丁应用失败=> $_patch" && exit 1
     fi
   done
 
@@ -479,9 +621,11 @@ apply_patches() {
 
 install_license() {
   local _srcDir="${pkgSrcDir:-${srcDir}/${pjName}}"
-  [[ ! -d "${_srcDir}" ]] && { echo "警告: 源码目录不存在，跳过协议安装 => ${_srcDir}" && return 0; }
+  [[ ! -d "${_srcDir}" ]] && { warn "源码目录不存在，跳过协议安装 => ${_srcDir}" && return 0; }
 
-  local _licDir="${destDir}${prefix}/share/_licenses/${pjName}"
+  # 与 gen_notices 的 ${prefix}/share/licenses 保持同一目录层级（此前这里写成
+  # share/_licenses，结果 rootfs 里同时存在 licenses/ 与 _licenses/ 两套目录）
+  local _licDir="${destDir}${prefix}/share/licenses/${pjName}"
   mkdir -p "${_licDir}"
 
   # 收集协议文件：优先源码目录，否则回退父目录（如 icu pkgSrcDir=src/icu/source）
@@ -508,7 +652,7 @@ install_license() {
     for _f in $(ls -A "$_licSrcDir" 2>/dev/null); do
       if [[ -f "${_licSrcDir}/${_f}" ]] && [[ "${_f^^}" =~ ^(LICENSE|LICENCE|COPYING|COPYRIGHT|NOTICE) ]]; then
         cp -a "${_licSrcDir}/${_f}" "${_licDir}/"
-        echo "安装协议文件 => ${pjName}/${_f}"
+        info "安装协议文件 => ${pjName}/${_f}"
         _found=1
       fi
     done
@@ -525,18 +669,18 @@ install_license() {
       for _agree in ${_agreeSrc}; do
         if [[ -f "$_agree" ]]; then
           cp -a "$_agree" "${_licDir}/"
-          echo "安装自定义协议文件 => ${pjName}/$(basename "$_agree")"
+          info "安装自定义协议文件 => ${pjName}/$(basename "$_agree")"
           _found=1
           _agreeMatched=1
         fi
       done
-      [[ $_agreeMatched -eq 0 ]] && echo "警告: 自定义协议文件不存在 => ${_agreeSrc}"
+      [[ $_agreeMatched -eq 0 ]] && warn "自定义协议文件不存在 => ${_agreeSrc}"
     done
   fi
 
   if [[ $_found -eq 0 ]]; then
     # 源码中无协议文件时，写入最小协议信息（含 SPDX 标识与上游地址）
-    echo "警告: 未找到 ${pjName} 的协议文件，写入最小协议信息"
+    warn "未找到 ${pjName} 的协议文件，写入最小协议信息"
     {
       echo "Package: ${pjName}"
       echo "Version: ${revision}"
@@ -548,48 +692,18 @@ install_license() {
 
 # @package
 
-# libtool 版本号补偿：
-# vanilla libtool.m4 不认识 android host triplet（host_os=android 落入 * 分支），
-# 生成的 libtool version_type=none —— 所有 libtool/autotools 构建的共享库
-# 既无 DT_SONAME 也无版本化文件名（只有 libX11.so，没有 libX11.so.6）。
-# bionic 动态链接不受影响（NEEDED 同样记录无版本名），但运行时生态
-# （wine 等按 libX11.so.6 寻库）与产物校验都要求标准 soname 命名。
-# 这里按 libtool -version-info c:r:a 语义（soname major = current - age）
-# 从 .la 文件反推出各库的 soname 版本并补齐符号链接。
-fix_libtool_soname_links() {
-  local _libDir="${destDir}${prefix}/lib"
-  [[ -d "$_libDir" ]] || return 0
-  local _la _lib _cur _age _major
-  for _la in "${_libDir}"/*.la; do
-    [[ -f "$_la" ]] || continue
-    _cur=$(sed -En 's/^current=([0-9]+).*/\1/p' "$_la" | head -1)
-    _age=$(sed -En 's/^age=([0-9]+).*/\1/p' "$_la" | head -1)
-    [[ -n "$_cur" && -n "$_age" ]] || continue
-    # soname major = current - age（可为 0：如 libmpg123.so.0 / libopus.so.0）
-    [[ $_cur -ge $_age ]] || continue
-    _major=$((_cur - _age))
-    _lib="$(basename "${_la%.la}")"
-    if [[ -f "${_libDir}/${_lib}.so" && ! -e "${_libDir}/${_lib}.so.${_major}" ]]; then
-      ln -sf "${_lib}.so" "${_libDir}/${_lib}.so.${_major}"
-      echo "补齐 soname 链接: ${_lib}.so.${_major} -> ${_lib}.so"
-    fi
-  done
-}
-
 package() {
   if [[ "${doNotMakePackage:-0}" == 1 ]]; then
-    echo "${pjName}: doNotMakePackage=1, 跳过打包"
+    info "${pjName}: doNotMakePackage=1, 跳过打包"
     return 0
   fi
-  [[ ! -d "${destDir}" ]] && { echo " destDir 不存在 => ${destDir}" && exit 1; }
+  [[ ! -d "${destDir}" ]] && { err "destDir 不存在 => ${destDir}" && exit 1; }
   install_license
   cd "${destDir}"
   if [[ -e dev/null ]]; then
-    echo "警告: ${pjName} 的 make install 在 DESTDIR 下创建了 dev/null，正在清理..."
+    warn "${pjName} 的 make install 在 DESTDIR 下创建了 dev/null，正在清理..."
     rm -rf dev/null
   fi
-  fix_libtool_soname_links
-  # 日志优化：打包过程无需逐文件列出（tar -v 的文件清单曾占整份日志 10%+）
   tar -cf "${wsDir}/pkgs/${pjName}-${revision}-${targetArch}.tar" .
   rm -rf "${destDir}"
   cd "${wsDir}"
@@ -600,7 +714,7 @@ package() {
 get_dep() {
   local _buildFile="${wsDir}/projects/$1/build.sh"
   if [[ ! -f "$_buildFile" ]]; then
-    echo "错误: 项目不存在 => $1" >&2
+    err "项目不存在 => $1" >&2
     return 1
   fi
   . "${wsDir}/empty.sh"
@@ -617,7 +731,7 @@ collect_dep() {
   _allPkgs_+=("$_project")
 
   local _deps
-  _deps=$(get_dep "$_project") || { echo "错误: 无法获取 $_project 的依赖" && exit 1; }
+  _deps=$(get_dep "$_project") || { err "无法获取 $_project 的依赖" && exit 1; }
   local _dep
   for _dep in $_deps; do
     collect_dep "$_dep"
@@ -632,7 +746,7 @@ toposort() {
   local _project
   for _project in "${_allPkgs_[@]}"; do
     local _deps
-    _deps=$(get_dep "$_project") || { echo "错误: 无法获取 $_project 的依赖" && exit 1; }
+    _deps=$(get_dep "$_project") || { err "无法获取 $_project 的依赖" && exit 1; }
     _indeg_["$_project"]=0
     local _dep
     for _dep in $_deps; do
@@ -668,11 +782,11 @@ toposort() {
 
   # 检测循环依赖
   if [[ ${#_buildOrder_[@]} -ne ${#_allPkgs_[@]} ]]; then
-    echo "错误:存在循环依赖!"
-    echo "未排序的包:"
+    err "存在循环依赖!"
+    err "未排序的包:"
     for _project in "${_allPkgs_[@]}"; do
       [[ ! " ${_buildOrder_[@]} " =~ " $_project " ]] && {
-        echo "$_project"
+        err "$_project"
       }
     done
     exit 1
@@ -682,12 +796,12 @@ toposort() {
 # @build
 
 configure_err() {
-  echo "构建失败"
+  err "构建失败"
   exit 1
 }
 
 compile_err() {
-  echo "编译失败"
+  err "编译失败"
   exit 1
 }
 
@@ -695,14 +809,14 @@ build_system() {
   local _buildArchs
   _buildArchs=$(filter_archs "${arch[@]}")
   [[ -z "$_buildArchs" ]] && {
-    echo "跳过: 目标架构不在包的 arch 列表中"
+    info "跳过: 目标架构不在包的 arch 列表中"
     return 0
   }
   # 加载基础配置参数
   . "${wsDir}/base-configure-args.conf"
   #cat >> "${wsDir}/build_temp.sh" << "EOF"
   if [[ -n "${pkgSrcDir:-}" ]]; then
-    echo "存在定义的pkgSrcDir,进入"
+    info "存在定义的pkgSrcDir,进入"
     local _srcDir="${pkgSrcDir}"
   else
     local _srcDir="${srcDir}/${pjName}"
@@ -713,8 +827,8 @@ build_system() {
       destDir="/tmp/build-${targetArch}"
       export CCACHE_DIR="${wsDir}/bionic_ccache/${targetArch}"
       mkdir -p "$CCACHE_DIR"
-      echo "target arch=> $targetArch"
-      echo "Use cmake..."
+      info "target arch=> $targetArch"
+      info "Use cmake..."
       cd "${_srcDir}"
       #load_env "$targetArch"
       rm -rf build
@@ -728,22 +842,22 @@ build_system() {
         cmakeBaseArgs+=" -DANDROID_ABI=x86_64"
       fi
       if declare -F pre_setup >/dev/null; then
-        echo "存在前置操作,开始执行"
-        pre_setup
+        info "存在前置操作,开始执行"
+        pre_setup || { err "${pjName}: pre_setup 失败"; return 1; }
       fi
       if [[ $doNotUseNinja == 1 ]]; then
         cd build
         if [[ -n "${fullCustomArgs:-}" ]]; then
           cmake .. ${fullCustomArgs} || configure_err
         else
-          cmake .. ${cmakeBaseArgs[@]} ${args:-} || configure_err
+          cmake .. ${cmakeBaseArgs[@]} ${args[@]} || configure_err
         fi
         make -j$(nproc) || compile_err
       else
         if [[ -n "${fullCustomArgs:-}" ]]; then
           cmake -G Ninja -S . -B build ${fullCustomArgs} || configure_err
         else
-          cmake -G Ninja -S . -B build ${cmakeBaseArgs[@]} ${args:-} || configure_err
+          cmake -G Ninja -S . -B build ${cmakeBaseArgs[@]} ${args[@]} || configure_err
         fi
         cmake --build build || compile_err
       fi
@@ -758,7 +872,7 @@ build_system() {
         fi
       fi
       if declare -F pre_package >/dev/null; then
-        echo "存在前置打包操作,开始执行"
+        info "存在前置打包操作,开始执行"
         pre_package
       fi
       package
@@ -767,8 +881,8 @@ build_system() {
   meson)
     for targetArch in $_buildArchs; do
       destDir="/tmp/build-${targetArch}"
-      echo "target arch=> $targetArch"
-      echo "Use meson..."
+      info "target arch=> $targetArch"
+      info "Use meson..."
       cd "${_srcDir}"
       load_env "$targetArch"
       rm -rf build
@@ -776,8 +890,8 @@ build_system() {
 
       # 1) pre_setup 始终先于 cross file 生成（可修改 LDFLAGS/CFLAGS/extraMesonCrossProps 等）
       if declare -F pre_setup >/dev/null; then
-        echo "存在前置操作，开始执行"
-        pre_setup
+        info "存在前置操作，开始执行"
+        pre_setup || { err "${pjName}: pre_setup 失败"; return 1; }
       fi
 
       # 2) 生成 cross file
@@ -795,7 +909,7 @@ build_system() {
       if [[ -n "${fullCustomArgs:-}" ]]; then
         meson setup build ${mesonBaseArgs[@]} ${fullCustomArgs} || configure_err
       else
-        meson setup build ${mesonBaseArgs[@]} ${args:-} || configure_err
+        meson setup build ${mesonBaseArgs[@]} ${args[@]} || configure_err
       fi
       meson compile -C build || compile_err
       if declare -F install >/dev/null; then
@@ -804,7 +918,7 @@ build_system() {
         DESTDIR="${destDir}" PREFIX="${prefix}" meson install -C build
       fi
       if declare -F pre_package >/dev/null; then
-        echo "存在前置打包操作,开始执行"
+        info "存在前置打包操作,开始执行"
         pre_package
       fi
       package
@@ -813,8 +927,8 @@ build_system() {
   autotools | make)
     for targetArch in $_buildArchs; do
       destDir="/tmp/build-${targetArch}"
-      echo "target arch=> $targetArch"
-      echo "Use autotools..."
+      info "target arch=> $targetArch"
+      info "Use autotools..."
       cd "${_srcDir}"
       # Clean previous build artifacts to prevent arch contamination
       make distclean >/dev/null || true
@@ -824,25 +938,25 @@ build_system() {
       configureBaseArgs+=(--host=${targetArch}-linux-android --build=$(uname -m)-linux-gnu)
 
       if declare -F pre_setup >/dev/null; then
-        echo "存在前置操作,开始执行"
-        pre_setup
+        info "存在前置操作,开始执行"
+        pre_setup || { err "${pjName}: pre_setup 失败"; return 1; }
       fi
 
       if [[ -f autogen.sh ]] && [[ ! $doNotUseAutogenSh == 1 ]] && [[ ! -f configure ]]; then
         if [[ ! $argsToAutogenSh == 1 ]]; then
-          ./autogen.sh || { echo "autogen.sh: err" && exit 1; }
+          ./autogen.sh || { err "autogen.sh: err" && exit 1; }
         else
-          echo "构建参数传入autogen.sh"
+          info "构建参数传入autogen.sh"
           if [[ -n "${fullCustomArgs:-}" ]]; then
             ./autogen.sh ${fullCustomArgs} || configure_err
           else
-            ./autogen.sh ${configureBaseArgs[@]} ${args:-} || configure_err
+            ./autogen.sh ${configureBaseArgs[@]} ${args[@]} || configure_err
           fi
         fi
       fi
 
       if declare -F custom_configure >/dev/null; then
-        echo "存在自定义构建,开始执行"
+        info "存在自定义构建,开始执行"
         custom_configure
       else
         if [[ ! $argsToAutogenSh == 1 ]] && [[ ! $forceAutoreconf == 1 ]]; then
@@ -850,24 +964,24 @@ build_system() {
             if [[ -n "${fullCustomArgs:-}" ]]; then
               ./configure ${fullCustomArgs} || configure_err
             else
-              ./configure ${configureBaseArgs[@]} ${args:-} || configure_err
+              ./configure ${configureBaseArgs[@]} ${args[@]} || configure_err
             fi
           else
-            echo "未能找到configure,将通过autoreconf -fi自动生成"
-            autoreconf -fi || { echo "autoreconf 失败!" && exit 1; }
+            info "未能找到configure,将通过autoreconf -fi自动生成"
+            autoreconf -fi || { err "autoreconf 失败!" && exit 1; }
             if [[ -n "${fullCustomArgs:-}" ]]; then
               ./configure ${fullCustomArgs} || configure_err
             else
-              ./configure ${configureBaseArgs[@]} ${args:-} || configure_err
+              ./configure ${configureBaseArgs[@]} ${args[@]} || configure_err
             fi
           fi
         else
-          echo "configure将通过autoreconf -fi自动生成"
-          autoreconf -fi || { echo "autoreconf 失败!" && exit 1; }
+          info "configure将通过autoreconf -fi自动生成"
+          autoreconf -fi || { err "autoreconf 失败!" && exit 1; }
           if [[ -n "${fullCustomArgs:-}" ]]; then
             ./configure ${fullCustomArgs} || configure_err
           else
-            ./configure ${configureBaseArgs[@]} ${args:-} || configure_err
+            ./configure ${configureBaseArgs[@]} ${args[@]} || configure_err
           fi
         fi
       fi
@@ -878,22 +992,22 @@ build_system() {
         PREFIX="${prefix}" make install DESTDIR="${destDir}"
       fi
       if declare -F pre_package >/dev/null; then
-        echo "存在前置打包操作,开始执行"
+        info "存在前置打包操作,开始执行"
         pre_package
       fi
       package
     done
     ;;
   debug)
-    echo "加载调试环境"
+    info "加载调试环境"
     for targetArch in $_buildArchs; do
-      echo "target arch=> $targetArch"
+      info "target arch=> $targetArch"
       load_env "$targetArch"
       bash
     done
     ;;
   others) if ! declare -F extra_fuction >/dev/null; then
-    echo "如果buildSys 为others,那么你需要定义extra_fuction 函数!"
+    err "如果buildSys 为others,那么你需要定义extra_fuction 函数!"
     exit 1
   else
     for targetArch in $_buildArchs; do
@@ -901,7 +1015,7 @@ build_system() {
       mkdir -p "${destDir}/${prefix}"
       cd "${_srcDir}"
       load_env "$targetArch"
-      extra_fuction || { echo "失败!" && exit 1; }
+      extra_fuction || { err "失败!" && exit 1; }
       package
     done
   fi ;;
@@ -915,33 +1029,24 @@ make_pkg() {
   local _pkgArchs
   _pkgArchs=$(filter_archs "${arch[@]}")
   [[ -z "$_pkgArchs" ]] && {
-    echo "跳过 $pjName: 目标架构不在包的 arch 列表中"
+    info "跳过 $pjName: 目标架构不在包的 arch 列表中"
     return 0
   }
 
   # doNotMakePackage=1: 无包项目，不生成/解压 tar，每次都进入构建流程，
   # 由项目脚本内部判断是否真正重建（如 wine-tools 的宿主工具版本比对）
   if [[ "${doNotMakePackage:-0}" == 1 ]]; then
-  local _srcDir="${pkgSrcDir:-${srcDir}/${pjName}}"
+    local _srcDir="${pkgSrcDir:-${srcDir}/${pjName}}"
     # --has-src: 使用现有源码，不重新获取，也不重新打补丁（视为已打好）
     if [[ "$hasSrc" == true ]]; then
       if [[ ! -d "$_srcDir" ]]; then
-        echo "错误: --has-src 指定但源码目录不存在 => $_srcDir"
+        err "--has-src 指定但源码目录不存在 => $_srcDir"
         exit 1
       fi
     else
-      # 源码目录缺失或 .src-revision 与 revision 不一致时重新获取，避免用旧源码构建
-      local _srcRev=""
-      [[ -f "${_srcDir}/.src-revision" ]] && _srcRev="$(cat "${_srcDir}/.src-revision")"
-      if [[ ! -d "$_srcDir" || "$_srcRev" != "$revision" ]]; then
-        get_src
-        echo "$revision" > "${_srcDir}/.src-revision"
-        if [[ $doNotApplyPatch != 1 ]]; then
-          apply_patches
-        fi
-      fi
+      prepare_src
     fi
-    build_system
+    build_system || return 1
     return 0
   fi
 
@@ -950,7 +1055,7 @@ make_pkg() {
     for _targetArch in $_pkgArchs; do
       local _pkgFile="${pkgDir}/${pjName}-${revision}-${_targetArch}.tar"
       if [[ -f "$_pkgFile" ]]; then
-        echo "重建模式：删除已存在的包 => $_pkgFile"
+        info "重建模式：删除已存在的包 => $_pkgFile"
         rm -f "$_pkgFile"
       fi
     done
@@ -959,7 +1064,7 @@ make_pkg() {
     for _targetArch in $_pkgArchs; do
       local _pkgFile="${pkgDir}/${pjName}-${revision}-${_targetArch}.tar"
       if [[ -f "$_pkgFile" ]]; then
-        echo "重建模式：删除已存在的包 => $_pkgFile"
+        info "重建模式：删除已存在的包 => $_pkgFile"
         rm -f "$_pkgFile"
       fi
     done
@@ -979,26 +1084,66 @@ make_pkg() {
     if [[ "$hasSrc" == true ]]; then
       local _hasSrcDir="${pkgSrcDir:-${srcDir}/${pjName}}"
       if [[ -d "$_hasSrcDir" ]]; then
-        echo "跳过源码获取: $_hasSrcDir (--has-src 模式，现有源码视为已打好补丁，跳过 apply_patches)"
+        info "跳过源码获取: $_hasSrcDir (--has-src 模式，现有源码视为已打好补丁，跳过 apply_patches)"
       else
-        echo "错误: --has-src 指定但源码目录不存在 => $_hasSrcDir"
+        err "--has-src 指定但源码目录不存在 => $_hasSrcDir"
         exit 1
       fi
     else
-      get_src
-      if [[ $doNotApplyPatch != 1 ]]; then
-        apply_patches
-      fi
+      prepare_src
     fi
-    build_system
-    # 构建完成后清理源码目录
-    if [[ "$cleanSrcDir" == "1" ]]; then
+    build_system || return 1
+    # 构建完成后清理源码目录（local 源码由用户手动放置，不删除）
+    if [[ "$cleanSrcDir" == "1" && "$urlType" != "local" ]]; then
       local _cleanTarget="${pkgSrcDir:-${srcDir}/${pjName}}"
       if [[ -d "$_cleanTarget" ]]; then
-        echo "清理源码目录: $_cleanTarget"
+        info "清理源码目录: $_cleanTarget"
         rm -rf "$_cleanTarget"
       fi
     fi
+  fi
+
+  # 清理同项目旧 revision 的包 tar（cleanOldPackage=1 时启用）
+  if [[ "${cleanOldPackage:-0}" == 1 ]]; then
+    local _oldPkg
+    local _oldBase
+    # 包名为 <pjName>-<revision>-<arch>.tar，pjName 与 revision 都可能含 '-'
+    # （如 wayland 与 wayland-protocols、mesa-26.2.1），"${pjName}-*" 会顺带匹配到
+    # 名字以 "${pjName}-" 开头的其它项目的包，故先用 projects/ 下已知项目名排除
+    # （与 make-rootfs.sh 分组的思路一致）
+    local _siblingPjs=()
+    local _pjDirPath
+    local _pjDirName
+    for _pjDirPath in "${wsDir}"/projects/*/; do
+      _pjDirName="${_pjDirPath%/}"
+      _pjDirName="${_pjDirName##*/}"
+      [[ "$_pjDirName" == "${pjName}-"* ]] && _siblingPjs+=("$_pjDirName")
+    done
+
+    for _targetArch in $_pkgArchs; do
+      for _oldPkg in "${pkgDir}"/${pjName}-*-${_targetArch}.tar; do
+        [[ -e "$_oldPkg" ]] || continue
+        _oldBase="${_oldPkg##*/}"
+        [[ "$_oldBase" == "${pjName}-${revision}-${_targetArch}.tar" ]] && continue
+        local _sibling
+        local _isSiblingPkg=0
+        for _sibling in ${_siblingPjs[@]+"${_siblingPjs[@]}"}; do
+          [[ "$_oldBase" == "${_sibling}-"* ]] && {
+            _isSiblingPkg=1
+            break
+          }
+        done
+        [[ $_isSiblingPkg -eq 1 ]] && continue
+        info "清理旧版本包 => $_oldBase"
+        rm -f "$_oldPkg"
+      done
+    done
+  fi
+
+  # --has-prefix: 依赖已安装在 prefix 中，不再把包解压回去
+  if [[ "$hasPrefix" == true ]]; then
+    info "--has-prefix: 跳过 ${pjName} 的包解压"
+    return 0
   fi
 
   # 只解压当前 targetArch 的包到 prefix
@@ -1006,16 +1151,26 @@ make_pkg() {
     [[ "$_targetArch" == "$targetArch" ]] || continue
     local _pkgFile="${pkgDir}/${pjName}-${revision}-${_targetArch}.tar"
     if [[ -f "$_pkgFile" ]]; then
-      # -m(--touch): 不回填文件时间戳。解包目标是 / 顶层目录（runner 上归 root 所有），
-      # tar 末尾对 `.` 做 utime 必报 "Cannot utime: Operation not permitted"
-      # 并以非零退出，属无害噪声；-m 顺带去掉逐文件清单（日志减薄约 10%）。
-      tar --extract --touch --file="$_pkgFile" -C /
+      tar -xf "$_pkgFile" -C /
       guard_dev_null
     else
-      echo "错误: 包不存在 => $_pkgFile"
+      err "包不存在 => $_pkgFile"
       exit 1
     fi
   done
+}
+
+# 校验 projects/ 下确有可构建的项目
+# projects/*/ 是 glob: 一个子目录都没有时 bash 默认保留字面量, 循环只会跑一轮并拿到
+# pjName="*", build.sh 存在性判断不通过就被跳过, 最终还打印"全部完成"——构建全部
+# 静默空跑, 没有任何报错。这里显式拦一道, 让残缺 checkout / 目录被误删立刻暴露。
+check_projects_not_empty() {
+  local _pjDir
+  for _pjDir in "${wsDir}"/projects/*/; do
+    [[ -f "${_pjDir}/build.sh" ]] && return 0
+  done
+  err "未在 ${wsDir}/projects/ 下找到任何带 build.sh 的项目, 请检查仓库是否完整"
+  exit 1
 }
 
 build() {
@@ -1035,36 +1190,48 @@ build() {
   # 顶层按架构循环：每次只构建一个架构，确保 prefix 中只有当前架构的包
   local _arch
   for _arch in $_archs; do
-    echo "========== 构建架构: $_arch =========="
+    info "========== 构建架构: $_arch =========="
+    # 每个架构 pass 开始前完整清理 prefix，避免上一个架构的库污染链接
+    # （已有包 tar 在 pkgDir，make_pkg 会自动解压，依赖在本 pass 内按拓扑序重建）
+    # --has-prefix 时 prefix 就是要复用的对象，不能清
+    if [[ -d "${prefix}" ]]; then
+      if [[ "$hasPrefix" == true ]]; then
+        info "保留已有 prefix (--has-prefix): ${prefix}"
+      else
+        info "清理 prefix: ${prefix}"
+        rm -rf "${prefix}"
+      fi
+    fi
     # 临时将 targetArchs 和 targetArch 设为当前架构
     targetArchs=("$_arch")
     targetArch="$_arch"
-
-    # 清除 prefix 中上一个架构遗留的库文件，避免架构交叉污染
-    rm -f "${prefix}"/lib/*.so "${prefix}"/lib/*.a
-    rm -f "${prefix}"/usr/lib/*.so "${prefix}"/usr/lib/*.a
 
     # 重置依赖解析状态
     unset _visited_ _rgraph_ _indeg_ _allPkgs_ _buildOrder_
     declare -A _rgraph_=() _indeg_=() _visited_=()
     declare -a _allPkgs_=() _buildOrder_=()
 
-    collect_dep "$_target"
-    toposort
-    echo "构建顺序: ${_buildOrder_[*]}"
+    if [[ "$hasPrefix" == true ]]; then
+      info "--has-prefix: 跳过依赖解析，仅构建 $_target"
+      _buildOrder_=("$_target")
+    else
+      collect_dep "$_target"
+      toposort
+      info "构建顺序: ${_buildOrder_[*]}"
+    fi
     local _project
     for _project in "${_buildOrder_[@]}"; do
-      echo "构建=> $_project"
+      info "构建=> $_project"
       . "${wsDir}/empty.sh"
-      . "${wsDir}/projects/$_project/build.sh" || { echo "配置获取失败" && exit 1; }
+      . "${wsDir}/projects/$_project/build.sh" || { err "配置获取失败" && exit 1; }
       pjName="$_project"
-      make_pkg || { echo "构建失败!" && exit 1; }
+      make_pkg || { err "构建失败!" && exit 1; }
     done
   done
 
   # 恢复原始 targetArchs，确保 --build all 下一个包能正确判断架构
   targetArchs=("${_savedTargetArchs[@]}")
-  gen_notices
+  ok "构建完成: $_target"
 }
 
 # 重建所有包的所有依赖（全局去重，一次 pass）
@@ -1080,102 +1247,162 @@ build_all_deps() {
 
   local _arch
   for _arch in $_archs; do
-    echo "========== 构建所有依赖: $_arch =========="
+    info "========== 构建所有依赖: $_arch =========="
+    check_projects_not_empty
+    # 每个架构 pass 开始前完整清理 prefix，避免上一个架构的库污染链接
+    # （已有包 tar 在 pkgDir，make_pkg 会自动解压，依赖在本 pass 内按拓扑序重建）
+    # --has-prefix 时 prefix 就是要复用的对象，不能清
+    if [[ -d "${prefix}" ]]; then
+      if [[ "$hasPrefix" == true ]]; then
+        info "保留已有 prefix (--has-prefix): ${prefix}"
+      else
+        info "清理 prefix: ${prefix}"
+        rm -rf "${prefix}"
+      fi
+    fi
     targetArchs=("$_arch")
     targetArch="$_arch"
-
-    rm -f "${prefix}"/lib/*.so "${prefix}"/lib/*.a
-    rm -f "${prefix}"/usr/lib/*.so "${prefix}"/usr/lib/*.a
 
     unset _visited_ _rgraph_ _indeg_ _allPkgs_ _buildOrder_
     declare -A _rgraph_=() _indeg_=() _visited_=()
     declare -a _allPkgs_=() _buildOrder_=()
 
     local _pj
-    for _pj in "${wsDir}"/projects/*/; do
-      local _pjName=$(basename "$_pj")
-      [[ -f "${_pj}/build.sh" ]] && collect_dep "$_pjName"
-    done
-
-    toposort
-    echo "构建顺序: ${_buildOrder_[*]}"
+    if [[ "$hasPrefix" == true ]]; then
+      info "--has-prefix: 跳过依赖解析，按目录顺序构建全部包"
+      for _pj in "${wsDir}"/projects/*/; do
+        local _pjName=$(basename "$_pj")
+        [[ -f "${_pj}/build.sh" ]] && _buildOrder_+=("$_pjName")
+      done
+    else
+      for _pj in "${wsDir}"/projects/*/; do
+        local _pjName=$(basename "$_pj")
+        [[ -f "${_pj}/build.sh" ]] && collect_dep "$_pjName"
+      done
+      toposort
+    fi
+    info "构建顺序: ${_buildOrder_[*]}"
     local _project
     for _project in "${_buildOrder_[@]}"; do
-      echo "构建=> $_project"
+      info "构建=> $_project"
       . "${wsDir}/empty.sh"
-      . "${wsDir}/projects/$_project/build.sh" || { echo "配置获取失败" && exit 1; }
+      . "${wsDir}/projects/$_project/build.sh" || { err "配置获取失败" && exit 1; }
       pjName="$_project"
-      make_pkg || { echo "构建失败!" && exit 1; }
+      make_pkg || { err "构建失败!" && exit 1; }
     done
   done
   targetArchs=("${_savedTargetArchs[@]}")
-  gen_notices
 }
 
 # 主逻辑
 [[ $# -eq 0 ]] && usage
 
+# 构建动作先登记、等整个命令行解析完再执行。
+#
+# 选项是一个 while 循环按顺序消费的，而 --arch 决定 build() 里按几个架构各跑一遍。
+# 若在解析到 --build 时立刻开跑，写在它后面的 --arch 根本还没被读到，就被静默忽略了：
+# 实测 `--build all --arch arm64` 会按 aarch64 + x86_64 各构建一遍（想只要 arm64 反而
+# 多花一倍时间、pkgs 里还多出一套 x86_64 包）。usage 里 --build 排在 --arch 之前，
+# 按它抄下来正好会踩这个顺序。同样的道理，--has-src 之类的开关写在 --build 后面也会失效。
+_actionModes=()
+_actionTargets=()
+
+push_action() {
+  local _mode="$1"
+  local _items="$2"
+  local _item
+  for _item in $_items; do
+    _actionModes+=("$_mode")
+    _actionTargets+=("$_item")
+  done
+}
+
+run_actions() {
+  local _i
+  local _mode
+  local _target
+  local _pj
+  local _pjName
+  for ((_i = 0; _i < ${#_actionModes[@]}; _i++)); do
+    _mode="${_actionModes[$_i]}"
+    _target="${_actionTargets[$_i]}"
+    if [[ "$_target" == "all" ]]; then
+      case "$_mode" in
+      build)
+        check_projects_not_empty
+        for _pj in "${wsDir}"/projects/*/; do
+          _pjName=$(basename "$_pj")
+          [[ -f "${_pj}/build.sh" ]] && build "$_pjName"
+        done
+        ;;
+      # --rebuild all 与 --rebuild-deps all 语义相同：全量删除重建
+      rebuild | rebuild-deps)
+        rebuildMode=true
+        build_all_deps
+        ;;
+      esac
+    else
+      case "$_mode" in
+      build)
+        build "$_target"
+        ;;
+      rebuild)
+        rebuildTarget="$_target"
+        build "$_target"
+        unset rebuildTarget
+        ;;
+      rebuild-deps)
+        rebuildMode=true
+        build "$_target"
+        ;;
+      esac
+    fi
+  done
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
   --arch)
     [[ -z "$2" ]] && {
-      echo "错误：--arch 需要指定架构"
+      err "--arch 需要指定架构"
       exit 1
     }
     if [[ "$2" == "all" ]]; then
       targetArchs=()
     else
-      # 顶层 while 循环不在函数内，不能使用 local（bash 会报
-      # "local: can only be used in a function"），改用普通变量
-      _a=""
+      # 注意: 这里是顶层作用域(不在函数内), 不能用 local, 否则 bash 会报
+      # "local: can only be used in a function"
       for _a in $2; do
         targetArchs+=("$(normalize_arch "$_a")")
       done
-      unset _a
     fi
     shift 2
     ;;
   --build)
     [[ -z "$2" ]] && {
-      echo "错误：--build 需要指定包名或 all"
+      err "--build 需要指定包名或 all"
       exit 1
     }
-    if [[ "$2" == "all" ]]; then
-      for _pj in "${wsDir}"/projects/*/; do
-        _pjName=$(basename "$_pj")
-        [[ -f "${_pj}/build.sh" ]] && build "$_pjName"
-      done
-    else
-      build "$2"
-    fi
+    # 与 --arch 语义一致: 支持空格分隔的多个包名 (整体加引号传入)
+    push_action build "$2"
     shift 2
     ;;
   --rebuild)
     [[ -z "$2" ]] && {
-      echo "错误：--rebuild 需要指定包名或 all"
+      err "--rebuild 需要指定包名或 all"
       exit 1
     }
-    if [[ "$2" == "all" ]]; then
-      rebuildMode=true
-      build_all_deps
-    else
-      rebuildTarget="$2"
-      build "$2"
-      unset rebuildTarget
-    fi
+    # 与 --arch 语义一致: 支持空格分隔的多个包名 (整体加引号传入)
+    push_action rebuild "$2"
     shift 2
     ;;
   --rebuild-deps)
     [[ -z "$2" ]] && {
-      echo "错误：--rebuild-deps 需要指定包名或 all"
+      err "--rebuild-deps 需要指定包名或 all"
       exit 1
     }
-    rebuildMode=true
-    if [[ "$2" == "all" ]]; then
-      build_all_deps
-    else
-      build "$2"
-    fi
+    # 与 --arch 语义一致: 支持空格分隔的多个包名 (整体加引号传入)
+    push_action rebuild-deps "$2"
     shift 2
     ;;
   --clean-ccache)
@@ -1186,6 +1413,14 @@ while [[ $# -gt 0 ]]; do
     hasSrc=true
     shift
     ;;
+  --has-prefix)
+    hasPrefix=true
+    shift
+    ;;
+  --update-ndk)
+    updateNdk=true
+    shift
+    ;;
   --update-host-deps)
     bash ${wsDir}/host-deps.sh || exit 1
     shift
@@ -1194,8 +1429,36 @@ while [[ $# -gt 0 ]]; do
     usage
     ;;
   *)
-    echo "未知选项: $1"
-    usage
+    err "未知选项: $1"
+    usage 1
     ;;
   esac
 done
+
+# prefix 路径不含架构，--has-prefix 复用的一定是某一种架构的产物。
+# 多架构或未指定架构时会让第二个架构直接链接到第一个架构的库，必须拦下。
+if [[ "$hasPrefix" == true && ${#targetArchs[@]} -ne 1 ]]; then
+  err "--has-prefix 需要配合单一 --arch 使用 (如 --arch arm64)"
+  exit 1
+fi
+
+[[ "$hasPrefix" == true && ! -d "${prefix}" ]] && { err "--has-prefix 指定但 prefix 不存在 => ${prefix}"; exit 1; }
+
+# 没指定 --arch 时按两个架构各构建一遍。这是默认行为，但日志里只体现为连着两次
+# "构建架构: xxx"，很容易被当成"指定了 arm64 却还在构建 x86"——先明说一句。
+if [[ ${#targetArchs[@]} -eq 0 ]]; then
+  warn "未指定 --arch: 将按 aarch64 与 x86_64 两个架构各构建一遍 (只要一个架构请加 --arch arm64)"
+fi
+
+# NDK 只在有构建动作或显式 --update-ndk 时处理，--help/--clean-ccache 等不再触发下载
+if [[ "$updateNdk" == true ]]; then
+  info "--update-ndk: 删除旧 NDK 并重新下载"
+  rm -rf "$ndkDir"
+fi
+if [[ "$updateNdk" == true || ${#_actionModes[@]} -gt 0 ]]; then
+  ensure_ndk
+fi
+
+run_actions
+
+ok "全部完成"

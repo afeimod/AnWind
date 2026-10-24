@@ -23,6 +23,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
@@ -49,18 +50,26 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.withContext
 import kotlin.math.abs
 import kotlin.math.roundToInt
 import kotlin.random.Random
+import android.os.Handler
+import android.os.Looper
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * 中国象棋（QQ游戏大厅 · 本地游戏）：
  *  - 完整规则：车马炮相仕帅兵全走法、蹩马腿、塞象眼、过河兵、九宫限制、
  *    白脸将（双帅不能照面）、被将死/困毙判负；
- *  - AI：迭代加深 alpha-beta（2~3 层 + 1.2s 时间预算）+ 看门狗兜底强制落子，永不卡死；
+ *  - AI：迭代加深 alpha-beta（2~3 层 + 1.2s 时间预算）；驱动采用
+ *    【模型层自驱】：play() 落子后直接在后台线程搜索棋盘副本，
+ *    经主线程 Handler 提交，完全不依赖 Compose 重组/协程调度
+ *    （历版 LaunchedEffect 驱动在用户设备上反复出现“黑方一直考虑不走棋”，
+ *    而同窗口秒表 ticker 正常，证明问题在协程调度链路而非引擎本身）；
+ *    另有三重兜底：内置看门狗强制落子、legal 缓存自愈重算、
+ *    Compose 侧 5s 兜底 nudge（正常情况永不触发）；
  *  - 玩家执红先行；积分存档 key = "象棋·昵称"（胜 +5 / 负 -5）。
  */
 
@@ -396,6 +405,10 @@ class ChessGame(selfName: String, selfAvatar: String, selfScore: Int) {
 
     private var legal = ChessRules.allLegalMoves(board, ChessRules.RED)
 
+    // ---- v5：AI 自驱调度（模型层，不依赖 Compose） ----
+    // epoch 令牌：reset()/shutdown()/新调度都会作废所有在途的搜索与看门狗
+    private val aiEpoch = AtomicLong(0)
+
     init {
         addLog("—— 对局开始，你执红先行 ——")
     }
@@ -412,12 +425,19 @@ class ChessGame(selfName: String, selfAvatar: String, selfScore: Int) {
     fun canSelect(from: Int): Boolean =
         winner == -1 && board[from] != 0 && ((board[from] > 0) == (turn == 0))
 
-    /** 走棋（含合法性校验） */
+    /**
+     * 走棋（含合法性校验）。
+     * legal 缓存与棋盘不一致时自愈重算一次再判，绝不误拒合法着法
+     * （防御任何不可预见的状态不同步导致 AI/看门狗的落子被静默吞掉）。
+     */
     fun play(from: Int, to: Int): Boolean {
         if (winner != -1) return false
         if ((board[from] > 0) != (turn == 0) || board[from] == 0) return false
         val mv = from * 90 + to
-        if (mv !in legal) return false
+        if (mv !in legal) {
+            legal = ChessRules.allLegalMoves(board, turn)
+            if (mv !in legal) return false
+        }
 
         val mover = turn
         val p = board[from]
@@ -442,15 +462,83 @@ class ChessGame(selfName: String, selfAvatar: String, selfScore: Int) {
             QQSounds.ding()
         }
         QQSounds.card()
+
+        // v5 自驱：轮到黑方即启动 AI（与 Compose 协程完全无关）
+        if (winner == -1 && turn == 1) scheduleAi()
         return true
     }
 
     fun reset() {
+        aiEpoch.incrementAndGet()      // 作废所有进行中的 AI 调度与看门狗
         board = ChessRules.initial()
         turn = 0; winner = -1; lastFrom = -1; lastTo = -1; ply = 0
         legal = ChessRules.allLegalMoves(board, ChessRules.RED)
         log.clear()
         addLog("—— 新对局开始，你执红先行 ——")
+    }
+
+    /** 离开牌桌时作废在途调度（DisposableEffect onDispose 调用；未调也仅浪费一次搜索） */
+    fun shutdown() {
+        aiEpoch.incrementAndGet()
+    }
+
+    /**
+     * Compose 侧兜底入口：5 秒仍未落子时由界面层 nudge 一次。
+     * 幂等性由 epoch 保证——若内置调度已在途，这次调用会顶掉旧调度重新计时，
+     * 最多浪费一次搜索，绝不会走出第二手棋（play() 的回合守卫兜底）。
+     */
+    fun ensureAiScheduled() = scheduleAi()
+
+    /**
+     * v5 核心驱动：完全脱离 Compose 协程链路 ——
+     *  1) 在棋盘【副本】上后台搜索（杜绝与 UI 绘制 / legal 缓存 / 看门狗
+     *     的任何并发读写交叉，也消除搜索期间棋盘被画成中间态的闪变）；
+     *  2) 结果经主线程 Handler 提交（主Looper与渲染同源，只要界面在画
+     *     它就必然存活——这正是历版 LaunchedEffect 方案缺失的保证）；
+     *  3) epoch 作废过期提交：reset/新一手/重新调度后旧结果全部失效；
+     *  4) 内置看门狗：3.5s 仍未落子则强制随机走一步合法棋，对局永不卡死。
+     */
+    private fun scheduleAi() {
+        if (winner != -1 || turn != 1) return
+        val epoch = aiEpoch.incrementAndGet()
+        val snapshot = board.copyOf()          // 搜索副本：并发安全的关键
+
+        // ---- 看门狗（对局永不卡死的最后保证） ----
+        MAIN.postDelayed({
+            if (epoch != aiEpoch.get()) return@postDelayed
+            if (winner == -1 && turn == 1) {
+                val mv = runCatching {
+                    ChessRules.allLegalMoves(board, ChessRules.BLACK).randomOrNull()
+                }.getOrNull()
+                if (mv != null) runCatching { play(mv / 90, mv % 90) }
+            }
+        }, AI_WATCHDOG_MS)
+
+        // ---- 主路径：短暂思考延迟 → 后台搜索 → 主线程提交 ----
+        MAIN.postDelayed({
+            if (epoch != aiEpoch.get() || winner != -1 || turn != 1) return@postDelayed
+            AI_EXECUTOR.execute {
+                val mv = runCatching {
+                    ChessAi.best(snapshot, ChessRules.BLACK, maxDepth = 3, budgetMs = AI_BUDGET_MS)
+                }.getOrNull()
+                    ?: runCatching {
+                        ChessRules.allLegalMoves(snapshot, ChessRules.BLACK).randomOrNull()
+                    }.getOrNull()
+                MAIN.post {
+                    if (epoch != aiEpoch.get()) return@post
+                    if (winner == -1 && turn == 1 && mv != null) {
+                        if (!runCatching { play(mv / 90, mv % 90) }.isSuccess) {
+                            // 极端防御：legal 缓存漂移（play 内已自愈重算过仍失败，
+                            // 说明棋盘真的不支持该着法）→ 换随机合法着法
+                            val fallback = runCatching {
+                                ChessRules.allLegalMoves(board, ChessRules.BLACK).randomOrNull()
+                            }.getOrNull()
+                            if (fallback != null) runCatching { play(fallback / 90, fallback % 90) }
+                        }
+                    }
+                }
+            }
+        }, AI_THINK_DELAY_MS)
     }
 
     companion object {
@@ -459,6 +547,21 @@ class ChessGame(selfName: String, selfAvatar: String, selfScore: Int) {
 
         fun pieceChar(p: Int): String =
             if (p > 0) CH_RED[abs(p)] ?: "?" else CH_BLACK[abs(p)] ?: "?"
+
+        /** AI 搜索线程（守护线程：进程退出自动回收；多窗口对局在同一线程排队） */
+        private val AI_EXECUTOR = Executors.newSingleThreadExecutor { r ->
+            Thread(r, "AnWindChessAi").apply {
+                isDaemon = true
+                priority = Thread.NORM_PRIORITY - 1
+            }
+        }
+
+        /** 主线程提交（与界面渲染同一个 Looper：只要屏幕在画它就必然活着） */
+        private val MAIN = Handler(Looper.getMainLooper())
+
+        private const val AI_THINK_DELAY_MS = 450L    // 拟人思考延迟
+        private const val AI_BUDGET_MS = 1100L        // 搜索时间预算
+        private const val AI_WATCHDOG_MS = 3500L      // 看门狗强制落子时限
     }
 }
 
@@ -523,35 +626,21 @@ fun QQChessTableScreen(onExit: () -> Unit) {
         }
     }
 
-    // ---- AI 行动：后台搜索 + 全链路异常兜底 + 看门狗强制落子 ----
+    // ---- v5：AI 已由模型层自驱（play() 内直接调度，后台搜索棋盘副本 +
+    //      主线程 Handler 提交 + 内置 3.5s 看门狗），界面层只保留一个
+    //      5 秒兜底 nudge：即使内置调度的所有环节都失效（理论上不可能，
+    //      主Looper与渲染同源），这里也会重新点火一次调度 ----
     LaunchedEffect(game.turn, game.winner, game.ply) {
         if (game.winner != -1 || game.turn != 1) return@LaunchedEffect
-        delay(Random.nextLong(400, 900))
-        if (game.winner != -1 || game.turn != 1) return@LaunchedEffect
-        val mv: Int? = try {
-            withContext(Dispatchers.Default) {
-                runCatching { ChessAi.best(game.board, ChessRules.BLACK, maxDepth = 3, budgetMs = 1200L) }
-                    .getOrNull()
-                    ?: ChessRules.allLegalMoves(game.board, ChessRules.BLACK).randomOrNull()
-            }
-        } catch (t: Throwable) {
-            runCatching { ChessRules.allLegalMoves(game.board, ChessRules.BLACK).randomOrNull() }.getOrNull()
-        }
-        if (game.winner == -1 && game.turn == 1 && mv != null) {
-            runCatching { game.play(mv / 90, mv % 90) }
+        delay(5000)
+        if (game.winner == -1 && game.turn == 1) {
+            game.ensureAiScheduled()
         }
     }
 
-    // ---- 看门狗 ----
-    LaunchedEffect(game.turn, game.winner, game.ply) {
-        if (game.winner != -1 || game.turn != 1) return@LaunchedEffect
-        delay(6000)
-        if (game.winner == -1 && game.turn == 1) {
-            val mv = runCatching {
-                ChessRules.allLegalMoves(game.board, ChessRules.BLACK).randomOrNull()
-            }.getOrNull()
-            if (mv != null) runCatching { game.play(mv / 90, mv % 90) }
-        }
+    // ---- 离开牌桌时作废在途的 AI 调度 ----
+    DisposableEffect(Unit) {
+        onDispose { game.shutdown() }
     }
 
     // ---- 结算 ----

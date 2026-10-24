@@ -32,6 +32,9 @@ archPkgs=(
   pkgconf
   gettext
   freetype2
+
+  glib2
+  glib2-devel
 )
 
 debianPkgs=(
@@ -67,10 +70,12 @@ debianPkgs=(
   # autopoint 依然缺失。fontconfig 等包的 autogen.sh 无条件检查 autopoint
   # （且其 configure.ac 带 AM_GNU_GETTEXT，autoreconf -i 也会真调用它），
   # 缺它会在 fontconfig 处报 "You must have autopoint installed" 直接失败。
-  # （2026-09-19 曾被误删过一轮：libflac 修好后 fontconfig 立即接棒失败）
   autopoint
   libfreetype-dev
   locales
+  # glib 构建在 Ubuntu 24.04 需要 gio-querymodules / glib-mkenums 等工具，
+  # 其已从 libglib2.0-dev-bin 拆分到独立包 libgio-2.0-dev-bin
+  libgio-2.0-dev-bin
   python3-setuptools
   python3-dev
   python3-mako
@@ -78,20 +83,25 @@ debianPkgs=(
 
 if [[ -f /etc/os-release ]]; then
   . /etc/os-release
-  case "$ID" in
+  # ID 直接匹配；衍生发行版（manjaro/cachyos/endeavouros 等）按 ID_LIKE 兜底
+  distro="${ID}"
+  [[ "${ID_LIKE:-}" == *arch* ]] && distro="arch"
+  [[ "${ID_LIKE:-}" == *debian* ]] && distro="debian"
+
+  case "${distro}" in
   arch)
     echo "当前为archlinux"
     echo "需要安装 ${archPkgs[@]}"
-    pacman --key-init
+    pacman-key --init
     pacman -Syyu --noconfirm || exit 1
     pacman -S --noconfirm --needed ${archPkgs[@]} || exit 1
     pip install PyYAML --break-system-packages || python3 -m pip install PyYAML --break-system-packages || true
-    sed -i 's/^#\(en_US.UTF-8\)/\1/' /etc/locale.gen && locale-gen
+    sed -i 's/^#[[:space:]]*\(en_US.UTF-8\)/\1/' /etc/locale.gen && locale-gen
     ;;
   debian|ubuntu)
     echo "当前为 $ID"
     echo "需要安装 ${debianPkgs[@]}"
-    echo "交互式将取消自动完成安装"
+    echo "交互式将取消,自动完成安装"
     export DEBIAN_FRONTEND=noninteractive
     apt update || exit 1
     apt upgrade -y || exit 1
@@ -135,14 +145,14 @@ if [[ -f /etc/os-release ]]; then
         || echo "警告: libtool 仍不可用（当前配方链已不依赖；若新增 autogen 包需注意）"
     fi
     command -v libtool >/dev/null 2>&1 && libtool --version | head -1 || true
-    sed -i 's/^#\(en_US.UTF-8\)/\1/' /etc/locale.gen && locale-gen
+    sed -i 's/^#[[:space:]]*\(en_US.UTF-8\)/\1/' /etc/locale.gen && locale-gen
     ;;
   *)
-    echo "不支持的发行版 => $ID"
+    echo "不支持的发行版 => ${ID:-未知}"
     exit 1
     ;;
   esac
 else
-  echo "不支持的发行版 => $ID"
+  echo "不支持的发行版 => ${ID:-未知}"
   exit 1
 fi

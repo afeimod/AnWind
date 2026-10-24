@@ -186,8 +186,18 @@ ANWIND_SHIM
     args+=" -Dgallium-drivers=softpipe -Dvulkan-drivers="
   fi
   if (( $api <= 29 )); then
-    echo "api小于29,将应用tls符号修复补丁"
+    local _patchFile="${wsDir}/projects/mesa/0011-lld-undefined-version.diff"
     cd "${srcDir}/mesa"
-    patch -p1 < "${wsDir}/projects/mesa/0011-lld-undefined-version.diff"
+    # 源码会在双架构构建间复用（prepare_src 状态指纹未变时不重新获取），
+    # 补丁仅在尚未应用时打，避免第二次应用失败（对齐参考构建系统的幂等写法）
+    if patch -p1 --dry-run < "${_patchFile}" >/dev/null 2>&1; then
+      echo "api小于29,将应用tls符号修复补丁"
+      patch -p1 < "${_patchFile}" || { echo "mesa: 补丁应用失败" && return 1; }
+    elif patch -p1 -R --dry-run < "${_patchFile}" >/dev/null 2>&1; then
+      echo "mesa: tls符号修复补丁已应用，跳过"
+    else
+      echo "mesa: tls符号修复补丁无法应用"
+      return 1
+    fi
   fi
 }

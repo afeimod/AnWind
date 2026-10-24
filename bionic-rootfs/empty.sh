@@ -9,6 +9,7 @@ unset args
 unset fullCustomArgs
 customCrossFile=""
 extraMesonCrossProps=""
+mesonHostSystem=""
 deps=""
 pkgSrcDir=""
 doNotApplyPatch=""

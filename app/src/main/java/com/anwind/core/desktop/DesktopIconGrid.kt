@@ -7,8 +7,6 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -20,6 +18,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshots.SnapshotStateMap
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -48,22 +47,30 @@ import com.anwind.core.window.AppRegistry
 import com.anwind.core.window.WindowManager
 import com.anwind.data.model.DesktopItem
 import com.anwind.data.model.DesktopItemType
-import com.anwind.data.model.Shortcut
 import kotlinx.coroutines.launch
-import java.io.IOException
 import kotlin.math.roundToInt
 
 /**
- * 桌面图标网格（v3 自由定位版）：Windows 式随意拖放。
+ * 桌面图标网格（v4 稳定单元格版）：完全对齐 Windows 桌面行为。
  *
- * - 长按图标 400ms（震动反馈）进入拖动，图标跟手自由移动；
- * - 松手时吸附到最近的网格单元并持久化位置（desktop_icon_positions）；
- * - 若目标格已有图标则与之交换位置（Windows 同款行为）；
- * - 未拖过/新出现的图标自动流式排到剩余空格（先列后行，同 Windows）；
- * - 排序方式 name/type 时忽略自定义位置按序排列，拖动禁用；
- * - iconBounds 上报每个图标边界，供双指右键手势命中检测。
+ * v3 的问题是「乱跑」：
+ *  - 只持久化被拖过的图标，未拖过的图标每次都按剩余空格重新流式布局 ——
+ *    任何图标获得自定义位置/被删除后，剩余空格集合变化，其它未拖过的
+ *    图标会集体跳位；
+ *  - 删除的快捷方式在位置表中留下幽灵占位，新图标落到奇怪的位置；
+ *  - DataStore 异步写回有时延，松手后图标先弹回原格再跳到新格。
+ *
+ * v4 的修复（与 Windows 一致）：
+ *  - 位置一律以「单元格(col,row)」持久化（新格式 id:c:col,row，兼容读取
+ *    旧版像素格式并自动换算），所有图标在首次布局后位置永久稳定；
+ *  - 新出现的图标按「先列后行」落入第一个空格（同 Windows）；
+ *  - 拖动只影响被拖图标与被占格图标（交换，同 Windows），其余图标不动；
+ *  - 删除图标时同步清除其位置记录，不留幽灵占位；
+ *  - 松手即时在本地快照层生效（不等待 DataStore 写回），零闪跳；
+ *  - 网格尺寸变化（旋转/改图标大小）时旧坐标按最近格吸附并钳制回界内；
+ *  - name/type 排序模式仍按序自动排列、禁用拖动（保持原行为）；
+ *  - iconBounds 上报每个图标边界，供双指右键手势命中检测。
  */
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun DesktopIconGrid(
     sortMode: String = "default",
@@ -76,7 +83,7 @@ fun DesktopIconGrid(
     val iconSize by app.settingsStore.iconSize.collectAsState(initial = 48f)
     // v2.14：自定义图标顺序（未拖动过的图标自动布局时沿用）
     val iconOrder by app.settingsStore.desktopIconOrder.collectAsState(initial = "")
-    // v3：自由定位坐标
+    // v4：稳定单元格位置
     val iconPositions by app.settingsStore.desktopIconPositions.collectAsState(initial = "")
     val scope = rememberCoroutineScope()
     val density = LocalDensity.current
@@ -117,7 +124,7 @@ fun DesktopIconGrid(
     val sortedItems = remember(items, sortMode, iconOrder) {
         when (sortMode) {
             "name" -> items.sortedWith(compareBy({ it.label }, { it.id }))
-            "type" -> items.sortedWith(compareBy({ it.type }, { it.label }))
+            "type" -> items.sortedWith(compareBy({ it.type }, { it.label }, { it.id }))
             else -> {
                 if (iconOrder.isNotBlank()) {
                     val orderIds = iconOrder.split(",").filter { it.isNotBlank() }
@@ -141,31 +148,12 @@ fun DesktopIconGrid(
         }
     }
 
-    // ============ v3：自由定位布局（Windows 式） ============
+    // ============ v4：稳定单元格布局（Windows 式） ============
 
     // 网格几何（px）：单元 = 图标单元宽/高 + 8dp 间距；边距 8dp
     val cellWpx = with(density) { ((iconSize + 24f).dp + 8.dp).toPx() }
     val cellHpx = with(density) { ((iconSize + 46f).dp + 8.dp).toPx() }
     val gridMarginPx = with(density) { 8.dp.toPx() }
-
-    // 解析持久化位置："id:x,y;id:x,y"
-    val customPos = remember(iconPositions) {
-        val m = mutableMapOf<String, Offset>()
-        iconPositions.split(';').forEach { seg ->
-            seg.trim().takeIf { it.isNotBlank() }?.let { s ->
-                val idx = s.lastIndexOf(':')
-                if (idx > 0) {
-                    val id = s.substring(0, idx)
-                    val xy = s.substring(idx + 1).split(',')
-                    if (xy.size == 2) {
-                        val x = xy[0].toFloatOrNull(); val y = xy[1].toFloatOrNull()
-                        if (x != null && y != null) m[id] = Offset(x, y)
-                    }
-                }
-            }
-        }
-        m
-    }
     val freeDrag = sortMode == "default"
 
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
@@ -174,7 +162,7 @@ fun DesktopIconGrid(
         val perCol = (((gridHpx - 2 * gridMarginPx) / cellHpx).toInt()).coerceAtLeast(1)
         val perRow = (((gridWpx - 2 * gridMarginPx) / cellWpx).toInt()).coerceAtLeast(1)
 
-        // 网格单元坐标 → 像素
+        // 网格单元坐标 → 像素（左上角）
         fun cellPx(col: Int, row: Int): Offset {
             val c = col.coerceIn(0, perRow - 1)
             val r = row.coerceIn(0, perCol - 1)
@@ -188,66 +176,154 @@ fun DesktopIconGrid(
             return col to row
         }
 
-        // 已占格（自定义位置吸附后的单元）
-        val occupiedCells = remember(customPos, perRow, perCol) {
-            customPos.values.map { cellOf(it) }.toSet()
-        }
-
-        // 未定位图标自动流入剩余空格（先列后行，同 Windows 新图标落位）
-        val positions = remember(sortedItems, customPos, occupiedCells, perRow, perCol, freeDrag) {
-            val m = mutableMapOf<String, Offset>()
-            if (freeDrag) {
-                sortedItems.forEach { if (customPos.containsKey(it.id)) m[it.id] = customPos[it.id]!! }
-                val freeCells = buildList {
-                    for (c in 0 until perRow) for (r in 0 until perCol) {
-                        val cell = c to r
-                        if (cell !in occupiedCells) add(cell)
+        // ---- 持久化位置的解析与序列化 ----
+        // 新格式："id:c:col,row;..."（单元格）
+        // 旧格式："id:x,y;..."（像素，v3 遗留）—— 按当前网格几何换算为单元格
+        fun parsePositions(raw: String): Map<String, Pair<Int, Int>> {
+            val m = mutableMapOf<String, Pair<Int, Int>>()
+            raw.split(';').forEach { seg ->
+                seg.trim().takeIf { it.isNotBlank() }?.let { s ->
+                    val idx = s.lastIndexOf(':')
+                    if (idx > 0) {
+                        val id = s.substring(0, idx)
+                        val rest = s.substring(idx + 1)
+                        val isCellFormat = rest.startsWith("c:")
+                        val xy = rest.removePrefix("c:").split(',')
+                        if (xy.size == 2) {
+                            val a = xy[0].trim().toIntOrNull()
+                            val b = xy[1].trim().toIntOrNull()
+                            if (a != null && b != null) {
+                                m[id] = if (isCellFormat) {
+                                    (a to b)
+                                } else {
+                                    // 旧像素坐标 → 最近单元格（并随网格尺寸自动钳制）
+                                    cellOf(Offset(a.toFloat(), b.toFloat()))
+                                }
+                            }
+                        }
                     }
                 }
-                sortedItems.filter { !customPos.containsKey(it.id) }.forEachIndexed { i, item ->
-                    if (i < freeCells.size) m[item.id] = cellPx(freeCells[i].first, freeCells[i].second)
-                }
-            } else {
-                // 排序模式：全部按序自动排列（忽略自定义位置）
-                sortedItems.forEachIndexed { i, item ->
-                    val col = i / perCol
-                    val row = i % perCol
-                    m[item.id] = cellPx(col, row)
-                }
             }
-            m
+            return m
         }
 
-        // 拖动落格：吸附 + 占位交换 + 持久化
-        fun onDropIcon(item: DesktopItem, basePx: Offset, deltaPx: Offset) {
-            if (deltaPx == Offset.Zero) return
-            val newCenter = basePx + deltaPx
-            val (col, row) = cellOf(newCenter)
-            val snapped = cellPx(col, row)
-            // 目标格占用者（按吸附后坐标精确匹配）
-            val occupant = sortedItems.firstOrNull { other ->
-                other.id != item.id && positions[other.id] == snapped
+        fun serializePositions(cells: Map<String, Pair<Int, Int>>): String =
+            cells.entries.joinToString(";") { (id, c) -> "${id}:c:${c.first},${c.second}" }
+
+        // 解析持久化位置（iconPositions / 网格几何 变化时重算，旧像素自动迁移）
+        val savedCells = remember(iconPositions, perRow, perCol) {
+            parsePositions(iconPositions)
+        }
+
+        // 即时覆盖层：拖拽落格后同步生效，不等 DataStore 写回（消除闪跳）
+        // 外部清空（设置里恢复默认布局）时一并清空本地层
+        val liveCells = remember { mutableStateMapOf<String, Pair<Int, Int>>() }
+        LaunchedEffect(iconPositions) {
+            if (iconPositions.isBlank()) liveCells.clear()
+        }
+
+        // ---- 完整布局计算：有格的保持（live 优先），缺格的先列后行 first-fit ----
+        // 返回 Pair(全部单元格表, 本次新分配的表)；新分配立即持久化 → 位置永久稳定
+        // 注意：不能包 remember —— liveCells 是状态表，拖拽落格后的即时生效依赖
+        // 它的读取被组合跟踪；计算本身仅百次量级循环，每次重组重算开销可忽略
+        val (cells, newlyAssigned) = run {
+            if (freeDrag) {
+                val merged = mutableMapOf<String, Pair<Int, Int>>()
+                // 1) 已有位置（含即时层覆盖）的图标先占格；同格冲突时先到先得
+                val taken = mutableSetOf<Pair<Int, Int>>()
+                sortedItems.forEach { item ->
+                    val c = liveCells[item.id] ?: savedCells[item.id] ?: return@forEach
+                    if (c in taken) return@forEach   // 钳制后撞格：让位给 first-fit
+                    merged[item.id] = c
+                    taken.add(c)
+                }
+                // 2) 无位置图标按「先列后行」落入剩余空格（同 Windows 新图标落位）
+                val newOnes = mutableMapOf<String, Pair<Int, Int>>()
+                var cellIdx = 0
+                sortedItems.forEach { item ->
+                    if (merged.containsKey(item.id)) return@forEach
+                    while (cellIdx < perRow * perCol) {
+                        val col = cellIdx / perCol
+                        val row = cellIdx % perCol
+                        cellIdx++
+                        val cell = col to row
+                        if (cell !in taken) {
+                            merged[item.id] = cell
+                            newOnes[item.id] = cell
+                            taken.add(cell)
+                            break
+                        }
+                    }
+                }
+                merged to newOnes
+            } else {
+                // 排序模式：全部按序自动排列（不写位置、忽略自定义位置）
+                val m = mutableMapOf<String, Pair<Int, Int>>()
+                sortedItems.forEachIndexed { i, item ->
+                    m[item.id] = (i / perCol) to (i % perCol)
+                }
+                m to emptyMap()
             }
-            val updated = customPos.toMutableMap()
-            updated[item.id] = snapped
-            if (occupant != null) updated[occupant.id] = basePx   // 被占者换到我原来的格
+        }
+
+        // ---- 持久化 ----
+        fun persistPositions(map: Map<String, Pair<Int, Int>>) {
             scope.launch {
-                app.settingsStore.setDesktopIconPositions(
-                    updated.entries.joinToString(";") { "${it.key}:${it.value.x},${it.value.y}" }
-                )
+                runCatching {
+                    app.settingsStore.setDesktopIconPositions(serializePositions(map))
+                }
             }
+        }
+
+        // 首次布局分配的格立即持久化（此后位置永久稳定，不再随其它变化重排）
+        LaunchedEffect(newlyAssigned) {
+            if (newlyAssigned.isNotEmpty()) persistPositions(cells)
+        }
+
+        // 清理消失图标的幽灵占位（删除快捷方式后不留空洞记录）
+        // 基于完整布局（含即时层）而非仅持久化层，避免与拖拽写入相互覆盖
+        LaunchedEffect(cells, items) {
+            val ids = items.map { it.id }.toSet()
+            val stale = cells.keys.filter { it !in ids }
+            if (stale.isNotEmpty()) {
+                persistPositions(cells.filterKeys { it in ids })
+            }
+        }
+
+        // ---- 拖动落格：按图标中心定位目标格 + 占位交换 + 即时生效 + 持久化 ----
+        fun onDropIcon(item: DesktopItem, baseCell: Pair<Int, Int>, deltaPx: Offset) {
+            if (deltaPx == Offset.Zero) return
+            // 图标中心松手位置 → 目标格（与 Windows 的光标落点语义最接近）
+            val base = cellPx(baseCell.first, baseCell.second)
+            val center = Offset(
+                base.x + deltaPx.x + cellWpx / 2f,
+                base.y + deltaPx.y + cellHpx / 2f
+            )
+            val target = cellOf(center)
+            if (target == baseCell) return           // 原格：无需任何变动
+
+            // 目标格占用者：按单元格索引精确匹配（整数比较，无浮点误差）
+            val occupantId = cells.entries.firstOrNull { it.key != item.id && it.value == target }?.key
+            val updated = cells.toMutableMap()
+            updated[item.id] = target
+            if (occupantId != null) updated[occupantId] = baseCell   // Windows 同款交换
+
+            // 即时生效（不等 DataStore 回流）+ 持久化
+            liveCells[item.id] = target
+            if (occupantId != null) liveCells[occupantId] = baseCell
+            persistPositions(updated)
         }
 
         sortedItems.forEach { item ->
-            val pos = positions[item.id] ?: cellPx(0, 0)
+            val cell = cells[item.id] ?: (0 to 0)
             DesktopIcon(
                 item = item,
                 iconSize = iconSize,
-                basePx = pos,
+                basePx = cellPx(cell.first, cell.second),
                 boundsRegistry = iconBounds,
                 clickMode = clickMode,
                 dragEnabled = freeDrag,
-                onDrop = { delta -> onDropIcon(item, pos, delta) }
+                onDrop = { delta -> onDropIcon(item, cell, delta) }
             )
         }
     }
@@ -324,14 +400,14 @@ private fun DesktopIcon(
     val cellWidth = (iconSize + 24).dp
     val haptic = LocalHapticFeedback.current
 
-    // v3 自由拖动状态：拖动中的累计偏移（px），松手归零并上报父级计算落格
+    // v4 自由拖动状态：拖动中的累计偏移（px），松手归零并上报父级计算落格
     var dragOffset by remember { mutableStateOf(Offset.Zero) }
     val dragging = dragOffset != Offset.Zero
 
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         modifier = Modifier
-            // v3：绝对定位（父级计算的网格坐标）
+            // v4：绝对定位（父级计算的网格坐标）
             .offset { IntOffset(basePx.x.roundToInt(), basePx.y.roundToInt()) }
             .width(cellWidth)
             // 拖动中置顶 + 轻微放大，视觉上"拎起来"
@@ -356,7 +432,7 @@ private fun DesktopIcon(
                     }
                 }
             }
-            // v3：长按 400ms 进入自由拖动 → 图标跟手 → 松手吸附最近网格落位
+            // v4：长按 400ms 进入自由拖动 → 图标跟手 → 松手吸附最近网格落位
             .pointerInput(item.id, dragEnabled) {
                 if (!dragEnabled) return@pointerInput
                 detectDragGesturesAfterLongPress(
