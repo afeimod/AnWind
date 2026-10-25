@@ -613,7 +613,7 @@ glibc-runner v3.12-anwind7 —— glibc 启动器 + wine 快捷启动 (startonwi
 
 注意:
  * 选项必须写在 exe 路径之前 (exe 之后的参数原样传给游戏)
- * 日志默认追加写入 $LOG_PATH (默认 /sdcard/mobox_log.txt), 终端同时回显
+ * 日志默认追加写入 $LOG_PATH (默认 /storage/emulated/0/Download/AnWind/mobox_wine.log), 终端同时回显
  * 盘符指向: z:=/data/data/com.anwind/files/usr (DRIVE_Z 可改, =/ 恢复
    wine 标准根文件系统); d:/e: 可用 DRIVE_D/DRIVE_E 自定义
  * -d 分辨率会实时同步给 AnWind X11 窗口 (游戏按真实分辨率渲染)
@@ -1329,7 +1329,8 @@ glr_env_full() {
 
 # ---- 日志落盘 ----
 glr_setup_log() {
-    GLR_LOG="${LOG_PATH:-/sdcard/mobox_log.txt}"
+    # 默认路径与 anwind-wine 会话日志同处（公共 Download/AnWind，用户可直接取走）
+    GLR_LOG="${LOG_PATH:-/storage/emulated/0/Download/AnWind/mobox_wine.log}"
     mkdir -p "$(dirname "${GLR_LOG}")" 2>/dev/null
     if ! : >> "${GLR_LOG}" 2>/dev/null; then
         GLR_LOG="${APP_PREFIX}/tmp/mobox_log.txt"

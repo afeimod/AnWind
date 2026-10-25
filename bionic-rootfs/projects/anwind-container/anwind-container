@@ -49,7 +49,16 @@ DL_TMP="$APP_PREFIX/tmp/anwind-dl"
 BLUE='\033[1;34m'; GRN='\033[1;32m'; YLW='\033[1;33m'; RST='\033[0m'
 msg()  { printf "${GRN}[anwind-container]${RST} %s\n" "$*"; }
 warn() { printf "${YLW}[警告]${RST} %s\n" "$*"; }
-die()  { printf "%b[错误]%b %s\n" "$YLW" "$RST" "$*" >&2; exit 1; }
+die()  {
+    printf "%b[错误]%b %s\n" "$YLW" "$RST" "$*" >&2
+    # 终端直跑时 CLI 级致命错误也留痕（App 会话有顶层 tee 接管，不重复写）
+    if [ -z "${ANWIND_SESSION_LOG:-}" ]; then
+        printf '[%s] anwind-container: %s\n' \
+            "$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo '?')" "$*" \
+            >>"$CONT_ROOT/logs/container-cli.log" 2>/dev/null || true
+    fi
+    exit 1
+}
 
 # ---------- 配置文件读写 ----------
 conf_read() { # <file> <key> [default]

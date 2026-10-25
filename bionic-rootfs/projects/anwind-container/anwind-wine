@@ -1,6 +1,13 @@
 #!/data/data/com.anwind/files/usr/bin/bash
 # ============================================================
-# anwind-wine v2.3 — AnWind 容器 Wine 启动器（bionic rootfs / X11）
+# anwind-wine v2.4 — AnWind 容器 Wine 启动器（bionic rootfs / X11）
+# v2.4 变更：会话日志 —— 运行 wine/exe 的完整过程（环境决策链 +
+#            wine 原始 stdout/stderr，含 wineboot 与 err:* 报错）
+#            落盘到公共 Download 目录：
+#            /storage/emulated/0/Download/AnWind/wine-<容器>-<时间>.log
+#            （不可写时退回容器区 logs/）。App 会话（WineSessionLauncher）
+#            建 ANWIND_SESSION_LOG 同一文件并在顶层接管 tee，本脚本复用；
+#            终端直跑由本脚本自建。进程替换不可用自动退回直跑（零回归）。
 # v2.3 变更：ensure_emulate_modeset —— 自动写入 wine 注册表
 #            HKCU\Software\Wine\X11 Driver\EmulateModeset=Y。
 #            AnWind 的 X 服务不支持 RandR 动态调分辨率（走 .anwind-x11-res
@@ -69,7 +76,7 @@ CONF_GLOBAL="$RFS_USR/etc/anwind/container.conf"
 X11_SOCK_DIR="$APP_PREFIX/tmp/.X11-unix"
 LOG_DIR="$CONT_ROOT/logs"
 
-version() { echo "anwind-wine 2.3.0 (AnWind bionic rootfs, X11 auto-start, isolated env, emulate-modeset)"; }
+version() { echo "anwind-wine 2.4.0 (AnWind bionic rootfs, X11 auto-start, isolated env, emulate-modeset, session log)"; }
 
 # ---------- 运行时目录兜底（必须在任何 wine 调用前） ----------
 # wine 按 termux 风格构建，把 /tmp 硬编码为 $RFS_USR/tmp：wineserver 启动时
@@ -77,11 +84,81 @@ version() { echo "anwind-wine 2.3.0 (AnWind bionic rootfs, X11 auto-start, isola
 mkdir -p "$RFS_USR/tmp" "$APP_PREFIX/tmp/.X11-unix" "$LOG_DIR" "$RFS_ROOT/home" 2>/dev/null || true
 
 die() { echo "anwind-wine: $*" >&2; exit 1; }
-info() { echo "[anwind-wine] $*"; }
+info() {
+    echo "[anwind-wine] $*"
+    # 进程替换不可用的降级路径：手工把决策信息追加进日志文件
+    if [ "${ANWIND_LOG_NO_TEE:-0}" = "1" ] && [ -n "${ANWIND_LOG_FILE:-}" ]; then
+        printf '[anwind-wine] %s\n' "$*" >>"$ANWIND_LOG_FILE" 2>/dev/null || true
+    fi
+}
+
+# ---------- 会话日志（v2.4：wine/exe 全程留痕，排障不再靠猜） ----------
+# 位置优先级：
+#   1) ANWIND_SESSION_LOG —— App 会话（WineSessionLauncher.spawn）已建好
+#      日志文件并把整条会话（bash→anwind-container→本脚本→wine）的输出
+#      tee 接到该文件；此时只复用该文件、不再自建 tee（避免双写）。
+#   2) /storage/emulated/0/Download/AnWind/wine-<容器>-<时间>.log ——
+#      公共 Download，用户文件管理器可直接取走（需「所有文件访问」授权）
+#   3) $LOG_DIR/wine-<容器>-<时间>.log —— rootfs 容器区 logs/，永远可写
+# 内容：环境决策链（容器/后端/wine 形态/WINEPREFIX/音频/GPU）+ wine
+#       原始 stdout/stderr 全程落盘；终端同步回显不受影响。
+ANWIND_LOG_FILE=""
+ANWIND_LOG_NO_TEE=0
+
+rotate_logs() { # <目录> [保留数] —— 只清理本机制产生的 wine-*.log
+    local _dir="$1" _keep="${2:-30}" _old
+    [ -d "$_dir" ] || return 0
+    _old="$(ls -t "$_dir"/wine-*.log 2>/dev/null | tail -n +$((_keep + 1)))"
+    if [ -n "$_old" ]; then
+        printf '%s\n' "$_old" | xargs -r rm -f 2>/dev/null
+    fi
+    return 0
+}
+
+session_log_init() {
+    local _ts _name _f _dir
+    # 1) App 会话已建文件 → 复用
+    if [ -n "${ANWIND_SESSION_LOG:-}" ] && : >> "$ANWIND_SESSION_LOG" 2>/dev/null; then
+        ANWIND_LOG_FILE="$ANWIND_SESSION_LOG"
+        return 0
+    fi
+    # 2) / 3) 自建（终端直跑 wine / anwind-container run 场景）
+    _ts="$(date '+%Y%m%d-%H%M%S' 2>/dev/null || echo manual)"
+    _name="$(printf '%s' "${CONT_NAME:-default}" | tr -c 'A-Za-z0-9._-' '_' 2>/dev/null | cut -c1-40)"
+    [ -n "$_name" ] || _name="default"
+    for _dir in "/storage/emulated/0/Download/AnWind" "$LOG_DIR"; do
+        mkdir -p "$_dir" 2>/dev/null || true
+        _f="$_dir/wine-${_name}-${_ts}.log"
+        if : >> "$_f" 2>/dev/null; then
+            ANWIND_LOG_FILE="$_f"
+            printf '===== AnWind wine 会话 %s =====\n' \
+                "$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo '?')" >>"$_f" 2>/dev/null || true
+            rotate_logs "$_dir"
+            break
+        fi
+    done
+    return 0
+}
+
+# 把整条输出接到日志文件（终端照常回显）。用进程替换保留 exec 语义：
+# wine 仍是本进程替换而来（会话 pid / 信号 / kill 行为全部不变）；
+# 环境不支持进程替换（无 /dev/fd 且 FIFO 兜底失败）时自动退回原直跑
+# 行为（仅 info 决策行直接落盘，零风险降级）。
+session_log_attach() {
+    [ -n "$ANWIND_LOG_FILE" ] || return 0
+    [ -n "${ANWIND_SESSION_LOG:-}" ] && return 0   # App 侧已在会话顶层接管
+    command -v tee >/dev/null 2>&1 || { ANWIND_LOG_NO_TEE=1; return 0; }
+    if bash -c ': > >(true)' 2>/dev/null; then
+        exec > >(tee -a "$ANWIND_LOG_FILE") 2>&1
+    else
+        ANWIND_LOG_NO_TEE=1
+    fi
+    return 0
+}
 
 usage() {
     cat << 'EOF'
-anwind-wine v2.3 — AnWind 容器 Wine 启动器（bionic rootfs / X11 · 环境隔离版）
+anwind-wine v2.4 — AnWind 容器 Wine 启动器（bionic rootfs / X11 · 环境隔离版）
 
 用法:
   anwind-wine [--container <name>] <wine 参数...>
@@ -97,6 +174,9 @@ anwind-wine v2.3 — AnWind 容器 Wine 启动器（bionic rootfs / X11 · 环�
   - wine 多版本: 容器 wine= 目录名（/usr/opt/<名>）或绝对路径；
     留空用全局 default_wine，再留空用 /usr/opt/wine
   - 显示: X11，强制 DISPLAY=:1（内置 X 服务未运行时自动拉起）
+  - 会话日志: 每次会话全程留痕（环境决策 + wine 全部输出）→
+    /storage/emulated/0/Download/AnWind/wine-<容器>-<时间>.log
+    （公共 Download，文件管理器可直接取；不可写时退回容器区 logs/）
   - 显示模式 dmode: off 跟随窗口 / d 固定分辨率 / v 虚拟桌面 / f 强制直出
   - 后端新增 arm64ec：所选 wine 为 aarch64 形态（bionic-arm64ec 构建）
     时直接原生运行（new WoW64）；x86_64 形态仍走 box64/native
@@ -656,6 +736,10 @@ case "$CMD" in
 esac
 
 resolve_container
+# v2.4 会话日志：先于一切决策初始化 —— load_container / pick_backend
+# 的 die 信息也要留痕（tee 已接管 stderr）
+session_log_init
+session_log_attach
 load_container
 resolve_wine_dir
 DMODE="$(conf_read "$CONT_CONF" dmode "off")"
@@ -671,7 +755,11 @@ ensure_x11
 pick_backend
 case "$BACKEND" in box64|fexcore) apply_box64_env ;; esac
 
+info "会话开始 $(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo '?') 内核=$(uname -m 2>/dev/null) pid=$$"
+info "会话日志: ${ANWIND_LOG_FILE:-（无可写目录，未落盘——检查存储权限）}"
 info "容器=$CONT_NAME 后端=$BACKEND wine形态=${WINE_ARCH:-?} DISPLAY=$DISPLAY WINEPREFIX=$WINEPREFIX"
+[ -n "$BOX64_BIN" ] && [ "$BACKEND" = "box64" ] && info "box64: $BOX64_BIN"
 [ -n "$DMODE_RESOLUTION" ] && info "显示模式 dmode=$DMODE 分辨率=$DMODE_RESOLUTION（X11 握手已写入）"
 info "环境: PREFIX=$PREFIX HOME=$HOME LANG=$LANG 音频=${PULSE_SERVER:-（关）}"
+info "wine 目录: $WINE_DIR  参数: $*"
 run_wine "$@"
