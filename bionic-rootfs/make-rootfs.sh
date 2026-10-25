@@ -298,6 +298,26 @@ for _f in "${_rootfsRoot}"/usr/lib/libxcb*.so; do
 done
 info "SONAME 版本别名: 本次补建 ${_libFixes} 个（包内已携带的自动跳过）"
 
+# ---- rootfs 构建戳（v3：排障可观测性） ----
+# 写入 usr/etc/anwind/rootfs-build-id：构建时间 + 关键组件版本
+# （hangover wine / box64 / mesa）+ CI 提交号。设备侧 anwind-wine v2.7
+# 会话日志与 anwind-container doctor 读取该戳 —— 设备日志从此能回答
+# "当时跑的到底是哪个 rootfs"（wine-5555 时代日志只有 App 版本，
+# rootfs 版本无从考证，排障靠猜）。
+{
+  echo "build=$(date '+%Y%m%d-%H%M%S')"
+  [[ -n "${GITHUB_SHA:-}" ]] && echo "commit=${GITHUB_SHA:0:12}"
+  for _proj in hangover-wine box64 mesa; do
+    _rev="$(sed -n 's/^revision="${ANWIND_[A-Z0-9_]*:-\(v\?[^"}]*\)}"/\1/p' \
+      "${wsDir}/projects/${_proj}/build.sh" 2>/dev/null | head -n 1)"
+    [[ -n "${_rev}" ]] && echo "${_proj}=${_rev}"
+  done
+} > "${_rootfsRoot}/usr/etc/anwind/rootfs-build-id" 2>/dev/null \
+  || { mkdir -p "${_rootfsRoot}/usr/etc/anwind" \
+       && { echo "build=$(date '+%Y%m%d-%H%M%S')"; [[ -n "${GITHUB_SHA:-}" ]] && echo "commit=${GITHUB_SHA:0:12}"; } \
+            > "${_rootfsRoot}/usr/etc/anwind/rootfs-build-id"; }
+info "rootfs 构建戳: $(head -n 1 "${_rootfsRoot}/usr/etc/anwind/rootfs-build-id" 2>/dev/null)"
+
 # ---- 绝对符号链接重写：让导出树自包含 ----
 # meson 的 install_symlink（如 xkeyboard-config compat-rules 的
 # share/X11/xkb -> <prefix>/share/xkeyboard-config-2）会生成指向设备最终

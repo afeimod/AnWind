@@ -6,8 +6,11 @@ name: AnWind Bionic Box64 (aarch64)
 # -DANDROID=1：按 Android/bionic 目标构建（MiceWine 同款参数）
 # -DBAD_SIGNAL=1：规避 bionic 信号栈差异
 # -DARM_DYNAREC=1：aarch64 动态二进制翻译（运行 x86_64 wine 核心）
+# 默认 v0.4.4：对齐 hangover-11.16 官方配套（hangover↔box64 的
+# PE/wow64 协议版本敏感，错配可致 wineboot SEH 级联崩溃）
 # 产物：anwind-box64-<ver>-aarch64-bionic.tar.gz
-#   设备上解包即入 rootfs（data/data/com.anwind/... 布局），
+#   设备安装：anwind-container install-box64（v2.2+ 一键升级，旧版
+#   自动备份/验证回滚）；或手动解包至 /（data/data/com.anwind/... 布局），
 #   anwind-container 自动从 /usr/local/bin/box64 探测。
 # ============================================================
 
@@ -15,9 +18,9 @@ on:
   workflow_dispatch:
     inputs:
       box64_ref:
-        description: 'Box64 版本（分支 / 标签，如 v0.4.2 / master）'
+        description: 'Box64 版本（分支 / 标签，如 v0.4.4 / master）'
         required: false
-        default: 'v0.4.2'
+        default: 'v0.4.4'
         type: string
       make_release:
         description: '构建成功后创建 GitHub Release'
@@ -177,9 +180,12 @@ jobs:
           body: |
             AnWind bionic rootfs 专用 Box64（aarch64 / ARM_DYNAREC / ANDROID=1）
 
-            - 设备安装: 解包 `anwind-box64-*.tar.gz` 至 /（data/data/com.anwind/... 自动就位）
+            - 一键升级: `anwind-container install-box64`（v2.2+，旧版自动备份/验证回滚）
+            - 手动安装: 解包 `anwind-box64-*.tar.gz` 至 /（data/data/com.anwind/... 自动就位）
             - 安装后 anwind-container 自动探测 /usr/local/bin/box64
-            - 用途: 在 aarch64 设备上运行 x86_64 Wine（backend=box64）
+            - 用途: 在 aarch64 设备上运行 x86_64 Wine（backend=box64）；
+              同时是 hangover 兑底后端的 i386 模拟依赖 —— v0.4.4 为
+              hangover-11.16 官方配套版本（错配可致 wineboot SEH 级联崩溃）
           files: |
             ${{ env.PACKAGE_NAME }}.tar.gz
             checksums-box64-aarch64.txt

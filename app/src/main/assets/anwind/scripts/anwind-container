@@ -41,6 +41,10 @@
 #                                   wine-arm64     普通 Wine ARM64
 #                                   proton         Proton（WOW64 游戏向）
 #                                 也可直接给本地包或完整 URL
+#   install-box64 [box64|URL|本地包]  升级 box64（v2.2）。hangover-11.16
+#                                 官方配套 box64 v0.4.4，版本错配可致
+#                                 wineboot SEH 级联崩溃；存量 rootfs 无需
+#                                 重刷即可升级（旧版自动备份/验证回滚）
 #   wine-list                     列出已安装的 wine 版本（/usr/opt/wine*）
 #   wine-catalog [类别]           在线构建目录（GitHub Releases，自动
 #                                 列出各类别可下载包；支持 ANWIND_GH_PROXY 加速）
@@ -68,7 +72,7 @@
 #       /system/fonts）提供 CJK 字体。
 # ============================================================
 
-version() { echo "anwind-container 2.1.1 (AnWind bionic rootfs, X11, isolated env, wine catalog, session log)"; }
+version() { echo "anwind-container 2.2.0 (AnWind bionic rootfs, X11, isolated env, wine catalog, session log, box64 upgrade channel)"; }
 
 RFS_ROOT="/data/data/com.anwind/files/rootfs"
 RFS_USR="$RFS_ROOT/usr"
@@ -518,6 +522,7 @@ classify_asset() { # $1=URL或文件名 → 回显类别（空=不匹配）
     # proton-*.txz）一律忽略，不进目录。
     local _b="${1##*/}"
     case "$_b" in
+        anwind-box64-*.tar.gz|anwind-box64-*.tzst|anwind-box64-*.tar.xz) echo box64 ;;
         anwind-wine-*x86_64*bionic.tar.gz)  echo bionic-x86_64 ;;
         anwind-wine-*arm64ec*bionic.tar.gz) echo bionic-arm64ec ;;
         *proton-*wow64.tar.xz)              echo proton ;;
@@ -528,6 +533,7 @@ classify_asset() { # $1=URL或文件名 → 回显类别（空=不匹配）
 }
 catalog_flavor_hint() { # $1=类别 → 人工提示
     case "$1" in
+        box64)          echo "box64 独立升级包（v0.4.4+ 为 hangover-11.16 官方配套版）" ;;
         bionic-x86_64)  echo "bionic 原生包，aarch64 设备经 box64 运行（推荐）" ;;
         bionic-arm64ec) echo "bionic 原生包，aarch64 设备原生运行（new WoW64，无需 box64）" ;;
         wine-x86_64)    echo "glibc 构建：需容器含 x86_64 glibc 运行库 + box64 才能跑" ;;
@@ -540,7 +546,8 @@ cmd_wine_catalog() {
     local want="${1:-}" _u _c _shown=0 _urls
     echo "Wine 在线构建目录（源: GitHub $(catalog_repo) Releases）"
     echo "  一键安装: anwind-container install-wine <类别>   （不指定 --name 时自动命名槽位）"
-    echo "  类别: bionic-x86_64 / bionic-arm64ec / wine-x86_64 / wine-arm64 / proton"
+    echo "  一键升级: anwind-container install-box64         （box64 独立升级包）"
+    echo "  类别: bionic-x86_64 / bionic-arm64ec / wine-x86_64 / wine-arm64 / proton / box64"
     echo
     _urls="$(catalog_urls)" || die "获取 Release 列表失败（网络受限或 API 限流）。可设 ANWIND_GH_PROXY=<镜像> 重试，或直接 install-wine <完整URL|本地包>"
     while IFS= read -r _u; do
@@ -563,7 +570,7 @@ EOF
 }
 resolve_catalog_url() { # $1=类别 → 回显最新资产 URL
     local _want="$1" _u _c _urls
-    case "$_want" in bionic-x86_64|bionic-arm64ec|wine-x86_64|wine-arm64|proton) ;; *) return 1 ;; esac
+    case "$_want" in box64|bionic-x86_64|bionic-arm64ec|wine-x86_64|wine-arm64|proton) ;; *) return 1 ;; esac
     _urls="$(catalog_urls)" || return 1
     while IFS= read -r _u; do
         _c="$(classify_asset "$_u")"
@@ -680,6 +687,127 @@ cmd_install_wine() {
     msg "wine 安装成功: $_dest${_verstr:+（$_verstr，$_archstr）}"
     [ -n "$_flavor" ] && { local _hint; _hint="$(catalog_flavor_hint "$_flavor")"; [ -n "$_hint" ] && msg "  形态: $_flavor（$_hint）"; }
     msg "选用: 容器 set <name> wine=$_name ｜ 全局: anwind-container wine-default $_name"
+    return 0
+}
+
+# ---------- install-box64（v2.2：box64 版本升级通道） ----------
+# 背景：hangover↔box64 的 PE/wow64 协议版本敏感——hangover-11.16 官方
+# 配套 box64 v0.4.4（AndreRH/hangover releases 实证），而 rootfs 打包的
+# 是 v0.4.2（更早的 rootfs 可能更旧）。错配可致 wineboot SEH invalid
+# frame 级联崩溃（box64 #2365 同款签名）。本命令让存量 rootfs 无需
+# 重刷即可升级 box64：从 Release 资产（类别 box64）或本地包/URL 安装，
+# 替换 /usr/local/bin/box64，旧版自动备份、新版 --version 验证失败
+# 自动回滚。
+BOX64_MIN_HANGOVER="0.4.4"   # hangover-11.16 官方配套版
+
+box64_version_of() { # $1=box64 二进制 → 回显纯数字版本（空=探测失败）
+    local _v
+    [ -n "$1" ] && [ -x "$1" ] || { echo ""; return 0; }
+    _v="$("$1" --version 2>/dev/null | head -n 1 | grep -o '[0-9][0-9]*\.[0-9][0-9]*\(\.[0-9][0-9]*\)\?' | head -n 1)"
+    printf '%s' "$_v"
+}
+
+ver_lt_num() { # $1 < $2 回 0（真）；纯 shell，不依赖 sort -V
+    local _a="$1" _b="$2" _ai _bi _i _x _y
+    [ -n "$_a" ] || return 0
+    [ -n "$_b" ] || return 1
+    _a="${_a#v}"; _b="${_b#v}"
+    local IFS='.'
+    _ai=( $_a ); _bi=( $_b )
+    for _i in 0 1 2 3 4; do
+        _x=$(( ${_ai[$_i]:-0} + 0 )) 2>/dev/null || _x=0
+        _y=$(( ${_bi[$_i]:-0} + 0 )) 2>/dev/null || _y=0
+        [ "$_x" -lt "$_y" ] && return 0
+        [ "$_x" -gt "$_y" ] && return 1
+    done
+    return 1
+}
+
+cmd_install_box64() {
+    local src="${1:-box64}" _f _tmp=0 _stage _bin _old _bak _arch
+    # 类别/缺省 → 解析最新 Release 资产并下载（gh_fetch 自带镜像兜底）
+    case "$src" in
+        box64|"")
+            local _url
+            msg "解析在线构建目录: box64（仓库 $(catalog_repo)）……"
+            _url="$(resolve_catalog_url box64)" || die "类别 box64 暂无可用资产（wine-catalog box64 查看；或设 ANWIND_GH_PROXY=<镜像> 后重试，或直接给本地包/完整 URL）"
+            msg "最新资产: $_url"
+            mkdir -p "$DL_TMP"
+            _f="$DL_TMP/${_url##*/}"
+            msg "下载（直连失败自动走加速镜像）……"
+            gh_fetch "$_url" "$_f" || die "下载失败: $_url（可设 ANWIND_GH_PROXY=<镜像> 重试）"
+            ;;
+        http://*|https://*)
+            mkdir -p "$DL_TMP"
+            _f="$DL_TMP/$(basename "$src")"
+            msg "下载: $src"
+            fetch "$src" "$_f" || die "下载失败: $src"
+            _tmp=1
+            ;;
+        *)
+            _f="$src"
+            [ -f "$_f" ] || die "文件不存在: $_f（用法: install-box64 [box64|URL|本地包]）"
+            ;;
+    esac
+
+    _stage="$DL_TMP/box64-stage.$$"
+    rm -rf "$_stage"; mkdir -p "$_stage"
+    msg "解包 $(basename "$_f")（tzst/tar.gz 自动适配）..."
+    tar_extract_any "$_f" "$_stage" || { rm -rf "$_stage"; die "解包失败（.tzst 需要 zstd: pkg install zstd）"; }
+
+    # 在解包树中定位 box64 二进制（usr/local/bin/box64 / bin/box64 / 顶层 box64 均可）
+    _bin="$(find "$_stage" -type f -name box64 -perm -u+x 2>/dev/null | head -n 1)"
+    [ -n "$_bin" ] || _bin="$(find "$_stage" -type f -name box64 2>/dev/null | head -n 1)"
+    [ -n "$_bin" ] || { rm -rf "$_stage"; die "未在包内找到 box64 二进制 —— 请确认这是 box64 发行包（build-box64-bionic workflow 产物）"; }
+
+    # ELF 架构校验：本通道只装 aarch64 构建（x86_64 设备用不上 box64）
+    _arch="$(dd if="$_bin" bs=1 skip=18 count=2 2>/dev/null | od -An -tx1 2>/dev/null | tr -d ' \n')"
+    case "$_arch" in
+        b700) ;;
+        *) { rm -rf "$_stage"; die "包内 box64 不是 aarch64 构建（ELF $_arch）—— 请用 build-box64-bionic workflow 的产物"; } ;;
+    esac
+
+    # 落位：/usr/local/bin/box64（find_box64 搜索序第一位）；旧版先备份
+    mkdir -p "$RFS_USR/local/bin"
+    _old="$(find_box64)"
+    if [ -n "$_old" ] && [ "$_old" != "$RFS_USR/local/bin/box64" ]; then
+        msg "发现既有 box64: $_old（$(box64_version_of "$_old" || echo 未知版本)）—— 保留不动，新装到 $RFS_USR/local/bin/box64（搜索序更高）"
+    fi
+    if [ -e "$RFS_USR/local/bin/box64" ]; then
+        _bak="$RFS_USR/local/bin/box64.anwind-bak.$$"
+        cp -p "$RFS_USR/local/bin/box64" "$_bak" || true
+    fi
+    cp "$_bin" "$RFS_USR/local/bin/box64.anwind-new.$$" \
+        && chmod 755 "$RFS_USR/local/bin/box64.anwind-new.$$" \
+        || { rm -rf "$_stage"; rm -f "$RFS_USR/local/bin/box64.anwind-new.$$"; die "box64 落盘失败（磁盘空间？）"; }
+    rm -rf "$_stage"
+
+    # 验证：--version 跑不通立即回滚（半死的 box64 比旧版更糟）
+    local _newver
+    _newver="$(box64_version_of "$RFS_USR/local/bin/box64.anwind-new.$$")"
+    if [ -z "$_newver" ]; then
+        rm -f "$RFS_USR/local/bin/box64.anwind-new.$$"
+        [ -n "${_bak:-}" ] && mv "$_bak" "$RFS_USR/local/bin/box64"
+        die "新版 box64 --version 验证失败，已回滚（包可能损坏或与本环境不兼容）"
+    fi
+    mv "$RFS_USR/local/bin/box64.anwind-new.$$" "$RFS_USR/local/bin/box64"
+    [ -n "${_bak:-}" ] && rm -f "$_bak"
+    [ "$_tmp" = 1 ] && rm -f "$_f"
+
+    # 记录版本信息（doctor / 排障用）
+    mkdir -p "$RFS_USR/etc/anwind"
+    {
+        echo "version=$_newver"
+        echo "installed=$(date '+%Y-%m-%d %H:%M:%S')"
+        echo "source=${_f##*/}"
+    } > "$RFS_USR/etc/anwind/box64-info"
+
+    msg "box64 安装成功: $RFS_USR/local/bin/box64（v$_newver）"
+    if [ -x "$RFS_USR/opt/bin/wine" ] && ver_lt_num "$_newver" "$BOX64_MIN_HANGOVER"; then
+        warn "注意: 当前版本低于 hangover-11.16 官方配套 v$BOX64_MIN_HANGOVER（建议换用更新资产）"
+    fi
+    # 提示正在运行的 wineserver 需要重启才用到新 box64
+    msg "提示: 正在运行的 wine 会话仍持有旧 box64 —— 容器停止后下次启动生效"
     return 0
 }
 
@@ -875,6 +1003,15 @@ cmd_doctor() {
     echo
     echo "[1/6] rootfs 与 X11（显示核心）"
     [ -d "$RFS_USR/lib" ] && echo "  [OK] rootfs 前缀就绪: $RFS_USR" || { echo "  [!!] rootfs 未安装"; return 1; }
+    # v2.2：rootfs 构建戳（20261025 起携带；旧 rootfs 无戳 + 缺 SONAME 别名
+    # → 提示 v2.7 脚本已自愈，但建议更新 rootfs 获得完整修复）
+    local _bid
+    _bid="$(conf_read "$RFS_USR/etc/anwind/rootfs-build-id" build "")"
+    if [ -n "$_bid" ]; then
+        echo "  [OK] rootfs 构建戳: $_bid"
+    else
+        echo "  [!] rootfs 无构建戳（20261025 前旧版）—— SONAME 别名已由 anwind-wine v2.7 运行时自愈，建议择机更新 rootfs"
+    fi
     [ -x "$RFS_USR/bin/anwind-container" ] \
         && echo "  [OK] anwind-container / anwind-wine 就绪（APK assets 自动部署）" \
         || echo "  [!!] anwind-container 缺失 —— 打开一次 AnWind 主界面自动从 APK 部署"
@@ -886,8 +1023,10 @@ cmd_doctor() {
         fi
     done
     [ "$_any" = 1 ] || echo "  [!] 未发现 X11 socket —— 从容器管理点\"运行\"会自动拉起；或终端运行 anwind-x11 :1"
-    [ -r "$RFS_USR/lib/libX11.so.6" ] && echo "  [OK] rootfs libX11 就绪（已打 App 侧 socket 路径补丁）" \
-        || echo "  [!!] rootfs libX11 缺失 —— 请用 bionic-rootfs workflow 重建 rootfs"
+    [ -r "$RFS_USR/lib/libX11.so.6" ] && echo "  [OK] rootfs libX11 就绪（SONAME 别名 libX11.so.6 在位）" \
+        || { echo "  [!!] libX11.so.6 别名缺失 —— anwind-wine v2.7 会话启动时自动补建"; \
+             [ -r "$RFS_USR/lib/libX11.so" ] && echo "      （检测到无版本号 libX11.so —— 自愈可行）" \
+                 || echo "      （连 libX11.so 都缺失 —— 请用 bionic-rootfs workflow 重建 rootfs）"; }
 
     echo
     echo "[2/6] 环境隔离"
@@ -915,10 +1054,19 @@ cmd_doctor() {
 
     echo
     echo "[4/6] CPU 翻译后端"
-    if [ -n "$(find_box64)" ]; then
-        echo "  [OK] box64: $(find_box64)"
+    local _b64 _b64v
+    _b64="$(find_box64)"
+    if [ -n "$_b64" ]; then
+        _b64v="$(box64_version_of "$_b64")"
+        echo "  [OK] box64: $_b64${_b64v:+（v$_b64v）}"
+        # v2.2：hangover 兑底后端的版本配套告警（hangover-11.16 ↔ box64 v0.4.4）
+        if [ -x "$RFS_USR/opt/bin/wine" ] && [ -n "$_b64v" ] && ver_lt_num "$_b64v" "$BOX64_MIN_HANGOVER"; then
+            echo "  [!] box64 v$_b64v 低于 hangover-11.16 官方配套 v$BOX64_MIN_HANGOVER ——"
+            echo "      hangover↔box64 协议版本敏感（SEH invalid frame 级联崩溃风险）"
+            echo "      升级: anwind-container install-box64"
+        fi
     else
-        echo "  [--] box64 未安装 → 运行 bionic 的 build-box64 workflow 或安装其 Release 产物"
+        echo "  [--] box64 未安装 → anwind-container install-box64（或运行 build-box64-bionic workflow）"
     fi
     if [ -x "$RFS_USR/opt/fex/bin/FEXInterpreter" ]; then
         echo "  [OK] fexcore: $RFS_USR/opt/fex/bin/FEXInterpreter"
@@ -1006,6 +1154,10 @@ Wine 多版本（bionic 双形态 + 普通 Wine + Proton）:
                                 也可给本地包或完整 URL；
                                 --name 槽位名（默认自动从资产名取）；
                                 --default 同时设为全局默认
+  install-box64 [box64|URL|本地包]
+                                升级 box64（类别 box64 = 最新 Release 资产；
+                                v0.4.4 为 hangover-11.16 官方配套，错配可致
+                                wineboot SEH 级联崩溃；旧版自动备份回滚）
   wine-catalog [类别]           在线构建目录（GitHub Releases，
                                 ANWIND_GH_PROXY 可设加速镜像，
                                 ANWIND_RELEASES_REPO 可指向 fork）
@@ -1020,6 +1172,7 @@ Wine 多版本（bionic 双形态 + 普通 Wine + Proton）:
   install-vkd3d <name> [文件|URL|ver]
                                 向容器安装 VKD3D-Proton（Vulkan D3D12）
   doctor                        体检：X11 / 隔离 / Wine / 后端 / 音频 / 容器
+                                （v2.2：rootfs 构建戳 / box64 版本配套告警 / SONAME 状态）
 
 显示模式（dmode，对齐 glibc-runner）:
   off  跟随 X11 窗口（native）        d  固定 X 屏幕分辨率（-d）
@@ -1055,6 +1208,7 @@ case "$CMD" in
     cmd|wine)      cmd_cmd "$@" ;;
     stop)          cmd_stop "$@" ;;
     install-wine)  cmd_install_wine "$@" ;;
+    install-box64) cmd_install_box64 "$@" ;;
     wine-list|wines)     cmd_wine_list ;;
     wine-catalog)  cmd_wine_catalog "$@" ;;
     wine-default)  cmd_wine_default "$@" ;;
