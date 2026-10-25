@@ -1,6 +1,19 @@
 #!/data/data/com.anwind/files/usr/bin/bash
 # ============================================================
-# anwind-wine v2.4 — AnWind 容器 Wine 启动器（bionic rootfs / X11）
+# anwind-wine v2.5 — AnWind 容器 Wine 启动器（bionic rootfs / X11）
+# v2.5 变更：GL 驱动 auto 默认 zink —— 修复 wine OpenGL(wgl) 全废导致
+#            exe 弹"驱动"错误（设备日志 CubeMap.exe 实证）：
+#            err:wgl:egldrv_init_pixel_formats "Failed to get any
+#            configs from eglChooseConfig"。根因：本 X 服务（termux-x11/
+#            libXlorie）无 GLX/DRI3，wine 10+ 落到 x11drv 的 EGL 路径，
+#            而 auto 旧默认 freedreno 走 DRM/KGSL 直渲，在 X11 平台上
+#            拿不到任何 EGL config → ChoosePixelFormat/wglCreateContext
+#            全失败。turnip 在同一会话已被 DXVK 实证可用（D3D9 设备/
+#            交换链创建成功），zink 复用同一条 Vulkan 通道出 GL。
+#            auto 判定：zink_dri.so + Vulkan ICD 齐备 → zink，否则退回
+#            freedreno（零回归）；容器 conf gallium= 显式值优先不变。
+#            另：GPU 决策行进会话日志；hangover 后端补 wine 形态探测
+#            （旧日志 wine形态=unknown 无排障价值）。
 # v2.4 变更：会话日志 —— 运行 wine/exe 的完整过程（环境决策链 +
 #            wine 原始 stdout/stderr，含 wineboot 与 err:* 报错）
 #            落盘到公共 Download 目录：
@@ -76,7 +89,7 @@ CONF_GLOBAL="$RFS_USR/etc/anwind/container.conf"
 X11_SOCK_DIR="$APP_PREFIX/tmp/.X11-unix"
 LOG_DIR="$CONT_ROOT/logs"
 
-version() { echo "anwind-wine 2.4.0 (AnWind bionic rootfs, X11 auto-start, isolated env, emulate-modeset, session log)"; }
+version() { echo "anwind-wine 2.5.0 (AnWind bionic rootfs, X11 auto-start, isolated env, emulate-modeset, session log, zink GL)"; }
 
 # ---------- 运行时目录兜底（必须在任何 wine 调用前） ----------
 # wine 按 termux 风格构建，把 /tmp 硬编码为 $RFS_USR/tmp：wineserver 启动时
@@ -174,6 +187,9 @@ anwind-wine v2.4 — AnWind 容器 Wine 启动器（bionic rootfs / X11 · 环�
   - wine 多版本: 容器 wine= 目录名（/usr/opt/<名>）或绝对路径；
     留空用全局 default_wine，再留空用 /usr/opt/wine
   - 显示: X11，强制 DISPLAY=:1（内置 X 服务未运行时自动拉起）
+  - GPU/OpenGL: auto 时 arm 设备默认 zink（GL-over-Vulkan，配 turnip；
+    D3D 走 DXVK 不受影响）；无 zink/Vulkan ICD 自动退回 freedreno；
+    容器 conf gallium= 可显式指定 zink/freedreno/llvmpipe/softpipe
   - 会话日志: 每次会话全程留痕（环境决策 + wine 全部输出）→
     /storage/emulated/0/Download/AnWind/wine-<容器>-<时间>.log
     （公共 Download，文件管理器可直接取；不可写时退回容器区 logs/）
@@ -527,21 +543,52 @@ clear_wine_blue_desktop() {
 }
 
 # ---------- Mesa / GPU 运行时（rootfs 自己的驱动栈） ----------
+# v2.5：auto 默认 zink（GL-over-Vulkan）。根因链（设备日志 CubeMap.exe
+# 实证）：本 X 服务（termux-x11/libXlorie）不提供 GLX/DRI3 → wine 10+
+# 的 x11drv 落到 EGL 路径 → eglChooseConfig 需要能在 X11 平台上给出
+# 窗口 config 的 gallium 驱动；freedreno 走 DRM/KGSL 直渲，无 DRI3 时
+# EGL 拿不到任何 config（"egldrv_init_pixel_formats Failed to get any
+# configs from eglChooseConfig" → wgl 全废 → exe 弹驱动错误）。而
+# turnip 在同一会话已被 DXVK 实证可用（D3D9 设备/交换链创建成功），
+# zink 复用同一条 Vulkan 通道出 GL。auto 判定：zink_dri.so + Vulkan
+# ICD 都在 → zink；否则维持 freedreno（无回归）。x86_64 侧 rootfs
+# mesa 只构建了 softpipe（无 llvmpipe），auto 同步纠正为 softpipe。
+# 容器 conf gallium= 显式指定仍优先生效。
 apply_gpu_env() {
     local _gallium _arch
     _arch="$(uname -m)"
     _gallium="$(conf_read "$CONT_CONF" gallium auto)"
+    # Vulkan ICD（turnip）探测：auto 判定与 zink 显式指定共用
+    GPU_VK_ICD="$(ls "$RFS_USR"/share/vulkan/icd.d/*.json \
+                     "$RFS_USR"/etc/vulkan/icd.d/*.json 2>/dev/null | head -n 1)"
     if [ "$_gallium" = "auto" ]; then
         case "$_arch" in
-            aarch64|arm64) _gallium="freedreno" ;;
-            *)             _gallium="llvmpipe" ;;
+            aarch64|arm64)
+                if [ -n "$GPU_VK_ICD" ] && [ -e "$RFS_USR/lib/dri/zink_dri.so" ]; then
+                    _gallium="zink"
+                else
+                    _gallium="freedreno"
+                fi
+                ;;
+            *)             _gallium="softpipe" ;;
         esac
     fi
     case "$_gallium" in
         zink)
+            # 对齐 glibc-runner 的 zink 全链配方（新旧 mesa 双变量兼容）
             export GALLIUM_DRIVER=zink
+            export MESA_LOADER_DRIVER_OVERRIDE=zink
             export ZINK_DESCRIPTORS=lazy
             export ZINK_DEBUG=compact
+            [ -d "$RFS_USR/lib/dri" ] && \
+                export LIBGL_DRIVERS_PATH="${LIBGL_DRIVERS_PATH:-$RFS_USR/lib/dri}"
+            # 显式锁定 ICD：与 DXVK 同一加载器同一路径，多 ICD 场景下
+            # 锁定 turnip（仅在探测到时设置；探测不到时加载器默认搜索
+            # 依然生效——DXVK 已实证默认搜索可用）
+            if [ -n "$GPU_VK_ICD" ]; then
+                export VK_DRIVER_FILES="$GPU_VK_ICD"
+                export VK_ICD_FILENAMES="$GPU_VK_ICD"   # 旧加载器兼容
+            fi
             ;;
         freedreno)
             export GALLIUM_DRIVER=freedreno
@@ -551,6 +598,7 @@ apply_gpu_env() {
             export LIBGL_ALWAYS_SOFTWARE=1
             ;;
     esac
+    GPU_DRIVER="$_gallium"
 }
 
 # ---------- 用户附加环境 + DLL 覆盖 ----------
@@ -634,6 +682,9 @@ pick_backend() {
             ;;
         *) die "未知后端: $BACKEND（可选 box64/hangover/fexcore/native/auto）" ;;
     esac
+    # hangover 兜底路径不经 resolve_wine_dir 探测 —— 此处补上，会话日志
+    # 的"wine形态"不再显示 unknown（排障需要知道架构形态）
+    [ "$BACKEND" = "hangover" ] && WINE_ARCH="$(detect_wine_arch "$WINE_HANGOVER")"
     # 旧版内置 hangover 兜底提示：/usr/opt/bin/wine 是 rootfs 打包时的旧
     # 构建（早于 CI 的 gstreamer/esync/显示设置修复），仅作保底。槽位
     # wine（/usr/opt/<名>，install-wine 安装）缺失时才会走到这里。
@@ -761,5 +812,10 @@ info "容器=$CONT_NAME 后端=$BACKEND wine形态=${WINE_ARCH:-?} DISPLAY=$DISP
 [ -n "$BOX64_BIN" ] && [ "$BACKEND" = "box64" ] && info "box64: $BOX64_BIN"
 [ -n "$DMODE_RESOLUTION" ] && info "显示模式 dmode=$DMODE 分辨率=$DMODE_RESOLUTION（X11 握手已写入）"
 info "环境: PREFIX=$PREFIX HOME=$HOME LANG=$LANG 音频=${PULSE_SERVER:-（关）}"
+if [ -n "$GPU_VK_ICD" ]; then
+    info "GPU: GL驱动=${GPU_DRIVER:-auto}（GALLIUM_DRIVER=${GALLIUM_DRIVER:-未设}）Vulkan ICD=$(basename "$GPU_VK_ICD")"
+else
+    info "GPU: GL驱动=${GPU_DRIVER:-auto}（GALLIUM_DRIVER=${GALLIUM_DRIVER:-未设}）Vulkan ICD=无"
+fi
 info "wine 目录: $WINE_DIR  参数: $*"
 run_wine "$@"
