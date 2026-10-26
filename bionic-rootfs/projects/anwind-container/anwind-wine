@@ -119,7 +119,7 @@ CONF_GLOBAL="$RFS_USR/etc/anwind/container.conf"
 X11_SOCK_DIR="$APP_PREFIX/tmp/.X11-unix"
 LOG_DIR="$CONT_ROOT/logs"
 
-version() { echo "anwind-wine 2.7.0 (AnWind bionic rootfs, X11 auto-start, isolated env, emulate-modeset, session log, zink GL, robust wineboot, soname self-heal)"; }
+version() { echo "anwind-wine 2.8.0 (AnWind bionic rootfs, X11 auto-start, isolated env, emulate-modeset, session log, zink GL, robust wineboot, soname self-heal, bionic heap-tag fix probe)"; }
 
 # ---------- SONAME 版本别名自愈（v2.7） ----------
 # 背景：本构建系统按 Termux/bionic 惯例产无版本号 .so，而 wine 的 unix
@@ -180,13 +180,15 @@ SONAME_MAP
     return 0
 }
 
-# ---------- box64 版本探测（v2.7） ----------
+# ---------- box64 版本探测（v2.8 修复） ----------
 # 回显纯数字版本号（0.4.4）；探测失败回显空。box64 --version 首行
-# 形如 "box64 v0.4.4 built on ..."。
+# 形如 "Box64 v0.4.4 built on ..."。v2.7 实现用 2>/dev/null 只收
+# stdout —— 而 box64 的版本横幅走 stderr，设备实测（wine-888888
+# 会话）版本恒为空，错配告警被连带旁路。改为 2>&1 合并捕获。
 box64_version() {
     local _bin="$1" _v
     [ -n "$_bin" ] && [ -x "$_bin" ] || { echo ""; return 0; }
-    _v="$("$_bin" --version 2>/dev/null | head -n 1 | grep -o '[0-9][0-9]*\.[0-9][0-9]*\(\.[0-9][0-9]*\)\?' | head -n 1)"
+    _v="$("$_bin" --version 2>&1 | head -n 3 | grep -o '[0-9][0-9]*\.[0-9][0-9]*\(\.[0-9][0-9]*\)\?' | head -n 1)"
     printf '%s' "$_v"
 }
 
@@ -868,6 +870,10 @@ wineboot_failed_action() { # $1 = wineboot 退出码
         fexcore)        "$FEX_BIN" "$(dirname "$WINE_X86")/wineserver" -k >/dev/null 2>&1 || true ;;
     esac
     info "排查建议（按序执行，命令可直接复制）:"
+    info "  0. 会话日志若见 \"wine 堆打标修复: 缺失\" —— 根因即在此："
+    info "     bionic TBI 0xB4 堆打标触发 fatal free → SEH 级联崩溃。"
+    info "     需用含 0006-fix-bionic-heap-tagging.patch 的配方重出 rootfs；"
+    info "     修复生效时日志会同时出现 \"anwind: bionic heap tagging disabled\"。"
     info "  1. 安装 CI 槽位 wine（首选 —— 恢复盒64/arm64ec 主力路径）:"
     info "     anwind-container install-wine bionic-arm64ec --default"
     info "     （aarch64 原生 new WoW64，无需 box64；跑 x64 游戏可选）"
@@ -1038,10 +1044,15 @@ else
 fi
 info "容器=$CONT_NAME 后端=$BACKEND wine形态=${WINE_ARCH:-?} DISPLAY=$DISPLAY WINEPREFIX=$WINEPREFIX"
 # v2.7：box64 版本进日志（排障三要素：rootfs 戳 + box64 版本 + wine 形态）
+# v2.8：探测失败也留痕（区分"没装 box64"与"装了但版本探测失败"）
 BOX64_VER=""
 if [ -n "$BOX64_BIN" ]; then
     BOX64_VER="$(box64_version "$BOX64_BIN")"
-    info "box64: $BOX64_BIN${BOX64_VER:+（v$BOX64_VER）}"
+    if [ -n "$BOX64_VER" ]; then
+        info "box64: $BOX64_BIN（v$BOX64_VER）"
+    else
+        info "box64: $BOX64_BIN（版本未知——--version 探测失败，排障可手跑: $BOX64_BIN --version）"
+    fi
 fi
 # hangover 兜底后端的版本错配告警：hangover-11.16 官方配套 box64 v0.4.4
 # （AndreRH/hangover releases 实证）；错配可致 SEH invalid frame 级联
@@ -1050,12 +1061,34 @@ fi
 if [ "$BACKEND" = "hangover" ]; then
     HO_TAG="$(conf_read "$RFS_USR/opt/.anwind-wine-info" tag "")"
     [ -n "$HO_TAG" ] && info "hangover 运行时: $HO_TAG"
+    # v2.8：bionic 堆打标修复内置探测（根治 wineboot SEH 级联 / 退出码 53 的
+    # 修复落在 ntdll.so —— 字符串标记 "bionic heap tagging disabled" 只存在于
+    # 打过 0006 补丁的构建）。设备日志从此可直接回答"这个 wine 有没有修复"。
+    HO_TAGFIX="unknown"
+    for _so in "$RFS_USR/opt/lib/wine/aarch64-unix/ntdll.so" \
+               "$RFS_USR/opt/lib/wine/x86_64-unix/ntdll.so"; do
+        if [ -f "$_so" ]; then
+            if grep -aq "bionic heap tagging disabled" "$_so" 2>/dev/null; then
+                HO_TAGFIX="yes"
+            else
+                HO_TAGFIX="no"
+            fi
+            break
+        fi
+    done
+    case "$HO_TAGFIX" in
+        yes) info "wine 堆打标修复: 已内置（0006 补丁 —— bionic TBI 0xB4 崩溃已根治）" ;;
+        no)  info "wine 堆打标修复: 缺失！当前 wine 构建于修复之前 —— wineboot SEH 级联崩溃"
+             info "      （invalid frame → not in stack limits → kernel32 c0000135 → 退出码 53）"
+             info "      会复发。需用含 0006-fix-bionic-heap-tagging.patch 的配方重出 rootfs。" ;;
+        *)   info "wine 堆打标修复: 未能定位 ntdll.so（$RFS_USR/opt/lib/wine/*-unix/）—— 无法探测" ;;
+    esac
     if [ -n "$BOX64_VER" ] && ver_lt "$BOX64_VER" "0.4.4"; then
         info "警告: box64 v$BOX64_VER 低于 hangover-11.16 官方配套 v0.4.4 ——"
         info "       hangover↔box64 协议版本敏感，SEH 崩溃风险。升级命令:"
         info "       anwind-container install-box64"
     fi
-    if [ -z "$(find "$RFS_USR/opt/lib/wine" "$WINEPREFIX/drive_c/windows" \
+    if [ -z "$(find "$RFS_USR/opt/lib/wine" "$WINE_DIR/lib/wine" "$WINEPREFIX/drive_c/windows" \
                  -name wowbox64.dll -o -name libarm64ecfex.dll 2>/dev/null | head -n 1)" ]; then
         info "提示: 未探测到模拟器 DLL（wowbox64/libarm64ecfex）——hangover 后端"
         info "      仅能运行 arm64ec/aarch64 PE；x86/x64 程序需安装槽位 wine 或"

@@ -279,6 +279,82 @@ SHMDECL
   }
   inject_shm_compat
 
+  # bionic scudo TBI 堆打标关闭（兜底注入，幂等）：
+  # Android >= 12 在支持 TBI 的内核上给每个 64 位原生进程启用堆打标
+  # （scudo malloc 指针顶字节 0xB4），free() 校验标签不符即
+  # async_safe_fatal("Pointer tag for %p was truncated") → abort()。
+  # wine 保存堆指针的场合会剥掉顶字节，fatal free() 恰落在 wine 的
+  # kernel stack（virtual_alloc_thread_data 以 limit_4g 锚定的 4GB 上
+  # 映射）→ SIGABRT 的异常分发把 SEH 帧留在 0x10010xxxx →
+  # is_valid_frame 只认 TEB 原生栈界 → "invalid frame / not in stack
+  # limits" 级联 → "could not load kernel32.dll" c0000135 → wineboot
+  # 退出码 53（设备日志 wine-888888，Android 15/SDK 35 实证；glibc
+  # 无打标故官方构建不受影响）。
+  # 修复：mallopt(M_BIONIC_SET_HEAP_TAGGING_LEVEL, M_HEAP_TAGGING_LEVEL_NONE)
+  # 公开 bionic API（与 AndroidManifest allowNativeHeapPointerTagging=false
+  # 同机制）；UNTAG 掩码保留，此前已打标指针仍可安全 free。首选由
+  # 0006-fix-bionic-heap-tagging.patch 打入（本函数之前的补丁循环已套），
+  # 此处仅做缺失兜底 —— 官方/proton 树结构漂移导致补丁 hunk 失败时，
+  # sed 直接锚定稳定上游锚点注入同一改动，保证修复必然落地。
+  inject_heap_tag_fix() {
+    local _helper _f
+    _helper='#if defined(__BIONIC__) && defined(__aarch64__)
+#include <malloc.h>
+#ifndef M_BIONIC_SET_HEAP_TAGGING_LEVEL
+#define M_BIONIC_SET_HEAP_TAGGING_LEVEL (-204)
+#endif
+#ifndef M_HEAP_TAGGING_LEVEL_NONE
+#define M_HEAP_TAGGING_LEVEL_NONE 0
+#endif
+static void anwind_disable_heap_tagging(void)
+{
+    if (mallopt( M_BIONIC_SET_HEAP_TAGGING_LEVEL, M_HEAP_TAGGING_LEVEL_NONE ))
+        fprintf( stderr, "anwind: bionic heap tagging disabled (TBI 0xB4 free-check off)\n" );
+    else
+        fprintf( stderr, "anwind: WARNING - failed to disable bionic heap tagging\n" );
+}
+#else
+static void anwind_disable_heap_tagging(void) { }
+#endif
+'
+    # 注：helper 经 ENVIRON 传入 awk（-v 会把 C 字符串里的 \n 解释成真实换行）
+    # 1) 每个 wine 进程的最早入口：dlls/ntdll/unix/loader.c 的 __wine_main
+    _f="dlls/ntdll/unix/loader.c"
+    if [[ -f "$_f" ]] && ! grep -q "anwind_disable_heap_tagging" "$_f"; then
+      if grep -q "^    main_argc = argc;" "$_f" && grep -q '^DECLSPEC_EXPORT void __wine_main' "$_f"; then
+        ANWIND_HEAPTAG_HELPER="$_helper" awk '
+          BEGIN { h = ENVIRON["ANWIND_HEAPTAG_HELPER"] }
+          /^DECLSPEC_EXPORT void __wine_main/ && !done {
+            print ""; print h; done=1
+          }
+          { print }
+          /^    main_argc = argc;$/ && !called { print "    anwind_disable_heap_tagging();"; called=1 }
+        ' "$_f" > "$_f.anwind-tmp" && mv "$_f.anwind-tmp" "$_f" \
+          && echo "已注入 bionic 堆打标关闭（__wine_main，兜底）=> $_f"
+      else
+        echo "⚠️ loader.c 无 __wine_main/main_argc 锚点，堆打标兜底未注入（请核查）"
+      fi
+    fi
+    # 2) wineserver：server/main.c 的 main()
+    _f="server/main.c"
+    if [[ -f "$_f" ]] && ! grep -q "anwind_disable_heap_tagging" "$_f"; then
+      if grep -q "^    setvbuf( stderr, NULL, _IOLBF, 0 );" "$_f" && grep -q '^int main( int argc, char \*argv\[\] )' "$_f"; then
+        ANWIND_HEAPTAG_HELPER="$_helper" awk '
+          BEGIN { h = ENVIRON["ANWIND_HEAPTAG_HELPER"] }
+          /^int main\( int argc, char \*argv\[\] \)$/ && !done {
+            print ""; print h; done=1
+          }
+          { print }
+          /^    setvbuf\( stderr, NULL, _IOLBF, 0 \);$/ && !called { print "    anwind_disable_heap_tagging();"; called=1 }
+        ' "$_f" > "$_f.anwind-tmp" && mv "$_f.anwind-tmp" "$_f" \
+          && echo "已注入 bionic 堆打标关闭（server main，兜底）=> $_f"
+      else
+        echo "⚠️ server/main.c 无 main/setvbuf 锚点，堆打标兜底未注入（请核查）"
+      fi
+    fi
+  }
+  inject_heap_tag_fix
+
   # arm64ec PE 导出名校验清理（wdscore，proton_10.0 树实测崩溃点）：
   # proton_10.0 的 dlls/wdscore/wdscore.spec 带 66 个 x86 32 位 MSVC 修饰名
   # @ stub 导出（CDynamicArray 模板成员，thiscall 标记 QAE/QBE 等）。ARM64EC

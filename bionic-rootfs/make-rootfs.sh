@@ -318,6 +318,42 @@ info "SONAME 版本别名: 本次补建 ${_libFixes} 个（包内已携带的自
             > "${_rootfsRoot}/usr/etc/anwind/rootfs-build-id"; }
 info "rootfs 构建戳: $(head -n 1 "${_rootfsRoot}/usr/etc/anwind/rootfs-build-id" 2>/dev/null)"
 
+# ---- hangover 模拟器 DLL 打包（v4：让内置 wine 具备 x86/x64 运行能力） ----
+# 背景：hangover-11.16 的 arm64ec 新 WoW64 形态中，x86_64 PE 经
+# libarm64ecfex.dll（FEX）、i386 PE 经 wowbox64.dll（box64）模拟——
+# 这些是独立构建的 PE DLL（hangover 官方 hangover_<ver>_dlls.tar，
+# 打包脚本实证内容 = dxvk*.tar.gz + lib*.dll + wow*.dll 平铺）。
+# 此前 rootfs 从未包含它们 → 内置 hangover 后端只能跑 arm64ec/aarch64
+# PE（anwind-wine v2.7 会话已探测并告警）。此处组装时下载并安装到
+# wine 的 DLL 搜索路径 usr/opt/lib/wine/aarch64-windows/（hangover-wine
+# 配方 --libdir=$prefix/opt/lib）。PE 文件与宿主 libc 无关（官方 glibc
+# 发行版直接复用，bionic 同样兼容）。
+# 失败仅告警不中断：rootfs 核心不含这些 DLL 也能出（hangover 后端
+# 退化为仅原生 PE，与修复前行为一致）。
+if [[ "$targetArch" == "aarch64" ]]; then
+  _hoVer="$(sed -n 's/^revision="${ANWIND_HANGOVER_TAG:-\([^"}]*\)}"/\1/p' \
+    "${wsDir}/projects/hangover-wine/build.sh" 2>/dev/null | head -n 1)"
+  [[ -n "${_hoVer}" ]] || _hoVer="11.16"
+  _hoDllsUrl="${ANWIND_HODLLS_URL:-https://github.com/AndreRH/hangover/releases/download/hangover-${_hoVer}/hangover_${_hoVer}_dlls.tar}"
+  _hoWineDllDir="${_rootfsRoot}/usr/opt/lib/wine/aarch64-windows"
+  _hoTmp="$(mktemp -d "${TMPDIR:-/tmp}/anwind-hodlls.XXXXXX")"
+  if wget -nv -T 120 -O "${_hoTmp}/dlls.tar" "${_hoDllsUrl}" 2>&1 | sed 's/^/  /' \
+     && tar -tf "${_hoTmp}/dlls.tar" 2>/dev/null | grep -q 'wowbox64\.dll\|libarm64ecfex\.dll'; then
+    mkdir -p "${_hoWineDllDir}"
+    tar -xf "${_hoTmp}/dlls.tar" -C "${_hoTmp}" --wildcards 'lib*.dll' 'wow*.dll' 2>/dev/null \
+      || tar -xf "${_hoTmp}/dlls.tar" -C "${_hoTmp}"
+    _hoN=0
+    for _d in "${_hoTmp}"/*.dll; do
+      [[ -f "$_d" ]] || continue
+      cp -p "$_d" "${_hoWineDllDir}/" && _hoN=$((_hoN + 1))
+    done
+    info "hangover 模拟器 DLL: 安装 ${_hoN} 个 => usr/opt/lib/wine/aarch64-windows/（$(tar -tf "${_hoTmp}/dlls.tar" 2>/dev/null | grep -c '\.dll$' || echo ?) 个在包内）"
+  else
+    warn "hangover 模拟器 DLL 下载/校验失败（${_hoDllsUrl}）—— 内置 wine 仅支持 arm64ec/aarch64 PE；可稍后手动安装：详见 hangover 官方 dlls.tar"
+  fi
+  rm -rf "${_hoTmp}"
+fi
+
 # ---- 绝对符号链接重写：让导出树自包含 ----
 # meson 的 install_symlink（如 xkeyboard-config compat-rules 的
 # share/X11/xkb -> <prefix>/share/xkeyboard-config-2）会生成指向设备最终

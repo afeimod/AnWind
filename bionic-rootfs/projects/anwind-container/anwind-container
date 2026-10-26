@@ -72,7 +72,7 @@
 #       /system/fonts）提供 CJK 字体。
 # ============================================================
 
-version() { echo "anwind-container 2.2.0 (AnWind bionic rootfs, X11, isolated env, wine catalog, session log, box64 upgrade channel)"; }
+version() { echo "anwind-container 2.2.1 (AnWind bionic rootfs, X11, isolated env, wine catalog, session log, box64 upgrade channel, heap-tag fix probe)"; }
 
 RFS_ROOT="/data/data/com.anwind/files/rootfs"
 RFS_USR="$RFS_ROOT/usr"
@@ -703,7 +703,9 @@ BOX64_MIN_HANGOVER="0.4.4"   # hangover-11.16 官方配套版
 box64_version_of() { # $1=box64 二进制 → 回显纯数字版本（空=探测失败）
     local _v
     [ -n "$1" ] && [ -x "$1" ] || { echo ""; return 0; }
-    _v="$("$1" --version 2>/dev/null | head -n 1 | grep -o '[0-9][0-9]*\.[0-9][0-9]*\(\.[0-9][0-9]*\)\?' | head -n 1)"
+    # v2.2.1：2>&1 合并捕获 —— box64 版本横幅走 stderr，v2.2 的 2>/dev/null
+    # 会把它丢弃（设备实证 wine-888888 会话：版本恒空）
+    _v="$("$1" --version 2>&1 | head -n 3 | grep -o '[0-9][0-9]*\.[0-9][0-9]*\(\.[0-9][0-9]*\)\?' | head -n 1)"
     printf '%s' "$_v"
 }
 
@@ -1027,6 +1029,18 @@ cmd_doctor() {
         || { echo "  [!!] libX11.so.6 别名缺失 —— anwind-wine v2.7 会话启动时自动补建"; \
              [ -r "$RFS_USR/lib/libX11.so" ] && echo "      （检测到无版本号 libX11.so —— 自愈可行）" \
                  || echo "      （连 libX11.so 都缺失 —— 请用 bionic-rootfs workflow 重建 rootfs）"; }
+    # v2.2.1：bionic 堆打标修复探测（根治 wineboot SEH 级联 / 退出码 53 的
+    # 0006 补丁；字符串标记只存在于打过补丁的 ntdll.so）
+    local _ho_ntdll="$RFS_USR/opt/lib/wine/aarch64-unix/ntdll.so"
+    if [ -f "$_ho_ntdll" ]; then
+        if grep -aq "bionic heap tagging disabled" "$_ho_ntdll" 2>/dev/null; then
+            echo "  [OK] 内置 wine 堆打标修复在位（0006 补丁 —— wineboot 53 级联崩溃已根治）"
+        else
+            echo "  [!!] 内置 wine 缺堆打标修复 —— bionic TBI 0xB4 会触发 wineboot SEH 级联崩溃"
+            echo "       （invalid frame → kernel32 c0000135 → 退出码 53）。需用含"
+            echo "       0006-fix-bionic-heap-tagging.patch 的配方重出 rootfs。"
+        fi
+    fi
 
     echo
     echo "[2/6] 环境隔离"
