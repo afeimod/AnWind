@@ -25,6 +25,15 @@ doNotApplyPatch=1
 #   * 安装路径 $prefix/opt（启动器 WINE_HANGOVER 分支识别）
 # llvm-mingw 必须用 20251202+：arm64ec PE 目标需要较新的 llvm/mingw-w64
 # （与用户 glibc 流水线 wine-Arm.yml 的验证组合一致）
+# v2 2026-10-27：20251202 → 20260826（LLVM 23.1.0）—— 对齐 hangover-11.16
+# 官方 .packaging 实际采用版（2026-08-28 提交 bump 到 20260826）。官方发行
+# 注记明确要求 “llvm-mingw toolchain with fixed exit thunks for vararg
+# functions”：arm64ec 的 x64↔arm64ec 过渡靠 exit thunk，vararg 场景的
+# thunk 缺陷会破坏栈帧/SEH 链——与设备实证的内置 hangover wineboot
+# 崩溃签名（SEH 帧落在 4GB 锚定的 wow64 kernel stack → not in stack
+# limits → kernel32 c0000135）相容。20251202 早于全部 2026 年发布，
+# 无法确认含该修复。（设备验证：尚未——先以 CI 槽位 x86_64 wine 恢复
+# 主力路径，本原配套修复供下次 rootfs 重建使用。）
 # ============================================================
 
 args="
@@ -92,8 +101,8 @@ deps="pthread-stub alsa-lib fontconfig freetype gnutls gstreamer ffmpeg pulseaud
 # 失败时仍能从 "make: *** [Makefile:...] Error 1" 定位到目标。
 makeSilent=1
 
-llvmMingwVersion="22"
-llvmMingwDate="20251202"
+llvmMingwVersion="23"
+llvmMingwDate="20260826"
 llvmMingwUrl="https://github.com/mstorsjo/llvm-mingw/releases/download/${llvmMingwDate}/llvm-mingw-${llvmMingwDate}-ucrt-ubuntu-22.04-x86_64.tar.xz"
 llvmMingwSha256=""
 
