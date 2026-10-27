@@ -2,9 +2,7 @@ package com.anwind.apps.containers
 
 import android.content.Context
 import android.os.Build
-import android.os.Environment
 import android.os.SystemClock
-import android.util.Log
 import com.anwind.apps.terminal.termux.TermuxEnvironment
 import com.anwind.apps.x11.X11WindowController
 import com.anwind.termux.terminal.TerminalSession
@@ -24,16 +22,18 @@ import java.util.Locale
  *     （bionic 模型：rootfs 内二进制直接原生运行，无需 chroot/proot）；
  *  3. 用无界面（headless）TerminalSession 承载 wine 进程，日志可在
  *     "Wine 输出"面板查看；wineserver 随会话存活，可用"停止"一键关闭。
- *  4. 会话日志（v2.24）：每次运行 wine/exe 全程留痕 —— Download/AnWind
- *     下按时间戳建 wine-<容器>-<时间>.log，整条会话（bash →
- *     anwind-container → anwind-wine → wine）的 stdout/stderr 经 tee
- *     同步落盘 + 终端回显；anwind-wine 识别 ANWIND_SESSION_LOG 复用同一
- *     文件并补记环境决策链；退出码由 App 侧补记。生命周期事件同步打
- *     logcat（TAG=AnWindWine）。公共 Download 不可写时退回 App 外部私有
- *     目录，全部失败则不接 tee（仅 lastLogs/logcat，零功能回归）。
  *
  * 容器解析/后端选择/DISPLAY 探测/PulseAudio 注入均由脚本侧完成，
  * App 端只负责拼装环境与展示。
+ *
+ * v2.29（基线恢复 + 纯日志）：回滚 598e60e 起的全部行为改动 —— 会话命令
+ * 恒等于原始 shellCmd（撤除 "$shellCmd > >(tee -a log) 2>&1" 管道接管，
+ * wine 全家 stdio 始终保持 pty 原生），进程创建/环境/生命周期与基线
+ * （ad214ca，加日志之前可正常构建前缀的实证版本）完全一致。仅新增
+ * 纯文件日志：启动头（spawn 写）+ anwind-wine 决策行（脚本侧经
+ * ANWIND_SESSION_LOG 追加）+ 会话结束时 transcript 全量转储 + 退出码
+ * （onSessionFinished 写）。全部为追加写文件 —— 不重定向、不建管道、
+ * 不改子进程任何状态。日志目录全部不可写时不接日志，会话照常执行。
  */
 object WineSessionLauncher {
 
@@ -42,12 +42,6 @@ object WineSessionLauncher {
 
     /** X 服务自动拉起的去抖窗口（冷启动 socket 未就绪期间防重复）。 */
     private const val SERVICE_START_DEBOUNCE_MS = 8000L
-
-    /** wine 会话生命周期的 logcat TAG。 */
-    private const val TAG = "AnWindWine"
-
-    /** 会话日志保留份数（wine-*.log 按修改时间轮转，超限删最旧）。 */
-    private const val LOG_KEEP = 30
 
     /** 活跃会话表：容器名 → 会话（供"停止"与状态展示）。 */
     val activeSessions = LinkedHashMap<String, TerminalSession>()
@@ -68,9 +62,7 @@ object WineSessionLauncher {
      */
     fun runExe(context: Context, container: ContainerData, exe: String, args: String = ""): String? {
         if (!ContainerManager.rootfsReady()) {
-            val msg = "rootfs 未就绪：请先导入包含 anwind-container 的 bionic rootfs"
-            logSpawnFailure(context, container.name, "runExe", msg)
-            return msg
+            return "rootfs 未就绪：请先导入包含 anwind-container 的 bionic rootfs"
         }
         val cmd = buildString {
             append("exec ${ContainerManager.CLI} run ")
@@ -87,9 +79,7 @@ object WineSessionLauncher {
      */
     fun runWineCmd(context: Context, container: ContainerData, wineCmd: String): String? {
         if (!ContainerManager.rootfsReady()) {
-            val msg = "rootfs 未就绪：请先导入包含 anwind-container 的 bionic rootfs"
-            logSpawnFailure(context, container.name, "runWineCmd", msg)
-            return msg
+            return "rootfs 未就绪：请先导入包含 anwind-container 的 bionic rootfs"
         }
         val cmd = "exec ${ContainerManager.CLI} cmd " +
             "\"${container.name}\" ${wineCmd.trim()}"
@@ -123,11 +113,9 @@ object WineSessionLauncher {
                     "exec ${ContainerManager.CLI} stop \"${name}\""
             )
             pb.environment()?.put("ANWIND_CONTAINER", name)
-            val rc = pb.start().waitFor()
-            Log.i(TAG, "stopContainer '$name' rc=$rc")
+            pb.start().waitFor()
             null
         } catch (e: Exception) {
-            Log.w(TAG, "stopContainer '$name' failed: ${e.message}")
             "停止失败：${e.message}"
         }
     }
@@ -166,9 +154,7 @@ object WineSessionLauncher {
         mkDefault: Boolean = false
     ): String? {
         if (!ContainerManager.rootfsReady()) {
-            val msg = "rootfs 未就绪：请先导入包含 anwind-container 的 bionic rootfs"
-            logSpawnFailure(context, "__install__", "installWine", msg)
-            return msg
+            return "rootfs 未就绪：请先导入包含 anwind-container 的 bionic rootfs"
         }
         val placeholder = ContainerData(name = "__install__")
         val cmd = buildString {
@@ -199,16 +185,14 @@ object WineSessionLauncher {
     fun ensureX11Window(context: Context) {
         try {
             ensureX11Service(context)
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             // 服务拉起失败不阻断流程：等待页持续重试，doctor 可诊断
-            Log.w(TAG, "ensureX11Service failed (non-blocking): ${e.message}")
         }
         try {
             X11WindowController.openWindow(context)
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             // X11 窗口未就绪时 wine 会连接失败，doctor 可诊断；
-            // 此处仅 logcat 留痕，避免阻断启动流程
-            Log.w(TAG, "X11WindowController.openWindow failed (non-blocking): ${e.message}")
+            // 此处静默，避免阻断启动流程
         }
     }
 
@@ -235,10 +219,7 @@ object WineSessionLauncher {
         val prefix = TermuxEnvironment.prefixPath(context)
         val client = File("$prefix/bin/termux-x11")
         val sh = File("$prefix/bin/sh")
-        if (!client.isFile) {
-            Log.w(TAG, "X11 client script missing: ${client.absolutePath}")
-            return                     // 组件未迁移完成
-        }
+        if (!client.isFile) return                     // 组件未迁移完成
 
         val log = File("$prefix/tmp/anwind-x11-autostart.log")
         log.parentFile?.mkdirs()
@@ -255,7 +236,6 @@ object WineSessionLauncher {
             putIfAbsent("TMPDIR", "$prefix/tmp")
         }
         pb.start()   // 脚本自身判断重复启动（anwindx11 进程探测），无需等待
-        Log.i(TAG, "X11 service autostart triggered (:1), log: ${log.absolutePath}")
     }
 
     /** 当前是否存在可用的 X11 socket（App 侧）。 */
@@ -266,105 +246,56 @@ object WineSessionLauncher {
     }
 
     // ------------------------------------------------------------------
-    // 会话日志（v2.24：wine/exe 运行全程留痕，排障不再靠猜）
+    // 会话日志（v2.29 纯日志）：只创建文件 + 追加写；零行为改动
     // ------------------------------------------------------------------
-
-    /**
-     * 会话日志目录：
-     *  1. 公共 Download/AnWind —— 用户用任意文件管理器可直接取走
-     *     （需已授予「所有文件访问」，与本应用文件管理器同权限）；
-     *  2. 不可写时退回 App 外部私有目录（无需任何权限：
-     *     /storage/emulated/0/Android/data/com.anwind/files/wine-logs）。
-     * 每次会话实时探测（自愈：用户补授权后立即回到公共 Download）。
-     */
-    private fun sessionLogDir(context: Context): File? {
-        val primary = File(
-            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
-            "AnWind"
-        )
-        if (probeWritableDir(primary)) return primary
-        val fallback = context.getExternalFilesDir(null)
-            ?.let { File(it, "wine-logs") }
-        if (fallback != null && probeWritableDir(fallback)) return fallback
-        return null
-    }
-
-    /** 真实建删探针文件（FUSE 上 canWrite() 不可靠）。 */
-    private fun probeWritableDir(dir: File): Boolean = runCatching {
-        if (!dir.isDirectory && !dir.mkdirs()) return@runCatching false
-        val probe = File(dir, ".anwind-probe")
-        val created = probe.createNewFile()
-        if (created) probe.delete()
-        created || probe.canWrite()
-    }.getOrDefault(false)
-
-    /** 新建会话日志文件（容器名 + 时间戳），并按 mtime 轮转旧日志。 */
-    private fun newSessionLog(context: Context, containerName: String): File? = runCatching {
-        val dir = sessionLogDir(context) ?: return@runCatching null
-        rotateLogs(dir)
+    // 基线（ad214ca）的 spawn 不创建日志文件、不包装命令；598e60e 起加入的
+    // "$shellCmd > >(tee -a log) 2>&1" 把 wine 全家 stdio 从 pty 改接
+    // 管道 —— 实证为 wineboot SEH 崩溃回归根因，已撤除。现在的会话日志
+    // 组成：启动头（spawn 写）+ 脚本决策行（anwind-wine v2.12 经
+    // ANWIND_SESSION_LOG 追加，实时落盘）+ 结束时 transcript 全量转储 +
+    // 退出码（onSessionFinished 写）。全程纯文件 IO，子进程无感。
+    private fun newSessionLog(context: Context, containerName: String): File? {
         val stamp = SimpleDateFormat("yyyyMMdd-HHmmss-SSS", Locale.US).format(Date())
-        val safe = containerName.replace(Regex("[^A-Za-z0-9._-]"), "_")
-            .take(40).ifBlank { "default" }
-        File(dir, "wine-$safe-$stamp.log").apply { createNewFile() }
-    }.getOrNull()
-
-    /** 只轮转本机制产生的 wine-*.log，保留最新 LOG_KEEP 份。 */
-    private fun rotateLogs(dir: File) {
-        val logs = dir.listFiles { f -> f.isFile && f.name.startsWith("wine-") && f.name.endsWith(".log") }
-            ?: return
-        if (logs.size <= LOG_KEEP) return
-        logs.sortedByDescending { it.lastModified() }
-            .drop(LOG_KEEP)
-            .forEach { runCatching { it.delete() } }
+        val safe = containerName.replace(Regex("[^A-Za-z0-9._-]"), "_").take(40).ifEmpty { "default" }
+        // 候选目录：公共 Download（用户文件管理器可直接取）→ rootfs 容器区 logs
+        for (dir in listOf(
+            File("/storage/emulated/0/Download/AnWind"),
+            File("${ContainerManager.ROOTFS_ROOT}/home/.anwind/containers/logs")
+        )) {
+            try {
+                if (!dir.isDirectory) dir.mkdirs()
+                if (!dir.isDirectory || !dir.canWrite()) continue
+                val f = File(dir, "wine-$safe-$stamp.log")
+                if (!f.createNewFile() && !f.isFile) continue
+                return f
+            } catch (_: Exception) {
+                // 该目录不可用 → 试下一个候选
+            }
+        }
+        return null // 全部失败：不落日志，会话照常执行（零影响）
     }
 
     private fun appendToFile(file: File, text: String) {
-        runCatching { file.appendText(text) }
-    }
-
-    /** 未起会话的错误（rootfs 未就绪 / bash 缺失等）也要留痕。 */
-    private fun logSpawnFailure(context: Context, containerName: String, where: String, message: String) {
-        Log.w(TAG, "[$where/$containerName] $message")
-        val f = newSessionLog(context, containerName) ?: return
-        appendToFile(
-            f,
-            "===== AnWind wine 会话失败 ${nowStamp()} =====\n" +
-                "容器: $containerName\n" +
-                "阶段: $where\n" +
-                "结果: $message\n\n"
-        )
+        try { file.appendText(text) } catch (_: Exception) {}
     }
 
     private fun nowStamp(): String =
         SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US).format(Date())
 
-    private fun appVersionLine(context: Context): String = runCatching {
-        val pm = context.packageManager
-        val info = pm.getPackageInfo(context.packageName, 0)
-        "com.anwind ${info.versionName ?: "?"}"
-    }.getOrDefault("com.anwind ?")
-
-    /** shell 参数引用：单引号包裹（内嵌单引号转义，路径含空格也安全）。 */
-    private fun shSingleQuote(s: String): String = "'" + s.replace("'", "'\\''") + "'"
+    private fun appVersionLine(context: Context): String = try {
+        val pi = context.packageManager.getPackageInfo(context.packageName, 0)
+        "${context.packageName} ${pi.versionName ?: "?"}"
+    } catch (_: Exception) { context.packageName }
 
     // ------------------------------------------------------------------
     // 会话孵化（headless TerminalSession）
     // ------------------------------------------------------------------
 
     /**
-     * 以 App 侧 bash -c 执行命令，输出写入 lastLogs 并全程落盘会话日志。
+     * 以 App 侧 bash -c 执行命令，输出写入 lastLogs。
      *
      * 环境：TermuxEnvironment 标准环境 + ANWIND_CONTAINER +
      * rootfs bin 前置 PATH（与 profile.d/anwind-container.sh 一致）。
-     *
-     * v2.24 会话日志：Download/AnWind 下按时间戳建 wine-<容器>-<时间>.log，
-     * 启动头（容器/命令/App 版本/设备）由 App 写入，整条会话（bash →
-     * anwind-container → anwind-wine → wine）的 stdout/stderr 经进程替换
-     * tee 同步落盘 + 终端回显（保留 exec 语义，会话 pid/信号/kill 行为
-     * 不变）；anwind-wine 识别 ANWIND_SESSION_LOG 复用同一文件并补记环境
-     * 决策链；退出码在 onSessionFinished 补记。进程替换自检失败时按原样
-     * 直跑（零功能回归）。公共 Download 不可写时退回 App 外部私有目录，
-     * 全部失败则不接 tee（输出仍进 lastLogs 与 logcat）。
      */
     private fun spawn(context: Context, containerName: String, shellCmd: String): String? {
         // X11 桌面窗口先就位（X11 显示方案联动；同步自动拉起 X 服务）
@@ -375,8 +306,6 @@ object WineSessionLauncher {
         runCatching {
             com.anwind.apps.terminal.termux.AnWindScriptAssets
                 .deployScriptsIfNeeded(context.applicationContext)
-        }.onFailure {
-            Log.w(TAG, "deployScriptsIfNeeded failed: ${it.message}")
         }
 
         // wineserver 运行时目录兜底：wine 按 termux 风格构建，把 /tmp 硬编码为
@@ -387,27 +316,17 @@ object WineSessionLauncher {
         runCatching {
             File("${ContainerManager.ROOTFS_ROOT}/usr/tmp").mkdirs()
             File("${ContainerManager.APP_PREFIX}/tmp/.X11-unix").mkdirs()
-        }.onFailure {
-            Log.w(TAG, "runtime dirs mkdir failed: ${it.message}")
         }
 
         val prefix = TermuxEnvironment.prefixPath(context)
         val bash = File("$prefix/bin/bash")
-        if (!bash.isFile) {
-            val msg = "未找到 App 侧 bash：$prefix/bin/bash"
-            logSpawnFailure(context, containerName, "spawn", msg)
-            return msg
-        }
+        if (!bash.isFile) return "未找到 App 侧 bash：$prefix/bin/bash"
 
-        // ---- v2.24 会话日志：建文件 + 接管整条会话输出 ----
+        // ---- v2.29 纯日志：会话日志文件（失败不阻断；不包装/不重定向命令） ----
+        // 注意：会话命令仍是原始 shellCmd 本身（无 tee/管道/重定向），
+        // 与基线 ad214ca 完全一致；这里只创建文件并写启动头。
         val sessionLog = newSessionLog(context, containerName)
         val logPath = sessionLog?.absolutePath
-        // 进程替换自检：不可用（无 /dev/fd 且 FIFO 兜底失败）时按原样直跑
-        // （exec 语义不变，仅本次不落盘）——零功能回归
-        val sessionCmd = if (logPath == null) shellCmd else
-            "if bash -c ': > >(true)' 2>/dev/null; then " +
-                "$shellCmd > >(tee -a ${shSingleQuote(logPath)}) 2>&1; " +
-                "else $shellCmd; fi"
         if (sessionLog != null) {
             appendToFile(
                 sessionLog,
@@ -421,20 +340,14 @@ object WineSessionLauncher {
                     append('\n')
                 }
             )
-            Log.i(TAG, "[$containerName] session log -> $logPath")
-        } else {
-            Log.w(
-                TAG,
-                "[$containerName] no writable log dir (Download/AnWind and fallback both failed); " +
-                    "output only in lastLogs/logcat"
-            )
         }
 
         val env = mutableListOf<String>().apply {
             addAll(TermuxEnvironment.buildEnvironment(context, isFailSafe = false))
             add("ANWIND_CONTAINER=$containerName")
-            // anwind-wine 见此变量即复用同一日志文件（补记环境决策链，
-            // 不再自建 tee，避免双写）
+            // v2.29 纯日志：anwind-wine v2.12 见此变量即把决策行追加进同一
+            // 文件（实时落盘）；wine/bash 均不读该变量，除它之外的环境与
+            // 基线 ad214ca 完全一致
             logPath?.let { add("ANWIND_SESSION_LOG=$it") }
             // 与 rootfs profile.d 注入一致的 PATH（rootfs bin 优先）
             add("PATH=${ContainerManager.ROOTFS_ROOT}/usr/bin:${TermuxEnvironment.prefixPath(context)}/bin")
@@ -445,7 +358,7 @@ object WineSessionLauncher {
             add("DISPLAY=:1")
         }
 
-        val args = arrayOf("-c", sessionCmd)
+        val args = arrayOf("-c", shellCmd)
         val processArgs = TermuxEnvironment.setupProcessArgs(context, bash.absolutePath, args)
         val executable = processArgs.first()
 
@@ -453,7 +366,8 @@ object WineSessionLauncher {
         activeSessions.remove(containerName)?.finishIfRunning()
 
         val log = StringBuilder("[AnWind] $shellCmd\n")
-        // 日志文件路径进面板首行：用户在"Wine 输出"里即可看到去哪取完整日志
+        // 会话日志路径进面板首行（纯展示信息）：用户在“Wine 输出”里即可
+        // 看到去哪取完整日志文件
         if (logPath != null) log.append("[AnWind] 会话日志: $logPath\n")
         lastLogs[containerName] = log
             .let { if (it.length > 4096) StringBuilder(it.substring(it.length - 4096)) else it }
@@ -473,7 +387,6 @@ object WineSessionLauncher {
         // initializeEmulator 内部即完成子进程孵化（JNI.createSubprocess），
         // 无需额外 start 调用
         session.initializeEmulator(80, 24)
-        Log.i(TAG, "[$containerName] session started, pid=${session.pid}, log=${logPath ?: "-"}")
 
         activeSessions[containerName] = session
         trimSessions()
@@ -489,7 +402,10 @@ object WineSessionLauncher {
         }
     }
 
-    private const val TRANSCRIPT_ROWS = 200
+    // v2.29 纯日志配套：200 → 2000 —— 会话结束时全量转储 transcript，缓冲
+    // 加深才能装下完整 wineboot/长会话输出（仅 App 侧内存滚动缓冲深度，
+    // 对子进程零影响）
+    private const val TRANSCRIPT_ROWS = 2000
 
     /** shell 参数引用：包裹双引号并转义内嵌双引号。 */
     private fun shellQuote(s: String): String =
@@ -501,8 +417,7 @@ object WineSessionLauncher {
 
     /**
      * 最小 TerminalSessionClient 实现：
-     * 输出变化时把缓冲尾部追加到 lastLogs，退出时打标记；
-     * 会话日志文件由外部（spawn）创建并接 tee，这里只补记退出码。
+     * 输出变化时把缓冲尾部追加到 lastLogs，退出时打标记。
      */
     private class HeadlessClient(
         private val key: String,
@@ -536,13 +451,21 @@ object WineSessionLauncher {
 
         override fun onSessionFinished(finishedSession: TerminalSession) {
             val code = if (finishedSession.isRunning) "?" else "${finishedSession.exitStatus}"
-            lastLogs[key]?.append("\n[进程退出码: $code]\n")
-            // 退出码补记进会话日志文件（tee 侧无生命周期概念，这里收尾；
-            // 根因定位三要素齐了：启动头 + 全程输出 + 退出码）
-            logFile?.let {
-                appendToFile(it, "\n[进程退出码: $code] 会话结束 ${nowStamp()}\n\n")
+            // v2.29 纯日志收尾：transcript 全量转储 + 退出码（纯文件追加；
+            // 会话 stdio 始终为 pty 原生，未经任何管道/重定向 —— 与基线
+            // 一致，这里只是把已读到的内容写进文件）
+            logFile?.let { f ->
+                try {
+                    finishedSession.emulator?.let { emu ->
+                        val text = emu.screen.transcriptText
+                        if (text.isNotEmpty()) appendToFile(f, "$text\n")
+                    }
+                } catch (_: Exception) {
+                }
+                appendToFile(f, "\n[进程退出码: $code] 会话结束 ${nowStamp()}\n")
             }
-            Log.i(TAG, "session '$key' finished, exitCode=$code, log=${logFile?.absolutePath ?: "-"}")
+            val log = lastLogs[key] ?: return
+            log.append("\n[进程退出码: $code]\n")
             if (key != "__install__") {
                 // 容器会话退出后清理登记，供 UI 刷新"运行中"状态
                 activeSessions.remove(key)
@@ -556,16 +479,12 @@ object WineSessionLauncher {
         override fun onTerminalCursorStateChange(state: Boolean) {}
         override fun getTerminalCursorStyle(): Int = 0
 
-        override fun logError(tag: String, message: String) { Log.e(tag, message) }
-        override fun logWarn(tag: String, message: String) { Log.w(tag, message) }
-        override fun logInfo(tag: String, message: String) { Log.i(tag, message) }
-        override fun logDebug(tag: String, message: String) { Log.d(tag, message) }
-        override fun logVerbose(tag: String, message: String) { Log.v(tag, message) }
-        override fun logStackTraceWithMessage(tag: String, message: String, e: Exception) {
-            Log.e(tag, message, e)
-        }
-        override fun logStackTrace(tag: String, e: Exception) {
-            Log.e(tag, "uncaught", e)
-        }
+        override fun logError(tag: String, message: String) {}
+        override fun logWarn(tag: String, message: String) {}
+        override fun logInfo(tag: String, message: String) {}
+        override fun logDebug(tag: String, message: String) {}
+        override fun logVerbose(tag: String, message: String) {}
+        override fun logStackTraceWithMessage(tag: String, message: String, e: Exception) {}
+        override fun logStackTrace(tag: String, e: Exception) {}
     }
 }

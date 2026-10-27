@@ -1,110 +1,22 @@
 #!/data/data/com.anwind/files/usr/bin/bash
 # ============================================================
-# anwind-wine v2.11 — AnWind 容器 Wine 启动器（bionic rootfs / X11）
-# v2.11 变更（A/B 裁决落地：清单判读修正 + ARM64X 现场探测 + 指引纠偏）：
-#            1) 架构风味清单判读修正：v2.10 把 arm64ec-windows/kernel32.dll
-#               缺失当缺陷报告 —— 误设。wine 11 以 --enable-archs=arm64ec,
-#               aarch64 构建时，arm64ec 代码以 ARM64X 混合 PE 并入
-#               aarch64-windows/（构建实证：makedep 向 winegcc 传 -marm64x、
-#               lld-link 产混合镜像；仓库 verify-arm64x.py 同结论），本构建
-#               形态不产出独立 arm64ec-windows/ 目录。A/B 裁决矩阵因此落格
-#               "清单全在位 + 基线也崩 = wine 二进制层"。
-#            2) arm64x_probe —— verify-arm64x.py 的纯 bash 移植（设备侧无
-#               python 也能自检）：读 aarch64-windows/kernel32.dll load
-#               config 的 CHPEMetadataPointer，非 0 = ARM64X 混合（arm64ec
-#               进程可加载）；0 = 纯 ARM64（不可加载 → c0000135 二进制层
-#               实锤）。任何解析失败一律回报"无法解析"，绝不误判。
-#            3) 指引纠偏：兜底路径只推荐 bionic-x86_64 槽位（09-22 起设备
-#               实证可用的同款资产）；bionic-arm64ec 槽位与内置同为旧
-#               llvm-mingw 工具链 arm64ec 形态，不再并列推荐。
-# v2.10 变更（wineboot 恢复 + 模拟器 DLL 预置 + 基线裁决模式）：
-#            1) 显式 wineboot 恢复 v2.3 的 exec 直跑（进程替换）。
-#               取证：598e60e(v2.4) 对 wineboot 仍 exec、仅把 stdio 接进
-#               tee 管道即触发全量崩溃（旧 rootfs + 同一套 wine，A/B
-#               唯一变量 = 管道）；v2.6 的子进程化与崩溃无因果（v2.3 的
-#               首次自动初始化从来就是子进程执行且工作正常）。exec
-#               恢复后，v2.6 的残缺前缀善后前移为 wineboot_preflight。
-#            2) seed_emulator_dlls —— arm64ec 形态 wine 进程启动时按
-#               绝对路径 C:\windows\system32\libarm64ecfex.dll 加载 FES/
-#               box64 模拟器 DLL（wine 源码 dlls/ntdll/loader.c
-#               load_arm64ec_module：绝对路径无内置目录回退，只查前缀
-#               system32）—— 新建前缀里没有该文件时 arm64ec 进程直接
-#               c0000135 / 退出码 53（鸡生蛋：建前缀的进程自身先要它）。
-#               预置 = 把 wine 安装目录里的 lib*.dll / wow*.dll 幂等拷入
-#               前缀 system32（对齐 hangover 官方 dlls.tar 的安装方式）。
-#            3) --wineboot-baseline —— 60 秒裁决基线子命令：v2.3 语义
-#               原样复刻（无会话日志/无探测/无 SONAME 自愈/无任何管道），
-#               并先打印 wine 安装目录的架构风味清单（各 arch 的
-#               kernel32.dll / libarm64ecfex.dll 在位性）。基线也崩 =
-#               wine/rootfs 层问题；基线正常 = 脚本环境层问题。
-# v2.9 变更（回归修复）：撤除会话输出接管，恢复 wine 原生 pty 执行。
-#            设备实证：wineboot SEH 级联崩溃（invalid frame 0x10010xxxx
-#            → not in stack limits → kernel32 c0000135 → 退出码 53）从
-#            容器 1111/5555（旧 rootfs + box64 v0.4.2）到 888888/9（新
-#            rootfs + box64 v0.4.4 + 0006 堆打标补丁）签名纹丝不动 ——
-#            rootfs/box64/wine 补丁层怎么换都治不好；而用户实证
-#            10-25 12:52（"写日志"改动集落地）之前 wineboot 一直正常。
-#            该改动集把 wine 全家（wineboot/wineserver/各 wine 子进程）
-#            的 stdout/stderr 从会话终端 pty 接进了 > >(tee -a ...) 2>&1
-#            管道 —— wine 进程链的执行环境从此改变，SEH 栈帧校验在
-#            该环境下系统性失败（每个派生进程同刷崩溃即为佐证）。
-#            修复：本脚本彻底不再 exec tee 接管（所有场景，含终端直跑）；
-#            wine 原始输出直连终端/"Wine 输出"面板；会话日志退化为
-#            启动头 + info() 决策行（ANWIND_LOG_NO_TEE=1 直接追加写，
-#            纯文件 IO，不触碰 wine 的 stdio）+ App 侧退出码补记。
-# v2.8 变更：bionic 堆打标修复内置探测（0006 补丁 —— 根治 TBI 0xB4
-#            fatal free；生效时日志出现 "anwind: bionic heap tagging
-#            disabled"）。
-# v2.7 变更：旧 rootfs 自愈 + 版本可观测（设备日志 wine-5555 实证回归）:
-#            1) fix_soname_aliases —— SONAME 版本别名运行时自愈：
-#               20261025 之前的 rootfs 缺 libX11.so.6 / libxcb.so.1 等
-#               版本别名（bionic 构建产无版本号 .so，而 wine 的 unix
-#               模块 DT_NEEDED 记上游标准 SONAME）→ winex11 等模块
-#               根本加载不出来，症状五花八门（驱动缺失/wineboot 崩溃/
-#               exe 无声无息）。本脚本启动时按映射表幂等补建软链 ——
-#               旧 rootfs 无需重刷即可修复，新 rootfs 自动跳过（零开销）。
-#            2) box64 版本检测与会话日志：box64 --version 进日志；
-#               hangover 后端 + box64 < 0.4.4（hangover-11.16 官方
-#               配套版）→ 显式告警 + install-box64 指引。hangover↔box64
-#               的 PE/wow64 协议是版本敏感的（box64 #2365 同款崩溃
-#               签名：SEH invalid frame 级联）。
-#            3) 会话头补 rootfs 构建戳（usr/etc/anwind/rootfs-build-id）
-#               + 模拟器 DLL 探测（wowbox64/libarm64ecfex —— hangover
-#               后端跑 x86/x64 程序的必需件，缺失即明确告警）。
-#            4) wineboot 失败指引具体化：直接可复制的 install-wine /
-#               install-box64 命令（v2.6 只给了方向，v2.7 给完整命令）。
-# v2.6 变更：wineboot 稳健化（设备日志 wine-1111-*.log 实证回归）：
-#            1) 维护类命令（wineboot/wineserver/reg* 等）不再应用任何
-#               GL 驱动环境 —— v2.5 的 zink 默认值曾被带进 wineboot 会话
-#               （前缀初始化用不到图形栈，纯属无关变量）；图形会话
-#               （exe/winecfg/explorer）照常应用，zink 修复保持不变。
-#            2) wineboot 改为子进程执行并检查退出码：失败且前缀从未
-#               初始化成功（无 system.reg）→ 自动清理残缺前缀（下次
-#               从零开始，不在废墟上叠加出 "could not load kernel32"
-#               级联崩溃）+ wineserver 收尸 + 行动指引（换 CI 新版
-#               wine 的具体命令）。
-#            3) ANWIND_SAFE=1 基线对照模式：GL 环境整体旁路 + 输出直连
-#               终端 —— 排障时用于排除本脚本引入的环境变量因素。
-# v2.5 变更：GL 驱动 auto 默认 zink —— 修复 wine OpenGL(wgl) 全废导致
-#            exe 弹"驱动"错误（设备日志 CubeMap.exe 实证）：
-#            err:wgl:egldrv_init_pixel_formats "Failed to get any
-#            configs from eglChooseConfig"。根因：本 X 服务（termux-x11/
-#            libXlorie）无 GLX/DRI3，wine 10+ 落到 x11drv 的 EGL 路径，
-#            而 auto 旧默认 freedreno 走 DRM/KGSL 直渲，在 X11 平台上
-#            拿不到任何 EGL config → ChoosePixelFormat/wglCreateContext
-#            全失败。turnip 在同一会话已被 DXVK 实证可用（D3D9 设备/
-#            交换链创建成功），zink 复用同一条 Vulkan 通道出 GL。
-#            auto 判定：zink_dri.so + Vulkan ICD 齐备 → zink，否则退回
-#            freedreno（零回归）；容器 conf gallium= 显式值优先不变。
-#            另：GPU 决策行进会话日志；hangover 后端补 wine 形态探测
-#            （旧日志 wine形态=unknown 无排障价值）。
-# v2.4 变更：会话日志 —— 运行 wine/exe 的完整过程（环境决策链 +
-#            wine 原始 stdout/stderr，含 wineboot 与 err:* 报错）
-#            落盘到公共 Download 目录：
-#            /storage/emulated/0/Download/AnWind/wine-<容器>-<时间>.log
-#            （不可写时退回容器区 logs/）。App 会话（WineSessionLauncher）
-#            建 ANWIND_SESSION_LOG 同一文件并在顶层接管 tee，本脚本复用；
-#            终端直跑由本脚本自建。进程替换不可用自动退回直跑（零回归）。
+# anwind-wine v2.12 —— 基线恢复版（v2.3 语义 + 纯日志）
+# 2026-10-27：回滚 v2.4~v2.11 全部行为改动（会话日志 tee 接管、zink GL
+# 默认、wineboot 前置善后/残缺前缀清理、模拟器 DLL 预置、SONAME 运行时
+# 自愈、堆打标探测等），逐字节恢复 v2.3（ad214ca —— 加日志之前可正常
+# 构建前缀的实证基线）的执行语义；在此之上仅增加【纯日志】。
+# 纯日志硬约束（全部满足，后续改动不得违反）：
+#   1. 不重定向 stdio —— v2.4 的 exec > >(tee ...) 2>&1 已实证为回归源，
+#      永久禁止
+#   2. 不新增/修改任何导出环境变量 —— wine 看到的环境与 v2.3 完全一致
+#      （ANWIND_SESSION_LOG 由 App 侧传入，wine/bash 均不读它）
+#   3. 不清理前缀、不预置 DLL、不动注册表逻辑 —— 全部维持 v2.3 原样
+#   4. 不改 exec 结构/目标 —— wineboot 仍直连 exec wineboot 二进制
+#   5. log() 仅 >> 追加（每次写完即关 fd，不向 exec 后的 wine 泄漏文件
+#      描述符）；ANWIND_SESSION_LOG 未设置时 log() 完全空转，终端用法
+#      零影响
+# ============================================================
+# anwind-wine v2.3 — AnWind 容器 Wine 启动器（bionic rootfs / X11）
 # v2.3 变更：ensure_emulate_modeset —— 自动写入 wine 注册表
 #            HKCU\Software\Wine\X11 Driver\EmulateModeset=Y。
 #            AnWind 的 X 服务不支持 RandR 动态调分辨率（走 .anwind-x11-res
@@ -173,97 +85,16 @@ CONF_GLOBAL="$RFS_USR/etc/anwind/container.conf"
 X11_SOCK_DIR="$APP_PREFIX/tmp/.X11-unix"
 LOG_DIR="$CONT_ROOT/logs"
 
-version() { echo "anwind-wine 2.11.0 (AnWind bionic rootfs, X11 auto-start, isolated env, emulate-modeset, session log, zink GL, robust wineboot, soname self-heal, bionic heap-tag fix probe, pty-native exec, emulator-dll seed, wineboot baseline, arm64x probe)"; }
+version() { echo "anwind-wine 2.12.0 (v2.3 基线恢复 + 纯日志，零行为改动)"; }
 
-# ---------- SONAME 版本别名自愈（v2.7） ----------
-# 背景：本构建系统按 Termux/bionic 惯例产无版本号 .so，而 wine 的 unix
-# 模块（winex11 等）DT_NEEDED 记上游标准 SONAME（libX11.so.6 等）。
-# 20261025 之前的 rootfs 没打版本别名 → wine 的 .so 加载失败 →
-# "驱动加载不了" / wineboot 启动崩溃 / exe 无声无息（设备日志
-# wine-1111 / wine-5555 的间接成因之一）。别名映射与
-# bionic-rootfs/make-rootfs.sh 保持一致（新 rootfs 已在组装时打好，
-# 此处幂等补建，专为旧 rootfs 存量设备自愈）。
-fix_soname_aliases() {
-    local _fixed=0 _base _soname _v
-    # X11 系 / mesa 系：无版本 .so → 上游标准 SONAME 别名
-    while IFS='|' read -r _base _soname; do
-        [ -n "$_base" ] || continue
-        if [ -e "$RFS_USR/lib/$_base" ] && [ ! -e "$RFS_USR/lib/$_soname" ]; then
-            ln -sf -- "$_base" "$RFS_USR/lib/$_soname" 2>/dev/null && _fixed=$((_fixed + 1))
-        fi
-    done <<'SONAME_MAP'
-libX11.so|libX11.so.6
-libX11-xcb.so|libX11-xcb.so.1
-libXext.so|libXext.so.6
-libXrender.so|libXrender.so.1
-libXfixes.so|libXfixes.so.3
-libXrandr.so|libXrandr.so.2
-libXi.so|libXi.so.6
-libXcursor.so|libXcursor.so.1
-libXinerama.so|libXinerama.so.1
-libXcomposite.so|libXcomposite.so.1
-libXxf86vm.so|libXxf86vm.so.1
-libXv.so|libXv.so.1
-libXdamage.so|libXdamage.so.1
-libxshmfence.so|libxshmfence.so.1
-libXau.so|libXau.so.6
-libXdmcp.so|libXdmcp.so.6
-libxkbcommon.so|libxkbcommon.so.0
-libxkbcommon-x11.so|libxkbcommon-x11.so.0
-libdrm.so|libdrm.so.2
-libdrm_amdgpu.so|libdrm_amdgpu.so.1
-libdrm_freedreno.so|libdrm_freedreno.so.1
-libGL.so|libGL.so.1
-libEGL.so|libEGL.so.1
-libGLESv2.so|libGLESv2.so.2
-libgbm.so|libgbm.so.1
-SONAME_MAP
-    # libxcb 核心与扩展库（上游 -version-info：核心/sync/xkb → .1，其余 → .0）
-    for _f in "$RFS_USR"/lib/libxcb*.so; do
-        [ -f "$_f" ] || continue
-        _base="$(basename "$_f")"
-        case "$_base" in
-            libxcb.so|libxcb-sync.so|libxcb-xkb.so) _v=1 ;;
-            *) _v=0 ;;
-        esac
-        if [ ! -e "$RFS_USR/lib/$_base.$_v" ]; then
-            ln -sf -- "$_base" "$RFS_USR/lib/$_base.$_v" 2>/dev/null && _fixed=$((_fixed + 1))
-        fi
-    done
-    [ "$_fixed" -gt 0 ] && info "SONAME 自愈: 补建 $_fixed 个版本别名软链（旧 rootfs 修复；详见 ls $RFS_USR/lib/libX11.so.6 等）"
-    return 0
-}
-
-# ---------- box64 版本探测（v2.8 修复） ----------
-# 回显纯数字版本号（0.4.4）；探测失败回显空。box64 --version 首行
-# 形如 "Box64 v0.4.4 built on ..."。v2.7 实现用 2>/dev/null 只收
-# stdout —— 而 box64 的版本横幅走 stderr，设备实测（wine-888888
-# 会话）版本恒为空，错配告警被连带旁路。改为 2>&1 合并捕获。
-box64_version() {
-    local _bin="$1" _v
-    [ -n "$_bin" ] && [ -x "$_bin" ] || { echo ""; return 0; }
-    _v="$("$_bin" --version 2>&1 | head -n 3 | grep -o '[0-9][0-9]*\.[0-9][0-9]*\(\.[0-9][0-9]*\)\?' | head -n 1)"
-    printf '%s' "$_v"
-}
-
-# 版本比较：$1 < $2 回 0（真），否则非 0。形如 0.4.2 / 0.4.4 / 0.5。
-# 纯 shell 实现（不依赖 sort -V —— bionic 侧 coreutils 裁剪不确定）：
-# 逐段数值比较，段数不同时长者补 0。
-ver_lt() {
-    local _a="$1" _b="$2" _ai _bi _i
-    [ -n "$_a" ] || return 0          # 空版本视为最小
-    [ -n "$_b" ] || return 1
-    _a="${_a#v}"; _b="${_b#v}"
-    local IFS='.'
-    _ai=( $_a ); _bi=( $_b )
-    for _i in 0 1 2 3 4; do
-        local _x="${_ai[$_i]:-0}" _y="${_bi[$_i]:-0}"
-        _x=$(( ${_x:-0} + 0 )) 2>/dev/null || _x=0
-        _y=$(( ${_y:-0} + 0 )) 2>/dev/null || _y=0
-        [ "$_x" -lt "$_y" ] && return 0
-        [ "$_x" -gt "$_y" ] && return 1
-    done
-    return 1
+# ---------- 纯日志（v2.12 唯一新增的执行代码） ----------
+# 仅当 App 会话传入 ANWIND_SESSION_LOG（可写文件路径）时生效；终端直跑
+# 或未传时完全空转。log() 只向文件追加一行，不写 stdout/stderr，
+# 不碰任何环境变量与前缀状态 —— 见文件头“纯日志硬约束”。
+ANWIND_LOG_FILE="${ANWIND_SESSION_LOG:-}"
+log() {
+    [ -n "$ANWIND_LOG_FILE" ] || return 0
+    printf '[anwind-wine] %s\n' "$*" >>"$ANWIND_LOG_FILE" 2>/dev/null || true
 }
 
 # ---------- 运行时目录兜底（必须在任何 wine 调用前） ----------
@@ -272,89 +103,16 @@ ver_lt() {
 mkdir -p "$RFS_USR/tmp" "$APP_PREFIX/tmp/.X11-unix" "$LOG_DIR" "$RFS_ROOT/home" 2>/dev/null || true
 
 die() { echo "anwind-wine: $*" >&2; exit 1; }
-info() {
-    echo "[anwind-wine] $*"
-    # 进程替换不可用的降级路径：手工把决策信息追加进日志文件
-    if [ "${ANWIND_LOG_NO_TEE:-0}" = "1" ] && [ -n "${ANWIND_LOG_FILE:-}" ]; then
-        printf '[anwind-wine] %s\n' "$*" >>"$ANWIND_LOG_FILE" 2>/dev/null || true
-    fi
-}
-
-# ---------- 会话日志（v2.4：wine/exe 全程留痕，排障不再靠猜） ----------
-# 位置优先级：
-#   1) ANWIND_SESSION_LOG —— App 会话（WineSessionLauncher.spawn）已建好
-#      日志文件并把整条会话（bash→anwind-container→本脚本→wine）的输出
-#      tee 接到该文件；此时只复用该文件、不再自建 tee（避免双写）。
-#   2) /storage/emulated/0/Download/AnWind/wine-<容器>-<时间>.log ——
-#      公共 Download，用户文件管理器可直接取走（需「所有文件访问」授权）
-#   3) $LOG_DIR/wine-<容器>-<时间>.log —— rootfs 容器区 logs/，永远可写
-# 内容：环境决策链（容器/后端/wine 形态/WINEPREFIX/音频/GPU）+ wine
-#       原始 stdout/stderr 全程落盘；终端同步回显不受影响。
-ANWIND_LOG_FILE=""
-ANWIND_LOG_NO_TEE=0
-
-rotate_logs() { # <目录> [保留数] —— 只清理本机制产生的 wine-*.log
-    local _dir="$1" _keep="${2:-30}" _old
-    [ -d "$_dir" ] || return 0
-    _old="$(ls -t "$_dir"/wine-*.log 2>/dev/null | tail -n +$((_keep + 1)))"
-    if [ -n "$_old" ]; then
-        printf '%s\n' "$_old" | xargs -r rm -f 2>/dev/null
-    fi
-    return 0
-}
-
-session_log_init() {
-    local _ts _name _f _dir
-    # 1) App 会话已建文件 → 复用（v2.9：App 层已撤除 tee 接管，此处
-    #    同时置 NO_TEE=1，决策行由 info() 直接追加落盘 —— 无管道参与）
-    if [ -n "${ANWIND_SESSION_LOG:-}" ] && : >> "$ANWIND_SESSION_LOG" 2>/dev/null; then
-        ANWIND_LOG_FILE="$ANWIND_SESSION_LOG"
-        ANWIND_LOG_NO_TEE=1
-        return 0
-    fi
-    # 2) / 3) 自建（终端直跑 wine / anwind-container run 场景）
-    _ts="$(date '+%Y%m%d-%H%M%S' 2>/dev/null || echo manual)"
-    _name="$(printf '%s' "${CONT_NAME:-default}" | tr -c 'A-Za-z0-9._-' '_' 2>/dev/null | cut -c1-40)"
-    [ -n "$_name" ] || _name="default"
-    for _dir in "/storage/emulated/0/Download/AnWind" "$LOG_DIR"; do
-        mkdir -p "$_dir" 2>/dev/null || true
-        _f="$_dir/wine-${_name}-${_ts}.log"
-        if : >> "$_f" 2>/dev/null; then
-            ANWIND_LOG_FILE="$_f"
-            printf '===== AnWind wine 会话 %s =====\n' \
-                "$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo '?')" >>"$_f" 2>/dev/null || true
-            rotate_logs "$_dir"
-            break
-        fi
-    done
-    return 0
-}
-
-# v2.9 回归修复：本函数不再接管输出（永久 NO_TEE 降级路径）。
-# 原理：v2.4 起的 exec > >(tee -a ...) 2>&1 会把 wine 全家进程链的
-# stdout/stderr 从会话终端 pty 改接管道 —— 实证为 wineboot SEH 级联
-# 崩溃（容器 1111/5555/888888/9 同签名）的回归根因（详见文件头
-# v2.9 变更说明）。wine 的 stdio 必须保持其原生形态（pty 直连），
-# 决策行改由 info() 以追加写落盘（纯文件 IO，零执行环境影响）。
-# wine 原始输出（err:seh / fixme 等）不再进会话日志文件 —— 排障时
-# 看 "Wine 输出"面板或终端直跑实时输出。
-session_log_attach() {
-    ANWIND_LOG_NO_TEE=1
-    return 0
-}
+info() { echo "[anwind-wine] $*"; }
 
 usage() {
     cat << 'EOF'
-anwind-wine v2.11 — AnWind 容器 Wine 启动器（bionic rootfs / X11 · 环境隔离版）
+anwind-wine v2.3 — AnWind 容器 Wine 启动器（bionic rootfs / X11 · 环境隔离版）
 
 用法:
   anwind-wine [--container <name>] <wine 参数...>
   anwind-wine --debug <wine 参数...> 诊断模式（+seh/+module/vulkan/wgl 错误全开，排障用）
   anwind-wine --list-backends        查看可用后端（box64/hangover/fexcore/native）
-  anwind-wine --wineboot-baseline <容器>  60 秒裁决：v2.3 语义原样复刻
-                                          直跑 wineboot -i（先打印各架构
-                                          kernel32/libarm64ecfex 在位清单；
-                                          基线也崩 = wine/rootfs 层问题）
   anwind-wine --version
 
 说明:
@@ -365,19 +123,6 @@ anwind-wine v2.11 — AnWind 容器 Wine 启动器（bionic rootfs / X11 · 环�
   - wine 多版本: 容器 wine= 目录名（/usr/opt/<名>）或绝对路径；
     留空用全局 default_wine，再留空用 /usr/opt/wine
   - 显示: X11，强制 DISPLAY=:1（内置 X 服务未运行时自动拉起）
-  - GPU/OpenGL: auto 时 arm 设备默认 zink（GL-over-Vulkan，配 turnip；
-    D3D 走 DXVK 不受影响）；无 zink/Vulkan ICD 自动退回 freedreno；
-    容器 conf gallium= 可显式指定 zink/freedreno/llvmpipe/softpipe
-  - 会话日志: 每次会话全程留痕（环境决策 + wine 全部输出）→
-    /storage/emulated/0/Download/AnWind/wine-<容器>-<时间>.log
-    （公共 Download，文件管理器可直接取；不可写时退回容器区 logs/）
-  - wineboot 失败善后: 自动清理残缺前缀（仅当 system.reg 未生成，
-    无用户数据可损）+ wineserver 收尸 + 换 wine/box64 完整命令指引；
-    维护类命令（wineboot/reg* 等）不应用 GL 环境
-  - SONAME 自愈（v2.7）: 旧 rootfs（20261025 前）缺 libX11.so.6 等
-    版本别名 → 启动时幂等补建，无需重刷 rootfs
-  - ANWIND_SAFE=1: 基线对照模式 —— GL 环境旁路、输出直连终端
-    （排障时用于排除本脚本引入的环境变量因素）
   - 显示模式 dmode: off 跟随窗口 / d 固定分辨率 / v 虚拟桌面 / f 强制直出
   - 后端新增 arm64ec：所选 wine 为 aarch64 形态（bionic-arm64ec 构建）
     时直接原生运行（new WoW64）；x86_64 形态仍走 box64/native
@@ -728,52 +473,21 @@ clear_wine_blue_desktop() {
 }
 
 # ---------- Mesa / GPU 运行时（rootfs 自己的驱动栈） ----------
-# v2.5：auto 默认 zink（GL-over-Vulkan）。根因链（设备日志 CubeMap.exe
-# 实证）：本 X 服务（termux-x11/libXlorie）不提供 GLX/DRI3 → wine 10+
-# 的 x11drv 落到 EGL 路径 → eglChooseConfig 需要能在 X11 平台上给出
-# 窗口 config 的 gallium 驱动；freedreno 走 DRM/KGSL 直渲，无 DRI3 时
-# EGL 拿不到任何 config（"egldrv_init_pixel_formats Failed to get any
-# configs from eglChooseConfig" → wgl 全废 → exe 弹驱动错误）。而
-# turnip 在同一会话已被 DXVK 实证可用（D3D9 设备/交换链创建成功），
-# zink 复用同一条 Vulkan 通道出 GL。auto 判定：zink_dri.so + Vulkan
-# ICD 都在 → zink；否则维持 freedreno（无回归）。x86_64 侧 rootfs
-# mesa 只构建了 softpipe（无 llvmpipe），auto 同步纠正为 softpipe。
-# 容器 conf gallium= 显式指定仍优先生效。
 apply_gpu_env() {
     local _gallium _arch
     _arch="$(uname -m)"
     _gallium="$(conf_read "$CONT_CONF" gallium auto)"
-    # Vulkan ICD（turnip）探测：auto 判定与 zink 显式指定共用
-    GPU_VK_ICD="$(ls "$RFS_USR"/share/vulkan/icd.d/*.json \
-                     "$RFS_USR"/etc/vulkan/icd.d/*.json 2>/dev/null | head -n 1)"
     if [ "$_gallium" = "auto" ]; then
         case "$_arch" in
-            aarch64|arm64)
-                if [ -n "$GPU_VK_ICD" ] && [ -e "$RFS_USR/lib/dri/zink_dri.so" ]; then
-                    _gallium="zink"
-                else
-                    _gallium="freedreno"
-                fi
-                ;;
-            *)             _gallium="softpipe" ;;
+            aarch64|arm64) _gallium="freedreno" ;;
+            *)             _gallium="llvmpipe" ;;
         esac
     fi
     case "$_gallium" in
         zink)
-            # 对齐 glibc-runner 的 zink 全链配方（新旧 mesa 双变量兼容）
             export GALLIUM_DRIVER=zink
-            export MESA_LOADER_DRIVER_OVERRIDE=zink
             export ZINK_DESCRIPTORS=lazy
             export ZINK_DEBUG=compact
-            [ -d "$RFS_USR/lib/dri" ] && \
-                export LIBGL_DRIVERS_PATH="${LIBGL_DRIVERS_PATH:-$RFS_USR/lib/dri}"
-            # 显式锁定 ICD：与 DXVK 同一加载器同一路径，多 ICD 场景下
-            # 锁定 turnip（仅在探测到时设置；探测不到时加载器默认搜索
-            # 依然生效——DXVK 已实证默认搜索可用）
-            if [ -n "$GPU_VK_ICD" ]; then
-                export VK_DRIVER_FILES="$GPU_VK_ICD"
-                export VK_ICD_FILENAMES="$GPU_VK_ICD"   # 旧加载器兼容
-            fi
             ;;
         freedreno)
             export GALLIUM_DRIVER=freedreno
@@ -783,7 +497,6 @@ apply_gpu_env() {
             export LIBGL_ALWAYS_SOFTWARE=1
             ;;
     esac
-    GPU_DRIVER="$_gallium"
 }
 
 # ---------- 用户附加环境 + DLL 覆盖 ----------
@@ -867,20 +580,11 @@ pick_backend() {
             ;;
         *) die "未知后端: $BACKEND（可选 box64/hangover/fexcore/native/auto）" ;;
     esac
-    # hangover 兜底路径不经 resolve_wine_dir 探测 —— 此处补上，会话日志
-    # 的"wine形态"不再显示 unknown（排障需要知道架构形态）
-    [ "$BACKEND" = "hangover" ] && WINE_ARCH="$(detect_wine_arch "$WINE_HANGOVER")"
     # 旧版内置 hangover 兜底提示：/usr/opt/bin/wine 是 rootfs 打包时的旧
     # 构建（早于 CI 的 gstreamer/esync/显示设置修复），仅作保底。槽位
     # wine（/usr/opt/<名>，install-wine 安装）缺失时才会走到这里。
     if [ "$BACKEND" = "hangover" ]; then
-        info "提示: 当前使用 rootfs 内置 hangover wine（$WINE_HANGOVER）兜底路径 ——"
-        info "      其 arm64ec 层为旧 llvm-mingw（20251202）工具链产物；hangover-11.16"
-        info "      官方要求 20260826『fixed exit thunks』版，旧版 exit thunk 缺陷可致"
-        info "      wineboot 二进制级崩溃（SEH invalid frame → kernel32 c0000135 → 53）。"
-        info "      恢复主力路径（09-22 起设备实证可用的同款资产）:"
-        info "      anwind-container install-wine bionic-x86_64 --default"
-        info "      （bionic-arm64ec 槽位与内置同为旧工具链 arm64ec 形态，暂不建议）"
+        info "提示: 当前使用 rootfs 内置旧版 hangover wine（$WINE_HANGOVER）——建议安装 CI 构建的新版 wine：anwind-container install-wine <wine tar.gz>"
     fi
 }
 
@@ -894,226 +598,15 @@ wine_run() {
     esac
 }
 
-# ---------- 模拟器 DLL 预置（v2.10） ----------
-# wine 源码实证（hangover-11.16 dlls/ntdll/loader.c load_arm64ec_module）：
-# arm64ec 形态进程启动时按绝对路径 C:\windows\system32\libarm64ecfex.dll
-# 加载 FES x64 模拟器（加载失败/初始化失败 → NtTerminateProcess 即刻
-# 退出，c0000135 → 退出码 53）；find_dll_file 对绝对路径只查前缀文件、
-# 无内置目录回退 —— 新建前缀 system32 为空时必然扑空。i386 侧的
-# wowbox64.dll 同机制（HODLL32/wow64 cpu 链）。预置把 wine 安装目录
-# （rootfs 组装时已从 hangover 官方 dlls.tar 装入 *-windows/）的
-# lib*.dll + wow*.dll 幂等拷入前缀 system32 —— 与 hangover 官方安装
-# 方式一致；aarch64/box64/native 后端不经此路径，零开销跳过。
-seed_emulator_dlls() {
-    case "$BACKEND" in hangover|arm64ec) ;; *) return 0 ;; esac
-    local _winroot _dst _n=0 _f _b
-    case "$BACKEND" in
-        hangover) _winroot="$RFS_USR/opt/lib/wine" ;;
-        arm64ec)  _winroot="$WINE_DIR/lib/wine" ;;
-    esac
-    _dst="$WINEPREFIX/drive_c/windows/system32"
-    for _f in "$_winroot"/aarch64-windows/lib*.dll "$_winroot"/aarch64-windows/wow*.dll \
-              "$_winroot"/arm64ec-windows/lib*.dll "$_winroot"/arm64ec-windows/wow*.dll; do
-        [ -f "$_f" ] || continue
-        _b="$(basename "$_f")"
-        if [ ! -e "$_dst/$_b" ]; then
-            mkdir -p "$_dst" 2>/dev/null || true
-            cp -f -- "$_f" "$_dst/$_b" 2>/dev/null && _n=$((_n + 1))
-        fi
-    done
-    if [ "$_n" -gt 0 ]; then
-        info "模拟器 DLL 预置: $_n 个 → 前缀 system32（libarm64ecfex/wowbox64 等）"
-        info "  —— arm64ec 进程按 C:\\windows\\system32 绝对路径加载它们，新前缀"
-        info "     无此文件即 c0000135 鸡生蛋崩溃（wine loader 无内置回退）"
-    elif [ ! -f "$_dst/libarm64ecfex.dll" ]; then
-        info "提示: wine 安装目录无模拟器 DLL（$_winroot/*-windows/）——"
-        info "      arm64ec 形态进程启动需要前缀 system32 里的 libarm64ecfex.dll。"
-        info "      获取：重出 rootfs（make-rootfs 已自动装）或手动解 hangover"
-        info "      官方 hangover_<ver>_dlls.tar 到 $_winroot/aarch64-windows/"
-        info "      与 arm64ec-windows/（PE 文件与 bionic 无关，可直接复用）"
-    fi
-    return 0
-}
-
-# ---------- wineboot 执行前准备（v2.10：善后前移） ----------
-# v2.6 的失败善后依赖子进程退出码；显式 wineboot 恢复 exec 后无法善后，
-# 故等价动作前移到执行前：残缺前缀清理（无 system.reg 即从未初始化
-# 成功，非用户数据，零风险）+ 模拟器 DLL 预置。幂等。
-wineboot_preflight() {
-    if [ -d "$WINEPREFIX" ] && [ ! -f "$WINEPREFIX/system.reg" ]; then
-        if mv "$WINEPREFIX" "${WINEPREFIX}.stale.$$" 2>/dev/null; then
-            rm -rf "${WINEPREFIX}.stale.$$" 2>/dev/null || true
-        else
-            rm -rf "$WINEPREFIX" 2>/dev/null || true
-        fi
-        mkdir -p "$WINEPREFIX" 2>/dev/null || true
-        info "已清理残缺前缀（无 system.reg）—— 本次从零初始化，不在废墟上叠加"
-    fi
-    seed_emulator_dlls
-    return 0
-}
-
-# ---------- ARM64X 混合探测（v2.11） ----------
-# verify-arm64x.py 的纯 bash 移植（设备侧无 python 环境也能自检）：
-# 读 PE32+ load config（数据目录第 10 项）里的 CHPEMetadataPointer ——
-# 非 0 即 ARM64X 混合镜像（arm64ec 代码已并入，arm64ec 风味进程可加载）。
-# 只读文件、不写任何状态；任何解析失败一律回报"无法解析"，绝不误判。
-_pe_le() { # $1=文件 $2=偏移 $3=字节数 → stdout: 无符号小端整数（失败无输出）
-    local _raw _v=0 _mul=1 _x
-    _raw="$(dd if="$1" bs=1 skip="$2" count="$3" 2>/dev/null \
-        | od -An -tu1 2>/dev/null | tr -s ' \n' ' ')"
-    [ -n "${_raw// /}" ] || return 0
-    for _x in $_raw; do
-        _v=$((_v + _x * _mul))
-        _mul=$((_mul * 256))
-    done
-    echo "$_v"
-}
-
-arm64x_probe() { # $1=PE32+ 文件 → stdout: 判读串（ARM64X…/纯 ARM64…/无法解析…）
-    local _f="$1" _pe _mach _nsec _optsz _magic _lc _sec _s _va _vsz _rsz _rraw _off _cfgsz _chpe
-    [ -f "$_f" ] || { echo "无法解析（文件不存在）"; return 0; }
-    _pe="$(_pe_le "$_f" 60 4)"; [ -n "$_pe" ] || { echo "无法解析（坏 DOS 头）"; return 0; }
-    _mach="$(_pe_le "$_f" $((_pe + 4)) 2)"
-    _nsec="$(_pe_le "$_f" $((_pe + 6)) 2)"
-    _optsz="$(_pe_le "$_f" $((_pe + 20)) 2)"
-    _magic="$(_pe_le "$_f" $((_pe + 24)) 2)"
-    case "${_magic:-}" in 523) ;; *) echo "无法解析（非 PE32+）"; return 0 ;; esac
-    case "${_nsec:-}" in ''|*[!0-9]*) echo "无法解析（坏节数）"; return 0 ;; esac
-    _lc="$(_pe_le "$_f" $((_pe + 216)) 4)"    # 数据目录[10] LOAD_CONFIG RVA
-    if [ -z "$_lc" ] || [ "$_lc" -eq 0 ] 2>/dev/null; then
-        echo "纯 ARM64（无 load config 目录 —— 无 CHPE 元数据）"; return 0
-    fi
-    _sec=$((_pe + 24 + _optsz))
-    _s=0; _off=""
-    while [ "$_s" -lt "$_nsec" ]; do
-        _va="$(_pe_le "$_f" $((_sec + _s * 40 + 12)) 4)"
-        _vsz="$(_pe_le "$_f" $((_sec + _s * 40 + 8)) 4)"
-        _rsz="$(_pe_le "$_f" $((_sec + _s * 40 + 16)) 4)"
-        _rraw="$(_pe_le "$_f" $((_sec + _s * 40 + 20)) 4)"
-        if [ -n "$_va" ] && [ -n "$_vsz" ] && [ -n "$_rsz" ] && [ -n "$_rraw" ] \
-           && [ "$_lc" -ge "$_va" ] \
-           && [ "$_lc" -lt $((_va + (_vsz > _rsz ? _vsz : _rsz))) ]; then
-            _off=$((_rraw + _lc - _va)); break
-        fi
-        _s=$((_s + 1))
-    done
-    [ -n "$_off" ] || { echo "无法解析（load config 未映射到节）"; return 0; }
-    _cfgsz="$(_pe_le "$_f" "$_off" 4)"
-    if [ -z "$_cfgsz" ]; then
-        echo "无法解析（load config 数据不可读 —— 文件截断？）"; return 0
-    fi
-    if [ "$_cfgsz" -lt 208 ] 2>/dev/null; then
-        echo "纯 ARM64（load config 无 CHPE 字段）"; return 0
-    fi
-    _chpe="$(_pe_le "$_f" $((_off + 200)) 8)"  # PE32+ CHPEMetadataPointer @ +0xC8
-    if [ -z "$_chpe" ]; then
-        echo "无法解析（CHPE 字段不可读 —— 文件截断？）"; return 0
-    fi
-    if [ "$_chpe" -gt 0 ] 2>/dev/null; then
-        echo "ARM64X 混合（machine=0x$(printf '%04x' "${_mach:-0}")，CHPE=0x$(printf '%x' "$_chpe")）"
-    else
-        echo "纯 ARM64（machine=0x$(printf '%04x' "${_mach:-0}")，CHPE=0 —— arm64ec 进程不可加载）"
-    fi
-    return 0
-}
-
-# ---------- 架构风味清单（v2.11：ARM64X 判读修正） ----------
-# "could not load kernel32.dll, c0000135" 的直接成因之一：kernel32.dll 对
-# 当前进程风味不可加载。判据说明（v2.11 修正）：ARM64X 设计下 arm64ec
-# 风味代码并入 aarch64-windows/ 混合 PE —— 检查"独立 arm64ec-windows/
-# 目录在位"是误设（本构建形态不产出它）；真正的硬判据是
-# aarch64-windows/kernel32.dll 的 CHPE 元数据（arm64x_probe 现场探测）。
-wineboot_flavor_inventory() {
-    local _winroot _d _k32 _verdict
-    case "$BACKEND" in
-        hangover) _winroot="$RFS_USR/opt/lib/wine" ;;
-        *)        _winroot="$WINE_DIR/lib/wine" ;;
-    esac
-    echo "[inventory] wine 安装目录: $_winroot"
-    _k32="$_winroot/aarch64-windows/kernel32.dll"
-    if [ -f "$_k32" ]; then
-        _verdict="$(arm64x_probe "$_k32")"
-        echo "[inventory]   aarch64-windows/kernel32.dll: 在位（$_verdict）"
-        case "$_verdict" in
-            ARM64X*)
-                echo "[inventory]     —— ARM64X 合格：arm64ec 风味进程可加载。若 wineboot"
-                echo "[inventory]       仍崩，则指向 arm64ec 过渡代码（exit thunk）运行时缺陷"
-                echo "[inventory]       （旧 llvm-mingw 工具链已知风险）—— 二进制层，换 wine 即愈" ;;
-            纯*)
-                echo "[inventory]     —— 非 ARM64X：arm64ec 风味进程无法加载 kernel32 →"
-                echo "[inventory]       wineboot c0000135 / 退出码 53 二进制层实锤"
-                echo "[inventory]       （arm64ec 混合构建失败，旧 llvm-mingw 工具链产物）" ;;
-            *) : ;;
-        esac
-    else
-        echo "[inventory]   aarch64-windows/kernel32.dll: 缺失（核心文件不在位）"
-    fi
-    if [ -f "$_winroot/i386-windows/kernel32.dll" ]; then
-        echo "[inventory]   i386-windows/kernel32.dll: 在位"
-    else
-        echo "[inventory]   i386-windows/kernel32.dll: 缺失"
-    fi
-    echo "[inventory]   （arm64ec 风味代码按 ARM64X 设计并入 aarch64-windows/；"
-    echo "[inventory]     独立 arm64ec-windows/ 目录本构建形态不产出，其缺失属正常）"
-    for _d in aarch64-windows arm64ec-windows; do
-        [ -f "$_winroot/$_d/libarm64ecfex.dll" ] && echo "[inventory]   $_d/libarm64ecfex.dll: 在位"
-        [ -f "$_winroot/$_d/wowbox64.dll" ] && echo "[inventory]   $_d/wowbox64.dll: 在位"
-    done
-    echo "[inventory] 前缀 system32: $WINEPREFIX/drive_c/windows/system32"
-    ls -1 "$WINEPREFIX/drive_c/windows/system32" 2>/dev/null | sed 's/^/[inventory]   /' | head -n 8
-    return 0
-}
-
-# ---------- wineboot 失败善后（v2.6） ----------
-# 设备日志（wine-1111-*.log）实证：wineboot 中途崩溃（seh invalid
-# frame 级联 → "could not load kernel32.dll"）会留下残缺前缀；原样
-# 重试会在废墟上叠加，前缀永久损坏。善后三步：
-#   1) system.reg 未生成（初始化从未成功过）→ 清空 prefix —— 此时
-#      不含任何用户数据，删除零风险；一旦 system.reg 存在（前缀曾
-#      初始化成功）则绝不自动删除；
-#   2) wineserver -k 收尸，避免残留服务进程锁住注册表/socket；
-#   3) 终端与日志同步给出行动指引（换 wine 的具体命令 + 基线对照
-#      法 + 日志文件路径）。
-wineboot_failed_action() { # $1 = wineboot 退出码
-    local _rc="${1:-?}"
-    info "wineboot 失败（退出码 $_rc）——前缀初始化未完成。"
-    if [ -d "$WINEPREFIX" ] && [ ! -f "$WINEPREFIX/system.reg" ]; then
-        # 先改名再删：大目录删除中途被打断也不会留下"半删"状态
-        if mv "$WINEPREFIX" "${WINEPREFIX}.stale.$$" 2>/dev/null; then
-            rm -rf "${WINEPREFIX}.stale.$$" 2>/dev/null || true
-        else
-            rm -rf "$WINEPREFIX" 2>/dev/null || true
-        fi
-        mkdir -p "$WINEPREFIX" 2>/dev/null || true
-        info "已清理残缺前缀（$WINEPREFIX）——下次初始化从零开始，不在废墟上叠加。"
-    fi
-    case "$BACKEND" in
-        box64)          "$BOX64_BIN" "$(dirname "$WINE_X86")/wineserver" -k >/dev/null 2>&1 || true ;;
-        native|arm64ec) "$(dirname "$WINE_X86")/wineserver" -k >/dev/null 2>&1 || true ;;
-        hangover)       "$(dirname "$WINE_HANGOVER")/wineserver" -k >/dev/null 2>&1 || true ;;
-        fexcore)        "$FEX_BIN" "$(dirname "$WINE_X86")/wineserver" -k >/dev/null 2>&1 || true ;;
-    esac
-    info "排查建议（按序执行，命令可直接复制）:"
-    info "  1. 恢复主力路径 —— 绕开内置 wine 的 arm64ec 二进制层（首选）:"
-    info "     anwind-container install-wine bionic-x86_64 --default"
-    info "     anwind-wine --container <容器名> wineboot -i"
-    info "     —— 预期会话头『后端=box64』、退出码 0、前缀生成 system.reg"
-    info "  2. 若 box64 形态仍崩（box64 0.4.4 回归疑点）:"
-    info "     anwind-container install-box64   # 或指定 Releases 的 v0.4.2 资产"
-    info "  3. 60 秒基线裁决（v2.3 语义复刻 + ARM64X 探测）:"
-    info "     anwind-wine --wineboot-baseline <容器名>"
-    info "     —— 清单里 CHPE 探测直接给出二进制层定性"
-    info "  4. 本会话决策日志: ${ANWIND_LOG_FILE:-（未落盘）}"
-}
-
 run_wine() {
-    # wineserver 是独立 Unix 程序，需直接执行其宿主二进制
-    if [ "${1:-}" = "wineserver" ]; then
+    # 纯日志：前缀状态观测（只读探测，不改任何流程）
+    log "run_wine: 前缀 system.reg $([ -f "$WINEPREFIX/system.reg" ] && echo 已存在 || echo 不存在-将首次初始化)"
+    # wineserver / wineboot 是独立 Unix 程序，需直接执行其宿主二进制
+    if [ "${1:-}" = "wineserver" ] || [ "${1:-}" = "wineboot" ]; then
         local _bin
         case "$BACKEND" in
-            box64|native|fexcore|arm64ec) _bin="$(dirname "$WINE_X86")/wineserver" ;;
-            hangover)                     _bin="$(dirname "$WINE_HANGOVER")/wineserver" ;;
+            box64|native|fexcore|arm64ec) _bin="$(dirname "$WINE_X86")/$1" ;;
+            hangover)                     _bin="$(dirname "$WINE_HANGOVER")/$1" ;;
         esac
         shift
         case "$BACKEND" in
@@ -1123,40 +616,17 @@ run_wine() {
             fexcore)  exec "$FEX_BIN" "$_bin" "$@" ;;
         esac
     fi
-    # wineboot：v2.10 恢复 v2.3 的 exec 直跑（进程替换）。
-    # 取证结论（598e60e 对照）：v2.4 对 wineboot 仍 exec、仅把 stdio 接
-    # 进 tee 管道即触发崩溃；v2.6 的子进程化本身与崩溃无因果（v2.3 的
-    # 首次自动初始化从来就是子进程执行且工作正常）。exec 恢复后，v2.6
-    # 的失败善后（残缺前缀清理）等价前移到 wineboot_preflight 执行前。
-    if [ "${1:-}" = "wineboot" ]; then
-        shift   # 去掉 wineboot 自身，$@ = -i/-u/... 原样转交
-        wineboot_preflight
-        case "$BACKEND" in
-            box64)          exec "$BOX64_BIN" "$(dirname "$WINE_X86")/wineboot" "$@" ;;
-            native|arm64ec) exec "$(dirname "$WINE_X86")/wineboot" "$@" ;;
-            hangover)       exec "$(dirname "$WINE_HANGOVER")/wineboot" "$@" ;;
-            fexcore)        exec "$FEX_BIN" "$(dirname "$WINE_X86")/wineboot" "$@" ;;
-        esac
-    fi
-    # 首次运行自动初始化前缀（wineboot -i）—— 子进程执行 + 退出码善后
-    # （v2.3 起即如此，保留；v2.10 增加执行前 preflight：清残缺 + 预置）
+    # 首次运行自动初始化前缀（wineboot -i）
     if [ ! -f "$WINEPREFIX/system.reg" ]; then
         info "首次使用，初始化 wine 前缀: $WINEPREFIX"
-        wineboot_preflight
-        local _irc=0
         case "$BACKEND" in
-            box64)          "$BOX64_BIN" "$(dirname "$WINE_X86")/wineboot" -i ;;
+            box64)    "$BOX64_BIN" "$(dirname "$WINE_X86")/wineboot" -i ;;
             native|arm64ec) "$(dirname "$WINE_X86")/wineboot" -i ;;
-            hangover)       "$(dirname "$WINE_HANGOVER")/wineboot" -i ;;
-            fexcore)        "$FEX_BIN" "$(dirname "$WINE_X86")/wineboot" -i ;;
+            hangover) "$(dirname "$WINE_HANGOVER")/wineboot" -i ;;
+            fexcore)  "$FEX_BIN" "$(dirname "$WINE_X86")/wineboot" -i ;;
         esac
-        _irc=$?
+        log "wineboot -i 退出码=$?"
         echo
-        if [ "$_irc" -ne 0 ]; then
-            # 前缀未就绪，后续 exe 必然跟着报一堆无关错误 —— 止损退出
-            wineboot_failed_action "$_irc"
-            exit "$_irc"
-        fi
     fi
     # 显示模式虚拟化（幂等；必须先于一切 wine 子命令——explorer 初始化
     # 显示设置时就需要它，否则模式表写不进注册表，游戏全部报错）
@@ -1201,14 +671,6 @@ case "$CMD" in
         backend_list
         exit 0
         ;;
-    --wineboot-baseline)
-        # v2.10：60 秒裁决基线 —— v2.3 语义复刻（无会话日志/无探测/
-        # 无 SONAME 自愈/无任何管道；GL env 按 v2.3 无差别应用），
-        # 打印架构风味清单后 exec wineboot -i。
-        shift
-        [ -n "${1:-}" ] && { export ANWIND_CONTAINER="$1"; shift; }
-        export ANWIND_BASELINE=1
-        ;;
     --debug)
         # 诊断模式：seh（崩溃/异常）、模块加载、vulkan/wgl 错误全开，
         # 排障时把输出整体发回即可定位（用法: anwind-wine --debug <exe路径>）
@@ -1223,145 +685,25 @@ case "$CMD" in
 esac
 
 resolve_container
-if [ "${ANWIND_BASELINE:-0}" != "1" ]; then
-    # v2.4 会话日志：先于一切决策初始化（v2.9：attach 已永久降级为
-    # NO_TEE —— 决策行经 info() 落盘，wine 输出保持 pty 原生直连）
-    session_log_init
-    session_log_attach
-    # v2.7 SONAME 自愈：必须在任何 wine 调用前（wine 的 unix .so 按版本
-    # SONAME 解析）；旧 rootfs（20261025 前）不打别名 → winex11 等模块
-    # 加载不出来 → 各种"神秘"崩溃。幂等，新 rootfs 零开销跳过。
-    fix_soname_aliases
-fi
 load_container
 resolve_wine_dir
 DMODE="$(conf_read "$CONT_CONF" dmode "off")"
 DMODE_RESOLUTION=""
 
-# 顺序关键：隔离 → 显示握手 → 音频 → GPU（按命令类型）→ 附加环境 → X 服务自启 → 后端
+# 顺序关键：隔离 → 显示握手 → 音频 → GPU → 附加环境 → X 服务自启 → 后端
 isolate_env
 apply_display_mode
 audio_setup
-# v2.6：GL 环境只作用于真正的图形会话。维护类子命令（wineboot/
-# wineserver/reg* 等）全程用不到图形驱动栈 —— 前缀初始化会话携带
-# zink/EGL 变量只会引入无关变量（设备日志 wine-1111 实证：v2.5 的
-# zink 默认值恰在 wineboot 会话生效）。ANWIND_SAFE=1 时整体旁路
-# （基线对照模式，排障用）。
-MAINT_LIST=" wineboot wineserver reg regedit regsvr32 msiexec services plugplay rundll32 winemenubuilder "
-case "$MAINT_LIST" in
-    *" ${1:-} "*) IS_MAINT=1 ;;
-    *)            IS_MAINT=0 ;;
-esac
-GPU_APPLIED=0
-if [ "${ANWIND_BASELINE:-0}" = "1" ]; then
-    apply_gpu_env        # v2.3 复刻：GL env 无差别应用（含 wineboot）
-    GPU_APPLIED=1
-elif [ "${ANWIND_SAFE:-0}" != "1" ] && [ "$IS_MAINT" = "0" ]; then
-    apply_gpu_env
-    GPU_APPLIED=1
-fi
+apply_gpu_env
 apply_extra_env
 ensure_x11
 pick_backend
 case "$BACKEND" in box64|fexcore) apply_box64_env ;; esac
 
-# v2.10 基线裁决模式的最终执行点：v2.3 语义直跑 wineboot -i。
-# 此后不再有任何 v2.4+ 附加动作（探测/自愈/日志一概不经过）。
-if [ "${ANWIND_BASELINE:-0}" = "1" ]; then
-    if [ -d "$WINEPREFIX" ] && [ ! -f "$WINEPREFIX/system.reg" ]; then
-        rm -rf "$WINEPREFIX" 2>/dev/null || true
-        mkdir -p "$WINEPREFIX" 2>/dev/null || true
-        echo "[baseline] 已清理残缺前缀（等价新容器首跑状态）"
-    fi
-    wineboot_flavor_inventory
-    echo "[baseline] 容器=$CONT_NAME 后端=$BACKEND wine形态=${WINE_ARCH:-?} WINEPREFIX=$WINEPREFIX"
-    echo "[baseline] exec wineboot -i（v2.3 原样：无日志/无自愈/无管道）"
-    case "$BACKEND" in
-        box64)          exec "$BOX64_BIN" "$(dirname "$WINE_X86")/wineboot" -i ;;
-        native|arm64ec) exec "$(dirname "$WINE_X86")/wineboot" -i ;;
-        hangover)       exec "$(dirname "$WINE_HANGOVER")/wineboot" -i ;;
-        fexcore)        exec "$FEX_BIN" "$(dirname "$WINE_X86")/wineboot" -i ;;
-    esac
-fi
-
-info "会话开始 $(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo '?') 内核=$(uname -m 2>/dev/null) pid=$$"
-info "会话日志: ${ANWIND_LOG_FILE:-（无可写目录，未落盘——检查存储权限）}"
-# v2.7 可观测性：rootfs 构建戳（新 rootfs 有；旧 rootfs 缺失即提示日期特征）
-ROOTFS_BUILD_ID="$(conf_read "$RFS_USR/etc/anwind/rootfs-build-id" build "")"
-if [ -n "$ROOTFS_BUILD_ID" ]; then
-    info "rootfs 构建戳: $ROOTFS_BUILD_ID"
-else
-    info "rootfs 构建戳: 无（20261025 前旧 rootfs——SONAME 别名已运行时自愈）"
-fi
 info "容器=$CONT_NAME 后端=$BACKEND wine形态=${WINE_ARCH:-?} DISPLAY=$DISPLAY WINEPREFIX=$WINEPREFIX"
-# v2.7：box64 版本进日志（排障三要素：rootfs 戳 + box64 版本 + wine 形态）
-# v2.8：探测失败也留痕（区分"没装 box64"与"装了但版本探测失败"）
-BOX64_VER=""
-if [ -n "$BOX64_BIN" ]; then
-    BOX64_VER="$(box64_version "$BOX64_BIN")"
-    if [ -n "$BOX64_VER" ]; then
-        info "box64: $BOX64_BIN（v$BOX64_VER）"
-    else
-        info "box64: $BOX64_BIN（版本未知——--version 探测失败，排障可手跑: $BOX64_BIN --version）"
-    fi
-fi
-# hangover 兜底后端的版本错配告警：hangover-11.16 官方配套 box64 v0.4.4
-# （AndreRH/hangover releases 实证）；错配可致 SEH invalid frame 级联
-# （box64 #2365 同款签名）。arm64ec 模拟器 DLL（wowbox64/libarm64ecfex）
-# 为 hangover 后端跑 x86/x64 程序的必需件，一并探测。
-if [ "$BACKEND" = "hangover" ]; then
-    HO_TAG="$(conf_read "$RFS_USR/opt/.anwind-wine-info" tag "")"
-    [ -n "$HO_TAG" ] && info "hangover 运行时: $HO_TAG"
-    # v2.8：bionic 堆打标修复内置探测（根治 wineboot SEH 级联 / 退出码 53 的
-    # 修复落在 ntdll.so —— 字符串标记 "bionic heap tagging disabled" 只存在于
-    # 打过 0006 补丁的构建）。设备日志从此可直接回答"这个 wine 有没有修复"。
-    HO_TAGFIX="unknown"
-    for _so in "$RFS_USR/opt/lib/wine/aarch64-unix/ntdll.so" \
-               "$RFS_USR/opt/lib/wine/x86_64-unix/ntdll.so"; do
-        if [ -f "$_so" ]; then
-            if grep -aq "bionic heap tagging disabled" "$_so" 2>/dev/null; then
-                HO_TAGFIX="yes"
-            else
-                HO_TAGFIX="no"
-            fi
-            break
-        fi
-    done
-    case "$HO_TAGFIX" in
-        yes) info "wine 堆打标修复: 已内置（0006 补丁 —— bionic TBI 0xB4 崩溃已根治）" ;;
-        no)  info "wine 堆打标修复: 缺失！当前 wine 构建于修复之前 —— wineboot SEH 级联崩溃"
-             info "      （invalid frame → not in stack limits → kernel32 c0000135 → 退出码 53）"
-             info "      会复发。需用含 0006-fix-bionic-heap-tagging.patch 的配方重出 rootfs。" ;;
-        *)   info "wine 堆打标修复: 未能定位 ntdll.so（$RFS_USR/opt/lib/wine/*-unix/）—— 无法探测" ;;
-    esac
-    if [ -n "$BOX64_VER" ] && ver_lt "$BOX64_VER" "0.4.4"; then
-        info "警告: box64 v$BOX64_VER 低于 hangover-11.16 官方配套 v0.4.4 ——"
-        info "       hangover↔box64 协议版本敏感，SEH 崩溃风险。升级命令:"
-        info "       anwind-container install-box64"
-    fi
-    if [ -z "$(find "$RFS_USR/opt/lib/wine" "$WINE_DIR/lib/wine" "$WINEPREFIX/drive_c/windows" \
-                 -name wowbox64.dll -o -name libarm64ecfex.dll 2>/dev/null | head -n 1)" ]; then
-        info "提示: 未探测到模拟器 DLL（wowbox64/libarm64ecfex）——arm64ec 形态"
-        info "      进程按前缀绝对路径加载它们（C:\\windows\\system32，wine loader"
-        info "      无内置回退）；v2.10 已自动预置进前缀，但安装目录本身缺源时"
-        info "      x86/x64 能力仍不可用。获取：重出 rootfs（make-rootfs 自动装）"
-        info "      或手动解 hangover 官方 hangover_<ver>_dlls.tar 到"
-        info "      $RFS_USR/opt/lib/wine/{aarch64,arm64ec}-windows/（PE 文件与"
-        info "      bionic 无关，可直接复用）"
-    fi
-fi
 [ -n "$DMODE_RESOLUTION" ] && info "显示模式 dmode=$DMODE 分辨率=$DMODE_RESOLUTION（X11 握手已写入）"
 info "环境: PREFIX=$PREFIX HOME=$HOME LANG=$LANG 音频=${PULSE_SERVER:-（关）}"
-if [ "$GPU_APPLIED" = "1" ]; then
-    if [ -n "$GPU_VK_ICD" ]; then
-        info "GPU: GL驱动=${GPU_DRIVER:-auto}（GALLIUM_DRIVER=${GALLIUM_DRIVER:-未设}）Vulkan ICD=$(basename "$GPU_VK_ICD")"
-    else
-        info "GPU: GL驱动=${GPU_DRIVER:-auto}（GALLIUM_DRIVER=${GALLIUM_DRIVER:-未设}）Vulkan ICD=无"
-    fi
-elif [ "${ANWIND_SAFE:-0}" = "1" ]; then
-    info "GPU: GL 环境已旁路（ANWIND_SAFE=1 基线对照模式）"
-else
-    info "GPU: GL 环境未应用（维护命令 ${1:-}——前缀初始化无需图形栈）"
-fi
-info "wine 目录: $WINE_DIR  参数: $*"
+log "$(version)"
+log "会话开始 $(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo '?') 内核=$(uname -m 2>/dev/null) pid=$$"
+log "派发: 后端=$BACKEND wine目录=$WINE_DIR 参数: $*"
 run_wine "$@"
