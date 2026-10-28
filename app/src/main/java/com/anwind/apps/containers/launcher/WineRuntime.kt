@@ -101,7 +101,8 @@ object WineRuntime {
 
     /**
      * 解析 wine 安装目录。容器 `wine=` 支持目录名（/usr/opt/<名>）或
-     * 绝对路径；空则全局 default_wine，再空则主槽位 /usr/opt/wine。
+     * 绝对路径；空则全局 default_wine（同样兼容目录名与绝对路径 ——
+     * 比脚本更宽容，CLI 写入的槽位名行为不变），再空则主槽位 /usr/opt/wine。
      */
     private fun resolveWineDir(container: ContainerData): File? {
         val explicit = container.wine.trim()
@@ -110,7 +111,12 @@ object WineRuntime {
             explicit.isNotEmpty() -> File(WINE_OPT, explicit)
             else -> {
                 val global = readGlobalConfKey("default_wine")
-                if (global.isNotBlank()) File(WINE_OPT, global) else File(WINE_OPT, "wine")
+                when {
+                    global.isBlank() -> File(WINE_OPT, "wine")
+                    // 绝对路径直用（防止 File(parent, "/abs") 拼接成错误路径）
+                    global.startsWith("/") -> File(global)
+                    else -> File(WINE_OPT, global)
+                }
             }
         }
         return dir.takeIf { it.isDirectory }
@@ -232,12 +238,16 @@ object WineRuntime {
     private fun autoBackend(arch: Arch): ContainerBackend? {
         return when (deviceArch) {
             "x86_64", "amd64" -> {
-                if (File("$WINE_OPT/wine/bin/wine").isFile ||
-                    File(WINE_OPT).isDirectory
+                // 必须校验 wine ELF 形态：x86_64 设备上若误装了 arm64ec
+                // 构建，直接 exec aarch64 二进制会得到 "Exec format error"
+                if (arch == Arch.X86_64 &&
+                    (File("$WINE_OPT/wine/bin/wine").isFile || File(WINE_OPT).isDirectory)
                 ) ContainerBackend.NATIVE else null
             }
             else -> {
                 // aarch64 / arm64 设备
+                // （resolve() 已保证 wineDir 存在，此处 wineOk 恒真，
+                // 保留检查仅为防御性冗余）
                 val wineOk = File("$WINE_OPT/wine/bin/wine").isFile || File(WINE_OPT).isDirectory
                 if (wineOk) {
                     when (arch) {

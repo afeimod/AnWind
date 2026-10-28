@@ -54,10 +54,11 @@ app/src/main/assets/anwind/
 
 | 文件 | 职责 |
 |---|---|
-| `ContainerApp.kt` | 桌面应用注册（"Wine 容器"，emoji:📦 图标，免新增资源） |
+| `ContainerApp.kt` | 桌面应用注册（"Wine 容器"，emoji:📦 图标，pinnedToDesktop 桌面快捷方式 + 任务栏固定） |
 | `ContainerModels.kt` | 容器数据模型 + container.conf 编解码（后端/预设/分辨率/渲染器枚举） |
 | `ContainerManager.kt` | 容器 CRUD / 默认容器 / 本地体检（与 CLI 共享同一存储） |
-| `WineSessionLauncher.kt` | Wine 会话启动：自动打开 X11 桌面窗口 → headless TerminalSession 跑 anwind-wine，日志回传 |
+| `WineSessionLauncher.kt` | 纯门面（v3.0）：API 与 v2.x 兼容，全部转发 RootfsLauncher 原生启动链 |
+| `launcher/`（10 文件） | v3.0 原生启动链：RootfsLauncher 编排 + NativeShellExecutor 直接 exec（详见 docs/NATIVE-LAUNCHER.md） |
 | `ContainerScreens.kt` | Compose 管理界面：列表/新建/编辑/克隆/删除/运行/winecfg/wineboot/regedit/停止/日志/体检 |
 
 关键设计：
