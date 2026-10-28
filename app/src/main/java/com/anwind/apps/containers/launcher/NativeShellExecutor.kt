@@ -230,11 +230,16 @@ class NativeShellExecutor private constructor() {
         /**
          * 从 App 进程继承环境时必须剔除的键：
          * - LD_PRELOAD：劫持 execve，wine/box64 必炸（终端时代的头号杀手）；
+         * - LD_LIBRARY_PATH：继承值会污染符号解析（Mesa/驱动/x11drv）。
+         *   需要它的子进程（wine/pulse/box64 目标）一律由调用方经
+         *   [putEnv] 显式构建白名单 —— X 服务（app_process）更是明确
+         *   要求零库环境（脚本侧 unset 同款，v3.1）；
          * - TERMUX_*：Termux 会话标识，防 rootfs 内脚本误判前缀；
          * - 旧会话日志变量：新链路不再依赖脚本侧日志。
          */
         private val SCRUBBED_KEYS = listOf(
             "LD_PRELOAD",
+            "LD_LIBRARY_PATH",
             "TERMUX_VERSION", "TERMUX_APP_PACKAGE", "TERMUX_PREFIX",
             "TERMUX_MAIN_PACKAGE_FILENAME",
             "TERMUX_APP__TERMUX__FILES_PREFIX",

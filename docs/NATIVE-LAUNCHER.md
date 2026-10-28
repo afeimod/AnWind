@@ -6,6 +6,41 @@
 > 架构蓝本为 WinFusion 的原生编排模型，**显示方案保留 AnWind 的 X11**
 > （termux-x11 / libXlorie），未引入 Weston / Wayland。
 
+## v3.1 增补（实测修复轮）
+
+v3.0 实测暴露出四处"伪原生"残留，v3.1 全部根除：
+
+1. **X 服务拉起去脚本化（X11Support 重写）**：v3.0 的
+   `ensureX11Service` 仍以 `$PREFIX/bin/sh $PREFIX/bin/termux-x11 :1`
+   启动 X 服务 —— 本质还是"App 调脚本"，且漏设 `XDG_RUNTIME_DIR`
+   （socket 落点不确定）、依赖 env 文件链、失败被静默吞掉（用户被迫
+   回终端手敲 anwind-x11）。v3.1 直接以 ProcessBuilder 执行
+   `/system/bin/app_process … com.termux.x11.CmdEntryPoint`，环境
+   （CLASSPATH / ANWIND_X11_NATIVE_DIR / TERMUX_X11_OVERRIDE_PACKAGE /
+   TMPDIR=XDG_RUNTIME_DIR / XKB_CONFIG_ROOT）全部由 Kotlin 构建，
+   宿主 APK 路径从 `context.applicationInfo` 直取（升级自愈）；
+   XKB 键盘数据解压改由新增的 `XkbExtractor`（纯 Kotlin tar.gz 解析）
+   承接。陈旧 socket 文件以"本地套接字试连"探活、死文件自动清除
+   （防 X 服务 bind 失败与 wine 连死端点）。
+2. **CWD 跟随 exe（RootfsLauncher.resolveExeWorkingDir）**：v3.0 把
+   wine 的工作目录写死为 rootfs/home —— 游戏按 CWD 相对路径找
+   `media\` 等资源全挂（"找不到 media"报错的根因）。v3.1 依 exe
+   路径形态解析工作目录：Unix 绝对路径取父目录；Windows 盘符路径经
+   dosdevices 盘符链接映射回 Unix；相对路径维持 HOME（与终端一致）。
+3. **dosdevices 兜底（WineRegistry.ensureDosdevices）**：启动链幂等
+   补建 `z: → /` 与 `c: → drive_c` —— z: 缺失时 `/storage/…` 这类
+   宿主路径在 wine 内整体不可达（绝对路径找资源的另一诱因）。
+4. **音频孤儿 socket 自愈（PulseAudioManager）**：旧版 `socket 文件
+   存在 → 直接复用`，存活校验永远执行不到 —— App 进程死亡留下的
+   孤儿 socket 被直接交给 wine（winecfg 音频页无设备、游戏无声）。
+   v3.1 复用前先试连验证；活实例无 socket 先 `-k` 再拉。配套：
+   `NativeShellExecutor` 清洗键新增 `LD_LIBRARY_PATH`（防继承值污染
+   Mesa/驱动符号解析；需要它的子进程全部白名单显式注入）。
+   `WineRuntime` 的 `default_wine` 失效回退主槽位 + 错误信息带槽位名。
+
+> 桌面「📦 Wine 容器」快捷方式的接入链路与排障见
+> `docs/DESKTOP-CONTAINER.md`。
+
 ## 一、动机：终端链路的结构性限制
 
 v2.x 中，App 启动 wine 的完整路径是：

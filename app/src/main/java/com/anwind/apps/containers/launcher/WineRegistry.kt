@@ -93,6 +93,50 @@ object WineRegistry {
     }
 
     /**
+     * 确保前缀的 dosdevices 盘符映射完整（v3.1 新增）。
+     *
+     * wineboot 建前缀时会创建 c: → ../drive_c 与 z: → /，但个别精简
+     * 构建 / 异常中断的前缀会缺 z: —— 之后：
+     *  - 用户从 App 传入的 Unix 绝对路径（/storage/emulated/0/…）wine
+     *    自动按 Z: 盘换算，z: 缺失即整个宿主文件系统在 wine 内不可达；
+     *  - 游戏按绝对路径（Z:\\storage\\…）找 media 等资源时直接报
+     *    "找不到 media"。
+     *
+     * 幂等：仅在链接缺失时补建（z: → / 绝对符号链接；c: 缺失时指向
+     * 前缀内 drive_c，与 wine 默认布局一致）。前缀尚未初始化（无
+     * dosdevices 目录）时跳过 —— 归 wineboot 管。
+     */
+    fun ensureDosdevices(container: ContainerData, log: (String) -> Unit = {}) {
+        runCatching {
+            val prefix = File(container.prefixPath)
+            val dd = File(prefix, "dosdevices")
+            if (!dd.isDirectory) return
+
+            val z = File(dd, "z:")
+            if (!z.exists()) {
+                try {
+                    android.system.Os.symlink("/", z.absolutePath)
+                    log("已补 dosdevices z: → /（/storage 等宿主路径经 Z: 盘可达）")
+                } catch (e: Exception) {
+                    log("警告: z: 盘补建失败（${e.message}）—— 宿主路径在 wine 内可能不可达")
+                }
+            }
+
+            val c = File(dd, "c:")
+            if (!c.exists()) {
+                val driveC = File(prefix, "drive_c")
+                driveC.mkdirs()
+                try {
+                    android.system.Os.symlink("../drive_c", c.absolutePath)
+                    log("已补 dosdevices c: → ../drive_c")
+                } catch (e: Exception) {
+                    log("警告: c: 盘补建失败（${e.message}）")
+                }
+            }
+        }
+    }
+
+    /**
      * 首次运行自动初始化前缀（run_wine 的 wineboot -i 分支）：
      * 前缀无 system.reg 时同步执行 wineboot -i（宿主二进制直连）。
      *

@@ -1,6 +1,8 @@
 package com.anwind.apps.containers.launcher
 
 import com.anwind.apps.containers.ContainerManager
+import android.net.LocalSocketAddress
+import android.net.LocalSocket
 import java.io.File
 import java.net.InetSocketAddress
 import java.net.Socket
@@ -19,7 +21,12 @@ import java.net.Socket
  *     "Daemon already running." 后秒退，socket 永不出现 —— 表现为
  *     随机的"音频无声"。启动前先校验 pid 真伪，死了就清 pid 与
  *     socket 残留（WinFusion 同款教训）。
- *  2. unix socket 就绪采用短轮询（6 × 500ms，与脚本一致），
+ *  2. **复用必须验证 socket 真活着**（v3.1 修复）：旧版 `socket 文件
+ *     存在 → 直接复用`，存活校验永远执行不到 —— 孤儿 socket 被直接
+ *     交给 wine（PULSE_SERVER=unix:<死端点>），表现为 winecfg 音频页
+ *     无设备、游戏无声，且到下次冷启动都不会自愈。现在经本地套接字
+ *     试连验证，连不上即清理重拉。
+ *  3. unix socket 就绪采用短轮询（6 × 500ms，与脚本一致），
  *     失败再尝试 TCP 4713 兜底（rootfs 自己的实例 + 匿名鉴权），
  *     最终仍失败则给出诊断提示但**不阻断容器启动**（音频只是降级）。
  *
@@ -65,8 +72,6 @@ object PulseAudioManager {
      */
     @Synchronized
     fun ensureServer(log: (String) -> Unit = {}): String {
-        // 守护已在跑：直接复用（跨会话常驻设计）
-        if (PULSE_SOCK.exists()) return "unix:${PULSE_SOCK.absolutePath}"
         if (!PULSE_BIN.isFile) {
             // 老 rootfs 未内置 pulseaudio —— 最后借道 App 侧 TCP 4713
             // （与脚本终态兜底一致）
@@ -74,8 +79,33 @@ object PulseAudioManager {
             return "127.0.0.1:4713"
         }
 
+        // 守护在跑且 socket 可连：直接复用（跨会话常驻设计）。
+        // socket 文件存在 != 活着 —— 必须试连（v3.1 修复点）。
+        if (PULSE_SOCK.exists() && pulseSocketAlive()) {
+            return "unix:${PULSE_SOCK.absolutePath}"
+        }
+        if (PULSE_SOCK.exists()) {
+            log("检测到陈旧 PulseAudio socket（守护不在监听），清理后重新拉起")
+        }
+
         // 陈旧 pid 清理：pid 死了但文件残留 → 清掉，否则 --start 秒退
         discardStaleRuntime(log)
+
+        // 活实例但 unix socket 起不来（default.pa 异常等）：先请下场，
+        // 否则 --start 判定 already running 后秒退、socket 永不出现
+        // （对齐 anwind-x11 脚本 anwind_pulse_start 的同款处理）
+        if (scanPulseAlive()) {
+            log("PulseAudio 活实例无 unix socket，先结束后重拉")
+            runCatching {
+                NativeShellExecutor.create()
+                    .setCommand(PULSE_BIN.absolutePath, "-k")
+                    .putEnv(pulseEnv())
+                    .setWorkingDir(File("$RFS_ROOT/home"))
+                    .exec()
+                    .waitFor(3, java.util.concurrent.TimeUnit.SECONDS)
+            }
+            discardStaleRuntime(log)
+        }
 
         return try {
             // 首次拉起（daemon 模式，--start 由 pulse 自行 fork 后台，
@@ -188,6 +218,28 @@ object PulseAudioManager {
         Socket().use { socket ->
             socket.connect(InetSocketAddress("127.0.0.1", 4713), timeoutMs)
             true
+        }
+    } catch (_: Exception) {
+        false
+    }
+
+    /**
+     * unix socket 是否有守护在监听（本地套接字试连，即刻断开）。
+     * 连接即断对 pulse 而言只是一次零载荷 client connect/disconnect，
+     * 无副作用。文件存在但连不上 = 陈旧残留（v3.1 复用判据）。
+     */
+    private fun pulseSocketAlive(): Boolean = try {
+        val socket = LocalSocket()
+        try {
+            socket.connect(
+                LocalSocketAddress(
+                    PULSE_SOCK.absolutePath,
+                    LocalSocketAddress.Namespace.FILESYSTEM
+                )
+            )
+            true
+        } finally {
+            runCatching { socket.close() }
         }
     } catch (_: Exception) {
         false

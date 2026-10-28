@@ -75,9 +75,18 @@ object WineRuntime {
     fun resolve(container: ContainerData): Resolved {
         // ---- 1) wine 目录（容器 wine= → 全局 default_wine= → /usr/opt/wine） ----
         val wineDir = resolveWineDir(container)
-            ?: throw IllegalStateException(
-                "未找到 wine：请先安装（App 端 Wine 选择器一键安装，或终端 anwind-container install-wine）"
-            )
+            ?: throw IllegalStateException(buildString {
+                append("未找到 wine：")
+                val w = container.wine.trim()
+                if (w.isNotEmpty()) {
+                    append("容器 wine=『$w』不存在（/usr/opt/$w 或绝对路径无效）")
+                } else {
+                    val g = readGlobalConfKey("default_wine")
+                    if (g.isNotBlank()) append("全局 default_wine=『$g』不存在且无主槽位")
+                    else append("主槽位 /usr/opt/wine 不存在")
+                }
+                append("。请先安装（App 端 Wine 选择器一键安装，或终端 anwind-container install-wine）")
+            })
         val wineBinary = File(wineDir, "bin/wine")
         if (!wineBinary.isFile) {
             throw IllegalStateException("wine 主程序缺失：${wineBinary.absolutePath}")
@@ -103,23 +112,31 @@ object WineRuntime {
      * 解析 wine 安装目录。容器 `wine=` 支持目录名（/usr/opt/<名>）或
      * 绝对路径；空则全局 default_wine（同样兼容目录名与绝对路径 ——
      * 比脚本更宽容，CLI 写入的槽位名行为不变），再空则主槽位 /usr/opt/wine。
+     *
+     * v3.1 容错：default_wine 指向的槽位失效（被卸载/改名）时回退主槽位
+     * wine（存在才回退）—— 与 CLI 的兑底语义一致，避免“改了个名就全
+     * 容器起不来”。容器显式 wine= 无效时仍报错（用户明确指定的东西
+     * 缺失就该报，静默换目标会跑错版本）。
      */
     private fun resolveWineDir(container: ContainerData): File? {
         val explicit = container.wine.trim()
-        val dir: File = when {
-            explicit.startsWith("/") -> File(explicit)
-            explicit.isNotEmpty() -> File(WINE_OPT, explicit)
-            else -> {
-                val global = readGlobalConfKey("default_wine")
-                when {
-                    global.isBlank() -> File(WINE_OPT, "wine")
-                    // 绝对路径直用（防止 File(parent, "/abs") 拼接成错误路径）
-                    global.startsWith("/") -> File(global)
-                    else -> File(WINE_OPT, global)
-                }
-            }
+        if (explicit.isNotEmpty()) {
+            val dir = if (explicit.startsWith("/")) File(explicit)
+                      else File(WINE_OPT, explicit)
+            return dir.takeIf { it.isDirectory }
         }
-        return dir.takeIf { it.isDirectory }
+        val global = readGlobalConfKey("default_wine")
+        if (global.isBlank()) {
+            return File(WINE_OPT, "wine").takeIf { it.isDirectory }
+        }
+        val globalDir = if (global.startsWith("/")) File(global)
+                        else File(WINE_OPT, global)
+        if (globalDir.isDirectory) return globalDir
+        // default_wine 失效 → 回退主槽位（存在才回退，否则返回原目标
+        // 让上层报出具体槽位名）
+        val main = File(WINE_OPT, "wine")
+        if (main.isDirectory) return main
+        return globalDir
     }
 
     /** 读全局 container.conf 的指定键（与 CLI conf_read 同源）。 */

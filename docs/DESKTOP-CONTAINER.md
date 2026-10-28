@@ -4,6 +4,17 @@
 > 覆盖四个关键环节：**创建容器 / 启动容器 / 构建前缀 / wine 读取位置**。
 > 原生启动链（去终端化）的架构细节见 `docs/NATIVE-LAUNCHER.md`。
 
+## 〇、v3.1 修复清单（本轮实测问题对应）
+
+| 实测症状 | 根因 | 修复（代码位置） |
+| --- | --- | --- |
+| 仍需终端跑 `anwind-x11` 才有画面 | X 服务拉起仍经 `sh bin/termux-x11` 脚本，且缺 `XDG_RUNTIME_DIR`（socket 位置不定）、失败被静默吞掉 | `X11Support` 重写：直接 `app_process … com.termux.x11.CmdEntryPoint` 拉起，环境全由 Kotlin 构建（CLASSPATH/nativeDir 从 Context 直取），决策行进会话日志 |
+| winecfg 拿不到音频 | `PulseAudioManager` 在函数开头 `socket 存在→直接返回`，孤儿 socket 被直接交给 wine（死端点） | 复用前先本地套接字试连验证，连不上即清理重拉；活实例无 socket 先 `-k` 再拉 |
+| `CubeMap.exe 找不到 media` | wine 的 CWD 写死为 rootfs/home，DX9 等按 CWD 相对路径找 `media\` 永远找不到 | `RootfsLauncher.resolveExeWorkingDir`：Unix 路径取 exe 父目录、Windows 盘符路径经 dosdevices 映射，CWD 跟随 exe |
+| 游戏内 Z:\storage 路径失效 | 前缀缺 `dosdevices/z:` 时宿主路径在 wine 内不可达 | 新增 `WineRegistry.ensureDosdevices`：每次启动幂等补建 `z:→/`、`c:→drive_c` |
+| 改名/卸载 wine 后容器全灭 | `default_wine` 指向的槽位失效时报错且无提示槽位名 | `WineRuntime`：default_wine 失效时回退主槽位；错误信息带具体槽位名 |
+| 环境串扰残留 | 继承的 `LD_LIBRARY_PATH` 可能污染 Mesa/驱动符号解析 | `NativeShellExecutor` 清洗键新增 `LD_LIBRARY_PATH`（需要它的子进程全部白名单显式注入） |
+
 ## 一、桌面快捷方式的注册与渲染
 
 ```
@@ -72,17 +83,23 @@ UI 层（`ContainerScreens.kt`）对启动链的调用**全部经过
  3. WineEnvironment.buildBaseEnv      环境白名单一次成型（PREFIX/HOME/TMPDIR/
                                        XDG_*/LD_LIBRARY_PATH/LANG/DISPLAY=:1…）
     + WINEPREFIX=<容器目录>/prefix
- 4. X11Support.ensureX11Window        自动拉起内置 X 服务 + 打开 X11 桌面窗口
-    X11Support.awaitSocketReady       显式等 socket（≤10s，防"X 未就绪先连"黑屏）
+ 4. X11Support.ensureX11Window        原生拉起内置 X 服务（v3.1：app_process
+                                       直启，不经 sh/脚本）+ 打开 X11 桌面窗口
+    X11Support.awaitSocketReady       显式等 socket 可连（≤10s，防"X 未就绪
+                                       先连"黑屏；死 socket 文件会被清理）
  5. WineServerUtils.stop              清残留 wineserver（仅 freshSession 路径，
                                        "第一次能启动之后起不来"的根治步骤）
  6. GPU/Box64 环境叠加                GALLIUM_DRIVER / BOX64_DYNAREC_* / ZINK_*
- 7. PulseAudioManager.ensureServer    原生音频守护 + PULSE_SERVER（audio=off 跳过）
+ 7. PulseAudioManager.ensureServer    原生音频守护 + PULSE_SERVER（audio=off 跳过；
+                                       v3.1：复用前试连验证，孤儿 socket 自愈）
  8. WineRegistry.initializePrefixIfNeeded   首次自动 wineboot -i（见下节）
+    WineRegistry.ensureDosdevices     v3.1：dosdevices 盘符兜底（z:→/、c:→drive_c）
  9. WineRegistry.ensureEmulateModeset       无 RandR 显示模式虚拟化（幂等）
 10. applyDisplayMode()                dmode=off/d/v/f + .anwind-x11-res 握手
 11. WineEnvironment.applyExtraEnv     用户 env= / dxoverrides（最后叠加可覆盖）
 12. buildCommand() + NativeShellExecutor.exec   ProcessBuilder 直接 exec
+    resolveExeWorkingDir()            v3.1：CWD 跟随 exe 所在目录（media 等
+                                       相对路径可解析；无法解析时维持 HOME）
 ```
 
 第 12 步的 exec 目标（`WineRuntime.wineCommand`）：
@@ -168,14 +185,45 @@ UI 层（`ContainerScreens.kt`）对启动链的调用**全部经过
 - 每槽位 `.anwind-wine-info` 记录 version/installed，App 选择器与终端
   `wine-list` 同源读取。
 
-## 六、排障速查
+## 六、X11 画面链路（v3.1 重点：不再依赖终端）
+
+从 App 运行 exe/winecfg 时，X 服务由启动链自动拉起，**用户无需先在终端
+跑 `anwind-x11`**：
+
+```
+RootfsLauncher.launch() 第 4 步
+→ X11Support.ensureX11Service()
+   ├─ socket 可连？→ 服务已在跑，直接复用
+   ├─ socket 文件残留但连不上？→ 删除（否则 bind 报 Address already in use）
+   ├─ anwindx11 进程存活？→ 冷启动进行中，等待
+   └─ XkbExtractor 解压 XKB 键盘数据（脚本 tar -xzf 的原生替代）
+      ProcessBuilder 直接 exec：
+      /system/bin/app_process -Xnoimage-dex2oat / \
+          --nice-name=anwindx11 :1 com.termux.x11.CmdEntryPoint :1
+      环境：CLASSPATH=<宿主APK> ANWIND_X11_NATIVE_DIR=<nativeLibraryDir>
+            TERMUX_X11_OVERRIDE_PACKAGE=com.anwind
+            TMPDIR=XDG_RUNTIME_DIR=<App前缀>/tmp（socket 落点保证）
+            XKB_CONFIG_ROOT=<etc/anwind/x11/xkb>
+→ X 服务起来后每秒向 com.anwind 广播 ACTION_START（自带 binder）
+→ AnWindApp 动态接收器 → X11WindowController.onBroadcastReceived
+→ AnWind 桌面内自动弹出 "X11 桌面" 浮动窗口
+→ LorieView 取 fd 接管渲染 —— wine 的画面出现在窗口里
+```
+
+与终端方式（`anwind-x11` → `bin/termux-x11` 脚本 → app_process）**最终
+命令与环境完全同源**，但中间不再有 sh / 脚本 / env 文件任何一环；宿主
+APK 路径直取 `context.applicationInfo.sourceDir`，APK 升级后自愈。
+
+## 七、排障速查
 
 | 症状 | 检查点 |
 | --- | --- |
 | 桌面无图标 | `AppBootstrap.registerAll()` 是否注册 `ContainersApp` |
 | 新建容器报错 | 容器名规则 / rootfs 已导入（`rootfsReady()` = CLI 文件存在） |
-| 运行报"未找到 wine" | `anwind-container wine-list` 或 App 选择器确认槽位；解析顺序见上节 |
-| 首启黑屏 | X 服务日志 `cat <App前缀>/tmp/anwind-x11-autostart.log` |
+| 运行报"未找到 wine" | 错误信息已带具体槽位名；`anwind-container wine-list` 或 App 选择器确认槽位 |
+| 首启黑屏 / 无 X11 窗口 | 会话日志看 X 服务决策行；`cat <App前缀>/tmp/anwind-x11-autostart.log` |
+| winecfg 音频页无设备 | 会话日志看 PulseAudio 决策行（陈旧 socket 清理 / 重拉 / TCP 兜底） |
+| 游戏报"找不到 media" | 确认以 exe 完整路径启动（CWD 会跟随 exe）；日志看"工作目录=exe 所在目录"行 |
+| Z:\ 路径不可达 | 会话日志看"已补 dosdevices z:"；`ls <前缀>/dosdevices/` |
 | 二次启动失败 | 会话日志看 `wineserver -k/-w` 步骤；冷启动孤儿清扫是否执行 |
-| 无声 | 会话日志看 PulseAudio 决策行（pid 清理 / unix socket / TCP 兜底） |
 | 显示模式枚举失败 | EmulateModeset marker：`<前缀>/.anwind-emulate-modeset` |

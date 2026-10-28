@@ -212,6 +212,36 @@ object RootfsLauncher {
     /** X11 桌面窗口联动（外部诊断/手动路径用）。 */
     fun ensureX11Window(context: Context) = X11Support.ensureX11Window(context)
 
+    /**
+     * 解析 exe 的工作目录（v3.1 新增）。
+     *
+     * 游戏几乎都按 CWD 相对路径找资源（DX9/DXUT 样例的 media\、各引擎
+     * 的 data\ 等）。旧版把 CWD 写死为 rootfs/home，用户从 App 运行
+     * /storage/…/CubeMap.exe 时 media 永远找不到 —— 终端时代用户会先
+     * cd 到游戏目录再跑 wine，App 侧一直没有等价物，这就是回归。
+     *
+     * 规则：
+     *  - Unix 绝对路径（/storage/…）→ exe 父目录（目录不存在则兑底 HOME）；
+     *  - Windows 盘符路径（Z:\… / C:\…）→ 经 dosdevices 盘符链接映射回
+     *    Unix 后取父目录（z: → /，c: → drive_c）；
+     *  - 相对路径 / 子命令（winecfg 等）→ null（维持 HOME，与终端一致）。
+     */
+    internal fun resolveExeWorkingDir(exe: String?, container: ContainerData): File? {
+        if (exe == null) return null
+        val p = exe.trim()
+        if (p.isEmpty()) return null
+        if (p.startsWith("/")) {
+            return File(p).parentFile?.takeIf { it.isDirectory }
+        }
+        val winPath = Regex("^([A-Za-z]):[\\\\/](.*)$").find(p) ?: return null
+        val drive = winPath.groupValues[1].lowercase() + ":"
+        val rest = winPath.groupValues[2].replace('\\', '/')
+        val base = File(File(container.prefixPath, "dosdevices"), drive)
+        if (!base.isDirectory) return null
+        if (rest.isBlank()) return base
+        return File(base, rest).parentFile?.takeIf { it.isDirectory } ?: base
+    }
+
     // ------------------------------------------------------------------
     // 启动链
     // ------------------------------------------------------------------
@@ -284,9 +314,10 @@ object RootfsLauncher {
             val env = LinkedHashMap(WineEnvironment.buildBaseEnv(container, resolved.wineDir))
             env["WINEPREFIX"] = container.prefixPath
 
-            // 4) X11 就绪：打开桌面窗口 + 自动拉起 X 服务 + 显式等 socket
-            //    （最多 10s，消除"X 未就绪 wine 先连 → 黑屏"竞态）
-            X11Support.ensureX11Window(context)
+            // 4) X11 就绪：打开桌面窗口 + 原生拉起 X 服务 + 显式等 socket
+            //    （v3.1：X 服务由 app_process 直启，不经 sh/脚本；决策行
+            //    进会话日志，失败不再静默）
+            X11Support.ensureX11Window(context) { sink.stamp(it) }
             X11Support.awaitSocketReady(env["DISPLAY"] ?: ":1") { sink.stamp(it) }
 
             // 5) 清残留 wineserver（仅 freshSession：注册表落盘 + 断开旧
@@ -326,6 +357,11 @@ object RootfsLauncher {
                 wineArgs.firstOrNull() == "wineboot"
             if (!isHostToolCommand) {
                 WineRegistry.initializePrefixIfNeeded(resolved, container, env) { sink.stamp(it) }
+                // v3.1：dosdevices 兑底（z: → / 等）—— /storage/emulated/0
+                // 这类宿主路径经 Z: 盘可达；缺失时某些精简 wine 构建不建
+                // z: 盘，游戏按绝对路径找资源文件会全挂（media 找不到的
+                // 另一诱因）
+                WineRegistry.ensureDosdevices(container) { sink.stamp(it) }
                 WineRegistry.ensureEmulateModeset(resolved, container, env) { sink.stamp(it) }
             }
 
@@ -348,6 +384,15 @@ object RootfsLauncher {
                 return
             }
             val command = buildCommand(resolved, wineArgs, dmode, resolution)
+            // v3.1：工作目录跟随 exe 所在目录（Unix 路径直取父目录 /
+            // Windows 盘符路径经 dosdevices 映射）—— DX9 等大量游戏按
+            // CWD 相对路径找 media\ 等资源，旧版写死 HOME 导致
+            // "找不到 media" 报错（CubeMap.exe 实证）
+            val workingDir = resolveExeWorkingDir(wineArgs.firstOrNull(), container)
+                ?: WineEnvironment.HOME_DIR
+            if (workingDir != WineEnvironment.HOME_DIR) {
+                sink.stamp("工作目录=exe 所在目录 $workingDir（media 等相对路径可解析）")
+            }
             sink.stamp(
                 "启动: ${command.joinToString(" ")}\n" +
                     "环境: DISPLAY=${env["DISPLAY"]} WINEPREFIX=${env["WINEPREFIX"]} " +
@@ -357,7 +402,7 @@ object RootfsLauncher {
             val executor = NativeShellExecutor.create()
                 .setCommand(*command.toTypedArray())
                 .putEnv(env)
-                .setWorkingDir(WineEnvironment.HOME_DIR)
+                .setWorkingDir(workingDir)
                 .onStdOut { sink.log(it) }
                 .onStdErr { sink.log(it) }
                 .onExit { code -> onSessionExit(key, code, sink) }

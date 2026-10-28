@@ -30,6 +30,13 @@ AnWind 的 X11 方案）：
 UI 层零改动（`WineSessionLauncher` 重制为兼容门面）；终端与 rootfs 侧
 脚本完整保留供高级用户使用，但 App 的 wine 运行不再依赖它们。
 
+**v3.1（实测修复轮）**：X 服务改由 `app_process` 直启（不经 sh/脚本，
+环境全由 Kotlin 构建，画面链路彻底脱离终端）；wine 工作目录跟随 exe
+所在目录（修复"找不到 media"）；dosdevices 幂等补建 `z:→/`；
+PulseAudio 孤儿 socket 试连自愈（修复 winecfg 无音频）；`default_wine`
+失效回退主槽位。桌面「📦 Wine 容器」快捷方式全流程见
+**`docs/DESKTOP-CONTAINER.md`**。
+
 ## 一、包目录结构（＝AnWind 仓库结构）
 
 ```
