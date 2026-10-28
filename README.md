@@ -9,6 +9,27 @@ App 侧 `/data/data/com.anwind/files/usr/tmp/.X11-unix/X1`，默认显示号 `:1
 全链路 **无 Weston、无 Wayland**：rootfs 内 libX11/xtrans/libxcb 已按 App 侧
 X11 socket 路径打补丁，容器内程序直连内置 X 服务。
 
+## ⚡ v3.0 重大更新：原生 rootfs 启动链（App 侧 wine 运行彻底去终端化）
+
+App 对 rootfs 的调用与运行已**完全重制**（架构蓝本 WinFusion，显示保留
+AnWind 的 X11 方案）：
+
+- **旧链路（已退役）**：App → Termux PTY（80×24 伪终端）→ `bash -c` →
+  anwind-container → anwind-wine 脚本（709 行 bash 环境清洗/音频/X11 自启/
+  后端选择）→ exec wine —— 驱动/音频/环境受终端链路层层制约，
+  stdio 被 pty/管道接管曾实证引发 wineboot SEH 崩溃。
+- **新链路（v3.0）**：App → `RootfsLauncher`（Kotlin 编排：wine 解析 →
+  X11 就绪 → 清残留 wineserver → 环境白名单一次成型 → 原生 PulseAudio →
+  wineboot/EmulateModeset → 显示模式握手）→ **ProcessBuilder 直接 exec
+  rootfs 内 wine 二进制** —— 无 PTY、无 bash、无脚本、无终端模拟器；
+  wine 是 App 原生管理的子进程，驱动 / 音频 / 环境由 App 直接构建，
+  进程生命周期具备完整进程语义（destroyForcibly + wineserver -k/-w +
+  /proc 孤儿清扫）。
+
+详见 **`docs/NATIVE-LAUNCHER.md`**（新架构完整说明）。
+UI 层零改动（`WineSessionLauncher` 重制为兼容门面）；终端与 rootfs 侧
+脚本完整保留供高级用户使用，但 App 的 wine 运行不再依赖它们。
+
 ## 一、包目录结构（＝AnWind 仓库结构）
 
 ```

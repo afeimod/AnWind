@@ -807,13 +807,13 @@ object X11FitClient {
 
 /**
  * v2.22.5 fix15 —— X11 会话清理：关闭 X11 桌面窗口时终止 wine。
- * App 与 termux 环境（/data/data/com.anwind）同 UID，直接以 termux 的
- * bash 执行清理：先 TERM wineserver（wine 随之正常收尾所有 Windows
- * 进程），再 KILL 兜底残留的 wine-preloader/.exe 进程。
+ * v3.0 原生化：不再经 termux bash 执行 `ps -ef | grep | awk | xargs kill`
+ * 文本管线（依赖 bash/ps 工具链、grep 自误匹配、无 UID 校验），改为
+ * [com.anwind.apps.containers.launcher.ProcessCleanup.killWineProcesses]
+ * 直接扫 /proc（同 UID + cmdline 特征）精确击杀 wine 全家。
  */
 object X11Session {
     private const val TAG = "X11Session"
-    private const val PREFIX = "/data/data/com.anwind/files/usr"
 
     @Volatile private var lastKillAt = 0L
 
@@ -825,22 +825,9 @@ object X11Session {
 
         Thread({
             try {
-                val bash = File("$PREFIX/bin/bash")
-                if (!bash.exists()) {
-                    Log.w(TAG, "termux bash 不存在，跳过 wine 清理")
-                    return@Thread
-                }
-                // ${'$'}2 为 awk 的 $2（Kotlin 模板转义）
-                val script = """
-                    ps -ef 2>/dev/null | grep -E 'wineserver|wine-preloader|wine64-preloader|\.exe' | grep -v grep | awk '{print ${'$'}2}' | xargs -r kill 2>/dev/null
-                    sleep 1
-                    ps -ef 2>/dev/null | grep -E 'wineserver|wine-preloader|wine64-preloader|\.exe' | grep -v grep | awk '{print ${'$'}2}' | xargs -r kill -9 2>/dev/null
-                    echo "[AnWind] X11 窗口已关闭，wine 会话已清理"
-                """.trimIndent()
-                val p = ProcessBuilder(bash.absolutePath, "-c", script)
-                p.redirectErrorStream(true)
-                val out = p.start().inputStream.bufferedReader().readText()
-                Log.i(TAG, "wine 清理完成: ${out.lineSequence().lastOrNull()?.trim() ?: "ok"}")
+                val killed = com.anwind.apps.containers.launcher.ProcessCleanup
+                    .killWineProcesses()
+                Log.i(TAG, "X11 窗口已关闭，wine 会话已清理（击杀 $killed 个进程）")
             } catch (e: Exception) {
                 Log.w(TAG, "wine 清理失败: ${e.message}")
             }

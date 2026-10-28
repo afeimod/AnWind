@@ -10,6 +10,7 @@ import androidx.room.Room
 import com.anwind.data.db.AppDatabase
 import com.anwind.data.prefs.SettingsStore
 import com.anwind.core.theme.ThemeManager
+import com.anwind.apps.containers.launcher.ProcessCleanup
 import com.anwind.apps.x11.X11WindowController
 import com.termux.x11.CmdEntryPoint
 import com.termux.x11.LoriePreferences
@@ -77,6 +78,15 @@ class AnWindApp : Application() {
     override fun onCreate() {
         super.onCreate()
         instance = this
+
+        // v3.0 原生启动链配套：清扫上次进程死亡遗留的 wine 孤儿树
+        // （wineserver / wine-preloader / 各 .exe / box64-wine）。
+        // 残留的 wineserver 会让新 wine 客户端连上旧会话 ——
+        // "第一次能启动，之后再也起不来"的根因；后台线程执行，
+        // 扫描 /proc 开销毫秒级。
+        applicationScope.launch(Dispatchers.IO) {
+            runCatching { ProcessCleanup.cleanup() }
+        }
 
         database = Room.databaseBuilder(this, AppDatabase::class.java, AppDatabase.NAME)
             .fallbackToDestructiveMigration()
