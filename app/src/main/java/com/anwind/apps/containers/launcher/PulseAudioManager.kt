@@ -73,9 +73,19 @@ object PulseAudioManager {
     @Synchronized
     fun ensureServer(log: (String) -> Unit = {}): String {
         if (!PULSE_BIN.isFile) {
-            // 老 rootfs 未内置 pulseaudio —— 最后借道 App 侧 TCP 4713
-            // （与脚本终态兜底一致）
-            log("rootfs 未内置 pulseaudio，音频走 App 侧 TCP 4713 兜底")
+            // 旧版 rootfs 未内置 pulseaudio。注意：原生链路没有任何 4713
+            // 服务端（那是终端时代 anwind-x11 脚本拉起的实例，已随脚本链路
+            // 退役）——返回 127.0.0.1:4713 只是为了给 wine 一个格式合法的
+            // PULSE_SERVER，libpulse 连不上后 mmdevapi 会回退 winealsa，
+            // 而 Android 应用进程无 /dev/snd 访问权，ALSA 同样起不来 →
+            // winecfg 音频页无设备、游戏无声。唯一出路：导入包含音频栈的
+            // 新版 bionic rootfs（含 pulseaudio/libpulse/libasound，v3.1.2
+            // 起 rootfs CI 强制校验这组文件必在）。
+            log(
+                "警告: rootfs 未内置 pulseaudio（旧版 rootfs）——原生链路没有 " +
+                    "4713 服务端可兜底，音频将不可用；请导入包含音频栈的新版 " +
+                    "bionic rootfs 后重试"
+            )
             return "127.0.0.1:4713"
         }
 

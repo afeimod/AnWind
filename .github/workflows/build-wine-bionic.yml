@@ -255,6 +255,36 @@ jobs:
               --build hangover-wine 2>&1 | tee build-wine-arm64ec.log
           fi
 
+      # ============ 6.5 音频驱动探测诊断（configure 期结果直接亮出来） ============
+      # 背景：wine 10/11 音频驱动（winepulse/winealsa）为纯 unixlib（无 .drv
+      # PE 文件）。configure 探测不到 libpulse/alsa-lib 时只打一行 NOTICE 告警
+      # 并静默禁用驱动，构建照样"成功"——产物里悄悄少了 winepulse.so/
+      # winealsa.so，设备上表现为 winecfg 音频页无设备、游戏无声。此步骤把
+      # 探测失败原因直接亮在步骤页；最终裁决仍由第 8 步 .so 文件存在性校验
+      # 负责（本步骤不因告警而 fail，避免与文件校验重复判定）。
+      - name: 音频驱动探测诊断（PulseAudio / ALSA configure 检测）
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          LOG="${GITHUB_WORKSPACE}/bionic-rootfs/build-wine-${{ matrix.flavor }}.log"
+          if [[ ! -f "$LOG" ]]; then echo "（构建日志不存在，跳过诊断）"; exit 0; fi
+          echo "=== configure 音频探测失败告警（应无输出）==="
+          NEG_HITS=$(grep -nE \
+            "(PulseAudio|ALSA) won't be supported|pulse/pulseaudio\.h\.\.\. no|alsa/asoundlib\.h\.\.\. no|for -lpulse soname\.\.\. no|for -lasound soname\.\.\. no|in -lasound\.\.\. no" \
+            "$LOG" | head -5 || true)
+          if [[ -n "$NEG_HITS" ]]; then
+            echo "$NEG_HITS"
+            echo "::error::configure 未探测到音频开发库 —— winepulse/winealsa 不会构建！"
+            echo "请检查依赖配方 pulseaudio / alsa-lib 是否构建成功（构建顺序见日志 '构建顺序:' 行）。"
+          else
+            echo "  [OK] 未出现 libpulse / alsa-lib 探测失败告警"
+          fi
+          echo "=== configure 音频探测正向证据（soname / 符号命中）==="
+          grep -nE \
+            "for -lpulse soname\.\.\. libpulse|in -lasound\.\.\. yes|for -lasound soname\.\.\. libasound" \
+            "$LOG" | head -6 || \
+            echo "  （未匹配到正向探测行——若上方无失败告警，以第 8 步 .so 文件校验为准）"
+
       # ============ 7. 失败自诊断（把日志尾部直接打进步骤输出） ============
       - name: 失败时输出日志尾部
         if: ${{ failure() }}

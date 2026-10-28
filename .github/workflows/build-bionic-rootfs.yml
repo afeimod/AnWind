@@ -233,6 +233,26 @@ jobs:
           check "$RFS/lib/libEGL.so.1"
           check "$RFS/lib/libgbm.so.1"
           check "$RFS/lib/libvulkan.so.1"
+          # ---- 音频栈（v3.1.2 新增强制校验）----
+          # wine 10/11 的音频驱动 winepulse/winealsa 是纯 unixlib：wine 侧
+          # dlopen winepulse.so → DT_NEEDED libpulse.so.0（rootfs 本库）→ 经
+          # PULSE_SERVER 连 rootfs pulseaudio 守护（module-sles-sink 直连
+          # Android OpenSLES 出声）。旧版 rootfs 缺以下任一项 → 设备上
+          # winecfg 音频页无设备、游戏无声，且 App 原生链路没有 4713
+          # 服务端可兜底（那是终端时代 anwind-x11 脚本的产物）——必须
+          # 在构建期就拦下来。注意 --lite 模式不删运行库/守护/模块，
+          # 这些校验对 lite 导出同样成立。
+          check "$RFS/bin/pulseaudio"
+          check "$RFS/lib/libpulse.so.0"
+          check "$RFS/lib/libasound.so.2"
+          check "$RFS/lib/pulseaudio/modules/libmodule-sles-sink.so"
+          check "$RFS/etc/pulse/default.pa"
+          if [[ -f "$RFS/etc/pulse/default.pa" ]] && \
+             ! grep -q "module-sles-sink" "$RFS/etc/pulse/default.pa"; then
+            echo "  [MISS] default.pa 未启用 module-sles-sink（OpenSLES 输出模块，缺失则守护无声）"
+            MISS=1
+            MISS_LIST+="$RFS/etc/pulse/default.pa (module-sles-sink)"$'\n'
+          fi
           # ---- GStreamer 运行时（wine winegstreamer 后端依赖；此前
           #      rootfs 缺 usr/lib/gstreamer-1.0 目录导致 wine 无编解码）----
           check "$RFS/lib/libgstreamer-1.0.so"

@@ -1,5 +1,62 @@
 # AnWind Bionic 修复包 v2（2026-09-19）
 
+> **v3.1.2 增量（2026-10-28）**：排查"winecfg 读取不到任何音频（pulse/alsa 全空）"
+>
+> ## 先纠正一个关键认知：wine 11 没有 winepulse.drv / winealsa.drv 是正常的！
+>
+> wine 10 起**全部音频驱动转为纯 unixlib**：PE 侧 `.drv` 文件已不存在，
+> 真正的驱动是安装目录 `lib/wine/<arch>-unix/` 下的 **winepulse.so / winealsa.so**
+> （x86_64 形态在 `x86_64-unix/`，arm64ec 形态在 `aarch64-unix/`）。
+> 检查产物时请查 .so，不要查 .drv——查 .drv 永远是"没有"，不能说明问题。
+> CI 的"校验 wine 产物"步骤已检查这两个 .so，缺失会直接构建失败。
+>
+> ## 完整音频链路（缺任何一环 = winecfg 音频页无设备）
+>
+> ```
+> winecfg / 游戏(mmdevapi)
+>   → dlopen <wine>/lib/wine/<arch>-unix/winepulse.so     ← wine 包
+>      └ DT_NEEDED libpulse.so.0                            ← rootfs（pulseaudio 配方）
+>         └ 连 PULSE_SERVER=unix:<rootfs>/usr/tmp/pulse/native
+>            └ rootfs pulseaudio 守护（App 原生拉起）
+>               └ default.pa: module-sles-sink → Android OpenSLES 出声
+> ```
+>
+> ## 设备侧排查（三条命令定位断点）
+>
+> ```
+> # ① wine 包里的音频驱动（应列出 winepulse.so 与 winealsa.so）
+> tar tzf anwind-wine-*-bionic.tar.gz | grep -E "winepulse|winealsa"
+>
+> # ② rootfs 音频栈（旧版 rootfs 大概率缺这三样 → 这就是根因）
+> ls /data/data/com.anwind/files/rootfs/usr/bin/pulseaudio
+> ls /data/data/com.anwind/files/rootfs/usr/lib/libpulse.so.0
+> ls /data/data/com.anwind/files/rootfs/usr/lib/libasound.so.2
+>
+> # ③ App 会话日志（容器"Wine 输出"面板 / Download/AnWind/*.log）
+> #    看"音频="决策行：
+> #    "rootfs 未内置 pulseaudio（旧版 rootfs）" → rootfs 太旧，必无声
+> #    "音频=PulseAudio(unix:...)"              → 守护正常，问题在 wine 包
+> ```
+>
+> ## 本轮改动
+>
+> 1. **build-bionic-rootfs.yml**：rootfs 产物校验新增音频栈强制检查
+>    （`bin/pulseaudio`、`libpulse.so.0`、`libasound.so.2`、
+>    `pulseaudio/modules/libmodule-sles-sink.so`、`etc/pulse/default.pa`
+>    含 module-sles-sink 行）——旧版 rootfs 缺音频栈能直接在 CI 拦下。
+> 2. **build-wine-bionic.yml**：新增"音频驱动探测诊断"步骤——把 configure
+>    期的 `PulseAudio won't be supported` / `ALSA won't be supported` 告警
+>    与正向探测证据直接亮在 Actions 步骤页（此前探测失败只藏在大日志里）。
+> 3. **PulseAudioManager.kt**：旧 rootfs 兜底日志修正——明确告知
+>    "4713 是死端点、需换新 rootfs"（原文案暗示 App 侧有服务端，误导排障）。
+>
+> ## 结论：如果设备上 ② 的三个文件缺失
+>
+> rootfs 是旧版（音频栈进入 projects 列表之前构建的），**重新跑
+> "Build AnWind Bionic Rootfs (X11)" 工作流导出新 rootfs 并重新导入**即可。
+> wine 包若 ① 正常则无需重编；若 ① 缺 .so，重跑 wine 工作流并查看新增的
+> 探测诊断步骤输出。
+
 > **v3.1.1 增量（2026-10-28）**：修复 GitHub Actions `compileReleaseKotlin` 报错
 > ```
 > XkbExtractor.kt:85:42 Type mismatch: inferred type is Long but Int was expected
