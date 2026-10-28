@@ -81,11 +81,24 @@ internal object XkbExtractor {
 
             when (typeFlag) {
                 'L'.code -> {
-                    // GNU LongName：数据块即下一个条目的真实名字
-                    val data = ByteArray(size)
-                    readFully(input, data)
-                    skipPadding(input, size)
-                    pendingLongName = data.toString(Charsets.UTF_8).trimEnd('\u0000')
+                    // GNU LongName：数据块即下一个条目的真实名字。
+                    // 修复①：size 来自 parseOctal 返回 Long，ByteArray 构造器
+                    // 需要 Int（编译报 85:42 Long→Int）；名字不可能超过 4MB，
+                    // 超限/负值视为坏包：跳过数据、回退普通头内名字，
+                    // 防止 toInt() 溢出成负数抛 NegativeArraySizeException。
+                    // 修复②：删除本分支内的 skipPadding —— when 块之后已对
+                    // 所有分支统一补一次填充；此前两处都执行会把 LongName
+                    // 条目的填充跳两遍，多吞 (512 - size%512) 字节，正好吃掉
+                    // 下一个条目的头部，导致整包解析错位。
+                    if (size < 0 || size > 4L * 1024 * 1024) {
+                        log("跳过异常 GNU LongName 条目（size=$size）")
+                        skipData(input, size)
+                        pendingLongName = null
+                    } else {
+                        val data = ByteArray(size.toInt())
+                        readFully(input, data)
+                        pendingLongName = data.toString(Charsets.UTF_8).trimEnd('\u0000')
+                    }
                 }
                 '5'.code, 'd'.code -> {
                     target.mkdirs()

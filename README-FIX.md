@@ -1,5 +1,15 @@
 # AnWind Bionic 修复包 v2（2026-09-19）
 
+> **v3.1.1 增量（2026-10-28）**：修复 GitHub Actions `compileReleaseKotlin` 报错
+> ```
+> XkbExtractor.kt:85:42 Type mismatch: inferred type is Long but Int was expected
+> ```
+> 根因：`parseOctal()` 返回 `Long`，`ByteArray(size)` 构造器要求 `Int`。
+> 修复为 `ByteArray(size.toInt())` 并加 4MB 上限防御（防溢出成负数组）；
+> 同时修掉同文件 GNU LongName 分支的**双重 skipPadding** 逻辑缺陷
+> （'L' 分支内跳一次 + when 块后统一再跳一次，会把下一个 tar 头吃掉）。
+> 详见 `fix-build-errors.patch` 第一段。
+
 解压后将 `AnWind-bionic-all-in-one-v2/` 内的全部内容
 （`.github/`、`bionic-rootfs/`、`app/`）直接覆盖合并到 AnWind 仓库根目录即可。
 
