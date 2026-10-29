@@ -6,6 +6,8 @@ import com.anwind.apps.containers.ContainerAudio
 import com.anwind.apps.containers.ContainerBackend
 import com.anwind.apps.containers.ContainerData
 import com.anwind.apps.containers.ContainerManager
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -71,6 +73,32 @@ object RootfsLauncher {
 
     /** 每容器最近一次启动的日志（简易环形，UI 查看）。 */
     val lastLogs = LinkedHashMap<String, StringBuilder>()
+
+    // ------------------------------------------------------------------
+    // v3.1.6 前缀构建日志（仅 wineboot -i 阶段；用户诉求：构建前缀日志显示）
+    // ------------------------------------------------------------------
+
+    /** 前缀构建进行中的容器名（null = 无）；UI 据此自动弹出前缀日志窗口。 */
+    private val _prefixBuildFlow = MutableStateFlow<String?>(null)
+    val prefixBuildFlow: StateFlow<String?> get() = _prefixBuildFlow
+
+    /** 前缀构建专用日志通道（容器名 → 累积文本，与主会话日志分离）。 */
+    private val prefixLogLock = Any()
+    private val prefixLogs = LinkedHashMap<String, StringBuilder>()
+
+    internal fun prefixLogLine(key: String, line: String) {
+        synchronized(prefixLogLock) {
+            prefixLogs.getOrPut(key) { StringBuilder() }.append(line).append('\n')
+        }
+    }
+
+    /** 读取容器的前缀构建日志（无则空串）。 */
+    fun prefixLogOf(key: String): String = synchronized(prefixLogLock) {
+        prefixLogs[key]?.toString() ?: ""
+    }
+
+    /** 清除容器的前缀构建日志（容器删除时）。 */
+    fun clearPrefixLog(key: String) = synchronized(prefixLogLock) { prefixLogs.remove(key) }
 
     /**
      * 启动链线程池：cached + daemon。链内含 X11 就绪等待 / wineserver
@@ -184,6 +212,8 @@ object RootfsLauncher {
         pendingLaunches.remove(name)
         synchronized(sessions) { sessions.remove(name) }?.let { it.stopAndWait() }
         lastLogs.remove(name)
+        if (_prefixBuildFlow.value == name) _prefixBuildFlow.value = null
+        clearPrefixLog(name)
         if (!ContainerManager.rootfsReady()) return null
         return try {
             val container = ContainerManager.get(name)
@@ -345,6 +375,18 @@ object RootfsLauncher {
                 env, resolved.arch, resolved.wineDir, container.env
             )
 
+            // v3.1.6：wineboot -i（前缀构建）会话不注入 HODLL64/HODLL ——
+            // 前缀创建只执行 aarch64 PE（wineboot/services/explorer 全部
+            // 原生 arm64ec 代码），仿真器 DLL 在 wow64 层的早期加载纯属
+            // 额外风险面，却是 proton10 arm64ec "无任何输出挂死"的高度
+            // 可疑点（同环境 hangover 11.16 正常，wine 10 与 11 的 wow64
+            // 初始化路径不同）。构建完成后的游戏/程序会话照常注入。
+            if (wineArgs.firstOrNull() == "wineboot") {
+                env.remove("HODLL64")
+                env.remove("HODLL")
+                sink.stamp("前缀构建会话：跳过 HODLL64/HODLL 注入（仅 aarch64 PE，规避仿真器早期加载风险）")
+            }
+
             // 7) 音频（audio=off → 无声；pulse → 原生守护管理 + PULSE_SERVER）
             when (container.audio) {
                 ContainerAudio.OFF -> {
@@ -363,16 +405,29 @@ object RootfsLauncher {
             //    游戏显示模式枚举/D3D 设备创建的关键修复；幂等）
             // wineserver / wineboot 直连命令跳过 8/9（对齐脚本 run_wine
             // 特殊分支：宿主工具不经 wine 客户端准备流程）
+            // v3.1.6：wineboot -i 会话与首次前缀初始化统一登记前缀构建
+            // 进度流 + 专用日志通道（UI 自动弹出「构建 Wine 前缀」窗口，
+            // 逐行显示 wineboot 输出 —— proton arm64ec 无输出挂死这类
+            // 问题从此有直接证据面）。
             val isHostToolCommand = wineArgs.firstOrNull() == "wineserver" ||
                 wineArgs.firstOrNull() == "wineboot"
+            val isPrefixSession = wineArgs.firstOrNull() == "wineboot"
+            if (isPrefixSession) _prefixBuildFlow.value = key
             if (!isHostToolCommand) {
-                WineRegistry.initializePrefixIfNeeded(resolved, container, env) { sink.stamp(it) }
-                // v3.1：dosdevices 兑底（z: → / 等）—— /storage/emulated/0
-                // 这类宿主路径经 Z: 盘可达；缺失时某些精简 wine 构建不建
-                // z: 盘，游戏按绝对路径找资源文件会全挂（media 找不到的
-                // 另一诱因）
-                WineRegistry.ensureDosdevices(container) { sink.stamp(it) }
-                WineRegistry.ensureEmulateModeset(resolved, container, env) { sink.stamp(it) }
+                try {
+                    WineRegistry.initializePrefixIfNeeded(resolved, container, env) { line ->
+                        sink.stamp(line)
+                        prefixLogLine(key, line)
+                    }
+                    // v3.1：dosdevices 兑底（z: → / 等）—— /storage/emulated/0
+                    // 这类宿主路径经 Z: 盘可达；缺失时某些精简 wine 构建不建
+                    // z: 盘，游戏按绝对路径找资源文件会全挂（media 找不到的
+                    // 另一诱因）
+                    WineRegistry.ensureDosdevices(container) { sink.stamp(it) }
+                    WineRegistry.ensureEmulateModeset(resolved, container, env) { sink.stamp(it) }
+                } finally {
+                    _prefixBuildFlow.value = null
+                }
             }
 
             // 10) 显示模式握手（dmode=off/d/v/f + screen=native|WxH）
@@ -413,9 +468,18 @@ object RootfsLauncher {
                 .setCommand(*command.toTypedArray())
                 .putEnv(env)
                 .setWorkingDir(workingDir)
-                .onStdOut { sink.log(it) }
-                .onStdErr { sink.log(it) }
-                .onExit { code -> onSessionExit(key, code, sink) }
+                .onStdOut {
+                    sink.log(it)
+                    if (isPrefixSession) prefixLogLine(key, it)
+                }
+                .onStdErr {
+                    sink.log(it)
+                    if (isPrefixSession) prefixLogLine(key, it)
+                }
+                .onExit { code ->
+                    onSessionExit(key, code, sink)
+                    if (isPrefixSession) _prefixBuildFlow.value = null
+                }
                 .exec()
 
             registerSession(key, WineSession(key, executor, sink))

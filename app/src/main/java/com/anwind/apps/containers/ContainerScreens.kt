@@ -7,17 +7,23 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.DialogProperties
 import com.anwind.core.theme.LocalWinTheme
 import com.anwind.core.window.WindowContentScope
+import com.anwind.apps.containers.launcher.RootfsLauncher
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -66,6 +72,13 @@ fun ContainerListContent(scope: WindowContentScope) {
     var showCloneFor by remember { mutableStateOf<ContainerData?>(null) }
     var showLogFor by remember { mutableStateOf<String?>(null) }
     var confirmRemove by remember { mutableStateOf<ContainerData?>(null) }
+
+    // v3.1.6 前缀构建日志：构建进行中自动弹出；也可从容器卡片手动打开
+    var prefixLogFor by remember { mutableStateOf<String?>(null) }
+    val prefixBuilding by RootfsLauncher.prefixBuildFlow.collectAsState()
+    LaunchedEffect(prefixBuilding) {
+        prefixBuilding?.let { prefixLogFor = it }
+    }
 
     // 列表加载（tick 驱动刷新）
     LaunchedEffect(tick) {
@@ -171,6 +184,7 @@ fun ContainerListContent(scope: WindowContentScope) {
                             }
                         }
                     },
+                    onPrefixLog = { prefixLogFor = c.name },
                     onWineCfg = {
                         cs.launch(Dispatchers.IO) {
                             val err = WineSessionLauncher.openWineCfg(context, c)
@@ -265,6 +279,13 @@ fun ContainerListContent(scope: WindowContentScope) {
             onDismiss = { showLogFor = null }
         )
     }
+    prefixLogFor?.let { name ->
+        PrefixBuildLogDialog(
+            containerName = name,
+            running = prefixBuilding == name,
+            onDismiss = { prefixLogFor = null }
+        )
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -285,7 +306,8 @@ private fun ContainerCard(
     onWineBoot: () -> Unit,
     onWineCfg: () -> Unit,
     onRegEdit: () -> Unit,
-    onShowLog: () -> Unit
+    onShowLog: () -> Unit,
+    onPrefixLog: () -> Unit = {}
 ) {
     var menuOpen by remember { mutableStateOf(false) }
 
@@ -357,6 +379,11 @@ private fun ContainerCard(
                     contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
                 ) { Text("日志", fontSize = 12.sp) }
 
+                OutlinedButton(
+                    onClick = onPrefixLog,
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                ) { Text("前缀日志", fontSize = 12.sp) }
+
                 Box {
                     OutlinedButton(
                         onClick = { menuOpen = true },
@@ -408,9 +435,20 @@ private fun CreateContainerDialog(onDismiss: () -> Unit, onCreated: () -> Unit) 
 
     AlertDialog(
         onDismissRequest = onDismiss,
+        // v3.1.6：弹窗几何适配（用户反馈：创建容器弹窗太大/内容显示不全，
+        // 横屏尤其严重）—— usePlatformDefaultWidth=false 解除平台默认
+        // 全宽限制，由内容自约束宽度；内容加竖向滚动 + 高度上限，
+        // 表单字段再多也能全部滚到（旧版超高字段直接被裁掉不显示）。
+        properties = DialogProperties(usePlatformDefaultWidth = false),
         title = { Text("新建 Wine 容器") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(
+                Modifier
+                    .widthIn(max = 620.dp)
+                    .heightIn(max = 430.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
                 OutlinedTextField(
                     value = name,
                     onValueChange = { name = it; error = null },
@@ -493,9 +531,16 @@ private fun EditContainerDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false),
         title = { Text("编辑容器 · ${container.name}") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(
+                Modifier
+                    .widthIn(max = 620.dp)
+                    .heightIn(max = 430.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
                 LabeledEnumSelector("CPU 翻译后端", backend, ContainerBackend.entries.toList()) { backend = it }
                 LabeledEnumSelector("Box64 预设（仅 box64 后端）", preset, Box64Preset.entries.toList()) { preset = it }
                 LabeledEnumSelector("显示模式（glibc-runner -d/-v/-f）", dmode, DisplayMode.entries.toList()) { dmode = it }
@@ -556,9 +601,13 @@ private fun RunContainerDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false),
         title = { Text("运行 · ${container.name}") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(
+                Modifier.widthIn(max = 620.dp).verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
                 OutlinedTextField(
                     value = exe, onValueChange = { exe = it },
                     label = { Text("程序路径（Windows 路径或容器内绝对路径）") },
@@ -668,17 +717,77 @@ private fun DoctorDialog(onDismiss: () -> Unit) {
 private fun LogDialog(title: String, log: String, onDismiss: () -> Unit) {
     AlertDialog(
         onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false),
         title = { Text(title, fontSize = 15.sp) },
         text = {
-            LazyColumn {
-                item {
-                    Text(
-                        log.takeLast(6000),
-                        fontSize = 11.sp,
-                        color = themeSec(),
-                        lineHeight = 15.sp
-                    )
-                }
+            // v3.1.6：宽度自约束（横屏不再拉满全屏）+ 等宽字体对齐日志列
+            Column(
+                Modifier
+                    .widthIn(max = 620.dp)
+                    .heightIn(max = 420.dp)
+                    .verticalScroll(rememberScrollState())
+            ) {
+                Text(
+                    log.takeLast(20000),
+                    fontSize = 11.sp,
+                    fontFamily = FontFamily.Monospace,
+                    color = themeSec(),
+                    lineHeight = 15.sp
+                )
+            }
+        },
+        confirmButton = { Button(onClick = onDismiss) { Text("关闭") } }
+    )
+}
+
+// ---------------------------------------------------------------------------
+// v3.1.6 前缀构建日志（仅限 wineboot -i 构建前缀阶段；用户诉求）
+// ---------------------------------------------------------------------------
+
+/**
+ * 前缀构建日志窗口：实时滚动显示 wineboot -i 的输出。
+ *
+ * 打开时机：①容器首次运行/手动初始化触发前缀构建时自动弹出
+ * （RootfsLauncher.prefixBuildFlow 驱动）；②容器卡片「前缀日志」按钮
+ * 手动查看最近一次构建日志。构建结束（含超时强杀）后标题切换为
+ * 「已结束」，内容停止刷新但保留全文。
+ */
+@Composable
+private fun PrefixBuildLogDialog(
+    containerName: String,
+    running: Boolean,
+    onDismiss: () -> Unit
+) {
+    var text by remember(containerName) { mutableStateOf(RootfsLauncher.prefixLogOf(containerName)) }
+    LaunchedEffect(containerName) {
+        while (true) {
+            text = RootfsLauncher.prefixLogOf(containerName)
+            delay(400)
+        }
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false),
+        title = {
+            Text(
+                "构建 Wine 前缀 · $containerName" + if (running) "（进行中…）" else "（已结束）",
+                fontSize = 15.sp
+            )
+        },
+        text = {
+            Column(
+                Modifier
+                    .widthIn(max = 620.dp)
+                    .heightIn(max = 420.dp)
+                    .verticalScroll(rememberScrollState())
+            ) {
+                Text(
+                    text.ifEmpty { "（暂无输出——wineboot 启动后此处逐行显示；若长时间空白说明 wine 挂在启动早期）" },
+                    fontSize = 11.sp,
+                    fontFamily = FontFamily.Monospace,
+                    color = themeSec(),
+                    lineHeight = 15.sp
+                )
             }
         },
         confirmButton = { Button(onClick = onDismiss) { Text("关闭") } }

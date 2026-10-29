@@ -1,5 +1,67 @@
 # AnWind Bionic 修复包 v2（2026-09-19）
 
+> **v3.1.6 增量（2026-10-29）**：修复 v3.1.5 三线 CI 失败 + D3D 软渲染回退 + 前缀日志 UI
+>
+> ## CI 三线失败根因（v3.1.5 日志实锤）
+>
+> 1. **hangover-10.18 两形态**：wine 10.17+ 上游改了安装布局 —— loader
+>    装进 `lib/wine/<arch>-unix/`，`bin/` 只留 12 个指向 `wine` 的悬空
+>    符号链接、**bin/wine 本体不再创建**（构建日志：`install -L wine`
+>    12 次、无任何 bin/wine 行；hangover-11.16 对照组正常装 bin/wine）。
+>    CI 步骤 8 校验 `bin/wine` 必 MISS。**修复**：两个 wine 配方
+>    （wine / hangover-wine）的 pre_package 新增"loader 物化"——
+>    lib 侧 loader 存在而 bin/wine 缺失/为符号链接时，物化为真实副本
+>    （含 wine-preloader），旧布局不受影响。
+> 2. **proton10 x86_64**：步骤 8.5a 关键库校验硬编码 glibc 风格版本名
+>    （libpulse.so.0 / libasound.so.2 / libX11.so.6），但 rootfs 的
+>    bionic 库为无版本安装（构建日志实证 `Installing src/pulse/
+>    libpulse.so`、libtool `-avoid-version` 的 libasound.so / libX11.so）
+>    → 校验必然 MISS 退出。**修复**：校验改"任一形态存在即通过"
+>    （glob 匹配 libpulse.so* 等），wine 的 DT_NEEDED 本就指向 configure
+>    期探测到的同一名录，存在性即可靠性。
+>
+> ## 运行时修复（设备侧）
+>
+> 3. **D3D "无兼容 Direct3D 设备"（默认 wine 跑 3D 样例）**：rootfs
+>    mesa（aarch64: softpipe,freedreno,zink；x86_64: softpipe —— 交叉
+>    构建不带 LLVM，**llvmpipe 从未构建**）。两处连锁错误：
+>    a) 容器渲染器选 "LLVMpipe" 时 GALLIUM_DRIVER=llvmpipe = 无效驱动名
+>    → GL 初始化失败；b) auto 档盲选 freedreno，而 freedreno 依赖
+>    /dev/dri 渲染节点（Android 应用沙箱在多数设备无权打开）→ GL
+>    整体失败 → wined3d 枚举不到适配器。**修复**：llvmpipe 一律归一
+>    softpipe（旧容器值自动归一）；auto 档先探 /dev/dri 可达性
+>    （renderD128/card0/kgsl-3d0），可达才 freedreno，否则
+>    softpipe + LIBGL_ALWAYS_SOFTWARE=1（软渲染必出画面）。
+> 4. **X11 跟随窗口"画面缩在左上角"**：握手文件早于 LorieView 挂载
+>    写入时，apply() 的 regenerate() 打不到任何视图（activeView 为
+>    null），X server native 端从未收到 sendWindowChange → 按旧屏幕
+>    尺寸 1:1 绘制在左上角。**修复**：attachView 挂载即重放握手文件
+>    并兜底开启 displayStretch；会话从未握手时同样强制拉伸
+>    （跟随窗口的设计语义即"拉伸铺满"）。
+> 5. **proton10 arm64ec 前缀挂死**：wineboot -i 无任何输出、无退出码
+>    （进程永久挂起）。fsync 守卫已确认生效（proton_10.0 的
+>    dlls/ntdll/unix/fsync.c 与 server/fsync.c 均含锚点且构建通过），
+>    挂点在更早的 wow64 初始化。v3.1.6 三管齐下：
+>    a) **前缀构建会话不注入 HODLL64/HODLL**（前缀创建只跑 aarch64
+>    PE，仿真器 DLL 的 wow64 早期加载是最大嫌疑风险面；游戏会话照常
+>    注入）；
+>    b) **wineboot -i 加 10 分钟超时**强杀 + 如实报错（旧版无限等，
+>    启动链卡死无反馈）；
+>    c) **前缀构建日志窗口**（见下），挂死/报错从此有直接证据面。
+>
+> ## App UI（用户诉求 3/3b）
+>
+> 6. **创建容器等弹窗几何修复**：AlertDialog usePlatformDefaultWidth=
+>    false + 内容 widthIn(620dp)/heightIn(430dp) + 竖向滚动 —— 旧版
+>    表单字段超出弹窗高度被直接裁掉（"没有窗口显示"），横屏尤其严重；
+>    新建/编辑/运行/日志弹窗全部适配，日志类弹窗换等宽字体。
+> 7. **前缀构建日志（仅限构建前缀）**：新增独立日志通道
+>    （RootfsLauncher.prefixLogs + prefixBuildFlow），构建进行中自动
+>    弹出「构建 Wine 前缀」窗口逐行滚动显示 wineboot 输出；容器卡片
+>    新增「前缀日志」按钮可回看最近一次构建全文。
+>
+> App 版本 2.38.1 → 2.38.2（versionCode 65）。
+
 > **v3.1.3 增量（2026-10-29）**：修复 v3.1.2 引入的两个 CI 阻断问题
 >
 > ## 问题 1：rootfs 构建被误判失败（实际 rootfs 完好）

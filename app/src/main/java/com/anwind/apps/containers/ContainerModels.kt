@@ -94,17 +94,26 @@ enum class Box64Preset(
  * AUTO       : 不强制指定，走 Mesa 默认（aarch64 上通常为 freedreno/turnip）
  * ZINK       : OpenGL-on-Vulkan（配 DXVK/VKD3D 时推荐）
  * FREEDRENO  : Adreno 驱动（msm/kgsl）
- * LLVMPIPE   : 软渲染兜底（无 GPU 加速时）
+ * SOFTPIPE   : 软渲染兜底（无 GPU 加速时；rootfs 的 aarch64/x86_64
+ *              mesa 均未构建 llvmpipe —— 交叉构建不带 LLVM，
+ *              GALLIUM_DRIVER=llvmpipe 是无效驱动名，v3.1.6 改为
+ *              实际存在的 softpipe；旧容器的 "llvmpipe" 值自动归一）
  */
 enum class GalliumDriver(val id: String, val label: String) {
     AUTO("auto", "自动"),
     ZINK("zink", "Zink (Vulkan)"),
     FREEDRENO("freedreno", "Freedreno (Adreno)"),
-    LLVMPIPE("llvmpipe", "LLVMpipe (软渲染)");
+    SOFTPIPE("softpipe", "Softpipe (软渲染)");
 
     companion object {
-        fun fromId(id: String?): GalliumDriver =
-            entries.firstOrNull { it.id == id } ?: AUTO
+        fun fromId(id: String?): GalliumDriver = when (id?.trim()?.lowercase()) {
+            // v3.1.6：旧值归一（llvmpipe 未构建，一律归 softpipe）
+            "llvmpipe", "softpipe" -> SOFTPIPE
+            "zink" -> ZINK
+            "freedreno" -> FREEDRENO
+            "auto", "", null -> AUTO
+            else -> AUTO
+        }
     }
 }
 

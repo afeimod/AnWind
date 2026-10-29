@@ -176,8 +176,8 @@ android {
         // x86_64-bionic 闭包 + HODLL 默认）——此前 assets 仍是 v3.1.3 版，
         // 每次启动覆盖部署会把 rootfs 侧新版启动器打回旧版，导致设备上
         // 前缀创建三大修复全部失效。
-        versionCode = 64
-        versionName = "2.38.1"
+        versionCode = 65
+        versionName = "2.38.2"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {

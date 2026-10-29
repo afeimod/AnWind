@@ -634,6 +634,32 @@ EOF
     fi
   fi
 
+  # v3.1.6：wine 10.17+ 新安装布局适配（hangover-10.18 CI 实证）——
+  # 上游把 loader 装进 lib/wine/<arch>-unix/ 且 bin/ 不再创建 wine 本体：
+  # bin 下 12 个工具全是指向 "wine" 的悬空符号链接（wineboot/winecfg/
+  # regedit… -L 存在但解析目标不存在），CI 步骤 8 校验 bin/wine 必
+  # MISS（v3.1.5 hangover-10.18 两形态全挂的直接根因）、设备启动器
+  # 同样找不到 loader。对策：lib 侧 loader 存在而 bin/wine 缺失或为
+  # 符号链接时，物化 bin/wine 为 loader 真实副本（与下方工具规整同
+  # 策略——符号链接在 tar/解包/zip 链路可能被实体化或弄断）；可选的
+  # wine-preloader 一并补齐（缺失时 loader 自动降级无 preloader 模式，
+  # bionic 下本就不依赖）。旧布局（bin/wine 真实 ELF，如 11.16/proton
+  # 10.0）完全不受影响。
+  if [[ -x "${_wineDir}/lib/wine/aarch64-unix/wine" ]]; then
+    mkdir -p "${_wineDir}/bin"
+    if [[ ! -e "${_wineDir}/bin/wine" || -L "${_wineDir}/bin/wine" ]]; then
+      rm -f "${_wineDir}/bin/wine"
+      cp -p "${_wineDir}/lib/wine/aarch64-unix/wine" "${_wineDir}/bin/wine" \
+        && chmod 755 "${_wineDir}/bin/wine" \
+        && echo "已物化 bin/wine（wine 10.17+ lib 布局 → loader 副本）"
+    fi
+    if [[ -f "${_wineDir}/lib/wine/aarch64-unix/wine-preloader" ]] \
+       && [[ ! -e "${_wineDir}/bin/wine-preloader" ]]; then
+      cp -p "${_wineDir}/lib/wine/aarch64-unix/wine-preloader" \
+        "${_wineDir}/bin/wine-preloader" 2>/dev/null || true
+    fi
+  fi
+
   # bin 工具规整（v3.1.4）：wine ≤9.18 / proton 树把 bin 工具（wineboot/
   # winecfg/reg 等）装成 shell 脚本（exec wine <名>），wine 9.19+ 装成
   # 指向 wine loader 的符号链接。arm64ec 形态原生执行两者皆可，但终端

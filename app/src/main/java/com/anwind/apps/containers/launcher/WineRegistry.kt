@@ -163,6 +163,12 @@ object WineRegistry {
             // v3.1.4：统一经 wine loader（box64 形态自动包装），不再直连
             // bin/wineboot 宿主文件（脚本/符号链接形态均不可靠）
             val cmdPrefix = WineRuntime.wineCommand(resolved)
+            // v3.1.6：每次尝试限时 —— wineboot 正常 1~3 分钟（arm64ec
+            // 原生 / box64 仿真最慢也 <10 分钟）；超时强杀并如实报错。
+            // 设备实测 proton10 arm64ec wineboot 无任何输出永久挂死
+            // （会话无退出码），旧版 waitFor() 无限等 → 启动链卡死、
+            // UI 无反馈。超时杀掉后错误行进前缀日志窗口，问题可见。
+            val TIMEOUT_MIN = 10L
             var lastCode = -1
             for (attempt in 1..2) {
                 val executor = NativeShellExecutor.create()
@@ -173,10 +179,23 @@ object WineRegistry {
                     .onStdOut { log(it) }
                     .onStdErr { log(it) }
                     .exec()
-                lastCode = executor.waitFor()
+                val finished = runCatching {
+                    executor.waitFor(TIMEOUT_MIN, java.util.concurrent.TimeUnit.MINUTES)
+                }.getOrDefault(false)
+                if (!finished) {
+                    runCatching { executor.stopAndWait(true, 10, java.util.concurrent.TimeUnit.SECONDS) }
+                    lastCode = -1
+                    log("wineboot -i 第 ${attempt} 次超时（>${TIMEOUT_MIN} 分钟无退出），已强制结束" +
+                        if (attempt == 1) "，清残留后重试一次…" else "")
+                    log("→ 典型原因：wineserver 握手挂起 / wow64 初始化崩溃；请把本窗口日志反馈给开发者")
+                } else {
+                    lastCode = runCatching { executor.waitFor() }.getOrDefault(-1)
+                }
                 if (lastCode == 0) break
-                log("wineboot -i 第 ${attempt} 次退出码 $lastCode" +
-                    if (attempt == 1) "，重试一次…" else "")
+                if (lastCode != 0 && finished) {
+                    log("wineboot -i 第 ${attempt} 次退出码 $lastCode" +
+                        if (attempt == 1) "，重试一次…" else "")
+                }
                 if (attempt == 1) {
                     // 残留 wineserver 可能让重试挂死——清一次再试
                     runCatching { WineServerUtils.stop(resolved, container, env) }
@@ -186,7 +205,7 @@ object WineRegistry {
                 log("wineboot -i 完成（退出码 0）")
                 true
             } else {
-                log("wineboot -i 失败（退出码 $lastCode，159=SIGSYS/旧包fsync、1=加载失败）")
+                log("wineboot -i 失败（退出码 $lastCode，159=SIGSYS/旧包fsync、1=加载失败、-1=超时强杀）")
                 log("→ 请用 v3.1.4+ 构建的 wine 包（fsync 守卫 + 自包含依赖库）后重建容器")
                 false
             }

@@ -99,23 +99,45 @@ object WineEnvironment {
 
     /** 依容器 gallium 配置注入 Mesa 渲染器变量。 */
     fun applyGpuEnv(env: MutableMap<String, String>, container: ContainerData) {
-        val gallium = when {
-            container.gallium.equals("auto", true) || container.gallium.isBlank() ->
-                if (isAarch64()) "freedreno" else "llvmpipe"
-            else -> container.gallium.trim()
+        // v3.1.6：两处修正 ——
+        //   1. "llvmpipe" 一律归一为 "softpipe"（rootfs 的 aarch64/x86_64
+        //      mesa 交叉构建均未包含 llvmpipe——不带 LLVM；GALLIUM_DRIVER
+        //      指到未构建的驱动名 = GL 初始化直接失败，等宽于"无 GL"，
+        //      wined3d 枚举不到任何适配器 → "无兼容 Direct3D 设备"）；
+        //   2. auto 档不再盲选 freedreno：freedreno（GLES/DRM 渲染节点）
+        //      依赖 /dev/dri 可访问，Android 应用沙箱在相当多设备/ROM 上
+        //      无权打开 → GL 整体初始化失败。auto 现在先探 /dev/dri
+        //      渲染节点可达性，不可达回退 softpipe + LIBGL_ALWAYS_SOFTWARE
+        //      （D3D 样例/茶壶类程序从此必出画面，慢但活）。
+        val raw = if (container.gallium.equals("auto", true) || container.gallium.isBlank())
+            "auto" else container.gallium.trim().lowercase()
+        val gallium = when (raw) {
+            "llvmpipe" -> "softpipe"
+            "auto" -> if (isAarch64() && hasDrmAccess()) "freedreno" else "softpipe"
+            else -> raw
         }
-        when (gallium.lowercase()) {
+        when (gallium) {
             "zink" -> {
                 env["GALLIUM_DRIVER"] = "zink"
                 env["ZINK_DESCRIPTORS"] = "lazy"
                 env["ZINK_DEBUG"] = "compact"
             }
             "freedreno" -> env["GALLIUM_DRIVER"] = "freedreno"
-            "llvmpipe", "softpipe" -> {
-                env["GALLIUM_DRIVER"] = gallium
+            else -> {
+                // softpipe（含旧 llvmpipe 归一值）
+                env["GALLIUM_DRIVER"] = "softpipe"
                 env["LIBGL_ALWAYS_SOFTWARE"] = "1"
             }
         }
+    }
+
+    /** v3.1.6：/dev/dri 渲染节点可达性探测（freedreno/zink 的 auto 档依据）。 */
+    private fun hasDrmAccess(): Boolean = try {
+        File("/dev/dri/renderD128").canRead() ||
+            File("/dev/dri/card0").canRead() ||
+            File("/dev/kgsl-3d0").canRead()
+    } catch (_: Exception) {
+        false
     }
 
     // ------------------------------------------------------------------

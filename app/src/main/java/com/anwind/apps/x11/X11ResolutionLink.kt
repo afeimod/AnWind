@@ -86,7 +86,34 @@ object X11ResolutionLink {
     /** 上一次 Toast 提示的握手值（去重，避免 anwind-x11/glibc-runner 交替写文件时刷屏）。 */
     private var lastToastKey: String? = null
 
-    fun attachView(view: LorieView?) { activeView = view }
+    /**
+     * v3.1.6：视图挂载即重放 —— 修复"画面缩在左上角"的两条路径：
+     *   1. 握手文件早于 LorieView 挂载写入（游戏先启动、X11 窗口后开，
+     *      或视图因窗口重建被替换）：apply() 时 activeView 还是 null，
+     *      prefs 已更新但 regenerate() 没打到任何视图 —— X server 的
+     *      native 渲染端从未收到 sendWindowChange，按旧屏幕尺寸 1:1
+     *      绘制在左上角，显示层拉伸无从谈起。挂载时重读握手文件并
+     *      重新应用，native 端即刻切到目标分辨率；
+     *   2. 会话从未写过握手（无 .anwind-x11-res 文件）：displayStretch
+     *      维持全局默认（可能为 false）→ 跟随窗口模式 1:1 不拉伸。
+     *      此处兜底强制开启 stretch（fix13 起的设计语义：跟随窗口
+     *      同样拉伸铺满，wine 经 RandR 切分辨率后画面自动铺满窗口）。
+     */
+    fun attachView(view: LorieView?) {
+        activeView = view
+        if (view == null) return
+        applyFromFile()
+        try {
+            LoriePreferences.prefs?.let { p ->
+                p.displayStretch.put(true)
+                view.reloadPreferences(p)
+            }
+            view.regenerate()
+            view.requestLayout()
+        } catch (e: Exception) {
+            Log.w(TAG, "attachView 重放握手失败（视图已分离？）", e)
+        }
+    }
 
     /** 当前活跃的 LorieView（设置面板等外部消费者）。 */
     fun currentView(): LorieView? = activeView
