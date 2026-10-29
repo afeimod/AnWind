@@ -1,5 +1,45 @@
 # AnWind Bionic 修复包 v2（2026-09-19）
 
+> **v3.1.3 增量（2026-10-29）**：修复 v3.1.2 引入的两个 CI 阻断问题
+>
+> ## 问题 1：rootfs 构建被误判失败（实际 rootfs 完好）
+>
+> v3.1.2 新增的音频栈校验把 OpenSLES 模块写成了
+> `libmodule-sles-sink.so`——但 pulseaudio 上游所有运行时模块**均无
+> lib 前缀**（meson `shared_module` + `name_prefix:''`），实际安装产物
+> 是 `usr/lib/pulseaudio/modules/module-sles-sink.so`；守护进程加载也
+> 是按 `<moduledir>/<模块名>.so` 查找（pulsecore/module.c 的
+> `pa_module_exists`/`lt_dlopenext` 均不带前缀）。构建日志里
+> `Installing src/modules/module-sles-sink.so` 一行证明模块编译安装
+> 全部成功，纯粹是校验文件名写错导致永远 MISS。
+>
+> **修复**：校验改为 `module-sles-sink.so`；failure-diag 诊断输出新增
+> `pulseaudio/modules` 目录实际清单，再出问题一眼可见。
+>
+> ## 问题 2：wine 构建选 10.15 时源码 404（等 2 小时依赖编完才报错）
+>
+> AndreRH/wine 的 hangover tag **只在发版里程碑打点**，中间小版本不存在。
+> 逐个实测（git ls-remote 权威列表）：
+>
+> | 源 | 可用版本 | 不可用（常见误选） |
+> |---|---|---|
+> | hangover | 11.16 / 11.9 / 11.4 / 11.0 / 10.18 / 10.14 / 10.11 / 10.10 / 10.9 / 10.6 / 10.4 / 10.2 / 10.0（更早 9.x、8.x 同理只里程碑有 tag） | **10.15 / 10.16 / 10.17 / 10.19 / 10.20** |
+> | official | 任意 wine-X.Y tag（9.0 ~ 11.20） | 无 |
+> | proton | 11.0 / 10.0 / 9.0 / 8.0 / 7.0 / 6.3 / 5.13 / 5.0（仅主版本分支） | **10.15 / 10.16**（proton 无小版本） |
+>
+> 即：想试 10.x 时代的 hangover 用 **10.18**；要精确的 10.15/10.16 用
+> **official** 源（注意 official 树无 hangover 的 GLES/mesa 适配补丁，
+> 个别 bionic 补丁 hunk 可能漂移，构建系统会容错打警告）。
+>
+> **修复**：`build-wine-bionic.yml` 参数解析阶段新增**源码 URL 预检**——
+> 1 字节 Range 请求探测，404/410 立即失败并把上表可用版本清单打进错误
+> 信息，不再白跑约 2 小时的依赖编译；`wine_version` 下拉描述同步改为
+> 准确的三源版本清单。custom 源只探测不强判（5xx/超时告警放行）。
+>
+> 另：日志里的 `tar: .: Cannot utime: Operation not permitted` 为无害
+> 噪音——构建系统把依赖包解压到 `/` 时，非 root 用户无法对 `/` 恢复
+> mtime，但文件本身全部解压成功，不影响构建与产物。
+
 > **v3.1.2 增量（2026-10-28）**：排查"winecfg 读取不到任何音频（pulse/alsa 全空）"
 >
 > ## 先纠正一个关键认知：wine 11 没有 winepulse.drv / winealsa.drv 是正常的！

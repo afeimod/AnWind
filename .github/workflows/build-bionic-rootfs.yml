@@ -245,7 +245,14 @@ jobs:
           check "$RFS/bin/pulseaudio"
           check "$RFS/lib/libpulse.so.0"
           check "$RFS/lib/libasound.so.2"
-          check "$RFS/lib/pulseaudio/modules/libmodule-sles-sink.so"
+          # 文件名注意：pulseaudio 上游所有运行时模块均无 "lib" 前缀
+          # （meson shared_module + name_prefix:''），安装产物就是
+          # module-sles-sink.so / module-null-sink.so 这样的名字；
+          # 守护进程加载时 lt_dlopenext 直接按 <moduledir>/<模块名>.so
+          # 查找（pulsecore/module.c 的 pa_module_exists 同样不带 lib 前缀）。
+          # v3.1.2 曾误写成 libmodule-sles-sink.so，导致校验永远 MISS ——
+          # rootfs 本身是完好的，纯属误报。
+          check "$RFS/lib/pulseaudio/modules/module-sles-sink.so"
           check "$RFS/etc/pulse/default.pa"
           if [[ -f "$RFS/etc/pulse/default.pa" ]] && \
              ! grep -q "module-sles-sink" "$RFS/etc/pulse/default.pa"; then
@@ -304,6 +311,8 @@ jobs:
               printf '%s' "$MISS_LIST"
               echo "=== usr/lib 实际内容（前 80 项）==="
               ls -lh "$RFS/lib" 2>/dev/null | head -80 || true
+              echo "=== pulseaudio 模块目录实际内容 ==="
+              ls -l "$RFS/lib/pulseaudio/modules" 2>/dev/null || true
               echo "=== share/X11 实际内容 ==="
               ls -l "$RFS/share/X11" 2>/dev/null || true
               echo "=== bin / etc/anwind 实际内容 ==="
