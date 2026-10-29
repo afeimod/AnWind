@@ -267,6 +267,51 @@ SHMDECL
   }
   inject_shm_compat
 
+  # fsync futex_waitv 探测 Android 守卫（v3.1.4，proton 树专属；官方/
+  # hangover-11 树已删 esync/fsync，文件缺失自动跳过）：
+  #   proton 的 do_fsync()（dlls/ntdll/unix/fsync.c 与 server/fsync.c 各
+  #   一份，代码相同）在读 WINEFSYNC 环境变量【之前】无条件执行
+  #     syscall( __NR_futex_waitv, ... )
+  #   做能力探测。Android 应用沙箱的 seccomp-bpf 对不在白名单内的
+  #   syscall 号直接 SECCOMP_RET_TRAP → SIGSYS（信号 31）击杀进程，
+  #   errno 永远不会被设置 —— 探测永远走不到 ENOSYS 分支，进程先死
+  #   （设备实测：wineboot -i 退出码 159 = 128+31，前缀建不出来，
+  #   wineserver 同款代码同样阵亡；WINEFSYNC=0 也无效，因为探测在
+  #   读环境变量之前）。修法：bionic 目标（__ANDROID__）硬禁用 fsync
+  #   —— 在 Android 上即便内核支持 futex_waitv，seccomp 也封了它，
+  #   硬禁用是唯一正确行为。桌面 Linux 构建不受影响。幂等：标记
+  #   已存在则跳过。
+  disable_fsync_probe() {
+    local _f
+    for _f in dlls/ntdll/unix/fsync.c server/fsync.c; do
+      [[ -f "$_f" ]] || continue
+      if grep -q "ANWIND_FIX_FSYNC_PROBE" "$_f"; then
+        echo "fsync 探测 Android 守卫已注入过，跳过 => $_f"
+        continue
+      fi
+      if ! grep -q 'static int do_fsync_cached = -1;' "$_f"; then
+        echo "⚠️ $_f 无 do_fsync_cached 锚点（树结构差异），跳过守卫注入"
+        echo "    若运行期 wineboot 以退出码 159（SIGSYS）阵亡，请核查此文件"
+        continue
+      fi
+      cat > ".anwind-fsync-guard.h" <<'FSYSGUARD'
+#if defined(__ANDROID__)
+    /* ANWIND_FIX_FSYNC_PROBE: Android app seccomp kills out-of-allowlist
+     * syscalls with SIGSYS (signal 31, exit code 128+31=159) *before* errno
+     * is ever set, so the futex_waitv capability probe below never reaches
+     * its ENOSYS branch. Proton calls the probe unconditionally BEFORE
+     * reading WINEFSYNC, so even WINEFSYNC=0 cannot prevent the kill.
+     * Hard-disable fsync on bionic targets. Desktop Linux unaffected. */
+    return 0;
+#endif
+FSYSGUARD
+      sed -i '/static int do_fsync_cached = -1;/r .anwind-fsync-guard.h' "$_f" \
+        && echo "已注入 fsync 探测 Android 守卫（SIGSYS 预防）=> $_f"
+      rm -f ".anwind-fsync-guard.h"
+    done
+  }
+  disable_fsync_probe
+
   # winedmo ffmpeg>=7 兼容改造（proton 树专属，官方/hangover 树无此文件）：
   # proton 的 dlls/winedmo/libavcodec/pcm_byte_order_reverse_bsf.c 是从
   # ffmpeg 内部源码拷贝的自定义 BSF，依赖 <7 的内部 ABI
@@ -426,6 +471,37 @@ backend=box64|native
 EOF
   else
     echo "警告: 未找到 wine 安装目录 ${_wineDir}，可能 make install 失败"
+  fi
+
+  # bin 工具规整（v3.1.4）：wine ≤9.18 / proton 树把 bin 工具（wineboot/
+  # winecfg/reg 等）装成 shell 脚本（exec wine <名>），wine 9.19+ 装成
+  # 指向 wine loader 的符号链接。两种形态在 box64 直跑
+  # （box64 …/bin/wineboot -i）下都不可靠：
+  #   * 脚本：box64 读不到 ELF 头 → 原生 exec → sh 解释脚本 → 脚本
+  #     直接 exec x86_64 的 bin/wine（绕开 box64）→ ENOEXEC（设备实测
+  #     "not executable: 64-bit ELF file"）；
+  #   * 符号链接：部分解包链路（tar --dereference / zip / 某些文件
+  #     管理器）会把链接实体化或弄断。
+  # 统一替换为 wine loader 的真实副本 —— loader 的 check_command_line()
+  # （dlls/ntdll/unix/loader.c）按 argv[0] basename 自动分发到同名 .exe，
+  # 这是 wine 官方符号链接机制的等价实现，native / box64 / 终端直呼
+  # 任何方式都成立。真实 ELF（wine/wineserver/winepath 等）不动。
+  local _binDir="${_wineDir}/bin"
+  if [[ -d "${_binDir}" && -x "${_binDir}/wine" ]]; then
+    local _tool _f
+    for _tool in wineboot winecfg reg regedit regsvr32 msiexec rundll32; do
+      _f="${_binDir}/${_tool}"
+      [[ -e "${_f}" || -L "${_f}" ]] || continue
+      if [[ -L "${_f}" ]]; then
+        rm -f "${_f}"
+        cp -p "${_binDir}/wine" "${_f}" && chmod 755 "${_f}" 2>/dev/null || true
+        echo "已规整 bin/${_tool}（符号链接 → wine loader 副本）"
+      elif head -c 2 "${_f}" 2>/dev/null | grep -q '#!'; then
+        rm -f "${_f}"
+        cp -p "${_binDir}/wine" "${_f}" && chmod 755 "${_f}" 2>/dev/null || true
+        echo "已规整 bin/${_tool}（shell 脚本 → wine loader 副本）"
+      fi
+    done
   fi
 }
 

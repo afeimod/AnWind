@@ -512,12 +512,46 @@ apply_extra_env() {
     [ -n "$_ovr" ] && export WINEDLLOVERRIDES="${_ovr}${WINEDLLOVERRIDES:+:$WINEDLLOVERRIDES}"
 }
 
+# ---------- Android 沙箱安全默认 + arm64ec 仿真器 DLL（v3.1.4） ----------
+apply_android_safe_env() {
+    # fsync 的 futex_waitv 能力探测在 Android 上被 seccomp 以 SIGSYS
+    # 击杀（proton 树退出码 159 根因；构建侧已加 __ANDROID__ 守卫根治，
+    # 此处环境默认再兜一层 —— 旧版 wine 包没打守卫时也能活）；esync 依赖
+    # /dev/shm 与 eventfd，沙箱内行为不可预期。默认双禁（Winlator/
+    # MiceWine 同款），用户 extra env 可覆盖（apply_extra_env 在后面执行）。
+    [ -z "${WINEFSYNC:-}" ] && export WINEFSYNC=0
+    [ -z "${WINEESYNC:-}" ] && export WINEESYNC=0
+    # arm64ec 形态仿真器 DLL 默认（v3.1.4 wine 包自带 FEX/box64 PE，
+    # 配方 pre_package 注入 lib/wine/aarch64-windows/）：上游
+    # official/proton 树默认 xtajit64 桩（只报不支持），hangover 树默认
+    # wowbox64 —— 有 FEX 就默认 FEX，用户 HODLL64/HODLL 优先。
+    if [ "${WINE_ARCH:-}" = "aarch64" ] && [ -d "$WINE_DIR/lib/wine/aarch64-windows" ]; then
+        [ -f "$WINE_DIR/lib/wine/aarch64-windows/libarm64ecfex.dll" ] \
+            && [ -z "${HODLL64:-}" ] && export HODLL64=libarm64ecfex.dll
+        [ -f "$WINE_DIR/lib/wine/aarch64-windows/libwow64fex.dll" ] \
+            && [ -z "${HODLL:-}" ] && export HODLL=libwow64fex.dll
+    fi
+}
+
 apply_box64_env() {
     local _preset
     _preset="$(conf_read "$CONT_CONF" preset performance)"
     export BOX64_LOG=0
     export BOX64_NOBANNER=1
     export BOX64_DYNAREC_TRACE=0
+    # v3.1.4：wine 发行包自带的 x86_64-bionic 依赖闭包（opt/<wine>/lib/
+    # x86_64-bionic，CI 打包步骤 8.5a 注入）—— aarch64 rootfs 只有
+    # aarch64 库，x86_64 形态 wine 的 unix .so（及其 DT_NEEDED：
+    # libpulse/libasound/libX11/libandroid-shmem/gstreamer…）由 box64
+    # 仿真加载，只能从这个私有目录找，缺它 wine 直接 "Symbol ... not
+    # found" 起不来。gstreamer 插件同步指向包内 x86_64 版（rootfs 里
+    # 的是 aarch64，x86_64 libgstreamer 加载不了）。
+    if [ -d "$WINE_DIR/lib/x86_64-bionic" ]; then
+        export BOX64_LD_LIBRARY_PATH="$WINE_DIR/lib/x86_64-bionic${BOX64_LD_LIBRARY_PATH:+:$BOX64_LD_LIBRARY_PATH}"
+        if [ -d "$WINE_DIR/lib/x86_64-bionic/gstreamer-1.0" ]; then
+            export GST_PLUGIN_SYSTEM_PATH="$WINE_DIR/lib/x86_64-bionic/gstreamer-1.0"
+        fi
+    fi
     # x86_64 glibc 运行库（rootfs 自带 usr/lib/x86_64-linux-gnu，由
     # bionic-rootfs 的 glibc-x86_64 配方安装）：本 wine 是 bionic 链接、
     # 不需要它；但容器内跑常规 glibc x86_64 Linux 程序时，box64 会在
@@ -601,31 +635,49 @@ wine_run() {
 run_wine() {
     # 纯日志：前缀状态观测（只读探测，不改任何流程）
     log "run_wine: 前缀 system.reg $([ -f "$WINEPREFIX/system.reg" ] && echo 已存在 || echo 不存在-将首次初始化)"
-    # wineserver / wineboot 是独立 Unix 程序，需直接执行其宿主二进制
-    if [ "${1:-}" = "wineserver" ] || [ "${1:-}" = "wineboot" ]; then
+    # wineserver：真实 Unix ELF 宿主程序 → 直连宿主二进制（box64 形态包装）
+    if [ "${1:-}" = "wineserver" ]; then
         local _bin
         case "$BACKEND" in
-            box64|native|fexcore|arm64ec) _bin="$(dirname "$WINE_X86")/$1" ;;
-            hangover)                     _bin="$(dirname "$WINE_HANGOVER")/$1" ;;
+            box64|native|fexcore|arm64ec) _bin="$(dirname "$WINE_X86")/wineserver" ;;
+            hangover)                     _bin="$(dirname "$WINE_HANGOVER")/wineserver" ;;
         esac
         shift
         case "$BACKEND" in
             box64)    exec "$BOX64_BIN" "$_bin" "$@" ;;
-            native|arm64ec) exec "$_bin" "$@" ;;
-            hangover) exec "$_bin" "$@" ;;
+            native|arm64ec|hangover) exec "$_bin" "$@" ;;
             fexcore)  exec "$FEX_BIN" "$_bin" "$@" ;;
         esac
     fi
-    # 首次运行自动初始化前缀（wineboot -i）
+    # wineboot（v3.1.4 修正）：wine ≤9.18/proton 树的 bin/wineboot 是
+    # shell 脚本（box64 读不到 ELF 头，脚本原生 exec 又绕开 box64 →
+    # ENOEXEC “not executable: 64-bit ELF file”），wine 9.19+ 是指向
+    # loader 的符号链接 —— 统一经 wine loader 执行（check_command_line
+    # 按 argv[0] basename 分发到 wineboot.exe，官方机制）。
+    if [ "${1:-}" = "wineboot" ]; then
+        shift
+        case "$BACKEND" in
+            box64)    exec "$BOX64_BIN" "$WINE_X86" wineboot "$@" ;;
+            native|arm64ec) exec "$WINE_X86" wineboot "$@" ;;
+            hangover) exec "$WINE_HANGOVER" wineboot "$@" ;;
+            fexcore)  exec "$FEX_BIN" "$WINE_X86" wineboot "$@" ;;
+        esac
+    fi
+    # 首次运行自动初始化前缀（wineboot -i；v3.1.4 经 loader + 退出码校验）
     if [ ! -f "$WINEPREFIX/system.reg" ]; then
         info "首次使用，初始化 wine 前缀: $WINEPREFIX"
+        local _wb_rc=0
         case "$BACKEND" in
-            box64)    "$BOX64_BIN" "$(dirname "$WINE_X86")/wineboot" -i ;;
-            native|arm64ec) "$(dirname "$WINE_X86")/wineboot" -i ;;
-            hangover) "$(dirname "$WINE_HANGOVER")/wineboot" -i ;;
-            fexcore)  "$FEX_BIN" "$(dirname "$WINE_X86")/wineboot" -i ;;
+            box64)    "$BOX64_BIN" "$WINE_X86" wineboot -i || _wb_rc=$? ;;
+            native|arm64ec) "$WINE_X86" wineboot -i || _wb_rc=$? ;;
+            hangover) "$WINE_HANGOVER" wineboot -i || _wb_rc=$? ;;
+            fexcore)  "$FEX_BIN" "$WINE_X86" wineboot -i || _wb_rc=$? ;;
         esac
-        log "wineboot -i 退出码=$?"
+        if [ "$_wb_rc" != "0" ]; then
+            warn "wineboot -i 失败（退出码 $_wb_rc；159=SIGSYS/旧包 fsync 探测，1=加载失败）"
+            warn "→ 请用 v3.1.4+ 构建的 wine 包（fsync 守卫 + 自包含依赖库）"
+        fi
+        log "wineboot -i 退出码=$_wb_rc"
         echo
     fi
     # 显示模式虚拟化（幂等；必须先于一切 wine 子命令——explorer 初始化
@@ -690,11 +742,12 @@ resolve_wine_dir
 DMODE="$(conf_read "$CONT_CONF" dmode "off")"
 DMODE_RESOLUTION=""
 
-# 顺序关键：隔离 → 显示握手 → 音频 → GPU → 附加环境 → X 服务自启 → 后端
+# 顺序关键：隔离 → 显示握手 → 音频 → GPU → Android 安全默认 → 附加环境 → X 服务自启 → 后端
 isolate_env
 apply_display_mode
 audio_setup
 apply_gpu_env
+apply_android_safe_env
 apply_extra_env
 ensure_x11
 pick_backend

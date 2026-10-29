@@ -137,10 +137,19 @@ object WineRegistry {
     }
 
     /**
-     * 首次运行自动初始化前缀（run_wine 的 wineboot -i 分支）：
-     * 前缀无 system.reg 时同步执行 wineboot -i（宿主二进制直连）。
+     * 首次运行自动初始化前缀（run_wine 的 wineboot -i 分支；v3.1.4 修正）：
+     * 前缀无 system.reg 时同步执行 wineboot -i。
      *
-     * @return true 表示初始化完成或已有前缀。
+     * v3.1.4 两处修正：
+     * ① 经 wine loader 执行（`[box64] bin/wine wineboot -i`）——旧版直连
+     *   bin/wineboot，而 wine ≤9.18/proton 树该文件是 shell 脚本（box64
+     *   读不到 ELF 头、脚本原生 exec 绕开 box64 → ENOEXEC），wine 9.19+
+     *   是符号链接，均不可靠；loader 的 check_command_line() 按 argv[0]
+     *   basename 分发到 wineboot.exe，官方机制。
+     * ② 校验退出码并失败重试一次 —— 旧版无条件报"完成"（设备实测
+     *   wineboot 阵亡仍打"完成"，EmulateModeset 随之连锁失败）。
+     *
+     * @return true 表示初始化完成（或已有前缀）。
      */
     fun initializePrefixIfNeeded(
         resolved: WineRuntime.Resolved,
@@ -151,21 +160,36 @@ object WineRegistry {
         if (File(container.prefixPath, "system.reg").isFile) return true
         log("首次使用，初始化 wine 前缀: ${container.prefixPath}")
         return try {
-            val wineboot = WineRuntime.hostToolBin(resolved, "wineboot")
-            NativeShellExecutor.create()
-                .setCommand(
-                    *WineRuntime.hostCommand(resolved, wineboot).toTypedArray(),
-                    "-i"
-                )
-                .putEnv(env)
-                .putEnv("WINEPREFIX", container.prefixPath)
-                .setWorkingDir(WineEnvironment.HOME_DIR)
-                .onStdOut { log(it) }
-                .onStdErr { log(it) }
-                .exec()
-                .waitFor()
-            log("wineboot -i 完成")
-            true
+            // v3.1.4：统一经 wine loader（box64 形态自动包装），不再直连
+            // bin/wineboot 宿主文件（脚本/符号链接形态均不可靠）
+            val cmdPrefix = WineRuntime.wineCommand(resolved)
+            var lastCode = -1
+            for (attempt in 1..2) {
+                val executor = NativeShellExecutor.create()
+                    .setCommand(*cmdPrefix.toTypedArray(), "wineboot", "-i")
+                    .putEnv(env)
+                    .putEnv("WINEPREFIX", container.prefixPath)
+                    .setWorkingDir(WineEnvironment.HOME_DIR)
+                    .onStdOut { log(it) }
+                    .onStdErr { log(it) }
+                    .exec()
+                lastCode = executor.waitFor()
+                if (lastCode == 0) break
+                log("wineboot -i 第 ${attempt} 次退出码 $lastCode" +
+                    if (attempt == 1) "，重试一次…" else "")
+                if (attempt == 1) {
+                    // 残留 wineserver 可能让重试挂死——清一次再试
+                    runCatching { WineServerUtils.stop(resolved, container, env) }
+                }
+            }
+            if (lastCode == 0) {
+                log("wineboot -i 完成（退出码 0）")
+                true
+            } else {
+                log("wineboot -i 失败（退出码 $lastCode，159=SIGSYS/旧包fsync、1=加载失败）")
+                log("→ 请用 v3.1.4+ 构建的 wine 包（fsync 守卫 + 自包含依赖库）后重建容器")
+                false
+            }
         } catch (e: Exception) {
             log("wineboot 初始化异常：${e.message}")
             false

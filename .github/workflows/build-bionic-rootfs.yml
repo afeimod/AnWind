@@ -284,6 +284,12 @@ jobs:
             check "$RFS/opt/bin/wine"
             check "$RFS/opt/lib/wine"
             check "$RFS/local/bin/box64"
+            # FEX/box64 仿真器 DLL（v3.1.4，hangover-wine 配方 pre_package
+            # 自动注入）：arm64ec 形态跑 x86_64/i386 Windows 程序的仿真核心，
+            # 缺它们前缀能建但任何 x86_64/i386 程序必挂
+            check "$RFS/opt/lib/wine/aarch64-windows/libarm64ecfex.dll"
+            check "$RFS/opt/lib/wine/aarch64-windows/libwow64fex.dll"
+            check "$RFS/opt/lib/wine/aarch64-windows/wowbox64.dll"
             # Mesa DRI 驱动（aarch64: zink + freedreno msm/kgsl + softpipe swrast）
             check "$RFS/lib/dri/zink_dri.so"
             check "$RFS/lib/dri/kgsl_dri.so"

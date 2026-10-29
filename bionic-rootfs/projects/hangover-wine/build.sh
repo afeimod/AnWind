@@ -279,6 +279,51 @@ SHMDECL
   }
   inject_shm_compat
 
+  # fsync futex_waitv 探测 Android 守卫（v3.1.4，proton 树专属；官方/
+  # hangover-11 树已删 esync/fsync，文件缺失自动跳过）：
+  #   proton 的 do_fsync()（dlls/ntdll/unix/fsync.c 与 server/fsync.c 各
+  #   一份，代码相同）在读 WINEFSYNC 环境变量【之前】无条件执行
+  #     syscall( __NR_futex_waitv, ... )
+  #   做能力探测。Android 应用沙箱的 seccomp-bpf 对不在白名单内的
+  #   syscall 号直接 SECCOMP_RET_TRAP → SIGSYS（信号 31）击杀进程，
+  #   errno 永远不会被设置 —— 探测永远走不到 ENOSYS 分支，进程先死
+  #   （设备实测：arm64ec 形态 proton-10.0 wineboot -i 退出码 159 =
+  #   128+31，前缀建不出来、syswow64 全空，wineserver 同款代码同样
+  #   阵亡；WINEFSYNC=0 也无效，因为探测在读环境变量之前）。修法：
+  #   bionic 目标（__ANDROID__）硬禁用 fsync —— Android 上即便内核
+  #   支持 futex_waitv，seccomp 也封了它，硬禁用是唯一正确行为。
+  #   桌面 Linux 构建不受影响。幂等：标记已存在则跳过。
+  disable_fsync_probe() {
+    local _f
+    for _f in dlls/ntdll/unix/fsync.c server/fsync.c; do
+      [[ -f "$_f" ]] || continue
+      if grep -q "ANWIND_FIX_FSYNC_PROBE" "$_f"; then
+        echo "fsync 探测 Android 守卫已注入过，跳过 => $_f"
+        continue
+      fi
+      if ! grep -q 'static int do_fsync_cached = -1;' "$_f"; then
+        echo "⚠️ $_f 无 do_fsync_cached 锚点（树结构差异），跳过守卫注入"
+        echo "    若运行期 wineboot 以退出码 159（SIGSYS）阵亡，请核查此文件"
+        continue
+      fi
+      cat > ".anwind-fsync-guard.h" <<'FSYSGUARD'
+#if defined(__ANDROID__)
+    /* ANWIND_FIX_FSYNC_PROBE: Android app seccomp kills out-of-allowlist
+     * syscalls with SIGSYS (signal 31, exit code 128+31=159) *before* errno
+     * is ever set, so the futex_waitv capability probe below never reaches
+     * its ENOSYS branch. Proton calls the probe unconditionally BEFORE
+     * reading WINEFSYNC, so even WINEFSYNC=0 cannot prevent the kill.
+     * Hard-disable fsync on bionic targets. Desktop Linux unaffected. */
+    return 0;
+#endif
+FSYSGUARD
+      sed -i '/static int do_fsync_cached = -1;/r .anwind-fsync-guard.h' "$_f" \
+        && echo "已注入 fsync 探测 Android 守卫（SIGSYS 预防）=> $_f"
+      rm -f ".anwind-fsync-guard.h"
+    done
+  }
+  disable_fsync_probe
+
   # arm64ec PE 导出名校验清理（wdscore，proton_10.0 树实测崩溃点）：
   # proton_10.0 的 dlls/wdscore/wdscore.spec 带 66 个 x86 32 位 MSVC 修饰名
   # @ stub 导出（CDynamicArray 模板成员，thiscall 标记 QAE/QBE 等）。ARM64EC
@@ -495,16 +540,91 @@ pre_package() {
   # anwind-container / 用户识别该运行时形态；kind 依源码树实际能力落戳
   # （arm64ec = 完整新 WoW64；arm64 = 极旧树降级形态，三大默认源不触发）
   local _wineDir="${destDir}${prefix}/opt"
+  local _isArm64ec=0
   if [[ -d "${_wineDir}" ]]; then
     local _kind="arm64-wow64-x11"
     if grep -q "aarch64|arm64ec" "${srcDir}/${pjName}/configure.ac" 2>/dev/null || \
        grep -q "aarch64|arm64ec" "${srcDir}/${pjName}/configure" 2>/dev/null; then
       _kind="arm64ec-wow64-x11"
+      _isArm64ec=1
     fi
     cat > "${_wineDir}/.anwind-wine-info" << EOF
 kind=${_kind}
 tag=${ANWIND_WINE_LABEL:-hangover-${revision}}
 backend=native
 EOF
+  fi
+
+  # FEX/box64 仿真器 DLL 注入（v3.1.4）：arm64ec 形态跑 x86_64/i386
+  # Windows 程序靠仿真器 DLL（Hangover 架构：只仿真应用本身，win32
+  # syscall 原生直达）—— libarm64ecfex.dll（x86_64 仿真，HODLL64）+
+  # libwow64fex.dll（i386 仿真，HODLL）+ wowbox64.dll（box64 PE，i386
+  # 备选）。此前配方定义了 hangoverDebUrl 却从未提取，三个 dll 全缺
+  # （设备实测：前缀建好后 x86_64 程序起不来）。
+  # 来源：Hangover 官方 release 的 hangover_<ver>_dlls.tar（平铺 PE
+  # dll），FEX PE 模块自包含（纯 CPU 仿真，syscall 翻译在 wine 侧），
+  # 与 wine 版本解耦 —— 固定取 11.16 已知良版本（ARM64EC/xtajit64
+  # 接口是 Windows-on-ARM 标准 ABI）。安装位置 lib/wine/
+  # aarch64-windows/（wineboot 建前缀时自动拷入 drive_c/windows/
+  # system32）。rootfs 构建与 wine CI 包两条产线共用本注入。
+  if [[ "${_isArm64ec}" == "1" ]]; then
+    local _peDir="${_wineDir}/lib/wine/aarch64-windows"
+    if [[ -f "${_peDir}/libarm64ecfex.dll" ]]; then
+      echo "FEX 仿真器 DLL 已存在（${_peDir}），跳过注入"
+    else
+      local _fexUrl="https://github.com/AndreRH/hangover/releases/download/hangover-11.16/hangover_11.16_dlls.tar"
+      local _fexTmp="${wsDir}/tmp/hangover-11.16-dlls"
+      mkdir -p "${_peDir}" "${wsDir}/tmp"
+      if [[ ! -f "${_fexTmp}/dlls.tar" ]]; then
+        echo "下载 Hangover 官方仿真器 DLL 包（libarm64ecfex / libwow64fex / wowbox64）..."
+        wget -nv -O "${_fexTmp}/dlls.tar.tmp" "${_fexUrl}" || {
+          echo "错误: 仿真器 DLL 包下载失败: ${_fexUrl}"
+          return 1
+        }
+        mv "${_fexTmp}/dlls.tar.tmp" "${_fexTmp}/dlls.tar"
+      fi
+      tar -xf "${_fexTmp}/dlls.tar" -C "${_fexTmp}" 2>/dev/null || {
+        echo "错误: 仿真器 DLL 包解包失败"
+        return 1
+      }
+      local _dll _hit=0
+      for _dll in libarm64ecfex.dll libwow64fex.dll wowbox64.dll; do
+        if [[ -f "${_fexTmp}/${_dll}" ]]; then
+          cp -p "${_fexTmp}/${_dll}" "${_peDir}/${_dll}"
+          _hit=$((_hit + 1))
+          echo "已注入仿真器 DLL → lib/wine/aarch64-windows/${_dll}"
+        fi
+      done
+      [[ "${_hit}" -ge 2 ]] || {
+        echo "错误: 仿真器 DLL 注入异常（仅 ${_hit}/3 个），x86_64/i386 程序将无法运行"
+        return 1
+      }
+      echo "仿真器 DLL 注入完成（${_hit} 个）—— 运行期默认：HODLL64=libarm64ecfex.dll HODLL=libwow64fex.dll"
+    fi
+  fi
+
+  # bin 工具规整（v3.1.4）：wine ≤9.18 / proton 树把 bin 工具（wineboot/
+  # winecfg/reg 等）装成 shell 脚本（exec wine <名>），wine 9.19+ 装成
+  # 指向 wine loader 的符号链接。arm64ec 形态原生执行两者皆可，但终端
+  # 与 App 统一走 `bin/wine <工具名>`（loader argv[0] basename 分发，
+  # 见 dlls/ntdll/unix/loader.c 的 check_command_line）最稳；此处把
+  # 脚本/符号链接统一替换为 wine loader 真实副本，任何调用方式都成立。
+  # 真实 ELF（wine/wineserver）不动。
+  local _binDir="${_wineDir}/bin"
+  if [[ -d "${_binDir}" && -x "${_binDir}/wine" ]]; then
+    local _tool _f
+    for _tool in wineboot winecfg reg regedit regsvr32 msiexec rundll32; do
+      _f="${_binDir}/${_tool}"
+      [[ -e "${_f}" || -L "${_f}" ]] || continue
+      if [[ -L "${_f}" ]]; then
+        rm -f "${_f}"
+        cp -p "${_binDir}/wine" "${_f}" && chmod 755 "${_f}" 2>/dev/null || true
+        echo "已规整 bin/${_tool}（符号链接 → wine loader 副本）"
+      elif head -c 2 "${_f}" 2>/dev/null | grep -q '#!'; then
+        rm -f "${_f}"
+        cp -p "${_binDir}/wine" "${_f}" && chmod 755 "${_f}" 2>/dev/null || true
+        echo "已规整 bin/${_tool}（shell 脚本 → wine loader 副本）"
+      fi
+    done
   fi
 }

@@ -172,3 +172,47 @@ host-deps.sh: line 93: meson: command not found
 3. 最后跑 `Build AnWind Bionic Rootfs (X11)` 与 `AnWind Bionic Box64`
 
 mesa 跑通后，wine/rootfs 与它共享同一批依赖配方，成功率最高。
+
+---
+
+# v3.1.4 —— 前缀创建全链路修复（proton 双形态 / FEX 仿真器 / 自包含依赖库）
+
+## 设备实测根因（四份会话日志逐条定位）
+
+| 现象 | 根因 | 修复 |
+|------|------|------|
+| proton-10.0 **arm64ec** `wineboot -i` 退出码 **159**，前缀建不出来、syswow64 全空 | 159 = 128+31 = **SIGSYS**：proton 的 `do_fsync()`（`dlls/ntdll/unix/fsync.c` + `server/fsync.c`）在读 `WINEFSYNC` 环境变量**之前**无条件 `syscall(__NR_futex_waitv,…)` 探测能力——Android 应用沙箱 seccomp 对白名单外的 syscall 号直接 SIGSYS 击杀，进程根本活不到读 errno。**`WINEFSYNC=0` 救不了**（探测先于 env） | 构建期注入 `#if defined(__ANDROID__) return 0;` 守卫（两配方 `disable_fsync_probe`，幂等 sed 注入） |
+| proton-10.0 **x86_64** `box64 …/bin/wineboot` 报 "Reading elf header … not executable: 64-bit ELF file" | wine ≤9.18/proton 树的 `bin/wineboot` 等工具装成 **shell 脚本**（`exec wine <名>`）；box64 读不到 ELF 头→原生 exec→脚本原生 exec x86_64 `bin/wine` 绕开 box64→ENOEXEC | ① App/脚本统一改走 `bin/wine wineboot`（loader 按 argv[0] basename 分发，官方机制）；② 配方 `normalize_bin_tools` 把脚本/符号链接规整成 loader 真实副本 |
+| proton-10.0 **x86_64** `box64 …/bin/wine winecfg` 报 **`Symbol shm_open not found, cannot apply R_X86_64_JUMP_SLOT`** | aarch64 rootfs 只组装 aarch64 包；x86_64 形态 wine 的 unix .so 是 **x86_64-bionic** 构建，其 DT_NEEDED（libpulse/libasound/libX11/libandroid-shmem/gstreamer…）在设备上**全都不存在**——shm_open 只是第一个炸的 | CI 打包步骤 8.5a：把依赖闭包打进 `opt/wine/lib/x86_64-bionic/`；App/脚本把它加进 `BOX64_LD_LIBRARY_PATH`（gstreamer 插件路径同步指向包内 x86_64 版） |
+| arm64ec 前缀建好后 **x86_64/i386 程序起不来**（缺 FEX 两个 dll） | 配方定义了 `hangoverDebUrl` 却从未提取——`libarm64ecfex.dll`（x86_64 仿真/HODLL64）、`libwow64fex.dll`（i386 仿真/HODLL）、`wowbox64.dll`（box64 PE）全缺 | 配方 `pre_package` 自动下载 Hangover 官方 `hangover_11.16_dlls.tar` 注入 `lib/wine/aarch64-windows/`（rootfs 产线共用）；App/脚本按存在性默认 `HODLL64/HODLL` |
+| 日志打 "wineboot -i 完成" 但实际已阵亡 | App 无条件报完成（不看退出码） | `WineRegistry` 校验退出码 + 失败重试一次 + 明确错误提示（159=SIGSYS） |
+
+rootfs 内置 wine 能用是因为 hangover-11 树已删 esync/fsync（无 syscall 探测）——与"是否 rootfs 构建"无关，与**源码树**有关。
+
+## 改动文件（8 个）
+
+1. `bionic-rootfs/projects/wine/build.sh` — `disable_fsync_probe` + `normalize_bin_tools`
+2. `bionic-rootfs/projects/hangover-wine/build.sh` — 同上 + FEX/box64 dll 自动注入（arm64ec 门控）
+3. `bionic-rootfs/projects/anwind-container/anwind-wine` — `apply_android_safe_env`（WINEESYNC/WINEFSYNC=0 + HODLL 探测）+ wineboot 走 loader + BOX64_LD_LIBRARY_PATH 指向 x86_64-bionic
+4. `.github/workflows/build-wine-bionic.yml` — 步骤 8.5a（x86_64 依赖闭包打包 + 校验）/ 8.5b（仿真器 dll 校验）+ 发行说明
+5. `.github/workflows/build-bionic-rootfs.yml` — rootfs 校验加 3 个仿真器 dll
+6. `app/…/launcher/WineEnvironment.kt` — `applyBox64Env(wineDir)` + `applyWineCompatEnv`
+7. `app/…/launcher/RootfsLauncher.kt` — wineboot 经 loader + 兼容环境接入
+8. `app/…/launcher/WineRegistry.kt` — wineboot 退出码校验 + 重试
+
+## 升级与验证顺序（重要）
+
+1. **重建 rootfs**（hangover-wine 配方注入 FEX dll → rootfs 内置 wine 也获得仿真器）
+2. **重建 wine 包**（fsync 守卫 + 自包含依赖库 + dll 注入；proton-10.0 两形态均应通过）
+3. **更新 APK**（启动器 wineboot/环境修复在 App 侧）
+4. 设备验证：
+   - `anwind-container install-wine anwind-wine-<ver>-x86_64-bionic.tar.gz` 后建容器
+   - 会话日志应出现 `wineboot -i 完成（退出码 0）`、无 `Symbol … not found`
+   - `ls <prefix>/drive_c/windows/syswow64` 应有 i386 dll（i386-windows 拷入）
+   - arm64ec 容器跑 x86_64 程序（FEX 默认），32 位程序 HODLL=libwow64fex.dll
+
+## 技术注记
+
+- **fsync 守卫为什么在构建期而非运行期**：探测先于 WINEFSYNC 读取，环境变量无法阻止 SIGSYS；必须在 C 源码层面短路。esync 无害（epoll 允许、/dev/shm 缺失时自动禁用），仍默认 `WINEESYNC=0`（Winlator 同款）。
+- **dll 版本解耦**：FEX PE 模块自包含（纯 CPU 仿真、syscall 翻译在 wine 侧），ARM64EC/xtajit64 是 Windows-on-ARM 标准 ABI —— 固定取 hangover-11.16 的 dll 包（30MB，含 DXVK 合集，版本可后续上浮）。
+- **mesa 不入 x86_64-bionic 闭包**：GL/EGL 走 box64 原生包装直达设备 GPU 驱动，捆绑仿真版反而降级回软件渲染。

@@ -119,14 +119,35 @@ object WineEnvironment {
     }
 
     // ------------------------------------------------------------------
-    // 3) Box64（apply_box64_env 移植）
+    // 3) Box64（apply_box64_env 移植 + v3.1.4 自包含依赖库路径）
     // ------------------------------------------------------------------
 
-    /** box64 / fexcore 后端的 DYNAREC 与运行库变量。 */
-    fun applyBox64Env(env: MutableMap<String, String>, container: ContainerData) {
+    /**
+     * box64 / fexcore 后端的 DYNAREC 与运行库变量。
+     *
+     * v3.1.4：BOX64_LD_LIBRARY_PATH 前插 wine 发行包自带的 x86_64-bionic
+     * 依赖库目录（`<wineDir>/lib/x86_64-bionic`，CI 打包步骤 8.5a 注入）——
+     * aarch64 rootfs 只有 aarch64 库，x86_64 形态 wine 的 unix .so（及其
+     * DT_NEEDED：libpulse/libasound/libX11/libandroid-shmem/gstreamer…）
+     * 由 box64 仿真加载，库文件只能从这个私有目录找，缺它 wine 直接
+     * "Symbol ... not found" 起不来。gstreamer 插件路径同步指向包内
+     * x86_64 版（rootfs 里的插件是 aarch64，x86_64 libgstreamer 加载不了）。
+     */
+    fun applyBox64Env(env: MutableMap<String, String>, container: ContainerData, wineDir: File) {
         env["BOX64_LOG"] = "0"
         env["BOX64_NOBANNER"] = "1"
         env["BOX64_DYNAREC_TRACE"] = "0"
+        // wine 包自带的 x86_64-bionic 依赖闭包（存在才追加；旧版包无此目录）
+        val bionicLibDir = File(wineDir, "lib/x86_64-bionic")
+        val bionicGstDir = File(bionicLibDir, "gstreamer-1.0")
+        if (bionicLibDir.isDirectory) {
+            env["BOX64_LD_LIBRARY_PATH"] = bionicLibDir.absolutePath +
+                (env["BOX64_LD_LIBRARY_PATH"]?.let { ":$it" } ?: "")
+            if (bionicGstDir.isDirectory) {
+                // x86_64 gstreamer 只认 x86_64 插件；rootfs 的 aarch64 插件目录对它无效
+                env["GST_PLUGIN_SYSTEM_PATH"] = bionicGstDir.absolutePath
+            }
+        }
         // x86_64 glibc 运行库（bionic-rootfs 的 glibc-x86_64 配方安装）：
         // 本 wine 是 bionic 链接不需要它；但容器内跑常规 glibc x86_64
         // Linux 程序时 box64 要在这些目录找 libc/ld-linux，缺它直接报
@@ -157,6 +178,47 @@ object WineEnvironment {
                 env["BOX64_DYNAREC_X87DOUBLE"] = "0"
                 env["BOX64_DYNAREC_STRONGMEM"] = "0"
             }
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // 3b) Android 安全默认 + arm64ec 仿真器 DLL（v3.1.4）
+    // ------------------------------------------------------------------
+
+    /**
+     * Android 沙箱兼容默认（v3.1.4）+ arm64ec 仿真器 DLL 选择。
+     *
+     * ① WINEESYNC/WINEFSYNC 默认 0：
+     *    - fsync 的 futex_waitv 能力探测在 Android 上被 seccomp 以
+     *      SIGSYS 击杀（构建侧已加 __ANDROID__ 守卫根治；此处环境默认
+     *      再兜一层——旧版 wine 包没打守卫补丁时也能活）；
+     *    - esync 依赖 /dev/shm 与 eventfd，Android 沙箱行为不可预期；
+     *    - 两者对游戏兼容性收益为零（Winlator/MiceWine 同款默认）。
+     *    用户可在容器 env= 里显式覆盖（applyExtraEnv 在链路最后叠加）。
+     *
+     * ② HODLL64/HODLL（仅 arm64ec 形态）：arm64ec 跑 x86_64/i386 程序
+     *    靠仿真器 DLL —— 上游 official/proton 树默认是 xtajit64 桩（只报
+     *    不支持），hangover 树默认 wowbox64（需 box64 PE）。v3.1.4 起
+     *    wine 包自带 libarm64ecfex + libwow64fex（FEX），存在即默认启用；
+     *    用户 HODLL64/HODLL 覆盖优先（先探测用户值再落默认）。
+     */
+    fun applyWineCompatEnv(
+        env: MutableMap<String, String>,
+        arch: WineRuntime.Arch,
+        wineDir: File,
+        userEnv: String = ""
+    ) {
+        env.putIfAbsent("WINEESYNC", "0")
+        env.putIfAbsent("WINEFSYNC", "0")
+        if (arch != WineRuntime.Arch.AARCH64) return
+        val peDir = File(wineDir, "lib/wine/aarch64-windows")
+        val hasUserHodll64 = userEnv.contains("HODLL64=")
+        val hasUserHodll = userEnv.contains("HODLL=")
+        if (!hasUserHodll64 && File(peDir, "libarm64ecfex.dll").isFile) {
+            env["HODLL64"] = "libarm64ecfex.dll"
+        }
+        if (!hasUserHodll && File(peDir, "libwow64fex.dll").isFile) {
+            env["HODLL"] = "libwow64fex.dll"
         }
     }
 

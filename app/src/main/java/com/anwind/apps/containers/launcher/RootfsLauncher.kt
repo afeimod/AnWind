@@ -332,8 +332,18 @@ object RootfsLauncher {
             if (resolved.backend == ContainerBackend.BOX64 ||
                 resolved.backend == ContainerBackend.FEXCORE
             ) {
-                WineEnvironment.applyBox64Env(env, container)
+                // v3.1.4：wineDir 参数 —— wine 包自带的 x86_64-bionic 依赖闭包
+                // 目录进 BOX64_LD_LIBRARY_PATH（缺它 box64 加载 wine unix .so
+                // 直接 "Symbol ... not found"）
+                WineEnvironment.applyBox64Env(env, container, resolved.wineDir)
             }
+
+            // 6b) Android 安全默认 + arm64ec 仿真器 DLL（v3.1.4）：
+            //     WINEESYNC/WINEFSYNC=0（fsync 探测 SIGSYS 兜底）、
+            //     HODLL64/HODLL 探测（libarm64ecfex/libwow64fex 存在即默认）
+            WineEnvironment.applyWineCompatEnv(
+                env, resolved.arch, resolved.wineDir, container.env
+            )
 
             // 7) 音频（audio=off → 无声；pulse → 原生守护管理 + PULSE_SERVER）
             when (container.audio) {
@@ -445,10 +455,15 @@ object RootfsLauncher {
     }
 
     /**
-     * 构建最终命令（run_wine 移植）。
+     * 构建最终命令（run_wine 移植 + v3.1.4 wineboot 修正）。
      *
-     * - `wineserver` / `wineboot` 是 Unix 宿主程序 → 直接执行其宿主
-     *   二进制（x86_64 形态经 box64/FEX 包装）；
+     * - `wineserver` 是真实 Unix ELF 宿主程序 → 直接执行宿主二进制
+     *   （x86_64 形态经 box64/FEX 包装）；
+     * - `wineboot`：wine ≤9.18/proton 树的 bin/wineboot 是 shell 脚本
+     *   （box64 读不到 ELF 头，脚本原生 exec 又绕开 box64 → ENOEXEC），
+     *   wine 9.19+ 是指向 loader 的符号链接 → 统一改走 wine loader：
+     *   `[box64] bin/wine wineboot …`（loader 的 check_command_line 按
+     *   argv[0] basename 分发到同名 .exe，官方机制，任何树都成立）；
      * - dmode=v + WxH → `wine explorer /desktop=AnWind,WxH <args>`；
      * - 其余 → `wine <args>`。
      */
@@ -459,11 +474,16 @@ object RootfsLauncher {
         resolution: String
     ): List<String> {
         val first = wineArgs.firstOrNull()
-        if (first == "wineserver" || first == "wineboot") {
+        if (first == "wineserver") {
             val bin = WineRuntime.hostToolBin(resolved, first)
             return WineRuntime.hostCommand(resolved, bin) + wineArgs.drop(1)
         }
         val cmd = WineRuntime.wineCommand(resolved)
+        if (first == "wineboot") {
+            // v3.1.4：经 wine loader 执行（argv[0] basename 分发），
+            // 不再直连 bin/wineboot（脚本/符号链接形态均不可靠）
+            return cmd + wineArgs
+        }
         if (dmode == "v" && resolution.isNotEmpty()) {
             return cmd + listOf("explorer", "/desktop=AnWind,$resolution") + wineArgs
         }

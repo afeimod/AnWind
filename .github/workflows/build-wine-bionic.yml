@@ -459,6 +459,84 @@ jobs:
           done
           [[ "$MISS" == "0" ]] || { echo "::error::wine 产物校验失败！"; exit 1; }
 
+      # ============ 8.5a. x86_64-bionic 依赖库打包（仅 x86_64 形态） ============
+      # 背景（v3.1.4 设备实测根因）：aarch64 rootfs 只组装 aarch64 包
+      # （make-rootfs.sh --arch aarch64），而 x86_64 形态 wine 的 unix 侧
+      # .so 是 x86_64-bionic 构建，运行期由 box64 仿真加载 —— 其 DT_NEEDED
+      # （libpulse.so.0 / libasound.so.2 / libX11.so.6 / libandroid-shmem.so
+      # / gstreamer 全家桶……）在设备 rootfs 里【根本不存在】（usr/lib 里
+      # 只有 aarch64 版），box64 报 "Symbol shm_open not found, cannot
+      # apply R_X86_64_JUMP_SLOT" 之类错误、wine 直接起不来。
+      # 修法：把本次 CI 依赖闭包（pkgs/ 下的 x86_64 tar，构建时本就全量
+      # 编译过）中的运行库打进发行包 wine 私有目录 opt/wine/lib/
+      # x86_64-bionic/，App 启动器把它加进 BOX64_LD_LIBRARY_PATH。
+      # 排除项：wine 本体（发行产物本体）/ hangover-wine（arm64ec 配方，
+      # x86_64 矩阵不会出现）/ box64 / glibc-x86_64（rootfs 侧通用 glibc
+      # 层）/ mesa（GL/EGL 走 box64 原生包装，捆绑反而降级回软件渲染）/
+      # rootfs 级数据包。保留目录结构（gstreamer-1.0/ 插件子目录必需）。
+      - name: 打包 x86_64-bionic 依赖库（x86_64 形态）
+        if: ${{ matrix.flavor == 'x86_64' }}
+        run: |
+          set -e
+          WROOT="/tmp/wine-verify/data/data/com.anwind/files/rootfs/usr"
+          OUT="$WROOT/opt/wine/lib/x86_64-bionic"
+          mkdir -p "$OUT" /tmp/dep-extract
+          for pkg in "${GITHUB_WORKSPACE}/bionic-rootfs/pkgs/"*-x86_64.tar; do
+            [[ -f "$pkg" ]] || continue
+            base="$(basename "$pkg" -x86_64.tar)"
+            case "$base" in
+              wine-*|hangover-wine*|box64*|glibc-x86_64*|mesa*|rootfs-*|anwind-container*|base-config*|tzdata*|pthread-stub*)
+                continue ;;
+            esac
+            rm -rf /tmp/dep-extract; mkdir -p /tmp/dep-extract
+            # 只取 usr/lib（含子目录：gstreamer-1.0 插件等运行期 dlopen 件）
+            tar -xf "$pkg" -C /tmp/dep-extract --wildcards '*/usr/lib/*' 2>/dev/null || true
+            srclib="$(find /tmp/dep-extract -type d -path '*/usr/lib' | head -n 1 || true)"
+            if [[ -n "$srclib" ]]; then
+              cp -rn "$srclib/." "$OUT/" 2>/dev/null || true
+            fi
+          done
+          # 清掉非运行时文件（.a/.la/pkgconfig/cmake 等静态开发残留）
+          find "$OUT" \( -name '*.a' -o -name '*.la' -o -name '*.pc' -o -name '*.sh' \) -delete 2>/dev/null || true
+          rm -rf "$OUT/pkgconfig" "$OUT/cmake" "$OUT/icu" 2>/dev/null || true
+          COUNT=$(find "$OUT" -name '*.so*' | wc -l)
+          echo "已打包 ${COUNT} 个 x86_64-bionic 运行库 → opt/wine/lib/x86_64-bionic/"
+          [[ "${COUNT:-0}" -gt 20 ]] || { echo "::error::依赖库打包异常（仅 ${COUNT} 个 .so）"; exit 1; }
+          # 关键库兜底校验（缺任何一个，box64 加载 wine unix .so 必失败）
+          for lib in libandroid-shmem.so libpulse.so.0 libasound.so.2 libX11.so.6 libfreetype.so.6 libgstreamer-1.0.so.0; do
+            [[ -e "$OUT/$lib" ]] || { echo "::error::关键依赖库缺失: $lib"; exit 1; }
+          done
+          echo "--- 关键依赖库就位确认 ---"
+          for lib in libandroid-shmem.so libpulse.so.0 libasound.so.2; do
+            ls -lh "$OUT/$lib"
+          done
+          du -sh "$OUT"
+
+      # ============ 8.5b. 仿真器 DLL 校验（仅 arm64ec 形态） ============
+      # FEX/box64 仿真器 DLL（libarm64ecfex/libwow64fex/wowbox64）由配方
+      # hangover-wine 的 pre_package 自动下载注入（rootfs 产线共用同一实现），
+      # 此处仅做存在性把关 —— 缺它们 arm64ec 形态跑不了任何 x86_64/i386
+      # Windows 程序（前缀能建、程序必挂，错误信息为 could not load
+      # libarm64ecfex.dll / wowbox64.dll）。
+      - name: 校验仿真器 DLL（arm64ec 形态）
+        if: ${{ matrix.flavor == 'arm64ec' }}
+        run: |
+          W="/tmp/wine-verify/data/data/com.anwind/files/rootfs/usr"
+          PE_DIR="$W/opt/lib/wine/aarch64-windows"
+          MISS=0
+          echo "=== 仿真器 DLL 校验（aarch64-windows/ → 前缀 system32） ==="
+          for dll in libarm64ecfex.dll libwow64fex.dll wowbox64.dll; do
+            if [[ -f "$PE_DIR/$dll" ]]; then
+              echo "  [OK] $dll ($(du -h "$PE_DIR/$dll" | cut -f1))"
+            else
+              echo "  [MISS] $dll"; MISS=1
+            fi
+          done
+          [[ "$MISS" == "0" ]] || { echo "::error::仿真器 DLL 缺失（配方 pre_package 注入未生效）"; exit 1; }
+          echo "运行期选择（App 启动器 v3.1.4 已默认）："
+          echo "  HODLL64=libarm64ecfex.dll  # x86_64 程序（FEX）"
+          echo "  HODLL=libwow64fex.dll      # i386 程序（FEX；备选 HODLL=wowbox64.dll 走 box64）"
+
       # ============ 9. 打包发行 ============
       - name: 打包 wine 发行包
         run: |
@@ -515,7 +593,10 @@ jobs:
             - ※ 过旧自定义树无 arm64ec 支持时自动降级 aarch64+i386（详见构建日志与包内 .anwind-wine-info 的 kind 字段）；official/proton 默认版本均支持完整 arm64ec
             - 显示: X11（AnWind 内置 X 服务, 默认 :1）
             - 音频: PulseAudio (TCP 127.0.0.1:4713)
+            - 自包含运行库（v3.1.4）: ${{ matrix.flavor == 'x86_64' && 'x86_64-bionic 依赖闭包（opt/wine/lib/x86_64-bionic，box64 仿真加载所需全量 .so + gstreamer 插件）' || 'FEX/box64 仿真器 DLL（libarm64ecfex + libwow64fex + wowbox64 → aarch64-windows/，wineboot 后自动进前缀 system32；App 启动器默认 HODLL64/HODLL 指向 FEX）' }}
+            - Android 兼容（v3.1.4）: fsync futex_waitv 探测 SIGSYS 守卫（proton 树退出码 159 根治）+ bin 工具规整（loader 副本）
             - 设备安装: `anwind-container install-wine anwind-wine-${{ env.WINE_VER }}-${{ matrix.flavor }}-bionic.tar.gz`
+            - ※ 需配合 v3.1.4+ App（启动器 wineboot 走 loader + BOX64_LD_LIBRARY_PATH/HODLL 环境默认）
           files: |
             ${{ env.PACKAGE_NAME }}.tar.gz
             checksums-wine-${{ matrix.flavor }}.txt
