@@ -267,6 +267,30 @@ SHMDECL
   }
   inject_shm_compat
 
+  # ffs bionic 兼容（v3.1.5）：glibc 的 <string.h> 在 _DEFAULT_SOURCE 下
+  # 附带声明 ffs()，bionic 的 ffs 只在 <strings.h>（POSIX 规定位置）——
+  # 依赖 glibc 隐式声明的树直接判 -Wimplicit-function-declaration 错。
+  # CI 实测：hangover-10.18 树 x86_64 形态 dlls/ntdll/unix/unix_private.h
+  # 的 ldt_bitmap 路径（660 行 ffs(...)）折在 loadorder.o；11.x/proton
+  # 树无 ffs 用法或已含 strings.h，自动跳过。幂等。
+  inject_ffs_compat() {
+    local _f="dlls/ntdll/unix/unix_private.h"
+    [[ -f "$_f" ]] || return 0
+    grep -q "ffs *(" "$_f" || return 0
+    if grep -q "ANWIND_FFS_COMPAT" "$_f"; then
+      echo "ffs 兼容已注入过，跳过 => $_f"
+      return 0
+    fi
+    if grep -q "#include <strings.h>" "$_f"; then
+      echo "unix_private.h 已含 strings.h（ffs 已声明），跳过"
+      return 0
+    fi
+    # 头文件（.c 才有 config.h 首位约束）：插到第一个 #include 之前
+    sed -i '0,/^#include/s|^#include|#include <strings.h> /* ANWIND_FFS_COMPAT: bionic 的 ffs 只在 strings.h */\n#include|' "$_f" \
+      && echo "已注入 #include <strings.h>（ffs 声明）=> $_f"
+  }
+  inject_ffs_compat
+
   # fsync futex_waitv 探测 Android 守卫（v3.1.4，proton 树专属；官方/
   # hangover-11 树已删 esync/fsync，文件缺失自动跳过）：
   #   proton 的 do_fsync()（dlls/ntdll/unix/fsync.c 与 server/fsync.c 各

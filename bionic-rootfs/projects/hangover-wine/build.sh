@@ -97,8 +97,9 @@ llvmMingwDate="20251202"
 llvmMingwUrl="https://github.com/mstorsjo/llvm-mingw/releases/download/${llvmMingwDate}/llvm-mingw-${llvmMingwDate}-ucrt-ubuntu-22.04-x86_64.tar.xz"
 llvmMingwSha256=""
 
-hangoverVersion="${revision}"
-hangoverDebUrl="https://github.com/AndreRH/hangover/releases/download/hangover-${hangoverVersion}/hangover_${hangoverVersion}_ubuntu2204_jammy_arm64.tar"
+# v3.1.5：已删除从未使用的 hangoverDebUrl 死代码（官方整包 tar）——
+# 仿真器 DLL 改从 pre_package 下载独立的 hangover_11.16_dlls.tar
+# （平铺 libarm64ecfex.dll / libwow64fex.dll / wowbox64.dll + dxvk 合集）。
 
 pre_setup() {
   local _hostTools="${wsDir}/host_tools/wine-tools-hangover-${revision}"
@@ -278,6 +279,30 @@ SHMDECL
     rm -f ".anwind-shm-compat.h"
   }
   inject_shm_compat
+
+  # ffs bionic 兼容（v3.1.5）：glibc 的 <string.h> 在 _DEFAULT_SOURCE 下
+  # 附带声明 ffs()，bionic 的 ffs 只在 <strings.h>（POSIX 规定位置）——
+  # 依赖 glibc 隐式声明的树直接判 -Wimplicit-function-declaration 错。
+  # CI 实测：hangover-10.18 树 dlls/ntdll/unix/unix_private.h 的
+  # ldt_bitmap 路径（660 行 ffs(...)）折在 loadorder.o；11.x/proton 树
+  # 无 ffs 用法或已含 strings.h，自动跳过。幂等。
+  inject_ffs_compat() {
+    local _f="dlls/ntdll/unix/unix_private.h"
+    [[ -f "$_f" ]] || return 0
+    grep -q "ffs *(" "$_f" || return 0
+    if grep -q "ANWIND_FFS_COMPAT" "$_f"; then
+      echo "ffs 兼容已注入过，跳过 => $_f"
+      return 0
+    fi
+    if grep -q "#include <strings.h>" "$_f"; then
+      echo "unix_private.h 已含 strings.h（ffs 已声明），跳过"
+      return 0
+    fi
+    # 头文件（.c 才有 config.h 首位约束）：插到第一个 #include 之前
+    sed -i '0,/^#include/s|^#include|#include <strings.h> /* ANWIND_FFS_COMPAT: bionic 的 ffs 只在 strings.h */\n#include|' "$_f" \
+      && echo "已注入 #include <strings.h>（ffs 声明）=> $_f"
+  }
+  inject_ffs_compat
 
   # fsync futex_waitv 探测 Android 守卫（v3.1.4，proton 树专属；官方/
   # hangover-11 树已删 esync/fsync，文件缺失自动跳过）：
@@ -574,10 +599,16 @@ EOF
     else
       local _fexUrl="https://github.com/AndreRH/hangover/releases/download/hangover-11.16/hangover_11.16_dlls.tar"
       local _fexTmp="${wsDir}/tmp/hangover-11.16-dlls"
-      mkdir -p "${_peDir}" "${wsDir}/tmp"
+      # v3.1.5：必须 mkdir -p "${_fexTmp}" 本体 —— 此前只建了父目录
+      # ${wsDir}/tmp，wget -O 写入 .../hangover-11.16-dlls/dlls.tar.tmp
+      # 直接 "No such file or directory"（CI 实测 rootfs + wine 两条产线
+      # 全部折在此处，且 pre_package 返回值被忽略 → 残废包静默流出）。
+      mkdir -p "${_peDir}" "${_fexTmp}"
       if [[ ! -f "${_fexTmp}/dlls.tar" ]]; then
         echo "下载 Hangover 官方仿真器 DLL 包（libarm64ecfex / libwow64fex / wowbox64）..."
-        wget -nv -O "${_fexTmp}/dlls.tar.tmp" "${_fexUrl}" || {
+        # --tries/--timeout：GitHub release 走 CDN 重定向，偶发 503/断流
+        # 自动重试；失败 return 1（build-rootfs-arch.sh v3.1.5 起会中止构建）
+        wget -nv --tries=3 --timeout=60 -O "${_fexTmp}/dlls.tar.tmp" "${_fexUrl}" || {
           echo "错误: 仿真器 DLL 包下载失败: ${_fexUrl}"
           return 1
         }

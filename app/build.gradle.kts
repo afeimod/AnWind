@@ -171,8 +171,13 @@ android {
         // + 设置→桌面窗口 诊断中心），见 FreeformCompat.kt / AndroidApps.kt /
         // WindowEnginePage.kt 的 v2.24.0 注释与 docs/DESKTOP_WINDOW.md
         targetSdk = 28
-        versionCode = 63
-        versionName = "2.38.0"
+        // v2.38.1（源码包 v3.1.5）：APK assets 内置 anwind-wine 同步
+        // v3.1.4 启动器（WINEFSYNC/WINEESYNC 守卫 + BOX64_LD_LIBRARY_PATH
+        // x86_64-bionic 闭包 + HODLL 默认）——此前 assets 仍是 v3.1.3 版，
+        // 每次启动覆盖部署会把 rootfs 侧新版启动器打回旧版，导致设备上
+        // 前缀创建三大修复全部失效。
+        versionCode = 64
+        versionName = "2.38.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {

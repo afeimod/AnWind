@@ -216,3 +216,69 @@ rootfs 内置 wine 能用是因为 hangover-11 树已删 esync/fsync（无 sysca
 - **fsync 守卫为什么在构建期而非运行期**：探测先于 WINEFSYNC 读取，环境变量无法阻止 SIGSYS；必须在 C 源码层面短路。esync 无害（epoll 允许、/dev/shm 缺失时自动禁用），仍默认 `WINEESYNC=0`（Winlator 同款）。
 - **dll 版本解耦**：FEX PE 模块自包含（纯 CPU 仿真、syscall 翻译在 wine 侧），ARM64EC/xtajit64 是 Windows-on-ARM 标准 ABI —— 固定取 hangover-11.16 的 dll 包（30MB，含 DXVK 合集，版本可后续上浮）。
 - **mesa 不入 x86_64-bionic 闭包**：GL/EGL 走 box64 原生包装直达设备 GPU 驱动，捆绑仿真版反而降级回软件渲染。
+
+---
+
+# v3.1.5 —— 三产线 CI 阻断 + 启动器覆盖回归修复（2026-10-29）
+
+> v3.1.4 合入后 hangover / proton / rootfs 三条产线仍全红。逐日志定位出
+> 4 个独立缺陷，其中两个让 v3.1.4 的运行时修复在设备上"看起来没生效"。
+
+## CI 阻断（三条产线全红的根因）
+
+| # | 现象（CI 日志实证） | 根因 | 修复 |
+|---|------|------|------|
+| 1 | arm64ec 形态与 rootfs 产线的 hangover-wine 构建双双打印 `…/tmp/hangover-11.16-dlls/dlls.tar.tmp: No such file or directory`，仿真器 DLL 注入失败 | `pre_package` 里 `mkdir -p "${_peDir}" "${wsDir}/tmp"` **漏建 `${_fexTmp}` 本体**——只建了父目录，`wget -O` 写入 `…/hangover-11.16-dlls/dlls.tar.tmp` 时目录不存在直接失败（URL 本身有效：`hangover_11.16_dlls.tar` 28.7MB 真实存在，平铺 3 个 dll + dxvk 合集） | `mkdir -p "${_peDir}" "${_fexTmp}"`；wget 加 `--tries=3 --timeout=60` |
+| 2 | 同上——DLL 下载失败后构建**照样** `[OK] 构建完成`，产出缺 dll 的残废包，下游 rootfs 校验（3 个 dll）/ wine 工作流 8.5b 校验才炸，报错位置远离根因 | `build-rootfs-arch.sh` 三处 `pre_package` 调用点**全部忽略返回值**——注入失败静默继续 `package()` | 三处统一 `pre_package \|\| { err …; exit 1; }`，失败即刻中止 |
+| 3 | x86_64 形态选 hangover-10.x 源（10.18 实测）编译中止：`dlls/ntdll/unix/unix_private.h:660:26: error: call to undeclared function 'ffs'`（loadorder.o Error 1） | glibc 的 `<string.h>` 在 `_DEFAULT_SOURCE` 下附带声明 `ffs()`，**bionic 的 ffs 只在 `<strings.h>`**（POSIX 规定位置）——依赖 glibc 隐式声明的 10.x 树在 bionic 下被 `-Wimplicit-function-declaration` 判死。11.x/proton 树无 ffs 用法不受影响 | 两配方（wine / hangover-wine）新增 `inject_ffs_compat`：仅当 `unix_private.h` 使用 ffs 且未含 strings.h 时幂等注入 `#include <strings.h>` |
+| 4 | （v3.1.4 遗留）`hangoverDebUrl` 定义后从未使用 | 死代码误导排查 | 已删除，注释指向 dlls.tar 方案 |
+
+## 运行时回归：APK assets 启动器陈旧覆盖（v3.1.4 修复"设备上不生效"的真因）
+
+`AnWindScriptAssets`（`assets/anwind/scripts/`）**每次 App 启动无条件覆盖**
+`rootfs/usr/bin/anwind-wine`。v3.1.4 只更新了 rootfs 侧
+（`bionic-rootfs/projects/anwind-container/anwind-wine`，762 行新版），
+APK assets 里仍是 **v3.1.3 旧版（709 行）**——缺：
+
+- `apply_android_safe_env`（WINEFSYNC/WINEESYNC=0 —— arm64ec proton
+  wineboot 退出码 159/SIGSYS 的运行期兜底）
+- `BOX64_LD_LIBRARY_PATH` 指向 `x86_64-bionic` 依赖闭包
+  （shm_open / libpulse / gstreamer "Symbol not found" 的解药）
+- HODLL64/HODLL 探测默认 + wineboot 走 loader 的分发修正
+
+即：**rootfs 装了新版启动器 → App 一开就被 APK 里的旧版打回去**，三份
+设备会话日志（wine-588 ×2 / wine-111111111 ×2）的全部症状与此吻合。
+
+**修复**：`app/src/main/assets/anwind/scripts/anwind-wine` 与 rootfs 侧
+逐字节同步；APK 升版 **2.38.1（versionCode 64）** 便于设备上区分
+（会话日志头部的 "App: com.anwind 2.38.x" 直接可查）。
+
+## 改动文件（5 个）
+
+1. `bionic-rootfs/projects/hangover-wine/build.sh` — FEX DLL 下载 mkdir 修复 + ffs 兼容注入 + 死代码清理
+2. `bionic-rootfs/projects/wine/build.sh` — ffs 兼容注入
+3. `bionic-rootfs/build-rootfs-arch.sh` — pre_package 失败传播（3 处）
+4. `app/src/main/assets/anwind/scripts/anwind-wine` — 同步 v3.1.4 启动器
+5. `app/build.gradle.kts` — 2.38.1 / versionCode 64
+
+## 验证顺序
+
+1. 重跑 `build-bionic-rootfs.yml`（aarch64）—— hangover-wine 段应出现
+   `已注入仿真器 DLL → lib/wine/aarch64-windows/…`，rootfs 校验 3 个 dll 全 OK
+2. 重跑 `build-wine-bionic.yml` 两形态 —— 8.5b（arm64ec）3 个 dll 全 OK；
+   x86_64 选 hangover-10.18 源应能编过（ffs 注入生效，日志有
+   `已注入 #include <strings.h>`）
+3. 更新设备 APK（2.38.1）→ 安装新 wine 包 → 建容器验证：
+   - x86_64 形态：`wineboot -i` 退出码 0、无 "Symbol shm_open not found"
+   - arm64ec 形态：`wineboot -i` 退出码 0（非 159）、
+     `ls <prefix>/drive_c/windows/syswow64` 出现 i386 dll
+   - arm64ec 跑 x86_64 程序（HODLL64=libarm64ecfex.dll 默认生效）
+
+## 附：hangover_11.16_dlls.tar 内容（实测解包）
+
+```
+dxvk-v2.7.1.tar.gz   16475867  （DXVK 合集，按需手动取用）
+libarm64ecfex.dll     4751360  （x86_64 仿真，HODLL64）
+libwow64fex.dll       4214784  （i386 仿真，HODLL）
+wowbox64.dll          4676096  （box64 PE，i386 备选）
+```

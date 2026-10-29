@@ -888,7 +888,9 @@ build_system() {
       fi
       if declare -F pre_package >/dev/null; then
         info "存在前置打包操作,开始执行"
-        pre_package
+        # v3.1.5：pre_package 失败必须中止 —— 此前返回值被忽略，DLL 注入
+        # 下载失败照样 package() 出残废包，rootfs/发行包校验才炸（难排查）。
+        pre_package || { err "${pjName}: 前置打包操作失败，中止构建"; exit 1; }
       fi
       package
     done
@@ -934,7 +936,9 @@ build_system() {
       fi
       if declare -F pre_package >/dev/null; then
         info "存在前置打包操作,开始执行"
-        pre_package
+        # v3.1.5：pre_package 失败必须中止 —— 此前返回值被忽略，DLL 注入
+        # 下载失败照样 package() 出残废包，rootfs/发行包校验才炸（难排查）。
+        pre_package || { err "${pjName}: 前置打包操作失败，中止构建"; exit 1; }
       fi
       package
     done
@@ -1008,7 +1012,9 @@ build_system() {
       fi
       if declare -F pre_package >/dev/null; then
         info "存在前置打包操作,开始执行"
-        pre_package
+        # v3.1.5：pre_package 失败必须中止 —— 此前返回值被忽略，DLL 注入
+        # 下载失败照样 package() 出残废包，rootfs/发行包校验才炸（难排查）。
+        pre_package || { err "${pjName}: 前置打包操作失败，中止构建"; exit 1; }
       fi
       package
     done
