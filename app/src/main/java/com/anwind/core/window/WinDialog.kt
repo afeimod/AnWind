@@ -258,7 +258,11 @@ private fun BoxScope.WinDialogFrame(
                 val y = (spec.y + dragOffset.y.roundToInt()).coerceIn(0, maxY)
                 IntOffset(x, y)
             }
-            .layout { measurable, _ ->
+            .layout { measurable, constraints ->
+                // 修复：原写法把第二个参数（传入约束）命名为 _ 丢弃后，
+                // 函数体内却引用 constraints —— WinDialogFrame 的接收者是
+                // BoxScope 而非 BoxWithConstraintsScope，作用域内并无该标识符，
+                // 编译报 Unresolved reference。改为显式命名 constraints 即可。
                 val w = frameWpx.coerceAtMost(constraints.maxWidth)
                 val placeable = measurable.measure(Constraints.fixedWidth(w))
                 layout(w, placeable.height) { placeable.place(0, 0) }
@@ -310,8 +314,12 @@ private fun BoxScope.WinDialogFrame(
                         .padding(8.dp),
                     contentAlignment = Alignment.Center
                 ) {
-                    if (spec.iconAsset != null) {
-                        IconPainter(spec.iconAsset, size = 16.dp)
+                    // 修复：spec.iconAsset 是 mutableStateOf 委托的可变属性，
+                    // 判空后直接传参会被并发修改打断，Kotlin 拒绝 smart cast。
+                    // 先拷贝到局部 val，判空与使用都基于同一不可变快照。
+                    val iconAsset = spec.iconAsset
+                    if (iconAsset != null) {
+                        IconPainter(iconAsset, size = 16.dp)
                     } else {
                         Box(
                             modifier = Modifier
