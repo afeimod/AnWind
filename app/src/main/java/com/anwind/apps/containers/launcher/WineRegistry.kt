@@ -284,16 +284,28 @@ object WineRegistry {
      *
      * - 退出码 0 + 版本号 → 一切就绪，顺带把版本写进前缀日志；
      * - 159（SIGSYS）→ fsync 探测被 seccomp 击杀（旧包，无 __ANDROID__ 守卫）；
-     * - 秒退无输出 → loader 阶段阵亡（旧包缺 x86_64-bionic 闭包时 box64
-     *   的 "Symbol … not found" 也可能被信号丢失，需看 /proc 无从抓起 ——
-     *   直接给出重编指引）；
-     * - 超时 → loader 本身挂死（arm64ec esync/_r_debug DSO 枚举一脉）。
+     * - 秒退无输出 → loader 阶段阵亡（v3.2.3 定位：wine-preloader 预加载器
+     *   在 bionic/box64 下交接失败；旧包缺 x86_64-bionic 闭包时 box64 的
+     *   "Symbol … not found" stderr 也可能被信号丢失）；
+     * - 超时 → loader 本身挂死（arm64ec：预加载器交接后的第二遍
+     *   __wine_main 挂在 virtual_init/早期初始化 —— v3.2.3 构建侧
+     *   disable_preloader_android 根治）。
+     *
+     * 注意：--version 在 wine ≤10 树由 check_command_line 处理，位于
+     * 预加载器再执行**之前** —— 冒烟测试通过不代表预加载器路径健康
+     * （v3.2.3 设备日志实证：proton arm64ec --version 可过、wineboot
+     * 挂死）。它只覆盖 loader/ntdll 加载层的其它故障（符号缺失、
+     * SIGSYS、路径错误）。
      *
      * 结果按（wine 目录 + 容器）记忆：同一运行时只测一次，不拖慢正常启动。
      */
     private val smokeTested = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
 
-    private fun loaderSmokeTest(
+    /**
+     * v3.2.3：internal —— 手动 wineboot 会话（RootfsLauncher 8b 步）复用
+     * 同一测试与缓存，不再私有。
+     */
+    internal fun loaderSmokeTest(
         resolved: WineRuntime.Resolved,
         container: ContainerData,
         env: Map<String, String>,
@@ -302,11 +314,17 @@ object WineRegistry {
         val cacheKey = "${resolved.wineDir.absolutePath}|${resolved.backend.id}|${container.name}"
         smokeTested[cacheKey]?.let { return it }
         log("加载器冒烟测试: ${WineRuntime.wineCommand(resolved).joinToString(" ")} --version …")
+        // v3.2.3：剥离 WINELOADERNOEXEC —— wine ≤10 树的 --version 分发
+        // （check_command_line）与该变量同一守卫块，不剥离会把
+        // "--version" 当程序名误报失败。同时这不失为更严格的检验：
+        // 直连 loader 的原始链路被真实地测到。
+        val testEnv = LinkedHashMap(env)
+        testEnv.remove("WINELOADERNOEXEC")
         val output = StringBuilder()
         return try {
             val executor = NativeShellExecutor.create()
                 .setCommand(*WineRuntime.wineCommand(resolved).toTypedArray(), "--version")
-                .putEnv(env)
+                .putEnv(testEnv)
                 .putEnv("WINEPREFIX", container.prefixPath)
                 .setWorkingDir(WineEnvironment.HOME_DIR)
                 .onStdOut { synchronized(output) { output.append(it).append('\n') } }
@@ -323,17 +341,17 @@ object WineRegistry {
             } else if (!finished) {
                 runCatching { executor.stopAndWait(true, 5, TimeUnit.SECONDS) }
                 log("加载器冒烟测试超时（60 秒无退出）—— loader 本身挂死，非 wineboot 逻辑问题")
-                log("→ arm64ec 形态：早期初始化挂起（esync/_r_debug DSO 枚举）；构建侧 disable_esync_android 已根治，旧包必须用新 CI 重编")
+                log("→ 高度可疑：wine ≤10 树（proton_8/9/10 等）的 wine-preloader 预加载器交接（v3.2.3 已在启动链停用 bin/*-preloader，若仍挂请发回下方现场）；hangover-10.18+/wine-11 树无此路径")
                 dumpWineHangSnapshot(resolved, container, log)
             } else {
                 log("加载器冒烟测试失败: 退出码 $code，输出：${if (text.isEmpty()) "（无任何输出）" else text.take(400)}")
                 when (code) {
-                    159 -> log("→ 159 = SIGSYS：fsync futex_waitv 探测被 seccomp 击杀 —— 旧包无 __ANDROID__ 守卫，请用 v3.1.4+ CI 重编")
+                    159 -> log("→ 159 = SIGSYS：fsync futex_waitv 探测被 seccomp 击杀（旧包无 __ANDROID__ 守卫；启动链 1.5 步的探测改写通常已免重编根治，若仍出现请反馈）")
                     139 -> log("→ 139 = SIGSEGV：loader 段错误")
                     126, 127 -> log("→ $code = 可执行体无法启动（路径/权限）")
                     else -> {
                         if (text.isEmpty()) {
-                            log("→ 秒退且无输出：box64/wine loader 阶段阵亡 —— 旧包缺 lib/x86_64-bionic 依赖闭包时（box64 \"Symbol shm_open not found\"）stderr 常被丢失；请用 v3.1.4+ CI 重编并重装该 wine 包")
+                            log("→ 秒退且无输出：box64/wine loader 阶段阵亡 —— 两类高发：①旧包缺 lib/x86_64-bionic 依赖闭包（box64 \"Symbol shm_open not found\"，stderr 常被丢失）；②wine-preloader 预加载器在 box64 仿真下跑不通（v3.2.3 已在启动链停用）。仍需重编时请用 v3.2.3+ CI（闭包 + 探测守卫 + 预加载器禁用）")
                         }
                     }
                 }
@@ -354,8 +372,11 @@ object WineRegistry {
      * （R 运行/S 睡眠/D 不可中断IO/Z 僵尸）与各线程的内核等待点（wchan）
      * 写进前缀日志。proton10 arm64ec“无任何输出永久挂死”下一轮就有
      * 内核级证据面（R=死循环嫌疑、S+wchan=futex=等锁死锁、D=IO 阻塞）。
+     *
+     * v3.2.3：internal —— 手动 wineboot 会话（RootfsLauncher 的前缀构建
+     * 流）的看门狗同样需要抓现场，不再私有。
      */
-    private fun dumpWineHangSnapshot(
+    internal fun dumpWineHangSnapshot(
         resolved: WineRuntime.Resolved,
         container: ContainerData,
         log: (String) -> Unit

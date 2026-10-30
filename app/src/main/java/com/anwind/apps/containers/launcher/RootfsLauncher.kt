@@ -346,7 +346,10 @@ object RootfsLauncher {
             //      bin/wine 副本 —— 副本按自身位置找 bin/ntdll.so 必失败
             //      （设备实测 wine-10-18 两形态 "could not load ntdll.so"）。
             //      此处就地换回相对符号链接，旧包免重装即修复。
+            //      v3.2.3 起同时停用 bin/*-preloader（直连 loader 官方兕底）
+            //      并改写 futex_waitv 探测（proton 旧包 159 静默阵亡根治）。
             WineLayoutRepair.ensure(resolved.wineDir) { sink.stamp(it) }
+            WineProbePatch.apply(resolved.wineDir) { sink.stamp(it) }
 
             // 2) 运行时目录兜底（rootfs tmp / X11 socket / XDG / 前缀 / logs）
             WineEnvironment.ensureRuntimeDirs(container)
@@ -481,6 +484,23 @@ object RootfsLauncher {
                 }
             }
 
+            // 8b) v3.2.3：手动 wineboot 会话补齐加载器冒烟测试 —— 此前该
+            //     路径（runWineCmd "wineboot -i"）不走 initializePrefixIfNeeded，
+            //     无冒烟、无看门狗，proton 两形态 loader 阵亡时会话日志
+            //     戛然而止无从排查。结论直接写进会话日志与前缀日志双通道。
+            //     同一运行时仅首次实测（WineRegistry 侧按 wine 目录缓存）。
+            if (isPrefixSession) {
+                if (!WineRegistry.loaderSmokeTest(resolved, container, env) { line ->
+                        sink.stamp(line)
+                        prefixLogLine(key, line)
+                    }) {
+                    sink.stamp("→ 加载器冒烟测试未通过，已放弃本次 wineboot（结论见上；请先解决该问题再重试）")
+                    prefixLogLine(key, "加载器冒烟测试未通过，wineboot 未执行")
+                    _prefixBuildFlow.value = null
+                    return
+                }
+            }
+
             // 10) dmode=f 的注册表蓝底清理（需前缀就绪；分辨率握手已在 7.5 提前完成）
             if (dmode == "f" && resolution.isNotEmpty()) {
                 WineRegistry.clearBlueDesktop(resolved, container, env)
@@ -518,23 +538,49 @@ object RootfsLauncher {
                     "HOME=${env["HOME"]} LANG=${env["LANG"]}"
             )
 
+            // v3.2.3：前缀构建会话看门狗信号量 —— onStdOut/onStdErr/onExit
+            // 回调置位（供下方 4 分钟无输出看门狗判定；普通会话开销为零）。
+            val gotSessionOutput = java.util.concurrent.atomic.AtomicBoolean(false)
+            val sessionEnded = java.util.concurrent.atomic.AtomicBoolean(false)
             val executor = NativeShellExecutor.create()
                 .setCommand(*command.toTypedArray())
                 .putEnv(env)
                 .setWorkingDir(workingDir)
                 .onStdOut {
+                    gotSessionOutput.set(true)
                     sink.log(it)
                     if (isPrefixSession) prefixLogLine(key, it)
                 }
                 .onStdErr {
+                    gotSessionOutput.set(true)
                     sink.log(it)
                     if (isPrefixSession) prefixLogLine(key, it)
                 }
                 .onExit { code ->
+                    sessionEnded.set(true)
                     onSessionExit(key, code, sink)
                     if (isPrefixSession) _prefixBuildFlow.value = null
                 }
                 .exec()
+
+            // v3.2.3：手动 wineboot 会话的无输出看门狗（WineRegistry 侧
+            // initializePrefixIfNeeded 同款语义）—— 4 分钟零输出且
+            // system.reg 未落盘时自动抓取 /proc 进程现场（R/S/D/Z +
+            // 各线程 wchan），只取证不杀进程（mono/gecko 提示框等待
+            // 用户确认属正常场景）。proton 旧包“预加载器交接挂死”这类
+            // 日志戛然而止的静默故障从此有内核级证据面。
+            if (isPrefixSession) {
+                val prefixMarker = File(container.prefixPath, "system.reg")
+                Thread({
+                    try { Thread.sleep(4 * 60_000L) } catch (_: InterruptedException) { return@Thread }
+                    if (!sessionEnded.get() && !gotSessionOutput.get() && !prefixMarker.isFile) {
+                        sink.stamp("wineboot 会话已 4 分钟无任何输出且 system.reg 未落盘 —— 疑似挂死，抓取进程现场：")
+                        WineRegistry.dumpWineHangSnapshot(resolved, container) { sink.stamp(it) }
+                        sink.stamp("→ 排障提示：v3.2.3 已自动停用预加载器并改写 futex_waitv 探测（免重编作用于旧包）；")
+                        sink.stamp("→ 若现场中 wine 进程仍在而 wineserver 缺席/已死 = 握手阻塞（把上面几行现场发回即可精确定位）；若 R=死循环/S+futex=死锁，同样发回现场")
+                    }
+                }, "anwind-prefix-session-watchdog").apply { isDaemon = true; start() }
+            }
 
             registerSession(key, WineSession(key, executor, sink))
         } catch (e: Exception) {

@@ -218,6 +218,26 @@ object WineEnvironment {
      *    - 两者对游戏兼容性收益为零（Winlator/MiceWine 同款默认）。
      *    用户可在容器 env= 里显式覆盖（applyExtraEnv 在链路最后叠加）。
      *
+     * ①b WINELOADERNOEXEC=1（v3.2.3，用户问题「proton 的 wine 都无法
+     *    构建前缀」的运行期缓解；proton_10.0 loader.c:2690 源码核实）：
+     *    - wine ≤10 树的 `__wine_main` 首遍逻辑是
+     *      `if (!getenv("WINELOADERNOEXEC")) { check_command_line();
+     *      if (pre_exec()) putenv("WINELOADERNOEXEC=1") → 经
+     *      wine-preloader 重新执行一遍自身 }` —— 置 1 = 首进程直接跳过
+     *      重执行（地址空间保留由 virtual_init 的无预加载器分支自完）。
+     *    - 代价：该变量与 check_command_line（--help/--version 分发）
+     *      同一守卫块 —— [WineRegistry.loaderSmokeTest] 已在测试前剥离，
+     *      不受影响。
+     *    - 子进程不经该变量（preloader_exec 不检查它）—— 子进程的
+     *      预加载器风险由 [WineLayoutRepair] 的 bin/*-preloader 停用
+     *      根治（ENOENT 官方兕底直连 loader）；本变量让首进程先不走弯路。
+     *
+     * ①c（v3.2.3 勘误）：此前版本在此处导出过 WINE_DISABLE_KERNEL_WRITEWATCH=1，
+     *    但全 wine 源码（proton_10.0 / wine-10.0 / hangover-11.16）均无此变量，
+     *    属无效安慰剂 —— 已移除。写监视（userfaultfd）风险实际在构建侧
+     *    双重关闭：配方参数 ac_cv_header_linux_userfaultfd_h=no +
+     *    hangover-11.16 源码自身 `!defined(__ANDROID__)` 排除。
+     *
      * ② HODLL64/HODLL（仅 arm64ec 形态）：arm64ec 跑 x86_64/i386 程序
      *    靠仿真器 DLL —— 上游 official/proton 树默认是 xtajit64 桩（只报
      *    不支持），hangover 树默认 wowbox64（需 box64 PE）。v3.1.4 起
@@ -232,6 +252,10 @@ object WineEnvironment {
     ) {
         env.putIfAbsent("WINEESYNC", "0")
         env.putIfAbsent("WINEFSYNC", "0")
+        // v3.2.3：预加载器首进程规避（详见 KDoc ①b；子进程风险由
+        // WineLayoutRepair 停用 bin/*-preloader + WineProbePatch 改写
+        // futex_waitv 探测兕底，两者均免重编作用于旧包）
+        env.putIfAbsent("WINELOADERNOEXEC", "1")
         if (arch != WineRuntime.Arch.AARCH64) return
         val peDir = File(wineDir, "lib/wine/aarch64-windows")
         val hasUserHodll64 = userEnv.contains("HODLL64=")

@@ -183,8 +183,6 @@ android {
         // （mono/gecko 提示框可见可点）⑤proton x86_64 闭包缺失诊断 +
         // esync Android 守卫（构建侧）⑥wine 10.17+ loader 布局自愈
         // （bin/wine 副本→符号链接，App+脚本+构建三端同步）。
-        versionCode = 68
-        versionName = "2.38.5"
         // v2.38.5（源码包 v3.2.2）：多窗口点击切换 View 层兜底修复 ——
         // 用户视频实锤 Compose 桌面内置窗口（浏览器/媒体播放器/扫雷）
         // 点击后面的窗口从不置前也无法操作（v3.1.7 Compose 观察器在
@@ -193,6 +191,35 @@ android {
         // TrackpadRouter 之前）+ TrackpadController/TrackpadRouter（触控板
         // 模式指针处与手指轻点处）按窗口几何直判置前；WindowChrome/
         // WinDialogFrame onGloballyPositioned 上报几何；focus 加诊断日志。
+        versionCode = 69
+        versionName = "2.38.6"
+        // v2.38.6（源码包 v3.2.3）：proton 两形态前缀构建修复。
+        // [根因]（proton_10.0 / hangover 两树源码逐行核对 + 设备日志对齐，
+        // 本轮勘误了早前的单因归因）：
+        //   ① Valve 树 start_main_thread 无条件调 fsync_init()（官方/
+        //      hangover 树无此行）→ do_fsync() 在读 WINEFSYNC 之前裸
+        //      syscall(__NR_futex_waitv,...) 探测 → Android 应用沙箱
+        //      seccomp SIGSYS(159) 整进程击杀、零输出（arm64ec 设备日志
+        //      死点：heap-tagging ×2 后戛然而止）；
+        //   ② wine ≤10 树的 wine-preloader 重执行链在 box64 仿真下静默
+        //      阵亡（x86_64 日志连 "_r_debug not found in ld.so" 都无 =
+        //      死在预加载器进入前后）。注：hangover 树同样有 pre_exec
+        //      （此前"上游已移除"说法有误），其可用而 proton 阵亡的
+        //      差异在 ① 与 box64 形态。
+        // [本版]：①App 侧 WineProbePatch：对已装包就地改写 futex_waitv
+        //      探测立即数（449→getpid，x86_64/aarch64 双模式 + 上下文
+        //      双校验防误伤）—— 旧包免重编即免疫 SIGSYS；②WineLayoutRepair
+        //      停用 bin/*-preloader（preloader_exec 的 ENOENT 官方兕底
+        //      直连 loader，可逆）+ WINELOADERNOEXEC=1 首进程跳过重执行；
+        //      ③手动 wineboot 会话补冒烟测试 + 4 分钟无输出看门狗
+        //      （/proc 现场 + wineserver 存活判定）；④构建侧两配方
+        //      disable_preloader_android + pre_package 剔除 preloader 入口
+        //      （新包建议用 v3.2.3+ CI 重编以对齐，但旧包已无需重编）。
+        //      勘误：移除安慰剂变量 WINE_DISABLE_KERNEL_WRITEWATCH（全
+        //      wine 源码无此名）；v3.2.0 对 "_r_debug not found in ld.so"
+        //      的 esync 归因是误诊（消息出自预加载器 preloader.c:1516
+        //      GDB 集成，非致命）。
+        // （v2.38.5/源码包 v3.2.2 记录见 git 历史与 README-FIX.md）
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {

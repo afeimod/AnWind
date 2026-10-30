@@ -38,6 +38,26 @@ import java.nio.file.Files
  *
  * 构建侧（bionic-rootfs 两配方 pre_package）已同步改为符号链接物化，
  * 新包生而正确；本自愈兜历史存量。
+ *
+ * ## v3.2.3 新增：wine-preloader 停用（bin/ 入口改名为 *.anwind-disabled）
+ *
+ * wine ≤10 树（proton_8/9/10、official ≤10.17）的 `__wine_main` 首遍会经
+ * `pre_exec() → loader_exec() → preloader_exec()` 把自己重新执行一遍
+ * wine-preloader（预加载器：手写 ELF 加载器，裸 syscall 自映射 bin/wine
+ * 及其 ELF 解释器后跳进动态链接器）；子进程同样经 preloader_exec 走它。
+ * 设备实测：该交接在 box64 仿真下静默阵亡（proton x86_64 前缀构建零输出，
+ * 连预加载器的 "_r_debug not found in ld.so" 告警都来不及打）。
+ *
+ * 停用方式取上游自己的兜底：`preloader_exec()` 在 wine-preloader 文件缺失
+ * （execv → ENOENT）时自动退回 `execv( argv[1], argv + 1 )` 直连 loader
+ * （proton_10.0 / hangover 两树源码逐行核实，即 HAVE_WINE_PRELOADER 未
+ * 定义时的官方行为；地址空间保留由 virtual_init 的无预加载器分支自完）。
+ * 因此把 bin/ 下的 wine-preloader / wine64-preloader 改名即等价于"构建时
+ * 未启用预加载器"—— 首进程与全部子进程一并切换，可逆（改回名字即恢复）。
+ *
+ * 配套：WINELOADERNOEXEC=1（WineEnvironment ①b）让首进程直接跳过重执行
+ * 分支；构建侧 disable_preloader_android（两配方）让新包代码层不再引用
+ * 预加载器；anwind-wine 脚本同步反转（不再重建链接）。
  */
 object WineLayoutRepair {
 
@@ -45,6 +65,9 @@ object WineLayoutRepair {
     private val BIN_TOOLS = listOf(
         "wineboot", "winecfg", "reg", "regedit", "regsvr32", "msiexec", "rundll32"
     )
+
+    /** v3.2.3：需停用的预加载器入口名（preloader_exec 按 loader 名尾缀二选一）。 */
+    private val PRELOADER_NAMES = listOf("wine-preloader", "wine64-preloader")
 
     /** bin/wine 期望的符号链接目标（相对路径，相对 bin/ 目录）。 */
     private const val WINE_LINK_TARGET = "../lib/wine/%s/wine"
@@ -69,6 +92,40 @@ object WineLayoutRepair {
     }
 
     private fun ensureImpl(wineDir: File, log: (String) -> Unit): Boolean {
+        val binDir = File(wineDir, "bin")
+
+        // ---- 0) wine-preloader 停用（v3.2.3，先行于布局检测）----
+        // 预加载器停用标记（步骤 0 与后续步骤共用）
+        var repaired0 = false
+        // 必须对**所有布局**生效：旧布局（proton_10.0 / wine ≤9.x，
+        // bin/wine 为真实 ELF）恰恰是预加载器风险的主力包型 —— 若放在
+        // 下方 lib 布局检测之后，旧布局的提前 return 会跳过本步。
+        // preloader_exec() 找不到 bin/wine-preloader 时走官方兕底
+        // `execv(argv[1], argv+1)` 直连 loader —— 改名即停用，可逆、幂等；
+        // 旧布局（bin 下真实 ELF）与新布局（符号链接）统一处理；
+        // lib 侧本体不动（无任何查找路径指向它，仅占位无害）。
+        if (binDir.isDirectory) {
+            for (preloaderName in PRELOADER_NAMES) {
+                val active = File(binDir, preloaderName)
+                if (active.exists() || Files.isSymbolicLink(active.toPath())) {
+                    val disabled = File(binDir, "$preloaderName.anwind-disabled")
+                    runCatching {
+                        if (disabled.exists() || Files.isSymbolicLink(disabled.toPath())) {
+                            disabled.delete()
+                        }
+                        Os.rename(active.absolutePath, disabled.absolutePath)
+                        repaired0 = true
+                        log(
+                            "已停用 bin/$preloaderName（v3.2.3：Android 直连 loader —— " +
+                                "preloader_exec 的 ENOENT 官方兕底路径；box64 仿真交接静默阵亡一并消除）"
+                        )
+                    }.onFailure {
+                        log("警告: 停用 bin/$preloaderName 失败（${it.message}）")
+                    }
+                }
+            }
+        }
+
         // ---- 1) 检测 wine 10.17+ lib 布局：lib/wine/<arch>-unix/wine 存在 ----
         val libDir = File(wineDir, "lib/wine")
         if (!libDir.isDirectory) return true
@@ -77,13 +134,12 @@ object WineLayoutRepair {
         val libLoader = File(archDir, "wine")
         val libLoaderAbs = libLoader.absolutePath
 
-        val binDir = File(wineDir, "bin")
         if (!binDir.isDirectory) {
             // lib 布局而 bin 目录整个缺失：异常包，补目录并建链接
             runCatching { binDir.mkdirs() }
         }
 
-        var repaired = false
+        var repaired = repaired0
 
         // ---- 2) bin/wine → ../lib/wine/<arch>-unix/wine ----
         val binWine = File(binDir, "wine")
@@ -101,19 +157,6 @@ object WineLayoutRepair {
                 )
             }.onFailure {
                 log("警告: bin/wine 符号链接重建失败（${it.message}）")
-            }
-        }
-
-        // ---- 3) wine-preloader（可选组件：缺失时 loader 自动降级无 preloader）----
-        val libPreloader = File(archDir, "wine-preloader")
-        val binPreloader = File(binDir, "wine-preloader")
-        if (libPreloader.isFile && !binPreloader.exists()) {
-            runCatching {
-                Os.symlink(
-                    "../lib/wine/${archDir.name}/wine-preloader",
-                    binPreloader.absolutePath
-                )
-                repaired = true
             }
         }
 

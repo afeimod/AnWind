@@ -433,6 +433,21 @@ resolve_wine_dir() {
 # loader）零改动。幂等。
 repair_wine_layout() {
     local _arch_dir _tool _f _tgt
+    # v3.2.3：停用 wine-preloader（先于布局检测 —— 旧布局包同样必须生效；
+    # 旧布局 bin/wine 为真实 ELF，不走下方 arch 循环）。preloader_exec()
+    # 找不到 bin/ 下入口时走官方兕底 execv(argv[1], argv+1) 直连 loader
+    # （即 HAVE_WINE_PRELOADER 未定义时的上游行为）。真实 ELF 与符号
+    # 链接统一改名停用，可逆、幂等；与 App 侧 WineLayoutRepair.kt 同款
+    # （两端同源自愈，此处不再重建链接）。
+    for _pl in wine-preloader wine64-preloader; do
+        if [ -e "$WINE_DIR/bin/$_pl" ] || [ -L "$WINE_DIR/bin/$_pl" ]; then
+            rm -f "$WINE_DIR/bin/$_pl.anwind-disabled"
+            if mv "$WINE_DIR/bin/$_pl" "$WINE_DIR/bin/$_pl.anwind-disabled" 2>/dev/null; then
+                info "已停用 bin/$_pl（Android 直连 loader：preloader_exec 的 ENOENT 官方兕底）"
+            fi
+        fi
+    done
+
     # 找 lib/wine/*-unix/wine（10.17+ 布局特征；旧布局不存在 → 直接返回）
     for _arch_dir in "$WINE_DIR"/lib/wine/*-unix; do
         [ -x "$_arch_dir/wine" ] || continue
@@ -444,11 +459,6 @@ repair_wine_layout() {
                 return 0
             }
             info "已自愈 bin/wine → $_tgt（wine 10.17+ loader 布局；旧物化副本找 bin/ntdll.so 必败）"
-        fi
-        # 可选的 wine-preloader（缺失时 loader 自动降级无 preloader 模式）
-        if [ -f "$_arch_dir/wine-preloader" ] && [ ! -e "$WINE_DIR/bin/wine-preloader" ]; then
-            ln -s "../lib/wine/$(basename "$_arch_dir")/wine-preloader" \
-                "$WINE_DIR/bin/wine-preloader" 2>/dev/null || true
         fi
         # bin 工具：两跳符号链接（→ bin/wine → lib loader）；绝不能是副本
         for _tool in wineboot winecfg reg regedit regsvr32 msiexec rundll32; do

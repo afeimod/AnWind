@@ -91,6 +91,9 @@ object WineRuntime {
         // 过不了下方文件检查；物化副本包虽能过但必炸 ntdll。两种都在
         // 此就地治好（幂等；启动链 1.5 步会再跑一次并打日志，此处静默）。
         runCatching { WineLayoutRepair.ensure(wineDir) }
+        // v3.2.3：futex_waitv 探测改写（proton 旧包 SIGSYS(159) 静默阵亡
+        // 的设备侧根治，免重编）—— 同样幂等 + 静默，1.5 步打日志。
+        runCatching { WineProbePatch.apply(wineDir) }
         val wineBinary = File(wineDir, "bin/wine")
         if (!wineBinary.isFile) {
             throw IllegalStateException("wine 主程序缺失：${wineBinary.absolutePath}")

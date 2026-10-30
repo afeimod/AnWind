@@ -392,6 +392,68 @@ ESYNCGUARD
   }
   disable_esync_android
 
+  # v3.2.3：wine-preloader Android 全面禁用 —— proton 两形态前缀构建
+  # 失败（arm64ec 阵亡 / x86_64 静默阵亡）的根治之一（另一根因 = Valve
+  # 树 start_main_thread 无条件调 fsync_init → do_fsync 的 futex_waitv
+  # 裸探测 → seccomp SIGSYS(159)，disable_fsync_probe 已守卫；App 侧
+  # WineProbePatch.kt 对已装旧包就地改写探测立即数，免重编）。
+  # [证据链]（2026-10-30 设备实测日志 + proton_10.0/hangover 两树源码
+  # 逐行核对 —— 本轮勘误）：
+  #   * proton_10.0 arm64ec：日志 "_r_debug not found in ld.so"（出处
+  #     loader/preloader.c:1516 —— 预加载器 GDB 集成的**非致命**告警，
+  #     与 esync 无关，v3.2.0 的 esync 归因是误诊）+ "bionic heap
+  #     tagging disabled" ×2 = __wine_main 先直跑一遍、再经 wine-preloader
+  #     重执行一遍；此后再无任何输出 —— 第二遍的死点在 start_main_thread
+  #     的 fsync_init()（Valve 专属、无条件调用；探测被守卫前 = SIGSYS
+  #     159）或预加载器交接后的进程状态，两者均在本轮修复面内。
+  #   * proton_10.0 x86_64 + box64：零输出阵亡且**无** "_r_debug" 告警
+  #     —— 死在预加载器进入前后（box64 仿真手写 ELF 加载器跑不通）；
+  #     或同样死于 fsync 探测（heap-tagging 打印是 aarch64-only，x86_64
+  #     的静默属正常，无法从日志区分 —— 两处都修掉）。
+  #   * hangover-10.18/11.16（同设备实测可用）：经核对**同样有** pre_exec
+  #     重执行分支与 wine-preloader（此前"上游已移除"的说法有误，
+  #     hangover 的 check_command_line→reexec_loader 一样走预加载器）
+  #     —— hangover 可用而 proton 阵亡的结构性差异在：Valve 树的
+  #     fsync_init/esync_init 无条件调用（hangover/官方树根本没有）与
+  #     x86_64 形态的 box64 仿真。预加载器本体在 bionic aarch64 原生
+  #     执行下可用；禁用它属"消除整条风险链"而非修复其自身。
+  # [修法] 停用整条预加载器链（等价 HAVE_WINE_PRELOADER 未定义的上游
+  #   官方路径；地址空间保留由 virtual_init 的无预加载器分支自行完成，
+  #   Apple 平台同款语义）：
+  #   1) pre_exec() → 0：首个 wine 进程不再重执行；
+  #   2) preloader_exec() 排除 __ANDROID__：子进程（wineboot/services/
+  #      explorer…）直接 exec wine loader —— 即原代码 execv 失败后的
+  #      官方兜底分支 execv(argv[1], argv+1)；
+  #   3) pre_package 剔除 bin/*-preloader 入口；App 侧 WineLayoutRepair
+  #      对已装旧包同步停用（改名 .anwind-disabled，免重装、可逆）。
+  # 幂等；锚点缺失（树结构漂移）时告警跳过不中断。
+  disable_preloader_android() {
+    local _f="dlls/ntdll/unix/loader.c"
+    [[ -f "$_f" ]] || { echo "⚠️ 无 $_f（树结构差异），跳过预加载器禁用"; return 0; }
+    if grep -q "ANWIND_FIX_PRELOADER_ANDROID" "$_f"; then
+      echo "预加载器 Android 禁用已注入过，跳过 => $_f"
+      return 0
+    fi
+    # 1) 首个进程：pre_exec 返回 0（x86_64/aarch64 Linux 均走 #else
+    #    通用分支；i386/arm32 的 check_vmsplit 分支与 Apple 分支的
+    #    return 1 注释不同，不会误伤）
+    if grep -q 'return 1;  /\* we have a preloader \*/' "$_f"; then
+      sed -i 's|return 1;  /\* we have a preloader \*/|return 0;  /* ANWIND_FIX_PRELOADER_ANDROID: preloader→linker64 handoff hangs bionic (arm64ec silent hang) and box64 (x86_64 silent death); align with hangover/wine-11 no-preloader behavior — virtual_init reserves address space itself */|' "$_f" \
+        && echo "已禁用首进程 preloader 再执行（pre_exec→0）=> $_f"
+    else
+      echo "ℹ️ $_f 无 pre_exec 锚点（wine 10.18+/11 树已移除再执行分支，无需处理）"
+    fi
+    # 2) 子进程：preloader_exec 函数体内 #ifdef HAVE_WINE_PRELOADER
+    #    改为 Android 排除 —— 函数退化为直接 exec loader
+    sed -i '/^static void preloader_exec/,/^}/ s|^#ifdef HAVE_WINE_PRELOADER$|#if defined(HAVE_WINE_PRELOADER) \&\& !defined(__ANDROID__) /* ANWIND_FIX_PRELOADER_ANDROID: children exec the wine loader directly (official execv-failure fallback path); see pre_exec note */|' "$_f"
+    if grep -q "ANWIND_FIX_PRELOADER_ANDROID" "$_f"; then
+      echo "已禁用子进程 preloader（preloader_exec 直连 loader）=> $_f"
+    else
+      echo "⚠️ preloader_exec 锚点未命中（树结构差异）—— 子进程仍将经 wine-preloader，请核查 $_f"
+    fi
+  }
+  disable_preloader_android
+
   # arm64ec PE 导出名校验清理（wdscore，proton_10.0 树实测崩溃点）：
   # proton_10.0 的 dlls/wdscore/wdscore.spec 带 66 个 x86 32 位 MSVC 修饰名
   # @ stub 导出（CDynamicArray 模板成员，thiscall 标记 QAE/QBE 等）。ARM64EC
@@ -707,10 +769,16 @@ EOF
       ln -s "../lib/wine/aarch64-unix/wine" "${_wineDir}/bin/wine" \
         && echo "已建立 bin/wine → ../lib/wine/aarch64-unix/wine 符号链接（wine 10.17+ lib 布局；副本会让 loader 找 bin/ntdll.so 必败）"
     fi
-    if [[ -f "${_wineDir}/lib/wine/aarch64-unix/wine-preloader" ]] \
-       && [[ ! -e "${_wineDir}/bin/wine-preloader" ]]; then
-      ln -s "../lib/wine/aarch64-unix/wine-preloader" "${_wineDir}/bin/wine-preloader" 2>/dev/null || true
-    fi
+    # v3.2.3：剔除 wine-preloader 入口 —— preloader_exec() 找不到入口时走
+    # 官方兕底 execv(argv[1], argv+1) 直连 loader（HAVE_WINE_PRELOADER 未
+    # 定义时的上游行为）。arm64ec 形态下首进程重执行链实测可达第二遍
+    # __wine_main（设备日志 heap-tagging ×2），其后的静默阵亡以 fsync
+    # futex_waitv 探测 SIGSYS(159) 为首嫌（disable_fsync_probe 已守卫），
+    # 预加载器整链停用把这一风险类一并消除。App 侧 WineLayoutRepair.kt
+    # 对已装旧包同步停用（免重装）。
+    rm -f "${_wineDir}/bin/wine-preloader" "${_wineDir}/bin/wine64-preloader" \
+           "${_wineDir}/bin/wine-preloader.anwind-disabled" \
+           "${_wineDir}/bin/wine64-preloader.anwind-disabled"
   fi
 
   # bin 工具规整（v3.1.4；v3.2.0 符号链接化）：wine ≤9.18 / proton 树把
