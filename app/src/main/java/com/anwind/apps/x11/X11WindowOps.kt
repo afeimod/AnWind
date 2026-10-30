@@ -105,7 +105,7 @@ object X11WindowOps {
     // ------------------------------------------------------------------
 
     private fun raiseAtSync(x: Int, y: Int) {
-        val c = connect() ?: return
+        val c = XConn.connect() ?: return
         try {
             val stacked = visibleRootChildren(c)   // 自底向上
             if (stacked.size <= 1) {
@@ -127,7 +127,7 @@ object X11WindowOps {
     }
 
     private fun cycleSync() {
-        val c = connect() ?: return
+        val c = XConn.connect() ?: return
         try {
             val stacked = visibleRootChildren(c)   // 自底向上
             if (stacked.size < 2) {
@@ -308,55 +308,62 @@ object X11WindowOps {
             focus.putInt(0)               // CurrentTime
             send(focus)
         }
-    }
 
-    private fun connect(): XConn? {
-        val dir = java.io.File("$PREFIX/tmp/.X11-unix")
-        val files = dir.listFiles { f -> f.name.matches(Regex("X\\d+")) } ?: return null
-        for (f in files.sortedByDescending { it.name }) {
-            var sock: LocalSocket? = null
-            try {
-                sock = LocalSocket()
-                sock.connect(LocalSocketAddress(f.absolutePath, LocalSocketAddress.Namespace.FILESYSTEM))
-                sock.soTimeout = 4000
-                val input = DataInputStream(BufferedInputStream(sock.inputStream, 16384))
-                val out = BufferedOutputStream(sock.outputStream, 4096)
+        companion object {
+            /**
+             * 连接本机 X server（与 X11FitClient.XConn.connectValidated 同源的
+             * 建连逻辑；工厂放伴生对象内，构造器保持 private —— Kotlin 不允许
+             * 外层对象直接调用嵌套类的私有构造器）。
+             */
+            fun connect(): XConn? {
+                val dir = java.io.File("$PREFIX/tmp/.X11-unix")
+                val files = dir.listFiles { f -> f.name.matches(Regex("X\\d+")) } ?: return null
+                for (f in files.sortedByDescending { it.name }) {
+                    var sock: LocalSocket? = null
+                    try {
+                        sock = LocalSocket()
+                        sock.connect(LocalSocketAddress(f.absolutePath, LocalSocketAddress.Namespace.FILESYSTEM))
+                        sock.soTimeout = 4000
+                        val input = DataInputStream(BufferedInputStream(sock.inputStream, 16384))
+                        val out = BufferedOutputStream(sock.outputStream, 4096)
 
-                // setup 请求：byte-order 'l'，协议 11.0，无认证
-                val req = ByteBuffer.allocate(12).order(ByteOrder.LITTLE_ENDIAN)
-                req.put('l'.code.toByte()); req.put(0)
-                req.putShort(11); req.putShort(0)
-                req.putShort(0); req.putShort(0); req.putShort(0)
-                out.write(req.array()); out.flush()
+                        // setup 请求：byte-order 'l'，协议 11.0，无认证
+                        val req = ByteBuffer.allocate(12).order(ByteOrder.LITTLE_ENDIAN)
+                        req.put('l'.code.toByte()); req.put(0)
+                        req.putShort(11); req.putShort(0)
+                        req.putShort(0); req.putShort(0); req.putShort(0)
+                        out.write(req.array()); out.flush()
 
-                val head = ByteArray(8)
-                input.readFully(head)
-                if (head[0].toInt() != 1) { runCatching { sock.close() }; continue }
-                // setup 回复前缀：success@0, reasonLen@1, major@2-3, minor@4-5, len(words)@6-7
-                val words = (head[6].toInt() and 0xFF) or ((head[7].toInt() and 0xFF) shl 8)
-                if (words <= 0 || words * 4 > 512 * 1024) {
-                    runCatching { sock.close() }; continue
+                        val head = ByteArray(8)
+                        input.readFully(head)
+                        if (head[0].toInt() != 1) { runCatching { sock.close() }; continue }
+                        // setup 回复前缀：success@0, reasonLen@1, major@2-3, minor@4-5, len(words)@6-7
+                        val words = (head[6].toInt() and 0xFF) or ((head[7].toInt() and 0xFF) shl 8)
+                        if (words <= 0 || words * 4 > 512 * 1024) {
+                            runCatching { sock.close() }; continue
+                        }
+                        val rest = ByteArray(words * 4)
+                        input.readFully(rest)
+                        if (rest.size < 32) { runCatching { sock.close() }; continue }
+                        val vendorLen = (rest[16].toInt() and 0xFF) or ((rest[17].toInt() and 0xFF) shl 8)
+                        val nScreens = rest[20].toInt() and 0xFF
+                        val nFormats = rest[21].toInt() and 0xFF
+                        val off = 32 + (vendorLen + 3) / 4 * 4 + nFormats * 8
+                        if (nScreens < 1 || off + 24 > rest.size) {
+                            runCatching { sock.close() }; continue
+                        }
+                        val rb = ByteBuffer.wrap(rest).order(ByteOrder.LITTLE_ENDIAN)
+                        val root = rb.getInt(off).toLong() and 0xFFFFFFFFL
+                        val c = XConn(sock, input, out)
+                        c.root = root
+                        return c
+                    } catch (e: Exception) {
+                        Log.w(TAG, "连接 ${f.absolutePath} 失败: ${e.message}")
+                        runCatching { sock?.close() }
+                    }
                 }
-                val rest = ByteArray(words * 4)
-                input.readFully(rest)
-                if (rest.size < 32) { runCatching { sock.close() }; continue }
-                val vendorLen = (rest[16].toInt() and 0xFF) or ((rest[17].toInt() and 0xFF) shl 8)
-                val nScreens = rest[20].toInt() and 0xFF
-                val nFormats = rest[21].toInt() and 0xFF
-                val off = 32 + (vendorLen + 3) / 4 * 4 + nFormats * 8
-                if (nScreens < 1 || off + 24 > rest.size) {
-                    runCatching { sock.close() }; continue
-                }
-                val rb = ByteBuffer.wrap(rest).order(ByteOrder.LITTLE_ENDIAN)
-                val root = rb.getInt(off).toLong() and 0xFFFFFFFFL
-                val c = XConn(sock, input, out)
-                c.root = root
-                return c
-            } catch (e: Exception) {
-                Log.w(TAG, "连接 ${f.absolutePath} 失败: ${e.message}")
-                runCatching { sock?.close() }
+                return null
             }
         }
-        return null
     }
 }
