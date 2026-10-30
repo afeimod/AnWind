@@ -87,6 +87,10 @@ object WineRuntime {
                 }
                 append("。请先安装（App 端 Wine 选择器一键安装，或终端 anwind-container install-wine）")
             })
+        // v3.2.0：loader 布局自愈先行 —— 悬空 bin/wine 的 10.17+ 原始包
+        // 过不了下方文件检查；物化副本包虽能过但必炸 ntdll。两种都在
+        // 此就地治好（幂等；启动链 1.5 步会再跑一次并打日志，此处静默）。
+        runCatching { WineLayoutRepair.ensure(wineDir) }
         val wineBinary = File(wineDir, "bin/wine")
         if (!wineBinary.isFile) {
             throw IllegalStateException("wine 主程序缺失：${wineBinary.absolutePath}")

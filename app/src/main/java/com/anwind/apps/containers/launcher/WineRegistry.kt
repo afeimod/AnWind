@@ -2,6 +2,7 @@ package com.anwind.apps.containers.launcher
 
 import com.anwind.apps.containers.ContainerData
 import java.io.File
+import java.util.concurrent.TimeUnit
 
 /**
  * Wine 注册表操作（经 wine reg 客户端执行 —— 与脚本 ensure_emulate_modeset /
@@ -159,16 +160,26 @@ object WineRegistry {
     ): Boolean {
         if (File(container.prefixPath, "system.reg").isFile) return true
         log("首次使用，初始化 wine 前缀: ${container.prefixPath}")
+        log("提示: 构建过程中的 mono/gecko 等安装提示框将显示在『X11 桌面』窗口（explorer 虚拟桌面）内，请在该窗口确认")
         return try {
             // v3.1.4：统一经 wine loader（box64 形态自动包装），不再直连
-            // bin/wineboot 宿主文件（脚本/符号链接形态均不可靠）
-            val cmdPrefix = WineRuntime.wineCommand(resolved)
+            // bin/wineboot 宿主文件（脚本/符号链接形态均不可靠）。
+            // v3.2.0（用户诉求 4）：包 explorer /desktop 虚拟桌面 —— 无 WM
+            // 裸窗口下 mono/gecko 提示框堆在 (0,0) 黑屏角落（用户实测“x11
+            // 没有任何画面、提示框看不到、无法继续构建”）；虚拟桌面铺满 X
+            // 屏幕，子窗口由 wine 自管，提示框可见可点。分辨率与普通会话
+            // 同源（RootfsLauncher.currentXScreenResolution）。
+            val vdRes = RootfsLauncher.currentXScreenResolution()
+            val cmdPrefix = WineRuntime.wineCommand(resolved) +
+                listOf("explorer", "/desktop=AnWind,$vdRes")
             // v3.1.6：每次尝试限时 —— wineboot 正常 1~3 分钟（arm64ec
             // 原生 / box64 仿真最慢也 <10 分钟）；超时强杀并如实报错。
             // 设备实测 proton10 arm64ec wineboot 无任何输出永久挂死
             // （会话无退出码），旧版 waitFor() 无限等 → 启动链卡死、
             // UI 无反馈。超时杀掉后错误行进前缀日志窗口，问题可见。
-            val TIMEOUT_MIN = 10L
+            // v3.2.0：10 → 15 分钟（用户需在 X11 窗口内确认安装提示框，
+            // 人为交互时间不可控）。
+            val TIMEOUT_MIN = 15L
             var lastCode = -1
             for (attempt in 1..2) {
                 val executor = NativeShellExecutor.create()
@@ -180,20 +191,28 @@ object WineRegistry {
                     .onStdErr { log(it) }
                     .exec()
                 val finished = runCatching {
-                    executor.waitFor(TIMEOUT_MIN, java.util.concurrent.TimeUnit.MINUTES)
+                    executor.waitFor(TIMEOUT_MIN, TimeUnit.MINUTES)
                 }.getOrDefault(false)
                 if (!finished) {
-                    runCatching { executor.stopAndWait(true, 10, java.util.concurrent.TimeUnit.SECONDS) }
+                    // v3.2.0：超时先抓挂死现场（进程 state/wchan）再杀 ——
+                    // 无输出挂死从此有内核级证据（R=死循环嫌疑、
+                    // S+wchan=futex=等锁死锁、D=IO 阻塞）。
+                    dumpWineHangSnapshot(resolved, container, log)
+                    runCatching { executor.stopAndWait(true, 10, TimeUnit.SECONDS) }
                     lastCode = -1
                     log("wineboot -i 第 ${attempt} 次超时（>${TIMEOUT_MIN} 分钟无退出），已强制结束" +
                         if (attempt == 1) "，清残留后重试一次…" else "")
-                    log("→ 典型原因：wineserver 握手挂起 / wow64 初始化崩溃；请把本窗口日志反馈给开发者")
+                    log("→ 典型原因：wineserver 握手挂起 / wow64 初始化崩溃 / 提示框等待确认；请把本窗口日志反馈给开发者")
                 } else {
                     lastCode = runCatching { executor.waitFor() }.getOrDefault(-1)
                 }
+                // v3.2.0：成败以 system.reg 落盘为准 —— explorer 虚拟桌面
+                // 不保证透传 wineboot 退出码，system.reg 是前缀创建完成
+                // 的权威信号（官方 wineboot 成功必落盘）。
+                if (File(container.prefixPath, "system.reg").isFile) break
                 if (lastCode == 0) break
                 if (lastCode != 0 && finished) {
-                    log("wineboot -i 第 ${attempt} 次退出码 $lastCode" +
+                    log("wineboot -i 第 ${attempt} 次退出码 $lastCode（前缀 system.reg 未落盘）" +
                         if (attempt == 1) "，重试一次…" else "")
                 }
                 if (attempt == 1) {
@@ -201,8 +220,8 @@ object WineRegistry {
                     runCatching { WineServerUtils.stop(resolved, container, env) }
                 }
             }
-            if (lastCode == 0) {
-                log("wineboot -i 完成（退出码 0）")
+            if (lastCode == 0 || File(container.prefixPath, "system.reg").isFile) {
+                log("wineboot -i 完成（前缀 system.reg 已落盘）")
                 true
             } else {
                 log("wineboot -i 失败（退出码 $lastCode，159=SIGSYS/旧包fsync、1=加载失败、-1=超时强杀）")
@@ -212,6 +231,62 @@ object WineRegistry {
         } catch (e: Exception) {
             log("wineboot 初始化异常：${e.message}")
             false
+        }
+    }
+
+    /**
+     * v3.2.0：wineboot 超时挂死现场抓取 —— 扫 /proc 找 wine 进程树
+     * （cmdline 含 wine 目录或 WINEPREFIX 特征），把每个进程的调度状态
+     * （R 运行/S 睡眠/D 不可中断IO/Z 僵尸）与各线程的内核等待点（wchan）
+     * 写进前缀日志。proton10 arm64ec“无任何输出永久挂死”下一轮就有
+     * 内核级证据面（R=死循环嫌疑、S+wchan=futex=等锁死锁、D=IO 阻塞）。
+     */
+    private fun dumpWineHangSnapshot(
+        resolved: WineRuntime.Resolved,
+        container: ContainerData,
+        log: (String) -> Unit
+    ) {
+        runCatching {
+            // wine 的 PE 子进程（wineboot/services/explorer…）cmdline 是
+            // Windows 风格（不含 unix 路径），需按 exe 名一并匹配；
+            // /proc 下非本 UID 进程读取即失败，自动被过滤，无越权风险。
+            val markers = listOf(
+                resolved.wineDir.absolutePath,
+                container.prefixPath,
+                "wineboot", "wineserver", "explorer.exe",
+                "services.exe", "winedevice.exe", "plugplay.exe", "start.exe"
+            )
+            val procs = File("/proc").listFiles { f -> f.name.toIntOrNull() != null }
+                .orEmpty().mapNotNull { proc ->
+                    val cmdline = runCatching {
+                        File(proc, "cmdline").readText().replace('\u0000', ' ').trim()
+                    }.getOrNull() ?: return@mapNotNull null
+                    if (markers.any { cmdline.contains(it) }) proc to cmdline else null
+                }
+            if (procs.isEmpty()) {
+                log("挂死现场: 未找到 wine 相关进程（可能已退出/被杀）")
+                return
+            }
+            log("挂死现场（${procs.size} 个 wine 相关进程；R=运行 S=睡眠 D=IO阻塞 Z=僵尸）:")
+            for ((proc, cmdline) in procs) {
+                val state = runCatching {
+                    File(proc, "stat").readText().split(" ").getOrNull(2) ?: "?"
+                }.getOrDefault("?")
+                log("  pid=${proc.name} state=$state cmd=${cmdline.take(120)}")
+                val tasks = runCatching {
+                    File(proc, "task").listFiles { f -> f.name.toIntOrNull() != null }
+                }.getOrNull() ?: continue
+                for (task in tasks.take(24)) {
+                    val tid = task.name
+                    val tState = runCatching {
+                        File(task, "stat").readText().split(" ").getOrNull(2) ?: "?"
+                    }.getOrDefault("?")
+                    val wchan = runCatching {
+                        File(task, "wchan").readText().trim().ifEmpty { "?" }
+                    }.getOrDefault("?")
+                    log("    tid=$tid state=$tState wchan=$wchan")
+                }
+            }
         }
     }
 }

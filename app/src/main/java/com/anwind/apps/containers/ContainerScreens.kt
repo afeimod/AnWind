@@ -1,7 +1,11 @@
 package com.anwind.apps.containers
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -13,11 +17,16 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Popup
+import androidx.compose.ui.window.PopupProperties
 import com.anwind.core.theme.LocalWinTheme
 import com.anwind.core.window.WinConfirmDialog
 import com.anwind.core.window.WinDialog
@@ -388,21 +397,100 @@ private fun ContainerCard(
                         contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
                     ) { Text("⋯", fontSize = 12.sp) }
 
-                    DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                        DropdownMenuItem(text = { Text("初始化前缀 (wineboot -i)") }, onClick = { menuOpen = false; onWineBoot() })
-                        DropdownMenuItem(text = { Text("注册表编辑器 (regedit)") }, onClick = { menuOpen = false; onRegEdit() })
-                        DropdownMenuItem(text = { Text("编辑配置") }, onClick = { menuOpen = false; onEdit() })
-                        DropdownMenuItem(text = { Text("克隆容器") }, onClick = { menuOpen = false; onClone() })
-                        HorizontalDivider()
-                        DropdownMenuItem(
-                            text = { Text("删除容器", color = MaterialTheme.colorScheme.error) },
-                            onClick = { menuOpen = false; onRemove() }
-                        )
+                    // v3.2.0（用户诉求 1）：三点菜单缩小。Material3
+                    // DropdownMenu 的每项 48dp 触控目标 + 180dp 最小宽 +
+                    // 大字号在 Win 主题桌面里巨大突兀（用户实测“菜单太大
+                    // 了”）。改为同视觉语言的紧凑 Win 风格弹出菜单：行高
+                    // 30dp / 11sp / 主题底色 + 描边 + 阴影，与桌面右键菜单
+                    // （ContextMenuEntry）一脉相承。
+                    if (menuOpen) {
+                        WinCompactMenu(onDismiss = { menuOpen = false }) { close ->
+                            WinCompactMenuItem("初始化前缀 (wineboot -i)") { close(); onWineBoot() }
+                            WinCompactMenuItem("注册表编辑器 (regedit)") { close(); onRegEdit() }
+                            WinCompactMenuItem("编辑配置") { close(); onEdit() }
+                            WinCompactMenuItem("克隆容器") { close(); onClone() }
+                            WinCompactMenuDivider()
+                            WinCompactMenuItem("删除容器", isDanger = true) { close(); onRemove() }
+                        }
                     }
                 }
             }
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// v3.2.0：紧凑 Win 风格弹出菜单（用户诉求 1 —— 三点菜单太大）
+// ---------------------------------------------------------------------------
+
+/**
+ * 紧凑弹出菜单容器：Popup 锚定在包裹按钮的右上、点外关闭、focusable
+ * （捕获返回键/点击外部统一 dismiss）。视觉与桌面右键菜单同语言：
+ * 主题底色 + 细描边 + 阴影 + 3dp 内边距 + 4dp 圆角。
+ */
+@Composable
+private fun WinCompactMenu(
+    onDismiss: () -> Unit,
+    content: @Composable ColumnScope.(close: () -> Unit) -> Unit
+) {
+    val theme = LocalWinTheme.current
+    Popup(
+        onDismissRequest = onDismiss,
+        properties = PopupProperties(focusable = true, dismissOnClickOutside = true),
+        alignment = Alignment.TopEnd
+    ) {
+        Column(
+            modifier = Modifier
+                .width(216.dp)
+                .shadow(6.dp, RoundedCornerShape(4.dp))
+                .clip(RoundedCornerShape(4.dp))
+                .background(theme.windowBackgroundColor)
+                .border(0.5.dp, theme.windowBorderColor, RoundedCornerShape(4.dp))
+                .padding(3.dp)
+        ) {
+            content(onDismiss)
+        }
+    }
+}
+
+/** 紧凑菜单项：行高 30dp / 11sp，按压高亮（无涟漪，同桌面右键菜单）*/
+@Composable
+private fun WinCompactMenuItem(
+    label: String,
+    isDanger: Boolean = false,
+    onClick: () -> Unit
+) {
+    val theme = LocalWinTheme.current
+    val interaction = remember { MutableInteractionSource() }
+    val pressed by interaction.collectIsPressedAsState()
+    val fg = when {
+        isDanger -> MaterialTheme.colorScheme.error
+        theme.isDark -> Color.White
+        else -> Color.Black
+    }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(30.dp)
+            .clip(RoundedCornerShape(3.dp))
+            .background(if (pressed) theme.accentColor.copy(alpha = 0.16f) else Color.Transparent)
+            .clickable(interactionSource = interaction, indication = null, onClick = onClick)
+            .padding(horizontal = 10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(label, fontSize = 11.sp, color = fg, maxLines = 1)
+    }
+}
+
+/** 紧凑菜单分隔线 */
+@Composable
+private fun WinCompactMenuDivider() {
+    val theme = LocalWinTheme.current
+    HorizontalDivider(
+        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+        thickness = 0.5.dp,
+        color = theme.windowBorderColor.copy(alpha = 0.6f)
+    )
 }
 
 // ---------------------------------------------------------------------------

@@ -336,6 +336,49 @@ FSYSGUARD
   }
   disable_fsync_probe
 
+  # v3.2.0：esync Android 硬禁用 —— proton10 arm64ec wineboot 无输出挂死
+  # 的头号嫌疑。设备日志实证：ntdll 已成功加载（"anwind: bionic heap
+  # tagging disabled" 出现 = __wine_main 在跑）后，esync 初始化路径打印
+  # "_r_debug not found in ld.so"（proton/Winlator 系 wine 在 Android 上的
+  # 同款输出；Winlator 紧跟 "esync: shm initialized" 能走通，bionic 下
+  # 无 _r_debug 导出、无 /dev/shm，该段 DSO 枚举/共享内存代码走不通，
+  # 之后进程再无任何输出 = 挂死）。esync 在 Android 沙箱收益为零
+  # （Winlator/MiceWine 默认关闭），与 fsync 守卫同款处理：__ANDROID__
+  # 目标 do_esync 直接 return 0；运行期 WINEESYNC=0 环境兜底保留。
+  # wine >=10 官方树/hangover-11 树 esync 并入 sync.c（无独立 esync.c），
+  # 文件缺失自动跳过；幂等。
+  disable_esync_android() {
+    local _f
+    for _f in dlls/ntdll/unix/sync.c dlls/ntdll/unix/esync.c \
+              server/sync.c server/esync.c; do
+      [[ -f "$_f" ]] || continue
+      if grep -q "ANWIND_FIX_ESYNC_ANDROID" "$_f"; then
+        echo "esync Android 守卫已注入过，跳过 => $_f"
+        continue
+      fi
+      if ! grep -q "do_esync_cached = -1" "$_f"; then
+        echo "⚠️ $_f 无 do_esync_cached 锚点（树结构差异），跳过 esync 守卫注入"
+        echo "    若运行期 wineboot 挂死在 esync 初始化，请核查此文件"
+        continue
+      fi
+      cat > ".anwind-esync-guard.h" <<'ESYNCGUARD'
+#if defined(__ANDROID__)
+    /* ANWIND_FIX_ESYNC_ANDROID: bionic has no _r_debug export and no
+     * /dev/shm; proton's esync DSO-enumeration/shm init path hangs the
+     * process silently on Android (device log: "_r_debug not found in
+     * ld.so" then no output at all). esync gives zero benefit in the
+     * Android sandbox (Winlator/MiceWine ship it disabled). Hard-disable
+     * on bionic targets; WINEESYNC=0 runtime fallback stays. */
+    return 0;
+#endif
+ESYNCGUARD
+      sed -i '/do_esync_cached = -1/r .anwind-esync-guard.h' "$_f" \
+        && echo "已注入 esync Android 守卫（挂死预防）=> $_f"
+      rm -f ".anwind-esync-guard.h"
+    done
+  }
+  disable_esync_android
+
   # winedmo ffmpeg>=7 兼容改造（proton 树专属，官方/hangover 树无此文件）：
   # proton 的 dlls/winedmo/libavcodec/pcm_byte_order_reverse_bsf.c 是从
   # ffmpeg 内部源码拷贝的自定义 BSF，依赖 <7 的内部 ABI
@@ -497,54 +540,61 @@ EOF
     echo "警告: 未找到 wine 安装目录 ${_wineDir}，可能 make install 失败"
   fi
 
-  # v3.1.6：wine 10.17+ 新安装布局适配（hangover-10.18 x86_64 形态 CI
-  # 实证）—— 上游把 loader 装进 lib/wine/<arch>-unix/ 且 bin/ 不再创建
-  # wine 本体（bin 工具全是指向 "wine" 的悬空符号链接），CI 步骤 8 校验
-  # bin/wine 必 MISS、box64 包装 `box64 …/bin/wine …` 也找不到 ELF。
-  # 对策：物化 bin/wine 为 loader 真实副本；wine-preloader 一并补齐。
-  # 旧布局（bin/wine 真实 ELF，如 11.16/proton 10.0）不受影响。
+  # v3.2.0：wine 10.17+ 新安装布局适配（二次修复，v3.1.6 物化副本是错的）——
+  # 上游把 loader 装进 lib/wine/x86_64-unix/（与 ntdll.so 同目录），
+  # loader 的 main() 优先 try_dlopen(/proc/self/exe)：按【自身真实所在
+  # 目录】找 dir/ntdll.so（loader/main.c：realpath_dirname →
+  # build_path(dir,"ntdll.so")）。v3.1.6 把 lib 侧 loader【复制】成
+  # bin/wine —— 副本的 /proc/self/exe 在 bin/，box64 形态设备实测直接
+  # 报 "could not load ntdll.so: Cannot dlopen(.../bin/ntdll.so...)"
+  # （hangover-10.18 x86_64 形态两份日志实锤）。正确做法：bin/wine 用
+  # 【相对符号链接】指回 lib loader —— /proc/self/exe 经内核解析符号
+  # 链接回到 lib 目录，ntdll.so 就在旁边；argv[0] 保留 bin/… 路径，
+  # loader 的 check_command_line() 按 argv[0] basename 分发不受影响。
+  # App 侧 WineLayoutRepair.kt 对已装旧包自愈（免重装）。
   if [[ -x "${_wineDir}/lib/wine/x86_64-unix/wine" ]]; then
     mkdir -p "${_wineDir}/bin"
-    if [[ ! -e "${_wineDir}/bin/wine" || -L "${_wineDir}/bin/wine" ]]; then
+    if [[ "$(readlink "${_wineDir}/bin/wine" 2>/dev/null)" != "../lib/wine/x86_64-unix/wine" ]]; then
       rm -f "${_wineDir}/bin/wine"
-      cp -p "${_wineDir}/lib/wine/x86_64-unix/wine" "${_wineDir}/bin/wine" \
-        && chmod 755 "${_wineDir}/bin/wine" \
-        && echo "已物化 bin/wine（wine 10.17+ lib 布局 → loader 副本）"
+      ln -s "../lib/wine/x86_64-unix/wine" "${_wineDir}/bin/wine" \
+        && echo "已建立 bin/wine → ../lib/wine/x86_64-unix/wine 符号链接（wine 10.17+ lib 布局；副本会让 loader 找 bin/ntdll.so 必败）"
     fi
     if [[ -f "${_wineDir}/lib/wine/x86_64-unix/wine-preloader" ]] \
        && [[ ! -e "${_wineDir}/bin/wine-preloader" ]]; then
-      cp -p "${_wineDir}/lib/wine/x86_64-unix/wine-preloader" \
-        "${_wineDir}/bin/wine-preloader" 2>/dev/null || true
+      ln -s "../lib/wine/x86_64-unix/wine-preloader" "${_wineDir}/bin/wine-preloader" 2>/dev/null || true
     fi
   fi
 
-  # bin 工具规整（v3.1.4）：wine ≤9.18 / proton 树把 bin 工具（wineboot/
-  # winecfg/reg 等）装成 shell 脚本（exec wine <名>），wine 9.19+ 装成
-  # 指向 wine loader 的符号链接。两种形态在 box64 直跑
-  # （box64 …/bin/wineboot -i）下都不可靠：
-  #   * 脚本：box64 读不到 ELF 头 → 原生 exec → sh 解释脚本 → 脚本
-  #     直接 exec x86_64 的 bin/wine（绕开 box64）→ ENOEXEC（设备实测
-  #     "not executable: 64-bit ELF file"）；
-  #   * 符号链接：部分解包链路（tar --dereference / zip / 某些文件
-  #     管理器）会把链接实体化或弄断。
-  # 统一替换为 wine loader 的真实副本 —— loader 的 check_command_line()
-  # （dlls/ntdll/unix/loader.c）按 argv[0] basename 自动分发到同名 .exe，
-  # 这是 wine 官方符号链接机制的等价实现，native / box64 / 终端直呼
-  # 任何方式都成立。真实 ELF（wine/wineserver/winepath 等）不动。
+  # bin 工具规整（v3.1.4；v3.2.0 符号链接化）：
+  #  - 10.17+ lib 布局（lib 侧 loader 存在）→ 符号链接到 bin/wine ——
+  #    绝不能复制（副本又会在 bin/ 找 ntdll.so）；两跳链接经
+  #    /proc/self/exe 全解析回 lib loader，argv[0] basename 分发不变；
+  #  - 旧布局（bin/wine 真实 ELF）→ 维持 v3.1.4 副本策略（脚本/符号
+  #    链接在 box64 直跑下不可靠，见下；旧 loader 按
+  #    bindir/../lib/wine/<arch>-unix/ 找 ntdll.so，副本位置无碍）。
+  # 真实 ELF（wine/wineserver/winepath 等）不动。
   local _binDir="${_wineDir}/bin"
-  if [[ -d "${_binDir}" && -x "${_binDir}/wine" ]]; then
+  local _libLayout=0
+  [[ -x "${_wineDir}/lib/wine/x86_64-unix/wine" || -x "${_wineDir}/lib/wine/aarch64-unix/wine" ]] && _libLayout=1
+  if [[ -d "${_binDir}" && -e "${_binDir}/wine" ]]; then
     local _tool _f
     for _tool in wineboot winecfg reg regedit regsvr32 msiexec rundll32; do
       _f="${_binDir}/${_tool}"
       [[ -e "${_f}" || -L "${_f}" ]] || continue
-      if [[ -L "${_f}" ]]; then
+      if [[ "${_libLayout}" == "1" ]]; then
+        if [[ "$(readlink "${_f}" 2>/dev/null)" != "wine" ]]; then
+          rm -f "${_f}"
+          ln -s "wine" "${_f}" 2>/dev/null || true
+          echo "已规整 bin/${_tool}（→ wine 符号链接，10.17+ 布局）"
+        fi
+      elif [[ -L "${_f}" ]]; then
         rm -f "${_f}"
         cp -p "${_binDir}/wine" "${_f}" && chmod 755 "${_f}" 2>/dev/null || true
-        echo "已规整 bin/${_tool}（符号链接 → wine loader 副本）"
+        echo "已规整 bin/${_tool}（符号链接 → wine loader 副本，旧布局）"
       elif head -c 2 "${_f}" 2>/dev/null | grep -q '#!'; then
         rm -f "${_f}"
         cp -p "${_binDir}/wine" "${_f}" && chmod 755 "${_f}" 2>/dev/null || true
-        echo "已规整 bin/${_tool}（shell 脚本 → wine loader 副本）"
+        echo "已规整 bin/${_tool}（shell 脚本 → wine loader 副本，旧布局）"
       fi
     done
   fi

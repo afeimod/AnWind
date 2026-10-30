@@ -413,7 +413,55 @@ resolve_wine_dir() {
         fi
     fi
     WINE_X86="$WINE_DIR/bin/wine"
+    # v3.2.0：布局自愈须先于 detect —— 悬空 bin/wine 的 10.17+ 原始包
+    # 会让 detect 失败；物化副本包 detect 正常但必炸 ntdll。两种都先治。
+    repair_wine_layout
     WINE_ARCH="$(detect_wine_arch "$WINE_X86")"
+}
+
+# ---------- v3.2.0：wine 10.17+ loader 布局自愈 ----------
+# 根因（wine 10.18 loader/main.c 实证）：上游把 loader 装进
+# lib/wine/<arch>-unix/（与 ntdll.so 同目录），loader 的 main() 优先
+# try_dlopen(/proc/self/exe)：按【自身真实所在目录】找 dir/ntdll.so。
+# v3.1.6 曾把 lib 侧 loader 复制成 bin/wine —— 副本的 /proc/self/exe
+# 在 bin/，dlopen 找 bin/ntdll.so 必失败（设备实测 hangover-10.18 两
+# 形态 "could not load ntdll.so"）。修法：bin/wine 及被规整过的 bin
+# 工具换回【相对符号链接】指回 lib 侧 loader —— /proc/self/exe 经内核
+# 解析符号链接回到 lib 目录，ntdll.so 就在旁边；argv[0] 保留 bin/…
+# 路径，check_command_line() 按 basename 分发不变（App 侧
+# WineLayoutRepair.kt 同款逻辑，两端同源自愈）。旧布局（lib 侧无
+# loader）零改动。幂等。
+repair_wine_layout() {
+    local _arch_dir _tool _f _tgt
+    # 找 lib/wine/*-unix/wine（10.17+ 布局特征；旧布局不存在 → 直接返回）
+    for _arch_dir in "$WINE_DIR"/lib/wine/*-unix; do
+        [ -x "$_arch_dir/wine" ] || continue
+        _tgt="../lib/wine/$(basename "$_arch_dir")/wine"
+        if [ "$(readlink "$WINE_DIR/bin/wine" 2>/dev/null)" != "$_tgt" ]; then
+            rm -f "$WINE_DIR/bin/wine"
+            ln -s "$_tgt" "$WINE_DIR/bin/wine" 2>/dev/null || {
+                warn "bin/wine → $_tgt 符号链接重建失败，若 wine 报 could not load ntdll.so 请重装该包"
+                return 0
+            }
+            info "已自愈 bin/wine → $_tgt（wine 10.17+ loader 布局；旧物化副本找 bin/ntdll.so 必败）"
+        fi
+        # 可选的 wine-preloader（缺失时 loader 自动降级无 preloader 模式）
+        if [ -f "$_arch_dir/wine-preloader" ] && [ ! -e "$WINE_DIR/bin/wine-preloader" ]; then
+            ln -s "../lib/wine/$(basename "$_arch_dir")/wine-preloader" \
+                "$WINE_DIR/bin/wine-preloader" 2>/dev/null || true
+        fi
+        # bin 工具：两跳符号链接（→ bin/wine → lib loader）；绝不能是副本
+        for _tool in wineboot winecfg reg regedit regsvr32 msiexec rundll32; do
+            _f="$WINE_DIR/bin/$_tool"
+            [ -e "$_f" ] || continue
+            if [ "$(readlink "$_f" 2>/dev/null)" != "wine" ]; then
+                rm -f "$_f"
+                ln -s "wine" "$_f" 2>/dev/null || true
+            fi
+        done
+        break   # 只处理第一个命中形态目录（单形态包）
+    done
+    return 0
 }
 
 # ---------- 显示模式握手（对齐 glibc-runner -d/-v/-f） ----------
@@ -551,6 +599,13 @@ apply_box64_env() {
         if [ -d "$WINE_DIR/lib/x86_64-bionic/gstreamer-1.0" ]; then
             export GST_PLUGIN_SYSTEM_PATH="$WINE_DIR/lib/x86_64-bionic/gstreamer-1.0"
         fi
+    else
+        # v3.2.0：闭包缺失诊断（设备实测 proton10-x86_64 旧包仍报
+        # "Symbol shm_open not found"）—— 旧包没有 x86_64-bionic 目录，
+        # 环境变量救不了缺文件，把“请重装 v3.1.4+ 构建的 wine 包”直接
+        # 写进会话日志，不再让用户对着 box64 报错猜原因。
+        warn "该 wine 包缺少 lib/x86_64-bionic 依赖闭包（v3.1.4 之前构建的旧包）"
+        warn "→ box64 加载 wine unix .so 时将报 Symbol shm_open not found；请用新 CI 重跑 build-wine-bionic（x86_64 形态）并重装该包"
     fi
     # x86_64 glibc 运行库（rootfs 自带 usr/lib/x86_64-linux-gnu，由
     # bionic-rootfs 的 glibc-x86_64 配方安装）：本 wine 是 bionic 链接、
@@ -696,12 +751,39 @@ run_wine() {
             fexcore)  exec "$FEX_BIN" "$WINE_X86" explorer "/desktop=AnWind,$DMODE_RESOLUTION" "$@" ;;
         esac
     fi
+    # v3.1.7 无 WM 补偿：其余模式（off/d，即"跟随窗口/固定分辨率"）也统一
+    # 包 wine 虚拟桌面 —— AnWind 内置 X 服务（libXlorie）没有窗口管理器，
+    # 裸窗口模式下 wine 顶层窗口全部堆在 (0,0)、点击坐标错位、整体上移。
+    # 桌面尺寸取当前 X 屏幕（App 侧 X11Surface 持续落盘 .anwind-x11-screen；
+    # 终端链路早于落盘时退 1280x720）。dmode=f（窗口直出）不包。
+    if [ "$DMODE" != "f" ] && [ "${1:-}" != "explorer" ]; then
+        local _vdesk="$(anwind_vdesk_resolution)"
+        log "无 WM 补偿: explorer /desktop=AnWind,$_vdesk"
+        case "$BACKEND" in
+            box64)    exec "$BOX64_BIN" "$WINE_X86" explorer "/desktop=AnWind,$_vdesk" "$@" ;;
+            native|arm64ec) exec "$WINE_X86" explorer "/desktop=AnWind,$_vdesk" "$@" ;;
+            hangover) exec "$WINE_HANGOVER" explorer "/desktop=AnWind,$_vdesk" "$@" ;;
+            fexcore)  exec "$FEX_BIN" "$WINE_X86" explorer "/desktop=AnWind,$_vdesk" "$@" ;;
+        esac
+    fi
     case "$BACKEND" in
         box64)    exec "$BOX64_BIN" "$WINE_X86" "$@" ;;
         native|arm64ec) exec "$WINE_X86" "$@" ;;
         hangover) exec "$WINE_HANGOVER" "$@" ;;
         fexcore)  exec "$FEX_BIN" "$WINE_X86" "$@" ;;
     esac
+}
+
+# v3.1.7：当前 X 屏幕尺寸（虚拟桌面几何）—— 实时落盘值 → 默认。
+anwind_vdesk_resolution() {
+    local _f="${APP_PREFIX:-/data/data/com.anwind/files/usr}/tmp/.anwind-x11-screen"
+    if [ -r "$_f" ]; then
+        local _v="$(head -c 32 "$_f" 2>/dev/null | tr -d '[:space:]')"
+        case "$_v" in
+            [0-9]*x[0-9]*) echo "$_v"; return ;;
+        esac
+    fi
+    echo "1280x720"
 }
 
 # ---------- 主入口 ----------

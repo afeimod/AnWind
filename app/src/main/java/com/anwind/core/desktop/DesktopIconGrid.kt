@@ -4,7 +4,7 @@ import android.graphics.BitmapFactory
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -52,26 +52,37 @@ import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
 /**
- * 桌面图标网格（v4 稳定单元格版）：完全对齐 Windows 桌面行为。
+ * 桌面图标网格（v5 自由摆放版）：对齐 Windows 桌面拖拽体验。
  *
- * v3 的问题是「乱跑」：
- *  - 只持久化被拖过的图标，未拖过的图标每次都按剩余空格重新流式布局 ——
- *    任何图标获得自定义位置/被删除后，剩余空格集合变化，其它未拖过的
- *    图标会集体跳位；
- *  - 删除的快捷方式在位置表中留下幽灵占位，新图标落到奇怪的位置；
- *  - DataStore 异步写回有时延，松手后图标先弹回原格再跳到新格。
+ * v4 及之前的问题是「死板」（用户诉求 3）：
+ *  - 拖动必须先长按 400ms（detectDragGesturesAfterLongPress）——手指
+ *    直接拖图标毫无反应，手感僵硬；
+ *  - 松手必吸附到网格单元格且强制与占用者交换 —— 图标永远只能落在
+ *    格点，不能像 Windows 那样摆到任意位置。
  *
- * v4 的修复（与 Windows 一致）：
- *  - 位置一律以「单元格(col,row)」持久化（新格式 id:c:col,row，兼容读取
- *    旧版像素格式并自动换算），所有图标在首次布局后位置永久稳定；
- *  - 新出现的图标按「先列后行」落入第一个空格（同 Windows）；
- *  - 拖动只影响被拖图标与被占格图标（交换，同 Windows），其余图标不动；
- *  - 删除图标时同步清除其位置记录，不留幽灵占位；
- *  - 松手即时在本地快照层生效（不等待 DataStore 写回），零闪跳；
- *  - 网格尺寸变化（旋转/改图标大小）时旧坐标按最近格吸附并钳制回界内；
+ * v5 的修复（Windows 同款语义）：
+ *  - 按下即可拖动（detectDragGestures，越过 slop 即跟手；单击/双击
+ *    打开不受影响 —— 手势以 slop 区分，点按不产生拖动）；
+ *  - 松手像素级自由落位（图标停在哪里就在哪里，无吸附、无交换，允许
+ *    与其它图标重叠 —— Windows 关闭“对齐到网格”时的行为）；
+ *  - 自由位置以像素持久化（格式 id:x,y —— 恰与 v3 旧格式同构，旧数据
+ *    自动升级为自由位）；未被拖过的图标仍按单元格 first-fit 自动落位
+ *    （先列后行，同 Windows 新图标落格）；
+ *  - 拖动只影响被拖图标（其余图标不动）；v4 的稳定性全部保留：即时
+ *    生效不闪跳 / 删除不留幽灵 / 网格尺寸变化时位置钳制回界内；
  *  - name/type 排序模式仍按序自动排列、禁用拖动（保持原行为）；
  *  - iconBounds 上报每个图标边界，供双指右键手势命中检测。
  */
+
+/** 图标位置：单元格（自动落位）或像素自由位（用户拖放）。 */
+private sealed interface IconPos {
+    /** 单元格 (col,row)：first-fit 自动落位 / 旧 v4 数据。 */
+    data class Cell(val col: Int, val row: Int) : IconPos
+
+    /** 像素自由位（图标左上角，px）：用户拖放产生，Windows 式摆放。 */
+    data class Free(val x: Int, val y: Int) : IconPos
+}
+
 @Composable
 fun DesktopIconGrid(
     sortMode: String = "default",
@@ -84,7 +95,7 @@ fun DesktopIconGrid(
     val iconSize by app.settingsStore.iconSize.collectAsState(initial = 48f)
     // v2.14：自定义图标顺序（未拖动过的图标自动布局时沿用）
     val iconOrder by app.settingsStore.desktopIconOrder.collectAsState(initial = "")
-    // v4：稳定单元格位置。
+    // v4/v5：稳定位置（v5 = 单元格 + 像素自由位双形态）。
     // v4.1 修复：initial 必须用 null（而非 ""）—— DataStore 首次发射前
     // "" 占位帧会把 first-fit 布局当成"已加载的空布局"立即落盘，覆盖
     // 用户拖动保存的自定义位置（冷启动后图标"跑回"默认排列的竞态根源）。
@@ -152,7 +163,7 @@ fun DesktopIconGrid(
         }
     }
 
-    // ============ v4：稳定单元格布局（Windows 式） ============
+    // ============ v5：稳定位置布局（Windows 式自由摆放） ============
 
     // 网格几何（px）：单元 = 图标单元宽/高 + 8dp 间距；边距 8dp
     val cellWpx = with(density) { ((iconSize + 24f).dp + 8.dp).toPx() }
@@ -173,18 +184,11 @@ fun DesktopIconGrid(
             return Offset(gridMarginPx + c * cellWpx, gridMarginPx + r * cellHpx)
         }
 
-        // 像素 → 最近网格单元（列/行）
-        fun cellOf(p: Offset): Pair<Int, Int> {
-            val col = ((p.x - gridMarginPx + cellWpx / 2f) / cellWpx).toInt().coerceIn(0, perRow - 1)
-            val row = ((p.y - gridMarginPx + cellHpx / 2f) / cellHpx).toInt().coerceIn(0, perCol - 1)
-            return col to row
-        }
-
         // ---- 持久化位置的解析与序列化 ----
-        // 新格式："id:c:col,row;..."（单元格）
-        // 旧格式："id:x,y;..."（像素，v3 遗留）—— 按当前网格几何换算为单元格
-        fun parsePositions(raw: String): Map<String, Pair<Int, Int>> {
-            val m = mutableMapOf<String, Pair<Int, Int>>()
+        // "id:c:col,row" → 单元格；"id:x,y" → 像素自由位（v5 语义；恰与
+        // v3 旧像素格式同构 —— 旧数据自动升级为自由位，无需迁移）
+        fun parsePositions(raw: String): Map<String, IconPos> {
+            val m = mutableMapOf<String, IconPos>()
             raw.split(';').forEach { seg ->
                 seg.trim().takeIf { it.isNotBlank() }?.let { s ->
                     val idx = s.lastIndexOf(':')
@@ -197,12 +201,8 @@ fun DesktopIconGrid(
                             val a = xy[0].trim().toIntOrNull()
                             val b = xy[1].trim().toIntOrNull()
                             if (a != null && b != null) {
-                                m[id] = if (isCellFormat) {
-                                    (a to b)
-                                } else {
-                                    // 旧像素坐标 → 最近单元格（并随网格尺寸自动钳制）
-                                    cellOf(Offset(a.toFloat(), b.toFloat()))
-                                }
+                                m[id] = if (isCellFormat) IconPos.Cell(a, b)
+                                else IconPos.Free(a, b)
                             }
                         }
                     }
@@ -211,38 +211,51 @@ fun DesktopIconGrid(
             return m
         }
 
-        fun serializePositions(cells: Map<String, Pair<Int, Int>>): String =
-            cells.entries.joinToString(";") { (id, c) -> "${id}:c:${c.first},${c.second}" }
+        fun serializePositions(positions: Map<String, IconPos>): String =
+            positions.entries.joinToString(";") { (id, p) ->
+                when (p) {
+                    is IconPos.Cell -> "${id}:c:${p.col},${p.row}"
+                    is IconPos.Free -> "${id}:${p.x},${p.y}"
+                }
+            }
 
-        // 解析持久化位置（iconPositions / 网格几何 变化时重算，旧像素自动迁移）
-        val savedCells = remember(iconPositions, perRow, perCol) {
+        // 位置 → 渲染像素（左上角）：单元格走网格几何；自由位直接像素并
+        // 钳制回界内（旋转/改图标大小后网格尺寸变化时防越界，v4 同款防御）
+        fun posPx(p: IconPos): Offset = when (p) {
+            is IconPos.Cell -> cellPx(p.col, p.row)
+            is IconPos.Free -> Offset(
+                p.x.toFloat().coerceIn(0f, (gridWpx - cellWpx).coerceAtLeast(0f)),
+                p.y.toFloat().coerceIn(0f, (gridHpx - cellHpx).coerceAtLeast(0f))
+            )
+        }
+
+        // 解析持久化位置（iconPositions / 网格几何 变化时重算）
+        val savedPositions = remember(iconPositions, perRow, perCol) {
             parsePositions(iconPositions ?: "")
         }
 
-        // 即时覆盖层：拖拽落格后同步生效，不等 DataStore 写回（消除闪跳）
+        // 即时覆盖层：拖拽落位后同步生效，不等 DataStore 写回（消除闪跳）
         // 外部清空（设置里恢复默认布局）时一并清空本地层
-        val liveCells = remember { mutableStateMapOf<String, Pair<Int, Int>>() }
+        val livePositions = remember { mutableStateMapOf<String, IconPos>() }
         LaunchedEffect(iconPositions) {
-            if (iconPositions?.isBlank() != false) liveCells.clear()
+            if (iconPositions?.isBlank() != false) livePositions.clear()
         }
 
-        // ---- 完整布局计算：有格的保持（live 优先），缺格的先列后行 first-fit ----
-        // 返回 Pair(全部单元格表, 本次新分配的表)；新分配立即持久化 → 位置永久稳定
-        // 注意：不能包 remember —— liveCells 是状态表，拖拽落格后的即时生效依赖
-        // 它的读取被组合跟踪；计算本身仅百次量级循环，每次重组重算开销可忽略
-        val (cells, newlyAssigned) = run {
+        // ---- 完整布局计算：有位的保持（live 优先），缺位的先列后行 first-fit ----
+        // 返回 Pair(全部位置表, 本次新分配的表)；新分配立即持久化 → 位置永久稳定
+        // 注意：不能包 remember —— livePositions 是状态表，拖拽落位后的即时
+        // 生效依赖它的读取被组合跟踪；计算本身仅百次量级循环，每次重组重算
+        // 开销可忽略
+        val (positions, newlyAssigned) = run {
             if (freeDrag) {
-                val merged = mutableMapOf<String, Pair<Int, Int>>()
-                // 1) 已有位置（含即时层覆盖）的图标先占格；同格冲突时先到先得
-                val taken = mutableSetOf<Pair<Int, Int>>()
+                val merged = LinkedHashMap<String, IconPos>()
                 sortedItems.forEach { item ->
-                    val c = liveCells[item.id] ?: savedCells[item.id] ?: return@forEach
-                    if (c in taken) return@forEach   // 钳制后撞格：让位给 first-fit
-                    merged[item.id] = c
-                    taken.add(c)
+                    (livePositions[item.id] ?: savedPositions[item.id])?.let { merged[item.id] = it }
                 }
-                // 2) 无位置图标按「先列后行」落入剩余空格（同 Windows 新图标落位）
-                val newOnes = mutableMapOf<String, Pair<Int, Int>>()
+                // 无位置图标按「先列后行」落入剩余空格（同 Windows 新图标落格）
+                val newOnes = mutableMapOf<String, IconPos>()
+                val takenCells = mutableSetOf<Pair<Int, Int>>()
+                merged.values.forEach { if (it is IconPos.Cell) takenCells.add(it.col to it.row) }
                 var cellIdx = 0
                 sortedItems.forEach { item ->
                     if (merged.containsKey(item.id)) return@forEach
@@ -251,10 +264,10 @@ fun DesktopIconGrid(
                         val row = cellIdx % perCol
                         cellIdx++
                         val cell = col to row
-                        if (cell !in taken) {
-                            merged[item.id] = cell
-                            newOnes[item.id] = cell
-                            taken.add(cell)
+                        if (cell !in takenCells) {
+                            merged[item.id] = IconPos.Cell(col, row)
+                            newOnes[item.id] = IconPos.Cell(col, row)
+                            takenCells.add(cell)
                             break
                         }
                     }
@@ -262,23 +275,16 @@ fun DesktopIconGrid(
                 merged to newOnes
             } else {
                 // 排序模式：全部按序自动排列（不写位置、忽略自定义位置）
-                val m = mutableMapOf<String, Pair<Int, Int>>()
+                val m = mutableMapOf<String, IconPos>()
                 sortedItems.forEachIndexed { i, item ->
-                    m[item.id] = (i / perCol) to (i % perCol)
+                    m[item.id] = IconPos.Cell(i / perCol, i % perCol)
                 }
-                // v4.2 修复（CI 编译错误）：emptyMap() 必须带显式类型参数。
-                // Kotlin 1.9 推断器把无参 emptyMap() 的 K/V 留成未推断变量，
-                // 与另一分支 newOnes 的 MutableMap<String, Pair<Int,Int>> 无法
-                // 统一，run 块的公共超类型求解失败 → "Type mismatch: inferred
-                // type is Map<???, ???> but MutableMap<String, Pair<Int, Int>>
-                // was expected"（233/269 三处报错）。显式类型参数后两分支统一
-                // 为 Pair<MutableMap<...>, Map<String, Pair<Int,Int>>，编译通过。
-                m to emptyMap<String, Pair<Int, Int>>()
+                m to emptyMap<String, IconPos>()
             }
         }
 
         // ---- 持久化 ----
-        fun persistPositions(map: Map<String, Pair<Int, Int>>) {
+        fun persistPositions(map: Map<String, IconPos>) {
             scope.launch {
                 runCatching {
                     app.settingsStore.setDesktopIconPositions(serializePositions(map))
@@ -292,53 +298,48 @@ fun DesktopIconGrid(
         // iconPositions 也作为 key：null→""（无存量布局）时重跑一次把
         // first-fit 固化下来（新用户首次布局仍立即稳定）。
         LaunchedEffect(newlyAssigned, iconPositions) {
-            if (iconPositions != null && newlyAssigned.isNotEmpty()) persistPositions(cells)
+            if (iconPositions != null && newlyAssigned.isNotEmpty()) persistPositions(positions)
         }
 
         // 清理消失图标的幽灵占位（删除快捷方式后不留空洞记录）
         // 基于完整布局（含即时层）而非仅持久化层，避免与拖拽写入相互覆盖
-        LaunchedEffect(cells, items) {
+        LaunchedEffect(positions, items) {
             val ids = items.map { it.id }.toSet()
-            val stale = cells.keys.filter { it !in ids }
+            val stale = positions.keys.filter { it !in ids }
             if (stale.isNotEmpty()) {
-                persistPositions(cells.filterKeys { it in ids })
+                persistPositions(positions.filterKeys { it in ids })
             }
         }
 
-        // ---- 拖动落格：按图标中心定位目标格 + 占位交换 + 即时生效 + 持久化 ----
-        // v4.1 修复：不再信任调用方传入的 baseCell —— pointerInput 手势协程
-        // 持有的是首次组合时的闭包，传入的 baseCell 可能是过期快照（这是
-        // “拖动后位置乱跑”的根源之一）；这里直接从当前 cells 表取真实基准格。
+        // ---- 拖动落位：像素级自由放置（Windows 式，无吸附无交换） ----
+        // v5：拖动累计偏移直接加到当前渲染位置上，钳制在桌面界内，图标停在
+        // 松手处 —— 不再吸附单元格、不再与占用者交换（Windows 关闭“对齐
+        // 到网格”的行为；允许与其它图标重叠，同 Windows）。
+        // v4.1 教训保留：从当前 positions 表取真实基准位（不信任过期闭包）。
         fun onDropIcon(item: DesktopItem, deltaPx: Offset) {
             if (deltaPx == Offset.Zero) return
-            val baseCell = cells[item.id] ?: return
-            // 图标中心松手位置 → 目标格（与 Windows 的光标落点语义最接近）
-            val base = cellPx(baseCell.first, baseCell.second)
-            val center = Offset(
-                base.x + deltaPx.x + cellWpx / 2f,
-                base.y + deltaPx.y + cellHpx / 2f
-            )
-            val target = cellOf(center)
-            if (target == baseCell) return           // 原格：无需任何变动
-
-            // 目标格占用者：按单元格索引精确匹配（整数比较，无浮点误差）
-            val occupantId = cells.entries.firstOrNull { it.key != item.id && it.value == target }?.key
-            val updated = cells.toMutableMap()
-            updated[item.id] = target
-            if (occupantId != null) updated[occupantId] = baseCell   // Windows 同款交换
+            val base = positions[item.id] ?: return
+            val basePx = posPx(base)
+            val nx = (basePx.x + deltaPx.x)
+                .coerceIn(0f, (gridWpx - cellWpx).coerceAtLeast(0f))
+                .roundToInt()
+            val ny = (basePx.y + deltaPx.y)
+                .coerceIn(0f, (gridHpx - cellHpx).coerceAtLeast(0f))
+                .roundToInt()
+            val free = IconPos.Free(nx, ny)
+            if (free == base) return
 
             // 即时生效（不等 DataStore 回流）+ 持久化
-            liveCells[item.id] = target
-            if (occupantId != null) liveCells[occupantId] = baseCell
-            persistPositions(updated)
+            livePositions[item.id] = free
+            persistPositions(positions + (item.id to free))
         }
 
         sortedItems.forEach { item ->
-            val cell = cells[item.id] ?: (0 to 0)
+            val pos = positions[item.id] ?: IconPos.Cell(0, 0)
             DesktopIcon(
                 item = item,
                 iconSize = iconSize,
-                basePx = cellPx(cell.first, cell.second),
+                basePx = posPx(pos),
                 boundsRegistry = iconBounds,
                 clickMode = clickMode,
                 dragEnabled = freeDrag,
@@ -419,21 +420,21 @@ private fun DesktopIcon(
     val cellWidth = (iconSize + 24).dp
     val haptic = LocalHapticFeedback.current
 
-    // v4 自由拖动状态：拖动中的累计偏移（px），松手归零并上报父级计算落格
+    // v5 自由拖动状态：拖动中的累计偏移（px），松手归零并上报父级计算落位
     var dragOffset by remember { mutableStateOf(Offset.Zero) }
     val dragging = dragOffset != Offset.Zero
 
     // v4.1 修复（核心）：pointerInput 的手势协程只在 key 变化时重启，
     // 块内直接引用的 onDrop 会停留在【首次组合时】的闭包里 —— 图标
-    // 落格/加载保存布局后 cells 已变，但手势回调仍拿旧 cell/旧 cells
-    // 计算，从第二次拖动起落点全错（“位置乱跑”的真正根源）。
+    // 落位/加载保存布局后 positions 已变，但手势回调仍拿旧位置计算，
+    // 从第二次拖动起落点全错（“位置乱跑”的真正根源）。
     // rememberUpdatedState 让回调永远调用最新一次重组的 onDrop。
     val currentOnDrop by rememberUpdatedState(onDrop)
 
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         modifier = Modifier
-            // v4：绝对定位（父级计算的网格坐标）
+            // v5：绝对定位（单元格或像素自由位，父级计算）
             .offset { IntOffset(basePx.x.roundToInt(), basePx.y.roundToInt()) }
             .width(cellWidth)
             // 拖动中置顶 + 轻微放大，视觉上"拎起来"
@@ -448,7 +449,7 @@ private fun DesktopIcon(
             }
             // 上报图标边界（根坐标）：供双指右键手势命中检测；
             // 值未变化时不重复写入，避免无谓的快照失效。
-            // 注意：上报的是【布局位置】（不含拖动偏移），松手落格后自动更新。
+            // 注意：上报的是【布局位置】（不含拖动偏移），松手落位后自动更新。
             .onGloballyPositioned { coords ->
                 if (boundsRegistry != null) {
                     val rect = coords.boundsInRoot()
@@ -458,10 +459,14 @@ private fun DesktopIcon(
                     }
                 }
             }
-            // v4：长按 400ms 进入自由拖动 → 图标跟手 → 松手吸附最近网格落位
+            // v5（用户诉求 3）：按下即可拖动（Windows 式）—— 手指越过
+            // touch slop 即开始移动图标，跟手；松手由父级像素级自由落位。
+            // 旧版 detectDragGesturesAfterLongPress（长按 400ms 才能拖）
+            // 是"移动死板"的根源。点按打开不受影响：tap 位移小于 slop，
+            // 不会进入拖动手势（clickMode 的 detectTapGestures 照常工作）。
             .pointerInput(item.id, dragEnabled) {
                 if (!dragEnabled) return@pointerInput
-                detectDragGesturesAfterLongPress(
+                detectDragGestures(
                     onDragStart = {
                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                     },

@@ -340,6 +340,13 @@ object RootfsLauncher {
                     "后端=${resolved.backend.id}"
             )
 
+            // 1.5) v3.2.0 wine 10.17+ loader 布局自愈：hangover/official 10.17+
+            //      上游把 loader 装进 lib/wine/<arch>-unix/，v3.1.6 曾物化成
+            //      bin/wine 副本 —— 副本按自身位置找 bin/ntdll.so 必失败
+            //      （设备实测 wine-10-18 两形态 "could not load ntdll.so"）。
+            //      此处就地换回相对符号链接，旧包免重装即修复。
+            WineLayoutRepair.ensure(resolved.wineDir) { sink.stamp(it) }
+
             // 2) 运行时目录兜底（rootfs tmp / X11 socket / XDG / 前缀 / logs）
             WineEnvironment.ensureRuntimeDirs(container)
 
@@ -369,6 +376,17 @@ object RootfsLauncher {
                 // 目录进 BOX64_LD_LIBRARY_PATH（缺它 box64 加载 wine unix .so
                 // 直接 "Symbol ... not found"）
                 WineEnvironment.applyBox64Env(env, container, resolved.wineDir)
+                // v3.2.0：闭包缺失诊断（设备实测 proton10-x86_64 旧包仍报
+                // "Symbol shm_open not found"）—— 旧包没有 x86_64-bionic 目录，
+                // 环境变量救不了缺文件，把“请重装 v3.1.4+ 构建的 wine 包”
+                // 直接写进会话日志，不再让用户对着 box64 报错猜原因。
+                if (!File(resolved.wineDir, "lib/x86_64-bionic").isDirectory) {
+                    sink.stamp(
+                        "警告: 该 wine 包缺少 lib/x86_64-bionic 依赖闭包（v3.1.4 之前构建的旧包）——" +
+                            "box64 加载 unix .so 时将报 Symbol shm_open not found；" +
+                            "请用新 CI 重跑 build-wine-bionic（x86_64 形态）并重装该包"
+                    )
+                }
             }
 
             // 6b) Android 安全默认 + arm64ec 仿真器 DLL（v3.1.4）：
@@ -388,6 +406,13 @@ object RootfsLauncher {
                 env.remove("HODLL64")
                 env.remove("HODLL")
                 sink.stamp("前缀构建会话：跳过 HODLL64/HODLL 注入（仅 aarch64 PE，规避仿真器早期加载风险）")
+                // v3.2.0（用户诉求 4）：前缀构建画面指引 —— 构建已包 explorer
+                // 虚拟桌面（见 buildCommand），mono/gecko 等安装提示框从此在
+                // 『X11 桌面』窗口内可见可点，不再是无 WM 裸窗口堆在 (0,0) 黑屏角落。
+                sink.stamp(
+                    "前缀构建画面输出在『X11 桌面』窗口（explorer 虚拟桌面）——" +
+                        "mono/gecko 等安装提示框请在该窗口中确认，构建日志同时在本窗口滚动"
+                )
             }
 
             // 7) 音频（audio=off → 无声；pulse → 原生守护管理 + PULSE_SERVER）
@@ -559,8 +584,16 @@ object RootfsLauncher {
         val cmd = WineRuntime.wineCommand(resolved)
         if (first == "wineboot") {
             // v3.1.4：经 wine loader 执行（argv[0] basename 分发），
-            // 不再直连 bin/wineboot（脚本/符号链接形态均不可靠）
-            return cmd + wineArgs
+            // 不再直连 bin/wineboot（脚本/符号链接形态均不可靠）。
+            // v3.2.0（用户诉求 4）：包 explorer /desktop 虚拟桌面 —— 无 WM 裸
+            // 窗口下 wineboot 的 mono/gecko 提示框全部堆在 (0,0)（用户实测
+            // “x11 没有显示任何画面/提示框看不到，无法继续构建”）；虚拟桌面
+            // 铺满 X 屏幕自带桌面底色，子窗口由 wine 自管（可见/可点/可置前），
+            // 构建画面从此直观可见。退出码语义：explorer 可能不透传 wineboot
+            // 退出码，成败以 WINEPREFIX/system.reg 落盘为准（WineRegistry
+            // 同步适配）。
+            val vdRes = currentXScreenResolution()
+            return cmd + listOf("explorer", "/desktop=AnWind,$vdRes") + wineArgs
         }
         if (dmode == "v" && resolution.isNotEmpty()) {
             return cmd + listOf("explorer", "/desktop=AnWind,$resolution") + wineArgs
@@ -576,8 +609,10 @@ object RootfsLauncher {
     /**
      * 当前 X 屏幕尺寸（用于"跟随窗口"模式的 wine 虚拟桌面几何）：
      * X11FitClient 实时值 → 落盘值（跨会话/启动链早于视图回调）→ 默认。
+     * v3.2.0：internal —— WineRegistry 的前缀构建（wineboot 包虚拟桌面）
+     * 复用同一分辨率源。
      */
-    private fun currentXScreenResolution(): String {
+    internal fun currentXScreenResolution(): String {
         val sw = X11FitClient.screenW
         val sh = X11FitClient.screenH
         if (sw > 0 && sh > 0) return "${sw}x${sh}"
