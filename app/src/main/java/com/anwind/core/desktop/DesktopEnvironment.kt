@@ -357,6 +357,18 @@ fun DesktopEnvironment(
             WindowHost()
         }
 
+        // ===== 3.5 弹窗层（v3.1.7：Windows 风格可移动小窗口弹窗） =====
+        // 容器创建/X11 设置等对话框在此渲染：盖在所有应用窗口之上、
+        // 开始菜单/任务栏之下。标题栏可拖动、点击置前、X 关闭 ——
+        // 与桌面窗口体系同一视觉（WinTheme），不再是平台大死窗。
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(workAreaHeight)
+        ) {
+            com.anwind.core.window.WinDialogHost()
+        }
+
         // ===== 4. 开始菜单层（位于任务栏上方） =====
         // v2.15.2：95/XP/7/10 时代开始菜单贴左下角（紧挨左下角开始按钮）；
         // 仅 Win11（MICA_11 悬浮 Dock）保持居中弹出。

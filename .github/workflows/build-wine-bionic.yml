@@ -389,7 +389,17 @@ jobs:
             # winegstreamer（--with-gstreamer：WMF/编解码后端，缺它视频无解）
             check "$W/opt/wine/lib/wine/x86_64-unix/winegstreamer.so"
             # amd_ags_x64（AMD AGS，unixlib 链接 libdrm_amdgpu —— 验证 amdgpu 链路）
-            check "$W/opt/wine/lib/wine/x86_64-unix/amd_ags_x64.so"
+            # v3.1.7：该 dll 为 wine 10.19+/proton 树新增（proton_10.0 反向移植
+            # 了它）；hangover-10.18 等老树源码里根本没有（源码包内无
+            # dlls/amd_ags*，构建日志无 amd_ags_x64 任何痕迹）—— 按构建日志
+            # 判定：日志有构建痕迹而产物缺失 = 真失败；源码树没有 = 跳过
+            # （旧版无条件硬卡，hangover-10.18 两形态全折在此处，v3.1.6
+            # hangover x86_64+arm64ec 全报错的直接根因）。
+            if grep -q "amd_ags_x64" "${GITHUB_WORKSPACE}/bionic-rootfs/build-wine-x86_64.log" 2>/dev/null; then
+              check "$W/opt/wine/lib/wine/x86_64-unix/amd_ags_x64.so"
+            else
+              echo "  [SKIP] amd_ags_x64：本源码树无该 dll（wine <10.19），跳过校验"
+            fi
             # NLS 数据（locale.nls 为 wine 启动必需）与自带字体
             check "$W/opt/wine/share/wine/nls/locale.nls"
             check "$W/opt/wine/share/wine/fonts/tahoma.ttf"
@@ -409,7 +419,13 @@ jobs:
             # winegstreamer（--with-gstreamer：WMF/编解码后端，缺它视频无解）
             check "$W/opt/lib/wine/aarch64-unix/winegstreamer.so"
             # amd_ags_x64（AMD AGS，unixlib 链接 libdrm_amdgpu —— 验证 amdgpu 链路）
-            check "$W/opt/lib/wine/aarch64-unix/amd_ags_x64.so"
+            # v3.1.7：同 x86_64 形态 —— 按 build 日志判定源码树是否含该 dll
+            # （hangover-10.18 arm64ec 与 x86_64 同源码树，都没有）。
+            if grep -q "amd_ags_x64" "${GITHUB_WORKSPACE}/bionic-rootfs/build-wine-arm64ec.log" 2>/dev/null; then
+              check "$W/opt/lib/wine/aarch64-unix/amd_ags_x64.so"
+            else
+              echo "  [SKIP] amd_ags_x64：本源码树无该 dll（wine <10.19），跳过校验"
+            fi
             # NLS 数据（locale.nls 为 wine 启动必需）与自带字体
             check "$W/opt/share/wine/nls/locale.nls"
             check "$W/opt/share/wine/fonts/tahoma.ttf"
@@ -503,12 +519,25 @@ jobs:
           echo "已打包 ${COUNT} 个 x86_64-bionic 运行库 → opt/wine/lib/x86_64-bionic/"
           [[ "${COUNT:-0}" -gt 20 ]] || { echo "::error::依赖库打包异常（仅 ${COUNT} 个 .so）"; exit 1; }
           # 关键库兜底校验（缺任何一个，box64 加载 wine unix .so 必失败）
-          for lib in libandroid-shmem.so libpulse.so.0 libasound.so.2 libX11.so.6 libfreetype.so.6 libgstreamer-1.0.so.0; do
-            [[ -e "$OUT/$lib" ]] || { echo "::error::关键依赖库缺失: $lib"; exit 1; }
+          # v3.1.7：bionic rootfs 按 Android 惯例产【无版本 .so】（libX11.so
+          # 而非 libX11.so.6）—— 配方按需额外建 SONAME 别名（libX11.so.6/
+          # libpulse.so.0/libasound.so.2 有；freetype/gstreamer 无）。旧版
+          # 只认 glibc 版本化名，无别名的库永远 MISS —— 8.5a 自 v3.1.4
+          # 加入以来 100% 误报（proton x86_64 每次构建必挂的直接根因）。
+          # 现按"无版本名或任一版本化别名"双形态命中即通过。
+          for lib in libandroid-shmem libpulse libasound libX11 libfreetype libgstreamer-1.0; do
+            hit=""
+            for cand in "$OUT/$lib.so" "$OUT/$lib.so.0" "$OUT/$lib.so.2" "$OUT/$lib.so.6"; do
+              [[ -e "$cand" ]] && hit="$cand" && break
+            done
+            [[ -n "$hit" ]] || { echo "::error::关键依赖库缺失: $lib.so(.0/.2/.6)"; exit 1; }
+            echo "  [OK] $hit"
           done
           echo "--- 关键依赖库就位确认 ---"
-          for lib in libandroid-shmem.so libpulse.so.0 libasound.so.2; do
-            ls -lh "$OUT/$lib"
+          for lib in libandroid-shmem libpulse libasound; do
+            for cand in "$OUT/$lib.so" "$OUT/$lib.so.0" "$OUT/$lib.so.2"; do
+              [[ -e "$cand" ]] && ls -lh "$cand" && break
+            done
           done
           du -sh "$OUT"
 

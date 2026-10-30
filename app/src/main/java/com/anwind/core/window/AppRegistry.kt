@@ -18,6 +18,10 @@ import androidx.compose.ui.unit.dp
  * @property pinnedToDesktop  是否在桌面显示图标
  * @property onTitleBarLongPress  标题栏长按回调（v2.22.4 fix11c：X11 用它
  *                                弹出"X11 设置"面板；null = 无长按行为）
+ * @property onMenuButton         标题栏菜单按钮回调（v3.1.7：定义即在
+ *                                最小化按钮左侧显示菜单按钮；X11 桌面
+ *                                用它调出 X11 设置菜单，替代难发现的
+ *                                长按手势）
  * @property content       该应用的 Composable 内容，接收 WindowContentScope 参数
  */
 data class AppDef(
@@ -30,6 +34,7 @@ data class AppDef(
     val pinnedToTaskbar: Boolean = false,
     val pinnedToDesktop: Boolean = true,
     val onTitleBarLongPress: ((Context) -> Unit)? = null,
+    val onMenuButton: ((Context) -> Unit)? = null,
     val content: @Composable (WindowContentScope) -> Unit
 )
 

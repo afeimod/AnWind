@@ -18,8 +18,9 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.DialogProperties
 import com.anwind.core.theme.LocalWinTheme
+import com.anwind.core.window.WinConfirmDialog
+import com.anwind.core.window.WinDialog
 import com.anwind.core.window.WindowContentScope
 import com.anwind.apps.containers.launcher.RootfsLauncher
 import kotlinx.coroutines.Dispatchers
@@ -222,7 +223,7 @@ fun ContainerListContent(scope: WindowContentScope) {
         }
     }
 
-    // ---------------- 弹窗 ----------------
+    // ---------------- 弹窗（v3.1.7：全部为 Windows 风格可移动小窗口） ----------------
     if (showCreate) {
         CreateContainerDialog(
             onDismiss = { showCreate = false },
@@ -251,22 +252,19 @@ fun ContainerListContent(scope: WindowContentScope) {
         )
     }
     confirmRemove?.let { c ->
-        AlertDialog(
-            onDismissRequest = { confirmRemove = null },
-            title = { Text("删除容器") },
-            text = { Text("确定删除容器 \"${c.name}\"？其 WINEPREFIX 与已安装程序将一并删除，不可恢复。") },
-            confirmButton = {
-                TextButton(onClick = {
-                    confirmRemove = null
-                    cs.launch(Dispatchers.IO) {
-                        ContainerManager.remove(c.name)
-                        withContext(Dispatchers.Main) { refresh() }
-                    }
-                }) { Text("删除", color = MaterialTheme.colorScheme.error) }
+        WinConfirmDialog(
+            title = "删除容器",
+            message = "确定删除容器 \"${c.name}\"？其 WINEPREFIX 与已安装程序将一并删除，不可恢复。",
+            confirmText = "删除",
+            danger = true,
+            onConfirm = {
+                confirmRemove = null
+                cs.launch(Dispatchers.IO) {
+                    ContainerManager.remove(c.name)
+                    withContext(Dispatchers.Main) { refresh() }
+                }
             },
-            dismissButton = {
-                TextButton(onClick = { confirmRemove = null }) { Text("取消") }
-            }
+            onDismiss = { confirmRemove = null }
         )
     }
     if (showDoctor) {
@@ -433,22 +431,18 @@ private fun CreateContainerDialog(onDismiss: () -> Unit, onCreated: () -> Unit) 
         }
     }
 
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        // v3.1.6：弹窗几何适配（用户反馈：创建容器弹窗太大/内容显示不全，
-        // 横屏尤其严重）—— usePlatformDefaultWidth=false 解除平台默认
-        // 全宽限制，由内容自约束宽度；内容加竖向滚动 + 高度上限，
-        // 表单字段再多也能全部滚到（旧版超高字段直接被裁掉不显示）。
-        properties = DialogProperties(usePlatformDefaultWidth = false),
-        title = { Text("新建 Wine 容器") },
-        text = {
-            Column(
-                Modifier
-                    .widthIn(max = 620.dp)
-                    .heightIn(max = 430.dp)
-                    .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
+    WinDialog(
+        title = "新建 Wine 容器",
+        onDismiss = onDismiss,
+        width = 620.dp
+    ) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 10.dp)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
                 OutlinedTextField(
                     value = name,
                     onValueChange = { name = it; error = null },
@@ -481,9 +475,16 @@ private fun CreateContainerDialog(onDismiss: () -> Unit, onCreated: () -> Unit) 
                         "环境/音频/语言均由容器自持，不受终端影响",
                     fontSize = 11.sp, color = themeSec()
                 )
-            }
-        },
-        confirmButton = {
+        }
+        // 底部按钮（右对齐，与原 AlertDialog confirm/dismiss 等价）
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 4.dp),
+            horizontalArrangement = Arrangement.End
+        ) {
+            TextButton(onClick = onDismiss) { Text("取消") }
+            Spacer(Modifier.width(8.dp))
             Button(onClick = {
                 val err = ContainerManager.create(
                     ContainerData(
@@ -495,9 +496,8 @@ private fun CreateContainerDialog(onDismiss: () -> Unit, onCreated: () -> Unit) 
                 )
                 if (err == null) onCreated() else error = err
             }) { Text("创建") }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } }
-    )
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -529,18 +529,18 @@ private fun EditContainerDialog(
         }
     }
 
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false),
-        title = { Text("编辑容器 · ${container.name}") },
-        text = {
-            Column(
-                Modifier
-                    .widthIn(max = 620.dp)
-                    .heightIn(max = 430.dp)
-                    .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
+    WinDialog(
+        title = "编辑容器 · ${container.name}",
+        onDismiss = onDismiss,
+        width = 620.dp
+    ) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 10.dp)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
                 LabeledEnumSelector("CPU 翻译后端", backend, ContainerBackend.entries.toList()) { backend = it }
                 LabeledEnumSelector("Box64 预设（仅 box64 后端）", preset, Box64Preset.entries.toList()) { preset = it }
                 LabeledEnumSelector("显示模式（glibc-runner -d/-v/-f）", dmode, DisplayMode.entries.toList()) { dmode = it }
@@ -565,9 +565,15 @@ private fun EditContainerDialog(
                 if (error != null) {
                     Text(error ?: "", color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
                 }
-            }
-        },
-        confirmButton = {
+        }
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 4.dp),
+            horizontalArrangement = Arrangement.End
+        ) {
+            TextButton(onClick = onDismiss) { Text("取消") }
+            Spacer(Modifier.width(8.dp))
             Button(onClick = {
                 val err = ContainerManager.update(
                     container.copy(
@@ -578,9 +584,8 @@ private fun EditContainerDialog(
                 )
                 if (err == null) onSaved() else error = err
             }) { Text("保存") }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } }
-    )
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -599,15 +604,18 @@ private fun RunContainerDialog(
     var args by remember { mutableStateOf("") }
     var msg by remember { mutableStateOf<String?>(null) }
 
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false),
-        title = { Text("运行 · ${container.name}") },
-        text = {
-            Column(
-                Modifier.widthIn(max = 620.dp).verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
+    WinDialog(
+        title = "运行 · ${container.name}",
+        onDismiss = onDismiss,
+        width = 560.dp
+    ) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 10.dp)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
                 OutlinedTextField(
                     value = exe, onValueChange = { exe = it },
                     label = { Text("程序路径（Windows 路径或容器内绝对路径）") },
@@ -625,16 +633,21 @@ private fun RunContainerDialog(
                 if (msg != null) {
                     Text(msg ?: "", color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
                 }
-            }
-        },
-        confirmButton = {
+        }
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 4.dp),
+            horizontalArrangement = Arrangement.End
+        ) {
+            TextButton(onClick = onDismiss) { Text("取消") }
+            Spacer(Modifier.width(8.dp))
             Button(onClick = {
                 val err = WineSessionLauncher.runExe(context, container, exe.trim(), args.trim())
                 if (err == null) onLaunched() else msg = err
             }) { Text("运行") }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } }
-    )
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -650,11 +663,17 @@ private fun CloneContainerDialog(
     var name by remember { mutableStateOf("${source.name}-copy") }
     var error by remember { mutableStateOf<String?>(null) }
 
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("克隆容器 · ${source.name}") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    WinDialog(
+        title = "克隆容器 · ${source.name}",
+        onDismiss = onDismiss,
+        width = 440.dp
+    ) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
                 OutlinedTextField(
                     value = name, onValueChange = { name = it; error = null },
                     label = { Text("新容器名") },
@@ -663,16 +682,21 @@ private fun CloneContainerDialog(
                 if (error != null) {
                     Text(error ?: "", color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
                 }
-            }
-        },
-        confirmButton = {
+        }
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 4.dp),
+            horizontalArrangement = Arrangement.End
+        ) {
+            TextButton(onClick = onDismiss) { Text("取消") }
+            Spacer(Modifier.width(8.dp))
             Button(onClick = {
                 val err = ContainerManager.clone(source.name, name.trim())
                 if (err == null) onCloned() else error = err
             }) { Text("克隆") }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } }
-    )
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -683,11 +707,17 @@ private fun CloneContainerDialog(
 private fun DoctorDialog(onDismiss: () -> Unit) {
     val checks = remember { ContainerManager.doctor() }
 
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("AnWind Wine 容器体检") },
-        text = {
-            LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    WinDialog(
+        title = "AnWind Wine 容器体检",
+        onDismiss = onDismiss,
+        width = 560.dp
+    ) {
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
                 items(checks.size) { i ->
                     val c = checks[i]
                     Row(verticalAlignment = Alignment.Top) {
@@ -703,10 +733,16 @@ private fun DoctorDialog(onDismiss: () -> Unit) {
                         }
                     }
                 }
-            }
-        },
-        confirmButton = { Button(onClick = onDismiss) { Text("好的") } }
-    )
+        }
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 4.dp),
+            horizontalArrangement = Arrangement.End
+        ) {
+            Button(onClick = onDismiss) { Text("好的") }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -715,29 +751,36 @@ private fun DoctorDialog(onDismiss: () -> Unit) {
 
 @Composable
 private fun LogDialog(title: String, log: String, onDismiss: () -> Unit) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false),
-        title = { Text(title, fontSize = 15.sp) },
-        text = {
-            // v3.1.6：宽度自约束（横屏不再拉满全屏）+ 等宽字体对齐日志列
-            Column(
-                Modifier
-                    .widthIn(max = 620.dp)
-                    .heightIn(max = 420.dp)
-                    .verticalScroll(rememberScrollState())
-            ) {
-                Text(
-                    log.takeLast(20000),
-                    fontSize = 11.sp,
-                    fontFamily = FontFamily.Monospace,
-                    color = themeSec(),
-                    lineHeight = 15.sp
-                )
-            }
-        },
-        confirmButton = { Button(onClick = onDismiss) { Text("关闭") } }
-    )
+    WinDialog(
+        title = title,
+        onDismiss = onDismiss,
+        width = 620.dp
+    ) {
+        // v3.1.7：Windows 小窗口 + 等宽字体对齐日志列（弹窗层钳制高度，
+        // 超出自动滚动）
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 10.dp)
+                .verticalScroll(rememberScrollState())
+        ) {
+            Text(
+                log.takeLast(20000),
+                fontSize = 11.sp,
+                fontFamily = FontFamily.Monospace,
+                color = themeSec(),
+                lineHeight = 15.sp
+            )
+        }
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 4.dp),
+            horizontalArrangement = Arrangement.End
+        ) {
+            Button(onClick = onDismiss) { Text("关闭") }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -765,33 +808,34 @@ private fun PrefixBuildLogDialog(
             delay(400)
         }
     }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false),
-        title = {
+    WinDialog(
+        title = "构建 Wine 前缀 · $containerName" + if (running) "（进行中…）" else "（已结束）",
+        onDismiss = onDismiss,
+        width = 620.dp
+    ) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 10.dp)
+                .verticalScroll(rememberScrollState())
+        ) {
             Text(
-                "构建 Wine 前缀 · $containerName" + if (running) "（进行中…）" else "（已结束）",
-                fontSize = 15.sp
+                text.ifEmpty { "（暂无输出——wineboot 启动后此处逐行显示；若长时间空白说明 wine 挂在启动早期）" },
+                fontSize = 11.sp,
+                fontFamily = FontFamily.Monospace,
+                color = themeSec(),
+                lineHeight = 15.sp
             )
-        },
-        text = {
-            Column(
-                Modifier
-                    .widthIn(max = 620.dp)
-                    .heightIn(max = 420.dp)
-                    .verticalScroll(rememberScrollState())
-            ) {
-                Text(
-                    text.ifEmpty { "（暂无输出——wineboot 启动后此处逐行显示；若长时间空白说明 wine 挂在启动早期）" },
-                    fontSize = 11.sp,
-                    fontFamily = FontFamily.Monospace,
-                    color = themeSec(),
-                    lineHeight = 15.sp
-                )
-            }
-        },
-        confirmButton = { Button(onClick = onDismiss) { Text("关闭") } }
-    )
+        }
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 4.dp),
+            horizontalArrangement = Arrangement.End
+        ) {
+            Button(onClick = onDismiss) { Text("关闭") }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

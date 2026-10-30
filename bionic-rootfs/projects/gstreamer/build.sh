@@ -162,3 +162,23 @@ SHMDECL
     && echo "已注入 shm_open/shm_unlink 原型 => gstshmallocator.c"
   rm -f "${_srcBase}/.anwind-shm-compat.h"
 }
+# v3.1.7：SONAME 版本别名（对齐 libX11/pulseaudio/alsa-lib 配方的既有做法）。
+# 本构建系统按 Termux/Android 惯例产无版本 .so（bionic 按文件名加载），
+# 但预编译产物（glibc 风格 DT_NEEDED）与 wine CI 8.5a 关键库校验认上游
+# 标准 SONAME。gstreamer 全家核心库补 .so.0 别名（基础 .so 缺失即跳过）。
+install() {
+  DESTDIR="${destDir}" meson install -C build
+  cd "${destDir}${prefix}/lib" || exit 1
+  local _base _hit=0
+  for _base in \
+    libgstreamer-1.0 libgstbase-1.0 libgstcontroller-1.0 libgstnet-1.0 \
+    libgstvideo-1.0 libgstaudio-1.0 libgstapp-1.0 libgstpbutils-1.0 \
+    libgsttag-1.0 libgstfft-1.0 libgstallocators-1.0 libgstrtp-1.0 \
+    libgstrtsp-1.0 libgstsdp-1.0 libgstriff-1.0 libgstgl-1.0; do
+    if [[ -e "${_base}.so" && ! -e "${_base}.so.0" ]]; then
+      ln -sf "${_base}.so" "${_base}.so.0"
+      _hit=$((_hit + 1))
+    fi
+  done
+  echo "gstreamer SONAME 别名完成（${_hit} 个 .so.0）"
+}

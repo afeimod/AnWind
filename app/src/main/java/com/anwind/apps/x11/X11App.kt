@@ -27,7 +27,10 @@ val X11App = AppDef(
     defaultHeight = 480.dp,
     pinnedToDesktop = true,
     // v2.22.4 fix11c：长按标题栏打开 X11 设置面板（分辨率/拉伸/剪贴板/握手重放）
-    onTitleBarLongPress = { _ -> X11SettingsBridge.requestShow() }
+    onTitleBarLongPress = { _ -> X11SettingsBridge.requestShow() },
+    // v3.1.7：标题栏菜单按钮（最小化左边）—— 一键调出 X11 设置菜单
+    // （旧入口只有长按标题栏 3 秒，难发现且易和拖动窗口冲突）
+    onMenuButton = { _ -> X11SettingsBridge.requestShow() }
 ) { scope ->
     X11Surface(scope)
 }

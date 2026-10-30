@@ -13,11 +13,9 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.OutlinedTextField
@@ -41,8 +39,8 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.DialogProperties
 import com.anwind.core.theme.LocalWinTheme
+import com.anwind.core.window.WinDialog
 import com.anwind.core.window.WindowManager
 import com.termux.x11.LoriePreferences
 import com.termux.x11.Prefs
@@ -52,10 +50,15 @@ import kotlinx.coroutines.flow.StateFlow
 /**
  * v2.22.4 fix11c：X11 设置面板。
  *
- * 用户需求："x11 长按状态栏的设置等" —— 两个入口：
+ * 用户需求："x11 长按状态栏的设置等" —— 三个入口：
  * 1. 长按 "X11 桌面" 浮动窗口标题栏（AppDef.onTitleBarLongPress，见 X11App）；
  * 2. 常驻通知（X11KeepAliveService）的 "X11 设置" 动作 —— 顺带把 App
- *    拉回前台并打开/聚焦 X11 窗口。
+ *    拉回前台并打开/聚焦 X11 窗口；
+ * 3. v3.1.7：X11 窗口标题栏菜单按钮（最小化左边，AppDef.onMenuButton）。
+ *
+ * v3.1.7：面板从平台 AlertDialog 改为 Windows 风格可移动小窗口
+ * （WinDialog）—— 与桌面窗口同一视觉/交互（标题栏可拖动、点击置前、
+ * X 关闭），不再是"大大的死窗口"。
  *
  * v2.25 面板对齐 LinBox X11 完善为全量条目（浮窗语境下真实生效的偏好）：
  * - 显示：分辨率模式（跟随窗口 / 缩放 / 固定分辨率）+ 常用预设/自定义
@@ -156,29 +159,22 @@ fun X11SettingsDialog() {
     val dividerColor = if (theme.isDark) Color(0xFF3A4450) else Color(0xFFDDDDDD)
     val hintColor = Color(0xFF8A97A3)
 
-    AlertDialog(
-        onDismissRequest = { X11SettingsBridge.dismiss() },
-        // fix12：收窄对话框（旧版按平台默认宽度在横屏上铺得太大，
-        // 右侧预设按钮被屏幕边缘裁掉）。
-        modifier = Modifier.widthIn(max = 330.dp),
-        properties = DialogProperties(usePlatformDefaultWidth = false),
-        confirmButton = {
-            TextButton(onClick = { X11SettingsBridge.dismiss() }) {
-                Text("完成", fontSize = 12.sp)
-            }
-        },
-        title = {
-            Text("X11 设置", fontSize = 15.sp, fontWeight = FontWeight.Bold,
-                color = if (theme.isDark) Color.White else Color.Black)
-        },
-        text = {
-            // fix12：内容可滚动 —— 横屏高度不足时上下滑动，不再被截断。
-            Column(
-                modifier = Modifier
-                    .widthIn(max = 306.dp)
-                    .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(7.dp)
-            ) {
+    WinDialog(
+        title = "X11 设置",
+        onDismiss = { X11SettingsBridge.dismiss() },
+        width = 340.dp,
+        iconAsset = "icons/x11.png"
+    ) {
+        // 内容可滚动 —— 高度不足时上下滑动，不被截断（弹窗层钳制
+        // 最大高度为工作区 82%）。v3.1.7：从平台 AlertDialog 改为
+        // Windows 风格可移动小窗口（标题栏拖动/点击置前/X 关闭）。
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 10.dp, vertical = 8.dp)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(7.dp)
+        ) {
 
                 // ---- 状态行 ----
                 Text(
@@ -534,9 +530,16 @@ fun X11SettingsDialog() {
                     color = hintColor,
                     lineHeight = 13.sp
                 )
-            }
+
+                // ---- 底部完成按钮（与标题栏 X 关闭同效） ----
+                HorizontalDivider(color = dividerColor)
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    TextButton(onClick = { X11SettingsBridge.dismiss() }) {
+                        Text("完成", fontSize = 12.sp)
+                    }
+                }
         }
-    )
+    }
 }
 
 @Composable

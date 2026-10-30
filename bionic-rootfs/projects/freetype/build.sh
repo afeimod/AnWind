@@ -16,3 +16,11 @@ args="
   -Dzlib=enabled
 "
 deps="brotli bzip2 libpng zlib"
+# v3.1.7：SONAME 版本别名（对齐 libX11/pulseaudio 配方）—— bionic 无版本
+# .so + 上游标准 SONAME 别名（libfreetype.so.6），兼容记录 glibc 风格
+# DT_NEEDED 的预编译产物与 wine CI 8.5a 关键库校验。
+install() {
+  DESTDIR="${destDir}" meson install -C build
+  cd "${destDir}${prefix}/lib" || exit 1
+  [[ -e libfreetype.so.6 ]] || ln -sf libfreetype.so libfreetype.so.6
+}

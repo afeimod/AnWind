@@ -6,6 +6,9 @@ import com.anwind.apps.containers.ContainerAudio
 import com.anwind.apps.containers.ContainerBackend
 import com.anwind.apps.containers.ContainerData
 import com.anwind.apps.containers.ContainerManager
+// v3.1.7 无 WM 补偿：wine 虚拟桌面几何取当前 X 屏幕尺寸（实时值 → 落盘值 → 默认）
+import com.anwind.apps.x11.X11FitClient
+import com.anwind.apps.x11.X11ResolutionLink
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import java.io.File
@@ -529,7 +532,18 @@ object RootfsLauncher {
      *   `[box64] bin/wine wineboot …`（loader 的 check_command_line 按
      *   argv[0] basename 分发到同名 .exe，官方机制，任何树都成立）；
      * - dmode=v + WxH → `wine explorer /desktop=AnWind,WxH <args>`；
-     * - 其余 → `wine <args>`。
+     * - v3.1.7 无 WM 补偿：其余"普通运行"（off/d/无分辨率的 v）也统一
+     *   包 `explorer /desktop=AnWind,<当前 X 屏幕尺寸>` —— AnWind 的
+     *   X 服务（termux-x11/libXlorie）没有窗口管理器，裸窗口模式下
+     *   wine 顶层窗口全部堆在 (0,0)（用户实测"跟随窗口一直在左上角、
+     *   点击位置不对、整体上移"）。wine 虚拟桌面让 wine 在桌面窗口内
+     *   自管子窗口几何（位置/装饰/点击换算），桌面窗口本体铺满整个
+     *   X 屏幕尺寸 → 跟随窗口模式随窗口变化（RandR 改屏幕时 wine
+     *   自适应缩放桌面窗口）。
+     *   - 尺寸来源：X11FitClient 当前值（本进程 LorieView 回调）→
+     *     .anwind-x11-screen 落盘值（上次会话/早于首帧回调）→ 1280x720；
+     *   - dmode=f（窗口直出）不包 —— 用户明确要求裸窗口直出；
+     *   - wineserver/wineboot（宿主工具/前缀构建）不包。
      */
     private fun buildCommand(
         resolved: WineRuntime.Resolved,
@@ -551,7 +565,24 @@ object RootfsLauncher {
         if (dmode == "v" && resolution.isNotEmpty()) {
             return cmd + listOf("explorer", "/desktop=AnWind,$resolution") + wineArgs
         }
+        // v3.1.7：无 WM 补偿 —— 见方法 KDoc。explorer 自引用防重包。
+        if (dmode != "f" && first != "explorer") {
+            val vdRes = currentXScreenResolution()
+            return cmd + listOf("explorer", "/desktop=AnWind,$vdRes") + wineArgs
+        }
         return cmd + wineArgs
+    }
+
+    /**
+     * 当前 X 屏幕尺寸（用于"跟随窗口"模式的 wine 虚拟桌面几何）：
+     * X11FitClient 实时值 → 落盘值（跨会话/启动链早于视图回调）→ 默认。
+     */
+    private fun currentXScreenResolution(): String {
+        val sw = X11FitClient.screenW
+        val sh = X11FitClient.screenH
+        if (sw > 0 && sh > 0) return "${sw}x${sh}"
+        X11ResolutionLink.readScreenSize()?.let { return it }
+        return X11ResolutionLink.DEFAULT_RES
     }
 
     // ------------------------------------------------------------------

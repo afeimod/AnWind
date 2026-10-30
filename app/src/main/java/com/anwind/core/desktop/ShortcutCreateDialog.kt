@@ -23,11 +23,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Popup
-import androidx.compose.ui.window.PopupProperties
 import com.anwind.core.input.keyboardAware
 import com.anwind.core.theme.LocalWinTheme
 import com.anwind.core.window.AppRegistry
+import com.anwind.core.window.WinDialog
 import com.anwind.data.model.DesktopItemType
 import com.anwind.data.model.Shortcut
 import kotlinx.coroutines.Dispatchers
@@ -75,28 +74,20 @@ fun ShortcutCreateDialog(
         }
     }
 
-    Popup(
-        alignment = Alignment.Center,
-        onDismissRequest = onDismiss,
-        properties = PopupProperties(focusable = true)
+    // v3.1.7：从居中 Popup 改为 Windows 风格可移动小窗口（与容器管理
+    // 等弹窗同一体系：标题栏可拖动、点击置前、X 关闭）。内容列定高，
+    // 内部 weight 区（应用列表/弹性空隙）在定高约束下正常工作。
+    WinDialog(
+        title = "新建快捷方式",
+        onDismiss = onDismiss,
+        width = 360.dp
     ) {
-        Box(
+        Column(
             modifier = Modifier
-                .size(width = 360.dp, height = 480.dp)
-                .background(theme.windowBackgroundColor, RoundedCornerShape(8.dp))
-                .border(1.dp, theme.windowBorderColor, RoundedCornerShape(8.dp))
-                .padding(20.dp)
+                .fillMaxWidth()
+                .height(440.dp)
+                .padding(horizontal = 20.dp, vertical = 12.dp)
         ) {
-            Column(modifier = Modifier.fillMaxSize()) {
-                // 标题
-                Text(
-                    text = "新建快捷方式",
-                    color = if (theme.isDark) Color.White else Color.Black,
-                    fontSize = 18.sp,
-                    fontWeight = FontWeight.SemiBold
-                )
-                Spacer(Modifier.height(20.dp))
-
                 // 类型选择
                 Text("类型", color = if (theme.isDark) Color.White else Color.Black, fontSize = 12.sp)
                 Spacer(Modifier.height(4.dp))
@@ -334,7 +325,6 @@ fun ShortcutCreateDialog(
                         }
                     ) { Text("创建") }
                 }
-            }
         }
     }
 }

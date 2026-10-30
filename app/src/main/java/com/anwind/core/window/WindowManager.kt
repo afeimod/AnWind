@@ -144,11 +144,14 @@ class WindowManager {
 
     fun focus(windowId: String) {
         val maxZ = _windows.maxOfOrNull { it.zIndex } ?: 0
-        _windows.firstOrNull { it.id == windowId }?.let {
-            it.zIndex = maxZ + 1
-            it.isMinimized = false
-            notifyChanged()
-        }
+        val w = _windows.firstOrNull { it.id == windowId } ?: return
+        // v3.1.7：已是顶层且可见 → 无操作。此前无条件 notifyChanged，
+        // WindowChrome 的"任意点击置前"观察器（每次按下都调 focus）会
+        // 在点击顶层窗口时触发整层无效重组。
+        if (w.zIndex == maxZ && !w.isMinimized) return
+        w.zIndex = maxZ + 1
+        w.isMinimized = false
+        notifyChanged()
     }
 
     fun minimize(windowId: String) {

@@ -11,6 +11,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Fullscreen
+import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Minimize
 import androidx.compose.material.icons.filled.FullscreenExit
 import androidx.compose.material3.Icon
@@ -24,6 +25,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.changedToUp
+import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -139,6 +141,20 @@ fun WindowChrome(
 
     Box(
         modifier = Modifier
+            // v3.1.7：任意点击置前 —— 用户反馈"多窗口时点击后面的窗口不显示
+            // 到前面"。旧版只在标题栏拖动开始时调 focus，单纯点击（不拖动）
+            // 或点击窗口内容区都不会置前。此处在窗口根节点挂事件观察器：
+            // Initial 阶段（父→子分发、先于任何子处理）捕获按下、不消费
+            // 事件（标题栏拖拽/内容手势照常进行），窗口从此"点谁谁置前"。
+            .pointerInput(state.id) {
+                awaitEachGesture {
+                    awaitFirstDown(
+                        requireUnconsumed = false,
+                        pass = PointerEventPass.Initial
+                    )
+                    wm.focus(state.id)
+                }
+            }
             // 位置：拖动 + 缩放都在 placement 阶段计算，实时钳制在工作区内
             .offset {
                 val lf = liveFrame.value
@@ -283,6 +299,14 @@ fun WindowChrome(
 
                 // 标题栏右侧控制按钮组
                 if (state.launchMode == LaunchMode.FLOATING) {
+                    // v3.1.7：应用菜单按钮（最小化左边）—— AppDef.onMenuButton
+                    // 定义即显示（X11 桌面用它调出 X11 设置菜单；此前只能
+                    // 长按标题栏 3 秒，难发现且易误触）。
+                    appDef?.onMenuButton?.let { menuAction ->
+                        ControlButton(icon = Icons.Default.Menu, theme = theme) {
+                            menuAction(chromeContext)
+                        }
+                    }
                     ControlButton(icon = Icons.Default.Minimize, theme = theme) { wm.minimize(state.id) }
                     ControlButton(
                         icon = if (state.isMaximized) Icons.Default.FullscreenExit else Icons.Default.Fullscreen,

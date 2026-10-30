@@ -232,6 +232,12 @@ fun X11Surface(scope: WindowContentScope) {
                         // fix15：自适应客户端同步当前 X 屏幕尺寸（已铺满则跳过判断）
                         X11FitClient.screenW = screenW
                         X11FitClient.screenH = screenH
+                        // v3.1.7：X 屏幕尺寸落盘 —— RootfsLauncher 构建"跟随窗口"
+                        // 模式的 wine 虚拟桌面（explorer /desktop=AnWind,WxH）时
+                        // 读取；无 WM 的 X 服务上裸 wine 窗口全堆 (0,0)（用户实测
+                        // "跟随窗口一直在左上角、点击位置不对、整体上移"），虚拟
+                        // 桌面铺满整个 X 屏幕后 wine 自管子窗口几何，三个症状同除。
+                        X11ResolutionLink.writeScreenSize(screenW, screenH)
                         // 同步 Winlator 侧 xserver 状态（screenInfo 消费方依赖）。
                         try {
                             lv.screenInfo.handleHostSizeChanged(surfaceW, surfaceH)

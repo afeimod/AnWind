@@ -434,23 +434,52 @@ load_env_host() {
 dl_src() {
   # 支持备用下载源：项目可在 build.sh 中定义 backupUrls=(...) 数组，主源失败时按序回退
   # （AnWind：bzip2/gmp/gnutls/libiconv 等包依赖此机制绕开上游对 CI 出口 IP 的限流）
+  #
+  # v3.1.7 下载健壮性（rootfs CI 实证：libXdmcp-1.1.5 从 xorg.freedesktop.org
+  # 下载遇 "OpenSSL: error:0A00026: unexpected eof while reading" —— 上游
+  # 偶发断流/SSL 中断，整条 rootfs 构建直接折在这一步）：
+  #   1. xorg.freedesktop.org 的 URL 自动补两个镜像（www.x.org/releases 与
+  #      ftp.x.org/pub，同路径结构，实测可用）—— 19 个 X 库配方无需逐一加
+  #      backupUrls；
+  #   2. 整张 URL 列表重试一轮（wget 自带 --tries=2 只覆盖单 URL 的连接
+  #      级重试，覆盖不了"换源也不行、稍等再试就好"的瞬时故障）。
   local _urls=("$url")
   local _u
   if [[ -n "${backupUrls[*]:-}" ]]; then
     _urls+=("${backupUrls[@]}")
   fi
-  rm -rf /tmp/download-src
-  mkdir -p /tmp/download-src
+  # xorg.freedesktop.org → 追加 x.org 镜像（archive/individual → releases|pub/individual 同构）
+  local _expanded=()
   for _u in "${_urls[@]}"; do
-    info "下载 => $_u"
-    # 快速失败：--timeout 限制单次连接/读取最长 60s，避免对被墙/屏蔽的源傻等半小时
-    # -nv：单行进度输出（完整进度条逐 KB 刷屏对排查无益，纯日志膨胀）
-    if wget -nv --timeout=60 --tries=2 --waitretry=3 -P /tmp/download-src/ "$_u"; then
-      return 0
-    fi
-    warn "下载 $_u 失败，切换下一个源..."
+    _expanded+=("$_u")
+    case "$_u" in
+      https://xorg.freedesktop.org/archive/*)
+        _expanded+=("${_u/#https:\/\/xorg.freedesktop.org\/archive/https://www.x.org/releases}")
+        _expanded+=("${_u/#https:\/\/xorg.freedesktop.org\/archive/https://ftp.x.org/pub}")
+        ;;
+    esac
+  done
+  _urls=("${_expanded[@]}")
+
+  local _pass 
+  for _pass in 1 2; do
     rm -rf /tmp/download-src
     mkdir -p /tmp/download-src
+    for _u in "${_urls[@]}"; do
+      info "下载 => $_u"
+      # 快速失败：--timeout 限制单次连接/读取最长 60s，避免对被墙/屏蔽的源傻等半小时
+      # -nv：单行进度输出（完整进度条逐 KB 刷屏对排查无益，纯日志膨胀）
+      if wget -nv --timeout=60 --tries=2 --waitretry=3 -P /tmp/download-src/ "$_u"; then
+        return 0
+      fi
+      warn "下载 $_u 失败，切换下一个源..."
+      rm -rf /tmp/download-src
+      mkdir -p /tmp/download-src
+    done
+    if [[ "$_pass" == "1" ]]; then
+      warn "第一轮全部下载源失败，10 秒后整表重试一次（瞬时 SSL/断流恢复）..."
+      sleep 10
+    fi
   done
   err "全部下载源均失败 => ${_urls[*]}"
   return 1
