@@ -8,6 +8,7 @@ import android.view.View
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.layout.LayoutCoordinates
+import com.anwind.core.window.WindowFocusHook
 
 /**
  * Compose 1.6.x 移除了 [LayoutCoordinates.boundsInWindow]（positionInWindow 等
@@ -99,7 +100,13 @@ object TrackpadRouter {
         if (rect == null) passthroughRects.remove(key) else passthroughRects[key] = rect
     }
 
-    private fun isPassthrough(x: Float, y: Float): Boolean {
+    /**
+     * (x,y)（窗口坐标）是否落在某个直通区（虚拟键盘面板 / 手柄工具条 /
+     * 手柄设置窗等"浮在窗口层之上的直触 UI"）。
+     * v3.2.2 起公开 —— WindowFocusHook 据此跳过浮层区域的窗口置前
+     * （敲键盘按键不应把键盘底下的应用窗口顶到前面）。
+     */
+    fun isPassthrough(x: Float, y: Float): Boolean {
         for (r in passthroughRects.values) {
             if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) return true
         }
@@ -289,8 +296,16 @@ object TrackpadRouter {
                     MouseController.press(false)
                     TrackpadController.injectDragUp(v, cursor.x, cursor.y)
                 }
-                maxPointers == 1 && !moved && !longPressFired && duration < longPressMs ->
+                maxPointers == 1 && !moved && !longPressFired && duration < longPressMs -> {
                     TrackpadController.tapClick(v, cursor.x, cursor.y)
+                    // v3.2.2：手指轻点的屏幕位置若落在非顶层窗口的可见部分，
+                    // 一并置前 —— 用户直觉“点谁谁置前”（tapClick 已在指针处
+                    // 置前；此处是轻点位置的补充，指针处点击照旧）。滑动/
+                    // 长按/双指均不触发（本分支仅轻点）。
+                    startPositions.values.firstOrNull()?.let {
+                        WindowFocusHook.raiseAt(it.x, it.y)
+                    }
+                }
                 maxPointers == 2 && !scrollMode && !moved && duration < twoFingerTapMs ->
                     onContextMenu?.invoke(cursor)
             }

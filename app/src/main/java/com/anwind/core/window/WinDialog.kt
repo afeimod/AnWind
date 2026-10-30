@@ -47,6 +47,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.layout
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Constraints
@@ -241,6 +242,12 @@ private fun BoxScope.WinDialogFrame(
     // 内容高度上限：工作区高的 82%（超出由弹窗内容自滚动）
     val maxContentH = with(density) { (workH * 0.82f).coerceAtLeast(0f).toDp() }
 
+    // v3.2.2：弹窗几何上报 —— WindowFocusHook 按几何直判落点：点弹窗 =
+    // 操作弹窗，不置前底下的应用窗口；弹窗关闭离开组合时注销。
+    DisposableEffect(spec.id) {
+        onDispose { WindowFocusHook.reportDialog(spec.id, null) }
+    }
+
     Box(
         modifier = Modifier
             // 点击弹窗任意处 → 置前（Initial 阶段观察，不消费事件，
@@ -271,6 +278,10 @@ private fun BoxScope.WinDialogFrame(
             .clip(theme.windowShape)
             .background(theme.windowBackgroundColor)
             .border(theme.windowBorderWidth, theme.windowBorderColor, theme.windowShape)
+            // v3.2.2：链尾上报最终布局位置（窗口坐标 Rect）
+            .onGloballyPositioned { coords ->
+                WindowFocusHook.reportDialog(spec.id, WindowFocusHook.boundsOf(coords))
+            }
     ) {
         Column(modifier = Modifier.fillMaxWidth()) {
             // ===== 标题栏 =====

@@ -1,5 +1,6 @@
 package com.anwind.core.window
 
+import android.util.Log
 import java.util.UUID
 
 /**
@@ -152,6 +153,9 @@ class WindowManager {
         w.zIndex = maxZ + 1
         w.isMinimized = false
         notifyChanged()
+        // v3.2.2：置前诊断日志（设备排障关键 —— logcat 过滤 WindowManager/
+        // WindowFocusHook 即可确认置前链路是否兑现）
+        Log.i("WindowManager", "窗口置前: 「${w.title}」 z=${w.zIndex}（${_windows.size} 个窗口）")
     }
 
     fun minimize(windowId: String) {

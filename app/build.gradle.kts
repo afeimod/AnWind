@@ -183,8 +183,16 @@ android {
         // （mono/gecko 提示框可见可点）⑤proton x86_64 闭包缺失诊断 +
         // esync Android 守卫（构建侧）⑥wine 10.17+ loader 布局自愈
         // （bin/wine 副本→符号链接，App+脚本+构建三端同步）。
-        versionCode = 67
-        versionName = "2.38.4"
+        versionCode = 68
+        versionName = "2.38.5"
+        // v2.38.5（源码包 v3.2.2）：多窗口点击切换 View 层兜底修复 ——
+        // 用户视频实锤 Compose 桌面内置窗口（浏览器/媒体播放器/扫雷）
+        // 点击后面的窗口从不置前也无法操作（v3.1.7 Compose 观察器在
+        // 设备上未兑现、v3.2.1 X11WindowOps 修错了层）。新增
+        // WindowFocusHook：MainActivity.dispatchTouchEvent（触摸模式，
+        // TrackpadRouter 之前）+ TrackpadController/TrackpadRouter（触控板
+        // 模式指针处与手指轻点处）按窗口几何直判置前；WindowChrome/
+        // WinDialogFrame onGloballyPositioned 上报几何；focus 加诊断日志。
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {

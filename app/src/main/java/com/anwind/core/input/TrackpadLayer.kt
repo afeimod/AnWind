@@ -12,6 +12,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import com.anwind.apps.browser.ZoomPinchLayout
+import com.anwind.core.window.WindowFocusHook
 import kotlin.math.abs
 
 /**
@@ -86,6 +87,9 @@ object TrackpadController {
 
     /** 轻点板面 = 指针处一次完整单击（视觉按压与注入绑定为原子动作） */
     fun tapClick(view: View, x: Float, y: Float) {
+        // v3.2.2：合成点击落在指针处 —— 点击置前（Windows 语义：点击后窗口
+        // 可见部分即激活；View 层几何直判，不依赖 Compose 命中测试）。
+        WindowFocusHook.raiseAt(x, y)
         pressing = true
         injectClick(view, x, y)
         pressing = false
@@ -115,6 +119,8 @@ object TrackpadController {
     private var dragDownTime = 0L
 
     fun injectDragDown(view: View, x: Float, y: Float) {
+        // v3.2.2：长按拖拽起点在指针处 —— 按下即激活目标窗口（与 tapClick 同）
+        WindowFocusHook.raiseAt(x, y)
         dragDownTime = SystemClock.uptimeMillis()
         val dt = dragDownTime
         view.post {

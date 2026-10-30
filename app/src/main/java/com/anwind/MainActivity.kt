@@ -7,6 +7,7 @@ import android.provider.Settings
 import android.view.MotionEvent
 import android.view.WindowManager
 import com.anwind.core.input.TrackpadRouter
+import com.anwind.core.window.WindowFocusHook
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -228,6 +229,10 @@ class MainActivity : ComponentActivity() {
      * （processCancel）与指针 id 重映射风暴不再发生。
      */
     override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+        // v3.2.2：View 层点击置前（用户视频实锤：多窗口点击无法切换/无法
+        // 操作）—— 必须在 TrackpadRouter 之前（触控板模式下真实手指会被
+        // 路由器拦截，之后就看不到了）。仅触摸模式生效，绝不消费事件。
+        WindowFocusHook.onMotionEvent(ev)
         if (TrackpadRouter.onMotionEvent(this, ev)) return true
         return super.dispatchTouchEvent(ev)
     }

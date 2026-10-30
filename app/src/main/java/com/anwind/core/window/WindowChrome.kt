@@ -25,8 +25,8 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.changedToUp
-import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.layout.layout
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
@@ -139,22 +139,23 @@ fun WindowChrome(
     // 保证拖拽结束提交时读到最新组合的工作区尺寸（旋转/多窗口/分屏后仍正确）
     val latestWorkArea by rememberUpdatedState(workAreaWidth to workAreaHeight)
 
+    // v3.2.2：窗口几何上报 —— WindowFocusHook（View 层点击置前）按几何直判
+    // 落点。拖动/缩放/最大化时随布局实时更新；窗口关闭/最小化离开组合时
+    // 注销（DisposableEffect）。与桌面图标 iconBounds 同模式。
+    DisposableEffect(state.id) {
+        onDispose { WindowFocusHook.reportWindow(state.id, null) }
+    }
+
     Box(
         modifier = Modifier
-            // v3.1.7：任意点击置前 —— 用户反馈"多窗口时点击后面的窗口不显示
-            // 到前面"。旧版只在标题栏拖动开始时调 focus，单纯点击（不拖动）
-            // 或点击窗口内容区都不会置前。此处在窗口根节点挂事件观察器：
-            // Initial 阶段（父→子分发、先于任何子处理）捕获按下、不消费
-            // 事件（标题栏拖拽/内容手势照常进行），窗口从此"点谁谁置前"。
-            .pointerInput(state.id) {
-                awaitEachGesture {
-                    awaitFirstDown(
-                        requireUnconsumed = false,
-                        pass = PointerEventPass.Initial
-                    )
-                    wm.focus(state.id)
-                }
-            }
+            // v3.2.2：任意点击置前已上移到 View 层（WindowFocusHook）——
+            // v3.1.7 此处的 pointerInput+awaitFirstDown(Initial) 观察器在
+            // 设备实测（用户视频 2026-10-30）从未兑现过置前，且保留它会
+            // 与 View 层 hook 互相打架（触控板模式下手指轻点置前的窗口
+            // 会被随后指针处注入点击命中的旧顶层观察器再顶回去）。View
+            // 层 hook 在 Activity.dispatchTouchEvent / TrackpadController
+            // 注入之前触发，语义完全覆盖并早于本层，且 Compose 层命中
+            // 测试的任何不确定性都与它无关。窗口几何在本链尾部上报。
             // 位置：拖动 + 缩放都在 placement 阶段计算，实时钳制在工作区内
             .offset {
                 val lf = liveFrame.value
@@ -180,6 +181,12 @@ fun WindowChrome(
             .clip(theme.windowShape)
             .background(theme.windowBackgroundColor)
             .border(if (isTrueFs) 0.dp else theme.windowBorderWidth, theme.windowBorderColor, theme.windowShape)
+            // v3.2.2：链尾上报最终布局位置（含 offset/layout 修饰符效果）——
+            // 窗口坐标 Rect，与 MainActivity.dispatchTouchEvent 的 MotionEvent
+            // 同一坐标系。
+            .onGloballyPositioned { coords ->
+                WindowFocusHook.reportWindow(state.id, WindowFocusHook.boundsOf(coords))
+            }
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
             // ===== 标题栏（真全屏时隐藏） =====
