@@ -544,7 +544,15 @@ private fun CreateContainerDialog(onDismiss: () -> Unit, onCreated: () -> Unit) 
                 LabeledEnumSelector("CPU 翻译后端", backend, ContainerBackend.entries.toList()) { backend = it }
                 LabeledEnumSelector("Box64 预设（仅 box64 后端）", preset, Box64Preset.entries.toList()) { preset = it }
                 LabeledEnumSelector("显示模式（glibc-runner -d/-v/-f）", dmode, DisplayMode.entries.toList()) { dmode = it }
-                LabeledChoiceSelector("虚拟分辨率", screen, ContainerData.SCREEN_CHOICES) { screen = it }
+                // v3.2.1（用户问题 3）：分辨率与显示模式联动 —— 选非 native 分辨率
+                // 时若仍为“跟随窗口”，握手永远写 native，分辨率毫无效果
+                // （用户实测“分辨率选择无效果”的直接原因）；自动切到固定分辨率。
+                LabeledChoiceSelector("虚拟分辨率（仅非“跟随窗口”模式生效）", screen, ContainerData.SCREEN_CHOICES) { v ->
+                    screen = v
+                    if (v != "native" && dmode == DisplayMode.OFF) {
+                        dmode = DisplayMode.D
+                    }
+                }
                 LabeledWineSelector(wines, wine) { wine = it }
                 LabeledChoiceSelector(
                     "Mesa 渲染器", gallium,
@@ -632,7 +640,13 @@ private fun EditContainerDialog(
                 LabeledEnumSelector("CPU 翻译后端", backend, ContainerBackend.entries.toList()) { backend = it }
                 LabeledEnumSelector("Box64 预设（仅 box64 后端）", preset, Box64Preset.entries.toList()) { preset = it }
                 LabeledEnumSelector("显示模式（glibc-runner -d/-v/-f）", dmode, DisplayMode.entries.toList()) { dmode = it }
-                LabeledChoiceSelector("虚拟分辨率", screen, ContainerData.SCREEN_CHOICES) { screen = it }
+                // v3.2.1（用户问题 3）：分辨率与显示模式联动（同新建容器）
+                LabeledChoiceSelector("虚拟分辨率（仅非“跟随窗口”模式生效）", screen, ContainerData.SCREEN_CHOICES) { v ->
+                    screen = v
+                    if (v != "native" && dmode == DisplayMode.OFF) {
+                        dmode = DisplayMode.D
+                    }
+                }
                 LabeledWineSelector(wines, wine) { wine = it }
                 LabeledChoiceSelector(
                     "Mesa 渲染器", gallium,

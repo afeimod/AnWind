@@ -228,6 +228,14 @@ fun X11Surface(scope: WindowContentScope) {
                     touchBridge = bridge
 
                     lv.setCallback { surfaceW, surfaceH, screenW, screenH ->
+                        // v3.2.1（用户问题 2）：surface 销毁路径（regenerate 的
+                        // setFormat 翻转 / 视图重排 / 最小化）LorieView 会以
+                        // 0x0 回调 —— 旧实现把 0x0 原样 sendWindowChange 给
+                        // X server → X 屏幕被清成 0x0 → 游戏/DXVK 交换链绑
+                        // 到 0 尺寸后不再重绘（设备实测“点击其他窗口后画面
+                        // 消失、游戏声音还在”）。此处吞掉 0x0：X 屏幕维持
+                        // 上次有效尺寸，surface 重建后按原尺寸无缝恢复。
+                        if (screenW <= 0 || screenH <= 0) return@setCallback
                         bridge.updateTransform(surfaceW, surfaceH, screenW, screenH)
                         // fix15：自适应客户端同步当前 X 屏幕尺寸（已铺满则跳过判断）
                         X11FitClient.screenW = screenW
@@ -249,7 +257,16 @@ fun X11Surface(scope: WindowContentScope) {
                             "Builtin Display" else "External Display"
                         LorieView.sendWindowChange(screenW, screenH, framerate, name)
                     }
-                    lv.setOnTouchListener { _, e -> bridge.onTouch(e) }
+                    lv.setOnTouchListener { _, e ->
+                        // v3.2.1（用户问题 1）：Android 层兜底置前 —— interop
+                        // 视图的触摸不经 Compose 常规命中路径时，窗口根节点的
+                        // Initial 观察器可能漏发；直接在触摸入口把宿主窗口提
+                        // 到最前（不消费事件，bridge 照常处理）。
+                        if (e.actionMasked == MotionEvent.ACTION_DOWN) {
+                            wm.focus(scope.windowState.id)
+                        }
+                        bridge.onTouch(e)
+                    }
                     // 按键直注 X（返回键不拦截，交给桌面处理全屏/关窗）
                     lv.setOnKeyListener { _, keyCode, event ->
                         if (keyCode == KeyEvent.KEYCODE_BACK) false
@@ -467,6 +484,15 @@ private fun ControlBar(
             )
 
             Spacer(Modifier.weight(1f))
+
+            // v3.2.1（用户问题 1）：X 层窗口轮转 —— 无 WM 的 X 屏幕上多个
+            // wine 会话互相完全遮挡时，点击够不到后面的窗口（连任务栏都
+            // 无能为力：全部 wine 会话共享这一个『X11 桌面』窗口）；此按钮
+            // 在根窗口可见子窗口间轮转置前（XRaiseWindow）。
+            TextButton(
+                onClick = { X11WindowOps.cycleTopWindow() },
+                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
+            ) { Text("切窗", fontSize = 11.sp) }
 
             // 软键盘开关
             TextButton(
@@ -1021,6 +1047,12 @@ internal class SmartTouchBridge(private val context: Context, private val view: 
                 val px = p[0]
                 val py = p[1]
                 tapX = px; tapY = py
+                // v3.2.1（用户问题 1）：X 层点击置前 —— AnWind 的 X 服务无
+                // 窗口管理器，多个 wine 会话（各自 explorer 虚拟桌面铺满整
+                // 屏）堆叠时，点击后面窗口的可见部分事件虽能到达但无人
+                // raise；此处在落点处把目标窗口提到最前（详见
+                // X11WindowOps.raiseAt）。fire-and-forget，不阻塞触摸线程。
+                X11WindowOps.raiseAt(px.toInt(), py.toInt())
                 postSend {
                     if (LorieView.connected())
                         view.sendMouseEvent(px, py, InputStub.BUTTON_LEFT, true, false)

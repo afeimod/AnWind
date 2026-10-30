@@ -150,26 +150,46 @@ object WineRegistry {
      * ② 校验退出码并失败重试一次 —— 旧版无条件报"完成"（设备实测
      *   wineboot 阵亡仍打"完成"，EmulateModeset 随之连锁失败）。
      *
+     * v3.2.1（用户问题 5）新增三道防线：
+     * ③ wineboot 前先跑【加载器冒烟测试】（`wine --version`，60 秒限时）——
+     *   proton x86_64 "直接退出没任何日志"、arm64ec "无输出挂死" 这类
+     *   静默阵亡，根因在 loader/早期初始化而非 wineboot 逻辑；冒烟测试
+     *   把它们拦在前级并给出可操作结论（退出码 159=SIGSYS/fsync 探测、
+     *   127/126=可执行体缺失、超时=loader 挂死）。
+     * ④ 无输出看门狗：4 分钟零输出且前缀未落盘时提前抓取 /proc 挂死
+     *   现场（不必等到 15 分钟超时；mono/gecko 提示框等待用户确认属
+     *   正常场景，看门狗只取证不杀进程）。
+     * ⑤ 退出码解读表直接写进前缀日志。
+     *
+     * v3.2.1（用户问题 3）：[vdResolution] —— 容器配置的分辨率；wineboot 的
+     * explorer 虚拟桌面与握手分辨率一致（无则维持旧“当前屏幕”语义）。
+     *
      * @return true 表示初始化完成（或已有前缀）。
      */
     fun initializePrefixIfNeeded(
         resolved: WineRuntime.Resolved,
         container: ContainerData,
         env: Map<String, String>,
+        vdResolution: String = "",
         log: (String) -> Unit = {}
     ): Boolean {
         if (File(container.prefixPath, "system.reg").isFile) return true
         log("首次使用，初始化 wine 前缀: ${container.prefixPath}")
         log("提示: 构建过程中的 mono/gecko 等安装提示框将显示在『X11 桌面』窗口（explorer 虚拟桌面）内，请在该窗口确认")
         return try {
+            // v3.2.1 ③：加载器冒烟测试 —— 静默阵亡拦在前级并给出结论
+            if (!loaderSmokeTest(resolved, container, env, log)) {
+                log("→ 加载器冒烟测试未通过，已放弃 wineboot（结论见上；请先解决该问题再重建容器）")
+                return false
+            }
             // v3.1.4：统一经 wine loader（box64 形态自动包装），不再直连
             // bin/wineboot 宿主文件（脚本/符号链接形态均不可靠）。
             // v3.2.0（用户诉求 4）：包 explorer /desktop 虚拟桌面 —— 无 WM
             // 裸窗口下 mono/gecko 提示框堆在 (0,0) 黑屏角落（用户实测“x11
             // 没有任何画面、提示框看不到、无法继续构建”）；虚拟桌面铺满 X
-            // 屏幕，子窗口由 wine 自管，提示框可见可点。分辨率与普通会话
-            // 同源（RootfsLauncher.currentXScreenResolution）。
-            val vdRes = RootfsLauncher.currentXScreenResolution()
+            // 屏幕，子窗口由 wine 自管，提示框可见可点。
+            // v3.2.1：分辨率优先用容器配置值（与握手一致）。
+            val vdRes = vdResolution.ifEmpty { RootfsLauncher.currentXScreenResolution() }
             val cmdPrefix = WineRuntime.wineCommand(resolved) +
                 listOf("explorer", "/desktop=AnWind,$vdRes")
             // v3.1.6：每次尝试限时 —— wineboot 正常 1~3 分钟（arm64ec
@@ -180,19 +200,31 @@ object WineRegistry {
             // v3.2.0：10 → 15 分钟（用户需在 X11 窗口内确认安装提示框，
             // 人为交互时间不可控）。
             val TIMEOUT_MIN = 15L
+            // v3.2.1 ④：无输出看门狗 —— 4 分钟零输出且前缀未落盘时提前取证
+            val WATCHDOG_MIN = 4L
             var lastCode = -1
             for (attempt in 1..2) {
+                var gotOutput = false
+                val watchdog = Thread({
+                    try { Thread.sleep(WATCHDOG_MIN * 60_000L) } catch (_: InterruptedException) { return@Thread }
+                    if (!gotOutput && !File(container.prefixPath, "system.reg").isFile) {
+                        log("wineboot -i 已 ${WATCHDOG_MIN} 分钟无任何输出且 system.reg 未落盘 ——")
+                        log("（mono/gecko 安装提示框等待确认属正常；否则疑似挂死）提前抓取进程现场：")
+                        dumpWineHangSnapshot(resolved, container, log)
+                    }
+                }, "anwind-prefix-watchdog").apply { isDaemon = true; start() }
                 val executor = NativeShellExecutor.create()
                     .setCommand(*cmdPrefix.toTypedArray(), "wineboot", "-i")
                     .putEnv(env)
                     .putEnv("WINEPREFIX", container.prefixPath)
                     .setWorkingDir(WineEnvironment.HOME_DIR)
-                    .onStdOut { log(it) }
-                    .onStdErr { log(it) }
+                    .onStdOut { gotOutput = true; log(it) }
+                    .onStdErr { gotOutput = true; log(it) }
                     .exec()
                 val finished = runCatching {
                     executor.waitFor(TIMEOUT_MIN, TimeUnit.MINUTES)
                 }.getOrDefault(false)
+                watchdog.interrupt()
                 if (!finished) {
                     // v3.2.0：超时先抓挂死现场（进程 state/wchan）再杀 ——
                     // 无输出挂死从此有内核级证据（R=死循环嫌疑、
@@ -214,6 +246,13 @@ object WineRegistry {
                 if (lastCode != 0 && finished) {
                     log("wineboot -i 第 ${attempt} 次退出码 $lastCode（前缀 system.reg 未落盘）" +
                         if (attempt == 1) "，重试一次…" else "")
+                    // v3.2.1 ⑤：退出码解读（信号位 = 128+信号号）
+                    when (lastCode) {
+                        159 -> log("→ 159 = SIGSYS：fsync 的 futex_waitv 能力探测被 Android seccomp 击杀 —— 旧包无 __ANDROID__ 守卫，请用 v3.1.4+ CI 重编")
+                        139 -> log("→ 139 = SIGSEGV：loader/早期初始化段错误（贴日志给开发者）")
+                        13 -> log("→ 13 = SIGPIPE：X 连接断开（X 服务未起/中途退出）")
+                        126, 127 -> log("→ $lastCode = 可执行体无法启动（box64/wine 路径或权限问题）")
+                    }
                 }
                 if (attempt == 1) {
                     // 残留 wineserver 可能让重试挂死——清一次再试
@@ -231,6 +270,81 @@ object WineRegistry {
         } catch (e: Exception) {
             log("wineboot 初始化异常：${e.message}")
             false
+        }
+    }
+
+    /**
+     * v3.2.1 ③：wine 加载器冒烟测试（`wine --version`，限时 60 秒）。
+     *
+     * 动机（设备实测两份日志）：proton x86_64 前缀构建"直接退出没任何日志"、
+     * arm64ec“无任何输出挂死”—— 这类静默阵亡发生在 loader/早期初始化，
+     * 与 wineboot 逻辑无关；wineboot 包裹 explorer 虚拟桌面后，被信号
+     * 杀死的进程连 stderr 缓冲都来不及刷（explorer 不透传退出码），
+     * 前缀日志窗口从此“什么都没有”。冒烟测试直连 loader：
+     *
+     * - 退出码 0 + 版本号 → 一切就绪，顺带把版本写进前缀日志；
+     * - 159（SIGSYS）→ fsync 探测被 seccomp 击杀（旧包，无 __ANDROID__ 守卫）；
+     * - 秒退无输出 → loader 阶段阵亡（旧包缺 x86_64-bionic 闭包时 box64
+     *   的 "Symbol … not found" 也可能被信号丢失，需看 /proc 无从抓起 ——
+     *   直接给出重编指引）；
+     * - 超时 → loader 本身挂死（arm64ec esync/_r_debug DSO 枚举一脉）。
+     *
+     * 结果按（wine 目录 + 容器）记忆：同一运行时只测一次，不拖慢正常启动。
+     */
+    private val smokeTested = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
+
+    private fun loaderSmokeTest(
+        resolved: WineRuntime.Resolved,
+        container: ContainerData,
+        env: Map<String, String>,
+        log: (String) -> Unit
+    ): Boolean {
+        val cacheKey = "${resolved.wineDir.absolutePath}|${resolved.backend.id}|${container.name}"
+        smokeTested[cacheKey]?.let { return it }
+        log("加载器冒烟测试: ${WineRuntime.wineCommand(resolved).joinToString(" ")} --version …")
+        val output = StringBuilder()
+        return try {
+            val executor = NativeShellExecutor.create()
+                .setCommand(*WineRuntime.wineCommand(resolved).toTypedArray(), "--version")
+                .putEnv(env)
+                .putEnv("WINEPREFIX", container.prefixPath)
+                .setWorkingDir(WineEnvironment.HOME_DIR)
+                .onStdOut { synchronized(output) { output.append(it).append('\n') } }
+                .onStdErr { synchronized(output) { output.append(it).append('\n') } }
+                .exec()
+            val finished = runCatching {
+                executor.waitFor(60, TimeUnit.SECONDS)
+            }.getOrDefault(false)
+            val code = runCatching { executor.waitFor() }.getOrDefault(-1)
+            val text = synchronized(output) { output.toString().trim() }
+            val ok = finished && code == 0 && text.isNotEmpty()
+            if (ok) {
+                log("加载器正常: ${text.lineSequence().first().take(60)}")
+            } else if (!finished) {
+                runCatching { executor.stopAndWait(true, 5, TimeUnit.SECONDS) }
+                log("加载器冒烟测试超时（60 秒无退出）—— loader 本身挂死，非 wineboot 逻辑问题")
+                log("→ arm64ec 形态：早期初始化挂起（esync/_r_debug DSO 枚举）；构建侧 disable_esync_android 已根治，旧包必须用新 CI 重编")
+                dumpWineHangSnapshot(resolved, container, log)
+            } else {
+                log("加载器冒烟测试失败: 退出码 $code，输出：${if (text.isEmpty()) "（无任何输出）" else text.take(400)}")
+                when (code) {
+                    159 -> log("→ 159 = SIGSYS：fsync futex_waitv 探测被 seccomp 击杀 —— 旧包无 __ANDROID__ 守卫，请用 v3.1.4+ CI 重编")
+                    139 -> log("→ 139 = SIGSEGV：loader 段错误")
+                    126, 127 -> log("→ $code = 可执行体无法启动（路径/权限）")
+                    else -> {
+                        if (text.isEmpty()) {
+                            log("→ 秒退且无输出：box64/wine loader 阶段阵亡 —— 旧包缺 lib/x86_64-bionic 依赖闭包时（box64 \"Symbol shm_open not found\"）stderr 常被丢失；请用 v3.1.4+ CI 重编并重装该 wine 包")
+                        }
+                    }
+                }
+            }
+            // 只缓存成功结果：失败不缓存（用户重装/重编 wine 包后下次自动重测）
+            if (ok) smokeTested[cacheKey] = true
+            ok
+        } catch (e: Exception) {
+            log("加载器冒烟测试异常: ${e.message}")
+            // 异常不代表 loader 坏（可能是执行器问题）—— 放行，让 wineboot 自己给证据
+            true
         }
     }
 

@@ -183,8 +183,8 @@ android {
         // （mono/gecko 提示框可见可点）⑤proton x86_64 闭包缺失诊断 +
         // esync Android 守卫（构建侧）⑥wine 10.17+ loader 布局自愈
         // （bin/wine 副本→符号链接，App+脚本+构建三端同步）。
-        versionCode = 66
-        versionName = "2.38.3"
+        versionCode = 67
+        versionName = "2.38.4"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {

@@ -623,6 +623,17 @@ backend=native
 EOF
   fi
 
+  # v3.2.1（用户问题 4）：界面翻译可见性 —— make install 在 msgfmt 缺失时
+  # 会静默跳过 .mo 安装（wine --enable-nls，LOCALEDIR = 安装目录内
+  # share/locale）。此处把 zh_CN 翻译是否存在直接亮在 CI 日志；缺失时
+  # App 侧 WineLocaleSupport 会从 APK assets 兜底安装（zh_CN/zh_TW/ja/ko），
+  # 新包自带则不覆盖。
+  if [[ -f "${_wineDir}/share/locale/zh_CN/LC_MESSAGES/wine.mo" ]]; then
+    echo "wine 界面翻译已随包安装（zh_CN/wine.mo 存在）"
+  else
+    echo "提示: ${_wineDir}/share/locale/zh_CN/LC_MESSAGES/wine.mo 缺失（CI 缺 msgfmt 时 make install 静默跳过）—— App 侧 WineLocaleSupport 将从 APK assets 兜底安装"
+  fi
+
   # FEX/box64 仿真器 DLL 注入（v3.1.4）：arm64ec 形态跑 x86_64/i386
   # Windows 程序靠仿真器 DLL（Hangover 架构：只仿真应用本身，win32
   # syscall 原生直达）—— libarm64ecfex.dll（x86_64 仿真，HODLL64）+

@@ -6,6 +6,7 @@ import com.anwind.apps.containers.ContainerAudio
 import com.anwind.apps.containers.ContainerBackend
 import com.anwind.apps.containers.ContainerData
 import com.anwind.apps.containers.ContainerManager
+import com.anwind.apps.containers.DisplayMode
 // v3.1.7 无 WM 补偿：wine 虚拟桌面几何取当前 X 屏幕尺寸（实时值 → 落盘值 → 默认）
 import com.anwind.apps.x11.X11FitClient
 import com.anwind.apps.x11.X11ResolutionLink
@@ -428,6 +429,23 @@ object RootfsLauncher {
                 }
             }
 
+            // 7.5) v3.2.1（用户问题 3）：显示模式握手提前到前缀初始化之前 ——
+            //      握手写 .anwind-x11-res → X11ResolutionLink 即时把 X 屏幕
+            //      切到目标分辨率；随后 wineboot / 应用的 explorer 虚拟桌面
+            //      以同一分辨率创建。旧顺序（前缀构建后才握手）下 VD 取到的
+            //      是握手生效前的旧屏幕尺寸（跟随窗口值），随后 X11FitClient
+            //      的“贴合”又把 X 屏缩回 VD 尺寸 —— 配置的分辨率被吞掉，
+            //      表现为“分辨率选择无效果、依旧跟随窗口”。
+            val (dmode, resolution) = applyDisplayMode(container)
+
+            // 7.6) v3.2.1（用户问题 4）：wine 本地化支持 —— wine.mo 界面翻译
+            //      （安装到 wine 目录 share/locale 双路径：槽位 + 编译期默认）+
+            //      CJK 字体（Android 系统字体 → 前缀 drive_c/windows/Fonts +
+            //      注册表 SimSun/微软雅黑/MS Shell Dlg 替换）。翻译先于前缀构
+            //      建安装（wineboot 的 mono/gecko 提示框直接是中文）；字体需
+            //      前缀就绪，未就绪时由后续启动自动补装（幂等）。
+            WineLocaleSupport.ensure(context, resolved, container, env) { sink.stamp(it) }
+
             // 8) 首次运行初始化前缀（wineboot -i，宿主二进制直连）
             // 9) EmulateModeset 注册表（无 RandR X 环境的显示模式虚拟化，
             //    游戏显示模式枚举/D3D 设备创建的关键修复；幂等）
@@ -443,7 +461,12 @@ object RootfsLauncher {
             if (isPrefixSession) _prefixBuildFlow.value = key
             if (!isHostToolCommand) {
                 try {
-                    WineRegistry.initializePrefixIfNeeded(resolved, container, env) { line ->
+                    // v3.2.1：把配置分辨率传给前缀构建 —— wineboot 的 explorer
+                    // 虚拟桌面与握手分辨率一致（无分辨率时维持旧“当前屏幕”语义）
+                    WineRegistry.initializePrefixIfNeeded(
+                        resolved, container, env,
+                        vdResolution = resolution
+                    ) { line ->
                         sink.stamp(line)
                         prefixLogLine(key, line)
                     }
@@ -458,13 +481,16 @@ object RootfsLauncher {
                 }
             }
 
-            // 10) 显示模式握手（dmode=off/d/v/f + screen=native|WxH）
-            val (dmode, resolution) = applyDisplayMode(container)
+            // 10) dmode=f 的注册表蓝底清理（需前缀就绪；分辨率握手已在 7.5 提前完成）
             if (dmode == "f" && resolution.isNotEmpty()) {
                 WineRegistry.clearBlueDesktop(resolved, container, env)
             }
             if (resolution.isNotEmpty()) {
                 sink.stamp("显示模式 dmode=$dmode 分辨率=$resolution（X11 握手已写入）")
+            } else if (dmode != DisplayMode.OFF.id) {
+                // v3.2.1（用户问题 3）：选了显示模式但没选分辨率（native）时
+                // 握手什么也不改 —— 如实告知，不再让用户对着“无效果”猜。
+                sink.stamp("显示模式 dmode=$dmode 但未配置分辨率（跟随窗口）——请在容器设置选择虚拟分辨率")
             }
 
             // 11) 用户附加环境（最后叠加 —— 可覆盖一切上游变量）
@@ -599,8 +625,13 @@ object RootfsLauncher {
             return cmd + listOf("explorer", "/desktop=AnWind,$resolution") + wineArgs
         }
         // v3.1.7：无 WM 补偿 —— 见方法 KDoc。explorer 自引用防重包。
+        // v3.2.1（用户问题 3）：有配置分辨率（dmode=d/off + WxH）时虚拟
+        // 桌面直接用配置值 —— 旧实现取“当前 X 屏幕尺寸”（握手生效前的
+        // 旧值/窗口尺寸），VD 与随后切换的 X 屏幕不一致，X11FitClient 的
+        // 自适应又把 X 屏缩回 VD 尺寸 —— 配置的分辨率被吞掉。无分辨率时
+        // 维持旧“当前屏幕”语义（跟随窗口）。
         if (dmode != "f" && first != "explorer") {
-            val vdRes = currentXScreenResolution()
+            val vdRes = resolution.ifEmpty { currentXScreenResolution() }
             return cmd + listOf("explorer", "/desktop=AnWind,$vdRes") + wineArgs
         }
         return cmd + wineArgs
