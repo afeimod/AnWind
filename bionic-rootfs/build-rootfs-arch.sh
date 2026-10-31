@@ -748,7 +748,17 @@ package() {
     warn "${pjName} 的 make install 在 DESTDIR 下创建了 dev/null，正在清理..."
     rm -rf dev/null
   fi
-  tar -cf "${wsDir}/pkgs/${pjName}-${revision}-${targetArch}.tar" .
+  # v3.3.0：GNU tar 打包 "." 收尾会尝试恢复目录时间戳，在无主目录上
+  # 报 "tar: .: Cannot utime: Operation not permitted"（CI 实测每个包
+  # 都报、exit 1）—— 此时 archive 数据已完整写出。改为：tar 失败后校验
+  # 归档可完整列出即放行，其余失败照常中止（不再让 set -e 吞掉真错误）。
+  tar -cf "${wsDir}/pkgs/${pjName}-${revision}-${targetArch}.tar" . || {
+    if tar -tf "${wsDir}/pkgs/${pjName}-${revision}-${targetArch}.tar" >/dev/null 2>&1; then
+      warn "${pjName}: tar 收尾 utime 失败（归档校验通过，忽略）"
+    else
+      err "${pjName}: 打包失败（归档不完整）" && exit 1
+    fi
+  }
   rm -rf "${destDir}"
   cd "${wsDir}"
 }

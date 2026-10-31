@@ -284,6 +284,10 @@ jobs:
             check "$RFS/opt/bin/wine"
             check "$RFS/opt/lib/wine"
             check "$RFS/local/bin/box64"
+            # box64 上游 ANDROID 模式配套（v3.3.0）：被仿真 x86_64 程序的
+            # C++ 标准库 + 系统级调优 rc —— 产物完整集，缺一不可
+            check "$RFS/lib/box64-x86_64-linux-gnu/libc++_shared.so"
+            check "$RFS/etc/box64.box64rc"
             # FEX/box64 仿真器 DLL（v3.1.4，hangover-wine 配方 pre_package
             # 自动注入）：arm64ec 形态跑 x86_64/i386 Windows 程序的仿真核心，
             # 缺它们前缀能建但任何 x86_64/i386 程序必挂
@@ -295,27 +299,27 @@ jobs:
             check "$RFS/lib/dri/kgsl_dri.so"
             check "$RFS/lib/dri/msm_dri.so"
             check "$RFS/lib/dri/swrast_dri.so"
-            # box64 跑 glibc x86_64 程序所需的运行库（此前缺失）
+            # box64 仿真执行 glibc x86_64 程序（含 wine unix 侧）所需的
+            # x86_64 运行库（glibc-x86_64 配方安装，仿真侧非宿主侧）
             check "$RFS/lib/x86_64-linux-gnu/libc.so.6"
             check "$RFS/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2"
             check "$RFS/lib/x86_64-linux-gnu/libstdc++.so.6"
-            # ---- bionic-box64 宿主侧 glibc 加载器与运行库（v3.2.5）----
-            # box64 自身为 glibc 链接（WINLATOR_GLIBC 模型），PT_INTERP 由
-            # projects/box64 的 patchelf 钉到该目录的 ld-linux-aarch64.so.1；
-            # 加载器由 glibc-aarch64 配方安装（box64 的 deps 拓扑依赖）
-            check "$RFS/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1"
-            check "$RFS/lib/aarch64-linux-gnu/libc.so.6"
-            check "$RFS/lib/aarch64-linux-gnu/libstdc++.so.6"
-            # PT_INTERP 硬校验：未钉死则设备上 box64 直接 SIGSEGV(139) 零输出
-            # （v3.2.5 前实测故障形态：wine-9.2-1 日志冒烟即 139）
+            # PT_INTERP 硬校验（v3.3.0）：box64 是 NDK bionic 链接，
+            # 解释器必须是 /system/bin/linker64 —— 出现
+            # ld-linux-aarch64.so.1 即说明又混入了 glibc 方案（v3.2.5
+            # 废弃形态，设备上连 box64 都起不来），直接判失败
             _b64_interp="$(readelf -l "$RFS/local/bin/box64" 2>/dev/null \
               | sed -n 's/.*Requesting program interpreter: \(.*\)\]/\1/p' | head -n 1)"
-            if [[ "$_b64_interp" != "/data/data/com.anwind/files/rootfs/usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1" ]]; then
-              echo "  [MISS] box64 PT_INTERP 未钉到 rootfs 私有加载器（实际: ${_b64_interp:-无 PT_INTERP}）"
+            if [[ "$_b64_interp" == *ld-linux* ]]; then
+              echo "  [MISS] box64 PT_INTERP 为 glibc 加载器（$_b64_interp）—— bionic rootfs 不应有 glibc 产物！"
               MISS=1
-              MISS_LIST+="$RFS/local/bin/box64 (PT_INTERP 未钉死)"$'\n'
+              MISS_LIST+="$RFS/local/bin/box64 (glibc 形态，应回 NDK bionic 构建)"$'\n'
+            elif [[ "$_b64_interp" != "/system/bin/linker64" ]]; then
+              echo "  [MISS] box64 PT_INTERP 非 bionic 形态（实际: ${_b64_interp:-无 PT_INTERP}，期望 /system/bin/linker64）"
+              MISS=1
+              MISS_LIST+="$RFS/local/bin/box64 (PT_INTERP 非 bionic)"$'\n'
             else
-              echo "  [OK] box64 PT_INTERP => $_b64_interp"
+              echo "  [OK] box64 PT_INTERP => $_b64_interp（bionic）"
             fi
             # wine 自带 NLS/字体（locale.nls 为 wine 启动必需）
             check "$RFS/opt/share/wine/nls/locale.nls"

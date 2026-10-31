@@ -6,177 +6,132 @@ buildSys="cmake"
 license="MIT"
 
 # ============================================================
-# AnWind bionic-box64（aarch64 / glibc 链接 / WINLATOR_GLIBC）
+# AnWind bionic-box64（aarch64 / NDK bionic 链接）
 # ------------------------------------------------------------
-# 桌面 wine 容器的 x86_64 仿真核心（/usr/local/bin/box64，
-# aarch64 设备上运行 bionic 链接的 x86_64 wine —— wine 的 unix
-# 侧 ELF 由 box64 内部加载器全仿真执行，宿主侧 libc 形态与仿真
-# 侧无关，见 box64 源码 src/elfs/elfloader.c 的 hasElfInterp：
-# 只检测 PT_INTERP 存在性、从不执行被仿真程序的解释器）。
+# 桌面 wine 容器的 x86_64 仿真核心（/usr/local/bin/box64）。
+# 与 rootfsbc 体系同链构建：NDK clang（api=28）+
+# android.toolchain.cmake（由框架 cmakeBaseArgs 注入），产物为
+# bionic ELF（PT_INTERP=/system/bin/linker64），与 rootfs 内
+# wine / mesa / pulseaudio 等全部二进制的运行形态完全一致 ——
+# rootfs 是 bionic 系统，box64 就是 bionic 二进制，不需要也不
+# 应当引入任何 glibc 产物（宿主侧 libc 与仿真侧无关：box64 的
+# elfloader 只检测被仿真程序的 PT_INTERP 存在性，从不执行它）。
 #
-# 【为什么是 glibc 链接而不是 NDK/bionic 链接】（v3.2.5 重做）
-# 旧配方 -DANDROID=ON + NDK clang 产出 bionic 链接的 box64，
-# 设备实测（日志 wine-9.2.2 / wine-10.0 / wine-9.2-1）：冒烟
-# `box64 wine --version` 能过，但 `box64 wine ... wineboot -i`
-# 毫无输出直接 SIGSEGV(139)，wineboot 前缀建不出来。改用与终端
-# box64（.github/workflows/build-box64.yml，用户实证可跑）完全
-# 同款的 WINLATOR_GLIBC 模型：box64 以 glibc 二进制形态构建，
-# 运行期由 rootfs 私有 glibc 加载器（ld-linux-aarch64.so.1，
-# 由依赖 glibc-aarch64 配方安装进
-# /data/data/com.anwind/files/rootfs/usr/lib/aarch64-linux-gnu/）
-# 直接拉起 —— 与 Winlator/终端 glibc 同一运行模型，wine 相关
-# 的 mmap 修正（wrappedlibc.c 的 WINLATOR_GLIBC 分支）同步生效。
+# 【历史教训：glibc 方案已废弃】v3.2.4~v3.2.5 曾改为
+# aarch64-linux-gnu-gcc 交叉构建 + WINLATOR_GLIBC + patchelf 把
+# PT_INTERP 钉到 rootfs 私有加载器（Ubuntu glibc deb 解包的
+# ld-linux-aarch64.so.1 + libc.so.6 等，glibc-aarch64 配方）——
+# 该形态与 bionic rootfs 不相容，设备上连 box64 自身都起不来
+# （"连 box64 的启动都没有"），且把终端 glibc 体系（另一套系统）
+# 的模型错误搬进 bionic。glibc-aarch64 配方同步删除。
 #
-# 【加载器钉死】构建完成后 patchelf：
-#   --set-interpreter /data/data/com.anwind/files/rootfs/usr/lib/
-#     aarch64-linux-gnu/ld-linux-aarch64.so.1
-#   --force-rpath --set-rpath <同目录>
-# （与终端 start-tfm / build-box64.yml 的 patchelf 手法一致；
-#   DT_RPATH 而非 RUNPATH：优先级高于会话注入的 LD_LIBRARY_PATH，
-#   避免 bionic 库目录串进来）。CI 宿主与设备共用同一绝对前缀
-# （default.conf 的 prefix），构建期校验的路径即设备运行期路径。
+# 【上游 ANDROID 模式】（CMakeLists.txt option(ANDROID)）：
+#   - add_definitions(-DANDROID)；BAD_SIGNAL 自动 ON（上游对
+#     Android 信号栈差异的规避 —— wine ntdll unix 侧依赖）
+#   - 内建 wrappedandroidshmem.c：被仿真 x86_64 程序的 SysV shm
+#     系列调用由 box64 拦截转发 bionic，rootfs 无需 libandroid-shmem
+#   - 链接 bionic 系统库 c / m / dl，无外部运行时依赖
+#   - Release 优化限制为 -O1（上游对 Android dynarec 稳定性的
+#     选择，CMakeLists "limit the optimization level" hack，
+#     会覆盖框架 cflags 的 -O3，遵上游）
+#   - ARM64 / ARM_DYNAREC 由 toolchain 的 CMAKE_SYSTEM_PROCESSOR=
+#     aarch64 自动使能，跑 x86_64 wine 的动态二进制翻译
 #
-# 【工具链】ubuntu-24.04 CI 宿主上用 aarch64-linux-gnu-gcc 交叉
-# 构建（host-deps.sh 安装；glibc 2.39 与 noble 同源、与
-# glibc-aarch64 配方解包的运行库 ABI 严格一致）。aarch64 宿主
-# 本地构建场景自动改用原生 gcc。
+# 【ASM 编译器钉死】load_env 导出 ASM=NDK yasm（仅支持 x86 的
+# 汇编器），CMake 的 ASM 探测会命中它 —— arm64_prolog.S 直接
+# "yasm: FATAL: unrecognized object format unwind-tables"
+# （v3.2.4 报废根因；旧配方的 -DCMAKE_ASM_FLAGS= 空参数治不了
+# 编译器选择问题）。显式把 ASM 编译器钉到 NDK clang（与 C 同一
+# 工具链，集成汇编器原生支持 .S）。
 #
-# 【为什么不再用 NDK 工具链】构建系统对 cmake 项目的默认参数
-# （base-configure-args.conf 的 cmakeBaseArgs）注入 NDK Android
-# toolchain file，且"others"类项目（glibc-aarch64）的 load_env
-# 会向本进程导出 NDK 的 CC/ASM/CFLAGS（含 --sysroot）并把 NDK
-# bin 前置到 PATH —— CMake 的 ASM 探测曾因此选中 NDK 里仅支持
-# x86 的 yasm，arm64_prolog.S 直接 "yasm: FATAL: unrecognized
-# object format unwind-tables"（CI 实测，v3.2.4 报废根因）。
-# 故本配方使用 fullCustomArgs 完整接管 cmake 参数（绕过 NDK
-# toolchain file），显式钉死 C/ASM 编译器为交叉 gcc，并在
-# pre_setup 里清掉上游残留的 NDK 编译环境变量。
+# 【产物完整集】上游 ANDROID 模式的安装内容，缺一不可：
+#   local/bin/box64                               仿真器本体
+#   lib/box64-x86_64-linux-gnu/libc++_shared.so  x86_64 C++ 标准库
+#     （上游 x64android/ 预制产物：被仿真的 x86_64 程序 dlopen
+#     libc++_shared.so 时从该目录解析；wine 的 glibc 系 x86_64
+#     运行库另由 glibc-x86_64 配方安装在 lib/x86_64-linux-gnu，
+#     两者职责不同、互不替代）
+#   etc/box64.box64rc                             系统级调优开关
 # ============================================================
 
-# glibc 运行库目录（构建期 = prefix 下；设备期同一绝对路径）
-GLIBC_LIBDIR="${prefix}/lib/aarch64-linux-gnu"
-GLIBC_LOADER="${GLIBC_LIBDIR}/ld-linux-aarch64.so.1"
+# 与 rootfsbc 参考配方（project_legacy/box64）同参数集：
+# ANDROID + BAD_SIGNAL + ARM_DYNAREC；BAD_SIGNAL 在 ANDROID=ON 时
+# 上游本就自动置 ON（CMakeLists if(ANDROID) set(BAD_SIGNAL ON)），
+# 显式写出以对齐参考语义。NO_CONF_INSTALL / NO_LIB_INSTALL 不再
+# 保留 —— 两者正是产物只剩单个 box64 文件的原因（配套的
+# x64android/libc++_shared.so 与 system/box64.box64rc 被 install
+# 规则跳过），本次由自定义 install() 补齐完整集
+args="-DANDROID=ON -DBAD_SIGNAL=ON -DARM_DYNAREC=ON"
 
-deps="glibc-aarch64"
-
-# 用 make 而非 ninja：box64 的 dynarec 生成步骤在 make 下与
-# 交叉构建组合为既有验证路径（终端 box64 工作流同为 make）
+# 用 make 而非 ninja：与 rootfs 其余 cmake 包同一验证路径
 doNotUseNinja=1
 
 pre_setup() {
-  # ---- 0. 编译器选择：x86_64 宿主走交叉，aarch64 宿主走原生 ----
-  local _cc="aarch64-linux-gnu-gcc"
-  if [[ "$(uname -m)" == "aarch64" ]]; then
-    _cc="gcc"
-    echo "宿主为 aarch64：使用原生 gcc"
-  else
-    echo "宿主为 $(uname -m)：使用 aarch64 glibc 交叉编译器 ${_cc}"
+  # 钉死 ASM 编译器为 NDK clang（v3.2.4 yasm 事故根治）。
+  # 双保险：-D 进 CMake cache（探测最高优先级）+ 覆盖 env ASM
+  # （load_env 导出的 ASM 是 NDK yasm，仅支持 x86，是探测的
+  # 次优先来源；empty.sh 会在包间 unset，无跨包泄漏）。
+  # NDK toolchain file 若自行设置 ASM 也只会设成同款 clang。
+  local _clang="${ndkDir}/toolchains/llvm/prebuilt/linux-x86_64/bin/${targetArch}-linux-android${api}-clang"
+  if [[ ! -x "${_clang}" ]]; then
+    # 兜底：NDK 尚未解压就位时用 PATH 名（构建系统在 configure 前
+    # 保证 NDK 就绪；aarch64 本地构建场景同样适用）
+    _clang="${targetArch}-linux-android${api}-clang"
   fi
-  command -v "${_cc}" >/dev/null 2>&1 || {
-    echo "错误: 缺少 aarch64 glibc 编译器 ${_cc}"
-    echo "  ubuntu/debian 宿主请安装 gcc-aarch64-linux-gnu（host-deps.sh 已包含）"
-    return 1
-  }
-  for _tool in patchelf readelf; do
-    command -v "${_tool}" >/dev/null 2>&1 || {
-      echo "错误: 缺少 ${_tool}（box64 加载器钉死与校验必需）"
-      return 1
-    }
-  done
-
-  # ---- 1. 清掉构建系统残留的 NDK 环境 ----
-  # 同一轮构建里先跑的项目（含 glibc-aarch64 的 others 流程 /
-  # 其它 meson/autotools 项目）会 load_env 导出 NDK clang 与
-  # --sysroot CFLAGS；不清掉会污染本交叉 glibc 构建（sysroot
-  # 指向 bionic 头文件、include 路径混入 rootfs 的 bionic 头）。
-  unset CPPFLAGS CXXFLAGS LDFLAGS LIBS
-  unset PKG_CONFIG_LIBDIR
-  export CFLAGS="-O2 -pipe"
-
-  # ---- 2. 完整接管 cmake 参数（绕过 NDK Android toolchain） ----
-  # 与终端 box64（build-box64.yml）同款选项集：
-  #   ARM64 + ARM_DYNAREC   aarch64 动态二进制翻译（跑 x86_64 wine）
-  #   WINLATOR_GLIBC        glibc 运行模型 + wine mmap 修正
-  #   BAD_SIGNAL            规避信号栈差异
-  #   SD845/865/888/8G2     高通系 SoC 的 dynarec 调优（运行期自
-  #                         识别，非对应设备时自动走通用路径）
-  # NO_CONF_INSTALL/NO_LIB_INSTALL：rootfs 里 /etc 交给 base-config，
-  # wrapped 库文件不安装（按原配方行为，运行库走 wine 包闭包）
-  # 显式 CMAKE_ASM_COMPILER=aarch64 gcc：杜绝 CMake 在 PATH 里
-  # 自行探测出仅支持 x86 的 yasm（v3.2.4 报废根因）
-  fullCustomArgs="
-    -DCMAKE_BUILD_TYPE=Release
-    -DCMAKE_SYSTEM_NAME=Linux
-    -DCMAKE_SYSTEM_PROCESSOR=aarch64
-    -DCMAKE_C_COMPILER=${_cc}
-    -DCMAKE_ASM_COMPILER=${_cc}
-    -DCMAKE_C_COMPILER_LAUNCHER=ccache
-    -DCMAKE_INSTALL_PREFIX=${prefix}
-    -DARM64=ON
-    -DARM_DYNAREC=ON
-    -DWINLATOR_GLIBC=ON
-    -DBAD_SIGNAL=ON
-    -DSD845=ON
-    -DSD865=ON
-    -DSD888=ON
-    -DSD8G2=ON
-    -DNO_CONF_INSTALL=ON
-    -DNO_LIB_INSTALL=ON
-  "
-
-  echo "=== AnWind bionic-box64（aarch64 glibc / WINLATOR_GLIBC）构建开始 ==="
-  echo "box64 版本: ${revision}"
-  echo "目标加载器: ${GLIBC_LOADER}"
+  args+=" -DCMAKE_ASM_COMPILER=${_clang}"
+  export ASM="${_clang}"
 }
 
 install() {
+  local _src="${srcDir}/${pjName}"
   local _bin="${destDir}${prefix}/local/bin/box64"
+  local _strip="${ndkDir}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip"
 
+  # ---- 1. box64 本体 ----
+  if [[ ! -f "${_src}/build/box64" ]]; then
+    echo "错误: 未找到构建产物 ${_src}/build/box64"
+    return 1
+  fi
   mkdir -p "${destDir}${prefix}/local/bin/"
-  cp -p "${srcDir}/${pjName}/build/box64" "${_bin}" \
-    || { echo "错误: 未找到构建产物 ${srcDir}/${pjName}/build/box64" && exit 1; }
+  cp -p "${_src}/build/box64" "${_bin}"
 
-  # ---- 1. 依赖配方必须已就位（toposort 保证 glibc-aarch64 先构建，
-  #         其包已解压进 prefix —— 构建期与设备期同一路径） ----
-  if [[ ! -f "${GLIBC_LOADER}" ]]; then
-    echo "错误: box64 的私有加载器不存在 => ${GLIBC_LOADER}"
-    echo "  glibc-aarch64 配方（deps 已声明）应先于 box64 构建并解压进 prefix"
-    exit 1
+  # ---- 2. x86_64 C++ 标准库（上游 ANDROID 模式配套，勿漏） ----
+  if [[ ! -f "${_src}/x64android/libc++_shared.so" ]]; then
+    echo "错误: 未找到上游 x64android/libc++_shared.so（${_src}）"
+    return 1
+  fi
+  mkdir -p "${destDir}${prefix}/lib/box64-x86_64-linux-gnu/"
+  cp -p "${_src}/x64android/libc++_shared.so" \
+    "${destDir}${prefix}/lib/box64-x86_64-linux-gnu/"
+
+  # ---- 3. 系统级 box64 rc ----
+  mkdir -p "${destDir}${prefix}/etc/"
+  cp -p "${_src}/system/box64.box64rc" "${destDir}${prefix}/etc/"
+
+  # ---- 4. strip（发布体积；llvm-strip 是 NDK 自带） ----
+  if [[ -x "${_strip}" ]]; then
+    "${_strip}" "${_bin}" || true
   fi
 
-  # ---- 2. patchelf 钉死解释器与库搜索路径 ----
-  # PT_INTERP 指向 rootfs 内私有 glibc 加载器（终端 box64 同款手法，
-  # 参见 termux-x11 start-tfm 与 build-box64.yml）；--force-rpath 生成
-  # DT_RPATH（优先级高于 LD_LIBRARY_PATH，glibc 运行库只会从该目录找）
-  echo "patchelf: PT_INTERP => ${GLIBC_LOADER}"
-  patchelf --set-interpreter "${GLIBC_LOADER}" "${_bin}" \
-    || { echo "错误: patchelf --set-interpreter 失败" && exit 1; }
-  patchelf --force-rpath --set-rpath "${GLIBC_LIBDIR}" "${_bin}" \
-    || { echo "错误: patchelf --set-rpath 失败" && exit 1; }
-
-  # ---- 3. 硬校验：PT_INTERP / RPATH / 架构，任何一项不对直接判失败 ----
-  local _interp _machine
-  _interp="$(readelf -l "${_bin}" 2>/dev/null \
-    | sed -n 's/.*Requesting program interpreter: \(.*\)\]/\1/p' | head -n 1)"
-  if [[ "${_interp}" != "${GLIBC_LOADER}" ]]; then
-    echo "错误: box64 PT_INTERP 校验失败"
-    echo "  期望: ${GLIBC_LOADER}"
-    echo "  实际: ${_interp:-（无 PT_INTERP）}"
-    exit 1
-  fi
-  if ! readelf -d "${_bin}" 2>/dev/null | grep -E "RPATH|RUNPATH" \
-      | grep -q "${GLIBC_LIBDIR}"; then
-    echo "错误: box64 RPATH 校验失败（应包含 ${GLIBC_LIBDIR}）"
-    readelf -d "${_bin}" | grep -E "RPATH|RUNPATH" || true
-    exit 1
-  fi
+  # ---- 5. 硬校验：aarch64 ELF + bionic PT_INTERP，任何一项不对直接判失败 ----
+  local _machine _interp
   _machine="$(readelf -h "${_bin}" 2>/dev/null | awk '/^ *Machine:/{print $2; exit}')"
   if [[ "${_machine}" != "AArch64" ]]; then
     echo "错误: box64 架构校验失败（期望 AArch64，实际 ${_machine:-未知}）"
-    exit 1
+    return 1
+  fi
+  _interp="$(readelf -l "${_bin}" 2>/dev/null \
+    | sed -n 's/.*Requesting program interpreter: \(.*\)\]/\1/p' | head -n 1)"
+  if [[ "${_interp}" != "/system/bin/linker64" ]]; then
+    echo "错误: box64 PT_INTERP 非 bionic 形态"
+    echo "  期望: /system/bin/linker64（NDK bionic 链接）"
+    echo "  实际: ${_interp:-（无 PT_INTERP）}"
+    echo "  若为 ld-linux-aarch64.so.1 => 又混入了 glibc 方案，查 pre_setup/toolchain"
+    return 1
   fi
 
-  echo "bionic-box64 安装完成: ${_bin}"
-  echo "  PT_INTERP: ${_interp}"
-  readelf -d "${_bin}" | grep -E "RPATH|RUNPATH" | head -1
+  echo "bionic-box64 安装完成:"
+  echo "  ${_bin}（PT_INTERP => /system/bin/linker64）"
+  echo "  ${prefix}/lib/box64-x86_64-linux-gnu/libc++_shared.so"
+  echo "  ${prefix}/etc/box64.box64rc"
 }

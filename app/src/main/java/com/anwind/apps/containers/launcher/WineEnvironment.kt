@@ -183,6 +183,18 @@ object WineEnvironment {
                 "${glibcDir.absolutePath}:$existing"
             }
         }
+        // box64 上游 ANDROID 模式配套的 x86_64 C++ 标准库目录
+        // （v3.3.0，bionic-box64 配方安装 lib/box64-x86_64-linux-gnu）：
+        // 被仿真的 x86_64 程序 dlopen libc++_shared.so 时从该目录解析。
+        val box64X64Dir = File("$RFS_USR/lib/box64-x86_64-linux-gnu")
+        if (box64X64Dir.isDirectory) {
+            val existing = env["BOX64_LD_LIBRARY_PATH"]
+            env["BOX64_LD_LIBRARY_PATH"] = if (existing.isNullOrBlank()) {
+                box64X64Dir.absolutePath
+            } else {
+                "${box64X64Dir.absolutePath}:$existing"
+            }
+        }
         when (container.preset) {
             Box64Preset.COMPATIBILITY -> {
                 env["BOX64_DYNAREC_BIGBLOCK"] = "0"

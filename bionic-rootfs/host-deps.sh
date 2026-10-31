@@ -176,31 +176,11 @@ if [[ -f /etc/os-release ]]; then
   esac
 
   # ============================================================
-  # v3.2.5：bionic-box64 的 aarch64 glibc 交叉构建工具
-  # ------------------------------------------------------------
-  # projects/box64 已改为 aarch64 glibc 目标（WINLATOR_GLIBC 模型，
-  # 构建后 patchelf 把 PT_INTERP 钉到 rootfs 私有加载器
-  # /data/data/com.anwind/files/rootfs/usr/lib/aarch64-linux-gnu/
-  # ld-linux-aarch64.so.1，加载器由 glibc-aarch64 配方安装）。
-  # x86_64 宿主（CI）需要 aarch64 glibc 交叉编译器 + patchelf；
-  # aarch64 宿主（本地构建场景）原生 gcc 即可，仅需 patchelf。
+  # bionic-box64 走 NDK clang（与 rootfs 其它包同链），宿主无需
+  # 任何交叉 glibc 工具链 / patchelf —— v3.2.5 的 gcc-aarch64-
+  # linux-gnu + patchelf 段已随 glibc 方案一并移除。
   # ============================================================
-  if [[ "$(uname -m)" != "aarch64" ]]; then
-    case "${distro}" in
-      debian|ubuntu)
-        apt install -y gcc-aarch64-linux-gnu patchelf \
-          || { echo "错误: gcc-aarch64-linux-gnu / patchelf 安装失败（box64 glibc 交叉构建必需）"; exit 1; }
-        ;;
-      arch)
-        pacman -S --noconfirm --needed aarch64-linux-gnu-gcc patchelf \
-          || echo "警告: arch 下 aarch64 交叉工具链安装失败——不构建 box64 可忽略"
-        ;;
-    esac
-  fi
-  command -v patchelf >/dev/null 2>&1 \
-    || apt install -y patchelf \
-    || { echo "错误: patchelf 不可用（box64 PT_INTERP 钉死必需）"; exit 1; }
-  command -v patchelf >/dev/null 2>&1 && echo "patchelf: $(patchelf --version)"
+  echo "工具链就绪: NDK 交叉编译（bionic），宿主仅通用构建工具"
 else
   echo "不支持的发行版 => ${ID:-未知}"
   exit 1

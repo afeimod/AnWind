@@ -23,8 +23,8 @@
 #   cmd <name> <winecmd> [...]    运行 wine 子命令（wineboot/winecfg/reg...）
 #   stop <name>                   结束容器内全部 wine 进程（wineserver -k）
 #   install-wine <tarball|URL>    安装 x86_64 wine 发行包（.tar.gz/.tzst 均可）
-#   install-box64 <tarball|URL>   安装/升级 box64（glibc 形态，随包带 aarch64
-#                                 glibc 运行库，免重建 rootfs）
+#   install-box64 <tarball|URL>   安装/升级 box64（bionic 形态，随包带
+#                                 x86_64 配套库，免重建 rootfs）
 #   install-dxvk <name> [文件|URL|版本] 向容器安装 DXVK（tzst/tar.gz;
 #                                 顶层 system32/syswow64 直解, x64/x32 自动重映射）
 #   install-vkd3d <name> [文件|URL|版本] 向容器安装 VKD3D-Proton（Vulkan D3D12）
@@ -336,15 +336,16 @@ cmd_install_wine() {
     return 0
 }
 
-# ---------- v3.2.5：box64 安装/升级（glibc 形态发行包） ----------
-# build-box64-bionic / build-box64 工作流产物 anwind-box64-<ver>-aarch64-*.tar.gz
+# ---------- v3.3.0：box64 安装/升级（bionic 形态发行包） ----------
+# build-box64-bionic 工作流产物 anwind-box64-<ver>-aarch64-bionic.tar.gz
 #   布局 data/data/com.anwind/files/rootfs/usr/{local/bin/box64,
-#   lib/aarch64-linux-gnu/（glibc 运行库 + ld-linux-aarch64.so.1）}
-# glibc 形态 box64 的 PT_INTERP 已被构建配方 patchelf 指到 rootfs 内
-# 加载器 —— 本命令把两者一并落位，免整包重建 rootfs 即完成升级。
+#   lib/box64-x86_64-linux-gnu/libc++_shared.so, etc/box64.box64rc}
+# bionic 形态 box64（NDK clang 链接，PT_INTERP=/system/bin/linker64）
+# 与 rootfs 内其它二进制同链同形态；上游 ANDROID 模式的配套
+# x86_64 C++ 标准库一并落位，免整包重建 rootfs 即完成升级。
 cmd_install_box64() {
     local src="$1"
-    [ -n "$src" ] || die "用法: anwind-container install-box64 <本地tar.gz | URL>（build-box64 工作流产物 anwind-box64-*-aarch64-*.tar.gz）"
+    [ -n "$src" ] || die "用法: anwind-container install-box64 <本地tar.gz | URL>（build-box64-bionic 工作流产物 anwind-box64-*-aarch64-bionic.tar.gz）"
     local _f="$src" _tmp=0
     case "$src" in
         http://*|https://*)
@@ -365,7 +366,7 @@ cmd_install_box64() {
         cp -p "$_b64" "$_bak" 2>/dev/null || true
         msg "已备份现有 box64 → $_bak"
     fi
-    msg "解包 box64 到 / （data/data/com.anwind/... 路径自动就位，含 glibc 运行库）..."
+    msg "解包 box64 到 / （data/data/com.anwind/... 路径自动就位，含 x86_64 配套库）..."
     tar_extract "$_f" || {
         if [ -n "$_b64" ] && [ -f "$_bak" ]; then
             cp -p "$_bak" "$_b64" 2>/dev/null || true
@@ -379,8 +380,8 @@ cmd_install_box64() {
     else
         _ok=0
     fi
-    if [ -e "$RFS_USR/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1" ]; then
-        msg "glibc 加载器就位: $RFS_USR/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1"
+    if [ -e "$RFS_USR/lib/box64-x86_64-linux-gnu/libc++_shared.so" ]; then
+        msg "x86_64 配套库就位: $RFS_USR/lib/box64-x86_64-linux-gnu/libc++_shared.so"
     else
         _ok=0
     fi
@@ -389,16 +390,24 @@ cmd_install_box64() {
             cp -p "$_bak" "$_b64" 2>/dev/null || true
             warn "产物不完整，已回滚原 box64（备份: $_bak）"
         fi
-        warn "请确认这是 anwind-box64-*-aarch64-*.tar.gz（应含 usr/local/bin/box64 与 usr/lib/aarch64-linux-gnu/）"
+        warn "请确认这是 anwind-box64-*-aarch64-bionic.tar.gz（应含 usr/local/bin/box64 与 usr/lib/box64-x86_64-linux-gnu/）"
         [ "$_tmp" = 1 ] && rm -f "$_f"
         return 1
     fi
-    # 形态确认：.interp 字符串直接出现在二进制头部区域（PT_INTERP）
+    # 形态确认：bionic 形态的 .interp 是 /system/bin/linker64，该字符串
+    # 直接出现在 ELF 头部区域；若出现 ld-linux-aarch64.so.1 说明装进了
+    # v3.2.5 废弃的 glibc 形态包（与 bionic rootfs 不相容）
     if grep -aq "ld-linux-aarch64.so.1" "$RFS_USR/local/bin/box64" 2>/dev/null; then
-        msg "box64 为 glibc 形态（PT_INTERP → rootfs 内 ld-linux-aarch64.so.1）—— 安装成功"
-    else
-        warn "注意: 该 box64 未引用 ld-linux-aarch64.so.1（bionic 形态或非 AnWind 包）—— 真实 wine 负载可能 SIGSEGV，建议用 build-box64-bionic 工作流产物"
+        warn "注意: 该 box64 是 glibc 形态（v3.2.5 废弃方案，bionic rootfs 不相容）"
+        warn "→ 请改装 build-box64-bionic 新产物（anwind-box64-*-aarch64-bionic.tar.gz，NDK bionic 链接）"
+        if [ -n "$_b64" ] && [ -f "$_bak" ]; then
+            cp -p "$_bak" "$_b64" 2>/dev/null || true
+            msg "已回滚原 box64（备份: $_bak）"
+        fi
+        [ "$_tmp" = 1 ] && rm -f "$_f"
+        return 1
     fi
+    msg "box64 为 bionic 形态（NDK clang 链接，PT_INTERP => /system/bin/linker64）—— 安装成功"
     [ -n "$_b64" ] && [ -f "$_bak" ] && rm -f "$_bak"
     [ "$_tmp" = 1 ] && rm -f "$_f"
     return 0
@@ -561,17 +570,24 @@ cmd_doctor() {
     echo "[3/5] CPU 翻译后端"
     if [ -n "$(find_box64)" ]; then
         echo "  [OK] box64: $(find_box64)"
-        # v3.2.5：glibc 形态 box64 的加载器体检（PT_INTERP 引用 ld-linux-
-        # aarch64.so.1 时该文件必须在 rootfs 内，否则 exec 直接 ENOENT）
+        # v3.3.0：box64 形态体检 —— bionic 形态（NDK clang 链接，
+        # PT_INTERP=/system/bin/linker64）与 rootfs 其它二进制同链；
+        # 若检出 glibc 加载器字符串即 v3.2.5 废弃形态（bionic rootfs
+        # 不相容），提示直接换装新产物
         if grep -aq "ld-linux-aarch64.so.1" "$(find_box64)" 2>/dev/null; then
-            if [ -e "$RFS_USR/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1" ]; then
-                echo "  [OK] box64 glibc 加载器: $RFS_USR/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1"
-            else
-                echo "  [!!] box64 为 glibc 形态但加载器缺失 → anwind-container install-box64 <新版 tar.gz>（否则 exec ENOENT 零输出）"
-            fi
+            echo "  [!!] box64 为 glibc 形态（v3.2.5 废弃方案，bionic rootfs 不相容）"
+            echo "       → anwind-container install-box64 <anwind-box64-*-aarch64-bionic.tar.gz|URL>"
+        else
+            echo "  [OK] box64 为 bionic 形态（NDK clang 链接，PT_INTERP => /system/bin/linker64）"
+        fi
+        # 上游 ANDROID 模式配套的 x86_64 C++ 标准库（v3.3.0 起随包安装）
+        if [ -e "$RFS_USR/lib/box64-x86_64-linux-gnu/libc++_shared.so" ]; then
+            echo "  [OK] box64 x86_64 配套库: $RFS_USR/lib/box64-x86_64-linux-gnu/libc++_shared.so"
+        else
+            echo "  [--] x86_64 配套库未安装（重装 box64 或重建 rootfs 补齐）"
         fi
     else
-        echo "  [--] box64 未安装 → 运行 bionic 的 build-box64 workflow 或安装其 Release 产物"
+        echo "  [--] box64 未安装 → 运行 build-box64-bionic workflow 或安装其 Release 产物"
     fi
     if [ -x "$RFS_USR/opt/fex/bin/FEXInterpreter" ]; then
         echo "  [OK] fexcore: $RFS_USR/opt/fex/bin/FEXInterpreter"

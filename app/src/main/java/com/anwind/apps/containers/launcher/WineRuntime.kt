@@ -66,39 +66,6 @@ object WineRuntime {
         File("${ContainerManager.APP_PREFIX}/bin/box64")
     ).firstOrNull { it.isFile && it.canExecute() }
 
-    /** v3.2.5：glibc 形态 box64 的 aarch64 glibc 加载器（rootfs 内设备绝对路径）。 */
-    val GLIBC_LOADER = File("$RFS_USR/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1")
-
-    /**
-     * v3.2.5：box64 的 glibc 加载器缺失诊断。
-     *
-     * CI 构建的 box64 是 glibc 链接 ELF，PT_INTERP 被 patchelf 改写指向
-     * rootfs 内 [GLIBC_LOADER]（运行库由 glibc-aarch64 配方随包提供；
-     * bionic 形态旧 box64 真实 wine 负载 SIGSEGV，已弃用）。加载器缺失
-     * 时 exec 直接 ENOENT —— 会话零输出即死（设备实测 x86_64 形态
-     * wineboot 秒退的直接根因）。
-     *
-     * 判定：仅当 box64 二进制头部区域确实含该加载器路径字符串
-     * （PT_INTERP/.interp 段就在 ELF 头部区域；bionic 形态不含，
-     * 恒 false）且文件缺失时返回 true。
-     */
-    fun box64GlibcLoaderMissing(): Boolean {
-        if (GLIBC_LOADER.isFile) return false
-        val bin = locateBox64() ?: return false
-        return try {
-            RandomAccessFile(bin, "r").use { raf ->
-                val n = minOf(raf.length(), 262_144L).toInt()
-                if (n <= 0) return false
-                val buf = ByteArray(n)
-                raf.seek(0)
-                raf.readFully(buf)
-                String(buf, Charsets.ISO_8859_1).contains("ld-linux-aarch64.so.1")
-            }
-        } catch (_: Exception) {
-            false
-        }
-    }
-
     /**
      * 解析容器对应的 wine 运行时（resolve + detect + pick 一步到位）。
      *
