@@ -191,8 +191,29 @@ android {
         // TrackpadRouter 之前）+ TrackpadController/TrackpadRouter（触控板
         // 模式指针处与手指轻点处）按窗口几何直判置前；WindowChrome/
         // WinDialogFrame onGloballyPositioned 上报几何；focus 加诊断日志。
-        versionCode = 69
-        versionName = "2.38.6"
+        versionCode = 70
+        versionName = "2.38.7"
+        // v2.38.7（源码包 v3.2.5）：box64 glibc 形态切换 + aarch64 glibc
+        // 运行库补齐 —— x86_64 形态 wine 前缀构建秒退(139)的根治。
+        // [根因]（用户诊断 + 构建链核对）：bionic 形态 box64（-DANDROID=1，
+        // NDK clang）冒烟可过（wine --version 轻路径）但真实 wine 负载
+        // （explorer ... wineboot -i）SIGSEGV；而 glibc 形态 box64（Winlator/
+        // MiceWine 同款）所需的 ld-linux-aarch64.so.1 从未构建过——rootfs
+        // 只有 glibc-x86_64（amd64 deb，给被仿真的 x86_64 程序用），aarch64
+        // 侧 glibc 加载器/运行库缺失，glibc box64 装上即 ENOENT。
+        // [本版]：①新配方 bionic-rootfs/projects/glibc-aarch64（Ubuntu
+        //      noble arm64 deb，ports.ubuntu.com → $prefix/lib/
+        //      aarch64-linux-gnu/，含 ld-linux-aarch64.so.1）；②box64 配方
+        //      切 glibc 交叉构建（aarch64-linux-gnu-gcc + WINLATOR_GLIBC/
+        //      BAD_SIGNAL/ARM_DYNAREC）+ install 阶段 patchelf --set-
+        //      interpreter/--set-rpath 指到 rootfs 设备绝对路径 + glibc
+        //      运行库随包自带；③host-deps.sh 补 gcc-aarch64-linux-gnu/
+        //      patchelf；④anwind-container 新增 install-box64（备份/校验/
+        //      回滚，免重建 rootfs 升级）+ doctor 加载器体检；⑤App 启动链
+        //      与 anwind-wine 双端加载器缺失前置诊断（glibc 形态判定：
+        //      二进制头部含 ld-linux-aarch64.so.1 字符串）。
+        // （v2.38.6/源码包 v3.2.3 记录见下，v2.38.5 及更早见 git 历史与
+        //  README-FIX.md）
         // v2.38.6（源码包 v3.2.3）：proton 两形态前缀构建修复。
         // [根因]（proton_10.0 / hangover 两树源码逐行核对 + 设备日志对齐，
         // 本轮勘误了早前的单因归因）：

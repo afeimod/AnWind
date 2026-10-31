@@ -45,6 +45,13 @@ debianPkgs=(
   ccache
   cmake
   ninja-build
+  # v3.2.5：box64 glibc 形态交叉构建（aarch64-linux-gnu-gcc 带 glibc
+  # sysroot；bionic NDK 工具链产出的 box64 真实负载 SIGSEGV，已弃用）
+  gcc-aarch64-linux-gnu
+  g++-aarch64-linux-gnu
+  # v3.2.5：box64 PT_INTERP/DT_RPATH 改写（glibc 形态在 Android 上
+  # exec 的硬前提；wine/hangover 配方的 llvm-mingw 路径与它无关）
+  patchelf
   bzip2
   xz-utils
   zstd

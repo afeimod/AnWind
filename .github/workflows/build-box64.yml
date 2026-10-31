@@ -1,4 +1,21 @@
-name: Build Box64 (aarch64)
+name: Build Box64 (aarch64, glibc)
+
+# ============================================================
+# AnWind Box64 独立构建（aarch64 / ARM 原生 runner / glibc 形态）
+# ------------------------------------------------------------
+# v3.2.5 与 build-box64-bionic.yml（rootfs 配方链版）产出等价：
+#   * glibc 形态（-DWINLATOR_GLIBC=1，Winlator/MiceWine 同款）——
+#     bionic 形态真实 wine 负载 SIGSEGV，已弃用
+#   * PT_INTERP/DT_RPATH patchelf 指到 rootfs 设备绝对路径
+#     /data/data/com.anwind/files/rootfs/usr/lib/aarch64-linux-gnu/
+#     ld-linux-aarch64.so.1（旧版指向 files/usr/glibc/... 且
+#     `|| true` 吞失败 —— 该目录从未被任何构建产出，本次修正）
+#   * Ubuntu noble arm64 glibc 运行库随包自带（ports.ubuntu.com）
+#   * 产物 anwind-box64-<ver>-aarch64-glibc.tar.gz：
+#     data/data/com.anwind/files/rootfs/usr/{local/bin/box64,
+#     lib/aarch64-linux-gnu/}，anwind-container install-box64 或
+#     手动解包至 / 即完成升级（免重建 rootfs）
+# ============================================================
 
 on:
   workflow_dispatch:
@@ -6,7 +23,7 @@ on:
       box64_version:
         description: 'Box64 版本 (分支、标签或提交哈希)'
         required: true
-        default: 'main'
+        default: 'v0.4.4'
         type: string
   pull_request:
 
@@ -26,7 +43,7 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y \
           cmake build-essential \
-          gcc git patchelf xz-utils
+          gcc git patchelf xz-utils file
 
     - name: 设置 Box64 版本
       id: set_version
@@ -36,7 +53,7 @@ jobs:
           echo "BOX64_REF=${{ github.event.inputs.box64_version }}" >> $GITHUB_ENV
         else
           # 对于 PR 事件，使用默认版本
-          echo "BOX64_REF=main" >> $GITHUB_ENV
+          echo "BOX64_REF=v0.4.4" >> $GITHUB_ENV
         fi
         echo "使用的 Box64 版本: $BOX64_REF"
 
@@ -44,11 +61,11 @@ jobs:
       run: |
         git clone https://github.com/ptitSeb/box64
         cd box64
-        
+
         # 检出指定版本
         echo "正在检出版本: $BOX64_REF"
         git checkout $BOX64_REF
-        
+
         # 如果是分支，拉取最新更改
         if git show-ref --verify --quiet refs/heads/$BOX64_REF; then
           echo "检出分支 $BOX64_REF，拉取最新更改"
@@ -64,56 +81,139 @@ jobs:
         BUILD_DATE=$(date +%Y%m%d)
         COMMIT_HASH=$(git rev-parse --short HEAD)
         BRANCH_OR_TAG=$(git symbolic-ref -q --short HEAD || git describe --tags --exact-match 2>/dev/null || echo "detached-$COMMIT_HASH")
-        
+
         echo "BOX64_VERSION=$BOX64_VERSION" >> $GITHUB_ENV
         echo "BUILD_DATE=$BUILD_DATE" >> $GITHUB_ENV
         echo "COMMIT_HASH=$COMMIT_HASH" >> $GITHUB_ENV
         echo "BRANCH_OR_TAG=$BRANCH_OR_TAG" >> $GITHUB_ENV
-        
+
         # 同时设置为步骤输出，供后续步骤使用
         echo "BOX64_VERSION=$BOX64_VERSION" >> $GITHUB_OUTPUT
         echo "BUILD_DATE=$BUILD_DATE" >> $GITHUB_OUTPUT
         echo "COMMIT_HASH=$COMMIT_HASH" >> $GITHUB_OUTPUT
         echo "BRANCH_OR_TAG=$BRANCH_OR_TAG" >> $GITHUB_OUTPUT
-        
+
         echo "版本: $BOX64_VERSION"
         echo "日期: $BUILD_DATE"
         echo "提交: $COMMIT_HASH"
         echo "分支/标签: $BRANCH_OR_TAG"
         echo "请求的版本: $BOX64_REF"
 
-    - name: 构建 Box64
+    - name: 构建 Box64（glibc 形态）
       run: |
         cd box64
         mkdir build && cd build
+        # v3.2.5：与 bionic-rootfs/projects/box64/build.sh 同一组参数
+        # （-DBAD_SIGN 为历史笔误，box64 无此选项，正确名 BAD_SIGNAL；
+        #  CMakeLists 逐项核实存在：WINLATOR_GLIBC/ARM64/ARM_DYNAREC/
+        #  BAD_SIGNAL/SD8xx）
         cmake .. \
             -DARM_DYNAREC=ON \
             -DCMAKE_BUILD_TYPE=Release \
             -DWINLATOR_GLIBC=ON \
             -DARM64=ON \
-            -DBAD_SIGN=ON \
+            -DBAD_SIGNAL=ON \
             -DSD845=ON \
             -DSD865=ON \
             -DSD888=ON \
-            -DSD8G2=ON
+            -DSD8G2=ON \
+            -DNO_LIB_INSTALL=ON \
+            -DNO_CONF_INSTALL=ON
 
         make -j4
-        patchelf --set-interpreter /data/data/com.anwind/files/usr/glibc/lib/ld-linux-aarch64.so.1 box64 || true
 
-        # 打包只包含可执行文件，使用 xz 压缩
-        tar -cJf box64-${BOX64_VERSION}-${BUILD_DATE}.tar.xz box64
+        # ---- PT_INTERP / DT_RPATH 改写（硬校验，失败即中止） ----
+        # 旧版指向 /data/data/com.anwind/files/usr/glibc/lib/... 且
+        # `|| true` 吞失败 —— 该目录从未被任何构建产出，设备上 exec
+        # 直接 ENOENT。v3.2.5 统一指到 rootfs 内路径（与 rootfs 配方、
+        # anwind-wine / App 原生链路的布局一致）。
+        GLIBC_LIB_DIR=/data/data/com.anwind/files/rootfs/usr/lib/aarch64-linux-gnu
+        GLIBC_LOADER=${GLIBC_LIB_DIR}/ld-linux-aarch64.so.1
+        patchelf --set-interpreter "$GLIBC_LOADER" box64
+        patchelf --force-rpath --set-rpath "$GLIBC_LIB_DIR" box64
+
+        # 读回校验（不依赖 grep 二进制这种模糊手段）
+        INTERP=$(patchelf --print-interpreter box64)
+        if [ "$INTERP" != "$GLIBC_LOADER" ]; then
+          echo "::error::PT_INTERP 改写未生效: '$INTERP'"
+          exit 1
+        fi
+        echo "[OK] PT_INTERP: $INTERP"
+        echo "[OK] DT_RPATH: $(patchelf --print-rpath box64)"
+        file box64
+
+    - name: 组装 rootfs 布局发行包（含 glibc 运行库）
+      run: |
+        cd box64/build
+
+        # ---- 随包自带 aarch64 glibc 运行库（自包含升级） ----
+        # Ubuntu noble arm64（与 bionic-rootfs/projects/glibc-aarch64
+        # 配方同版本；arm64 包在 ports.ubuntu.com —— archive 仅
+        # amd64/i386 与 25.10+ 新系列 arm64）
+        UBUNTU_PORTS="http://ports.ubuntu.com/ubuntu-ports/pool/main"
+        GLIBC_VER="2.39-0ubuntu8.9"
+        GCC_VER="14.2.0-4ubuntu2~24.04.1"
+        ZLIB_VER="1.3.dfsg-3.1ubuntu2.3"
+
+        STAGE=$(pwd)/anwind-stage
+        ROOTFS_USR=$STAGE/data/data/com.anwind/files/rootfs/usr
+        mkdir -p "$ROOTFS_USR/local/bin" "$ROOTFS_USR/lib/aarch64-linux-gnu"
+
+        cp -p box64 "$ROOTFS_USR/local/bin/box64"
+
+        for deb in \
+          "${UBUNTU_PORTS}/g/glibc/libc6_${GLIBC_VER}_arm64.deb" \
+          "${UBUNTU_PORTS}/g/gcc-14/libgcc-s1_${GCC_VER}_arm64.deb" \
+          "${UBUNTU_PORTS}/g/gcc-14/libstdc++6_${GCC_VER}_arm64.deb" \
+          "${UBUNTU_PORTS}/z/zlib/zlib1g_${ZLIB_VER}_arm64.deb" ; do
+          echo "下载 => $(basename "$deb")"
+          wget -nv --timeout=60 --tries=2 --waitretry=3 "$deb" || {
+            echo "::error::下载失败 => $deb（版本漂移时改本步 GLIBC_VER/GCC_VER/ZLIB_VER）"
+            exit 1
+          }
+        done
+
+        for deb in libc6_${GLIBC_VER}_arm64.deb \
+                   libgcc-s1_${GCC_VER}_arm64.deb \
+                   libstdc++6_${GCC_VER}_arm64.deb \
+                   zlib1g_${ZLIB_VER}_arm64.deb ; do
+          rm -rf deb-extract && mkdir deb-extract
+          dpkg-deb -x "$deb" deb-extract || { echo "::error::解包失败 => $deb"; exit 1; }
+          [ -d deb-extract/usr/lib/aarch64-linux-gnu ] && \
+            cp -a deb-extract/usr/lib/aarch64-linux-gnu/. "$ROOTFS_USR/lib/aarch64-linux-gnu/"
+          [ -d deb-extract/lib/aarch64-linux-gnu ] && \
+            cp -a deb-extract/lib/aarch64-linux-gnu/. "$ROOTFS_USR/lib/aarch64-linux-gnu/"
+        done
+        rm -rf deb-extract
+
+        # ---- 核心文件校验 ----
+        for f in ld-linux-aarch64.so.1 libc.so.6 libm.so.6 libdl.so.2 \
+                 libpthread.so.0 librt.so.1 libgcc_s.so.1 libz.so.1 ; do
+          [ -e "$ROOTFS_USR/lib/aarch64-linux-gnu/$f" ] || {
+            echo "::error::glibc 运行库缺少 $f"; exit 1; }
+        done
+        echo "[OK] 随包 glibc 运行库: $(ls "$ROOTFS_USR/lib/aarch64-linux-gnu" | wc -l) 项"
+
+        # ---- 打包（rootfs 布局，anwind-container install-box64 直接可装） ----
+        PACKAGE_NAME="anwind-box64-${BOX64_VERSION}-${BUILD_DATE}-aarch64-glibc"
+        echo "PACKAGE_NAME=${PACKAGE_NAME}" >> $GITHUB_ENV
+        tar -czf "${PACKAGE_NAME}.tar.gz" -C "$STAGE" .
+        sha256sum "${PACKAGE_NAME}.tar.gz" > checksums.txt
 
     - name: 验证文件存在
       run: |
         cd box64/build
-        ls -la box64-*.tar.xz
-        echo "文件大小: $(du -h box64-${BOX64_VERSION}-${BUILD_DATE}.tar.xz)"
+        ls -lh ${PACKAGE_NAME}.tar.gz checksums.txt
+        tar -tzf ${PACKAGE_NAME}.tar.gz | head -10
+        echo "文件大小: $(du -h ${PACKAGE_NAME}.tar.gz)"
 
     - name: 上传构建产物
       uses: actions/upload-artifact@v4
       with:
-        name: box64-${{ env.BOX64_VERSION }}-${{ env.BUILD_DATE }}
-        path: box64/build/box64-${{ env.BOX64_VERSION }}-${{ env.BUILD_DATE }}.tar.xz
+        name: ${{ env.PACKAGE_NAME }}
+        path: |
+          box64/build/${{ env.PACKAGE_NAME }}.tar.gz
+          box64/build/checksums.txt
 
     - name: 创建 Release 标签
       id: create_tag
@@ -131,7 +231,7 @@ jobs:
       uses: softprops/action-gh-release@v1
       with:
         tag_name: ${{ env.RELEASE_TAG }}
-        name: Box64 ${{ env.BOX64_VERSION }} (aarch64, Termux glibc)
+        name: AnWind Box64 ${{ env.BOX64_VERSION }} (aarch64, glibc)
         body: |
           ### Box64 构建信息
           - **版本**: ${{ env.BOX64_VERSION }}
@@ -139,9 +239,16 @@ jobs:
           - **提交哈希**: ${{ env.COMMIT_HASH }}
           - **分支/标签**: ${{ env.BRANCH_OR_TAG }}
           - **请求的版本**: ${{ env.BOX64_REF }}
-          
-          此构建针对 Termux glibc 环境优化。
-        files: box64/build/box64-${{ env.BOX64_VERSION }}-${{ env.BUILD_DATE }}.tar.xz
+
+          AnWind rootfs 专用 Box64（aarch64 / ARM_DYNAREC / glibc 形态）：
+          - PT_INTERP/DT_RPATH 已 patchelf 指到 rootfs 内
+            `/usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1`，glibc
+            运行库随包自带（自包含，免重建 rootfs）
+          - 一键升级: `anwind-container install-box64 <tar.gz>`（v3.2.5+）
+          - 手动安装: 解包至 /（data/data/com.anwind/... 自动就位）
+        files: |
+          box64/build/${{ env.PACKAGE_NAME }}.tar.gz
+          box64/build/checksums.txt
         draft: false
         prerelease: false
       env:
@@ -150,7 +257,7 @@ jobs:
     - name: 输出完成信息
       run: |
         echo "✅ Box64 构建完成并发布 Release"
-        echo "文件名: box64-$BOX64_VERSION-$BUILD_DATE.tar.xz"
+        echo "文件名: $PACKAGE_NAME.tar.gz"
         echo "Release 标签: $RELEASE_TAG"
         echo "构建版本: $BOX64_VERSION"
         echo "提交: $COMMIT_HASH"

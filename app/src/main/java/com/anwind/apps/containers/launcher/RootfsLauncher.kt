@@ -391,6 +391,19 @@ object RootfsLauncher {
                             "请用新 CI 重跑 build-wine-bionic（x86_64 形态）并重装该包"
                     )
                 }
+                // v3.2.5：glibc 形态 box64 的加载器自检 —— PT_INTERP 指向
+                // rootfs 内 ld-linux-aarch64.so.1（glibc-aarch64 配方/随包
+                // 提供）；缺失时 exec 直接 ENOENT、会话零输出即死，把结论
+                // 前置进日志（bionic 形态 box64 不含该字符串，零打扰）。
+                if (resolved.backend == ContainerBackend.BOX64 &&
+                    WineRuntime.box64GlibcLoaderMissing()
+                ) {
+                    sink.stamp(
+                        "警告: box64 为 glibc 形态但加载器缺失（${WineRuntime.GLIBC_LOADER.absolutePath}）——" +
+                            "exec 将以 ENOENT 失败（零输出/秒退）；" +
+                            "请执行 anwind-container install-box64 <新版 tar.gz>（含 lib/aarch64-linux-gnu）或重建 rootfs"
+                    )
+                }
             }
 
             // 6b) Android 安全默认 + arm64ec 仿真器 DLL（v3.1.4）：

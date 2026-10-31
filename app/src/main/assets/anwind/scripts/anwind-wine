@@ -626,6 +626,19 @@ apply_box64_env() {
     if [ -d "$RFS_USR/lib/x86_64-linux-gnu" ]; then
         export BOX64_LD_LIBRARY_PATH="$RFS_USR/lib/x86_64-linux-gnu${BOX64_LD_LIBRARY_PATH:+:$BOX64_LD_LIBRARY_PATH}"
     fi
+    # v3.2.5：glibc 形态 box64 的加载器自检 —— CI 构建的 box64 是
+    # glibc 链接 ELF（PT_INTERP 已被配方 patchelf 指到 rootfs 内的
+    # ld-linux-aarch64.so.1，运行库由 glibc-aarch64 配方/随包提供）。
+    # 加载器缺失时 exec 直接 ENOENT（"not found"），会话零输出即死
+    # —— 把结论前置进日志，不再让用户对着空输出猜原因。
+    # （.interp 字符串出现在二进制头部，grep 即判形态；bionic 形态
+    #  box64 不含该字符串，零打扰。）
+    if [ -n "$BOX64_BIN" ] && [ -f "$BOX64_BIN" ] \
+        && grep -aq "ld-linux-aarch64.so.1" "$BOX64_BIN" 2>/dev/null \
+        && [ ! -e "$RFS_USR/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1" ]; then
+        warn "box64 为 glibc 形态，但 rootfs 缺少 $RFS_USR/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1"
+        warn "→ exec 将以 ENOENT 失败（表现为零输出/退出码 127）；执行 anwind-container install-box64 <新版 tar.gz>（含 glibc 运行库）或重建 rootfs"
+    fi
     case "$_preset" in
         compatibility)
             export BOX64_DYNAREC_BIGBLOCK=0

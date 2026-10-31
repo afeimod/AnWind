@@ -1,17 +1,24 @@
-name: AnWind Bionic Box64 (aarch64)
+name: AnWind Box64 (aarch64, glibc)
 
 # ============================================================
-# 构建面向 AnWind bionic rootfs 的 Box64（aarch64 / ARM_DYNAREC）
+# 构建面向 AnWind bionic rootfs 的 Box64（aarch64 / ARM_DYNAREC / glibc 形态）
 # ------------------------------------------------------------
-# -DANDROID=1：按 Android/bionic 目标构建（MiceWine 同款参数）
-# -DBAD_SIGNAL=1：规避 bionic 信号栈差异
-# -DARM_DYNAREC=1：aarch64 动态二进制翻译（运行 x86_64 wine 核心）
+# v3.2.5：bionic 形态（-DANDROID=1，NDK clang）真实 wine 负载 SIGSEGV
+# （设备日志：冒烟可过、wineboot 秒退 139 零输出），切换到 glibc 形态
+# （Winlator/MiceWine 同款 -DWINLATOR_GLIBC=1，aarch64-linux-gnu-gcc
+# 交叉构建）。
+# 运行时前提由配方链自动满足：
+#   * deps=glibc-aarch64（Ubuntu noble arm64 deb → $prefix/lib/
+#     aarch64-linux-gnu/，含 ld-linux-aarch64.so.1）
+#   * install 阶段 patchelf --set-interpreter/--set-rpath 指到 rootfs
+#     设备绝对路径，glibc 运行库随包自带（自包含升级）
 # 默认 v0.4.4：对齐 hangover-11.16 官方配套（hangover↔box64 的
 # PE/wow64 协议版本敏感，错配可致 wineboot SEH 级联崩溃）
-# 产物：anwind-box64-<ver>-aarch64-bionic.tar.gz
-#   设备安装：anwind-container install-box64（v2.2+ 一键升级，旧版
-#   自动备份/验证回滚）；或手动解包至 /（data/data/com.anwind/... 布局），
-#   anwind-container 自动从 /usr/local/bin/box64 探测。
+# 产物：anwind-box64-<ver>-aarch64-glibc.tar.gz
+#   设备安装：anwind-container install-box64（v3.2.5+ 一键升级，旧版
+#   自动备份/验证回滚，glibc 运行库一并落位）；或手动解包至 /
+#   （data/data/com.anwind/... 布局），anwind-container 自动从
+#   /usr/local/bin/box64 探测。
 # ============================================================
 
 on:
@@ -85,14 +92,17 @@ jobs:
         uses: actions/cache@v4
         with:
           path: bionic-rootfs/bionic_ccache
-          key: anwind-bionic-ccache-aarch64-box64-v1
+          key: anwind-bionic-ccache-aarch64-box64-glibc-v2
           restore-keys: |
+            anwind-bionic-ccache-aarch64-box64-glibc-v2
             anwind-bionic-ccache-aarch64-v1
             anwind-bionic-ccache-v1
 
       # ============ 5. 构建 box64 ============
-      # box64 无 rootfs 库依赖（纯 bionic），但构建系统仍会自动补齐
-      # 其声明依赖；配方按 ANWIND_BOX64_REF 检出指定版本
+      # v3.2.5：glibc 形态（aarch64-linux-gnu-gcc 交叉 + WINLATOR_GLIBC）。
+      # 构建系统按 deps=glibc-aarch64 自动先建 glibc 运行库（arm64 deb）
+      # 并解压进 live prefix；box64 配方 install 阶段 patchelf 改写
+      # PT_INTERP/RPATH 并把 glibc 运行库随包自带。
       - name: 构建 Box64 aarch64
         shell: bash
         run: |
@@ -138,6 +148,28 @@ jobs:
           else
             echo "  [!!] 非 aarch64 ELF，请检查构建"; exit 1
           fi
+          echo "=== glibc 形态校验（v3.2.5） ==="
+          # 1) PT_INTERP 必须指到 rootfs 内加载器（patchelf 读回）
+          INTERP=$(patchelf --print-interpreter "$B")
+          EXPECTED_INTERP=/data/data/com.anwind/files/rootfs/usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1
+          if [[ "$INTERP" == "$EXPECTED_INTERP" ]]; then
+            echo "  [OK] PT_INTERP: $INTERP"
+          else
+            echo "  [!!] PT_INTERP 错误: '$INTERP'（期望 $EXPECTED_INTERP）"; exit 1
+          fi
+          # 2) DT_RPATH 必须指到 glibc 运行库目录
+          RPATH=$(patchelf --print-rpath "$B")
+          if [[ "$RPATH" == "/data/data/com.anwind/files/rootfs/usr/lib/aarch64-linux-gnu"* ]]; then
+            echo "  [OK] DT_RPATH: $RPATH"
+          else
+            echo "  [!!] DT_RPATH 错误: '$RPATH'"; exit 1
+          fi
+          # 3) glibc 运行库必须随包自带（自包含升级，install-box64 免重建 rootfs）
+          GLIBC_DIR=/tmp/box64-verify/data/data/com.anwind/files/rootfs/usr/lib/aarch64-linux-gnu
+          for f in ld-linux-aarch64.so.1 libc.so.6 libm.so.6 libdl.so.2 libpthread.so.0 librt.so.1 libgcc_s.so.1 libz.so.1; do
+            [[ -e "$GLIBC_DIR/$f" ]] || { echo "::error::随包 glibc 运行库缺少 $f"; exit 1; }
+          done
+          echo "  [OK] 随包 glibc 运行库: $(ls "$GLIBC_DIR" | wc -l) 项"
 
       # ============ 7. 打包发行 ============
       - name: 打包 box64 发行包
@@ -145,7 +177,7 @@ jobs:
           PKG_TAR=$(ls "${GITHUB_WORKSPACE}/bionic-rootfs/pkgs/"box64-*aarch64.tar | head -n 1)
           BOX64_VER=$(basename "$PKG_TAR" | sed -e 's/^box64-//' -e 's/-aarch64\.tar$//')
           echo "BOX64_VER=${BOX64_VER}" >> "$GITHUB_ENV"
-          PACKAGE_NAME="anwind-box64-${BOX64_VER}-aarch64-bionic"
+          PACKAGE_NAME="anwind-box64-${BOX64_VER}-aarch64-glibc"
           echo "PACKAGE_NAME=${PACKAGE_NAME}" >> "$GITHUB_ENV"
           cd "${GITHUB_WORKSPACE}"
           tar -czf "${PACKAGE_NAME}.tar.gz" -C /tmp/box64-verify .
@@ -176,16 +208,22 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: bionic-box64-${{ env.BOX64_VER }}
-          name: AnWind Bionic Box64 ${{ env.BOX64_VER }} (aarch64)
+          name: AnWind Box64 ${{ env.BOX64_VER }} (aarch64, glibc)
           body: |
-            AnWind bionic rootfs 专用 Box64（aarch64 / ARM_DYNAREC / ANDROID=1）
+            AnWind rootfs 专用 Box64（aarch64 / ARM_DYNAREC / glibc 形态）
 
-            - 一键升级: `anwind-container install-box64`（v2.2+，旧版自动备份/验证回滚）
-            - 手动安装: 解包 `anwind-box64-*.tar.gz` 至 /（data/data/com.anwind/... 自动就位）
-            - 安装后 anwind-container 自动探测 /usr/local/bin/box64
+            - v3.2.5 起为 **glibc 形态**（aarch64-linux-gnu-gcc 交叉构建 +
+              WINLATOR_GLIBC；bionic 形态真实 wine 负载 SIGSEGV 已弃用）
+            - PT_INTERP/DT_RPATH 已 patchelf 指到 rootfs 内
+              `/usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1`，
+              glibc 运行库随包自带（自包含，免重建 rootfs）
+            - 一键升级: `anwind-container install-box64 <tar.gz>`（v3.2.5+，
+              自动备份/校验/回滚）
+            - 手动安装: 解包 `anwind-box64-*.tar.gz` 至 /（data/data/
+              com.anwind/... 自动就位），anwind-container 自动探测
+              /usr/local/bin/box64
             - 用途: 在 aarch64 设备上运行 x86_64 Wine（backend=box64）；
-              同时是 hangover 兑底后端的 i386 模拟依赖 —— v0.4.4 为
-              hangover-11.16 官方配套版本（错配可致 wineboot SEH 级联崩溃）
+              v0.4.4 为 hangover-11.16 官方配套版本
           files: |
             ${{ env.PACKAGE_NAME }}.tar.gz
             checksums-box64-aarch64.txt
