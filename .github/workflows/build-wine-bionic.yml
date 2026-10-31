@@ -446,6 +446,13 @@ jobs:
                 "$W/opt/lib/wine/aarch64-windows/kernel32.dll" \
                 "$W/opt/lib/wine/aarch64-windows/ntdll.dll" \
                 "$W/opt/lib/wine/aarch64-windows/winex11.drv" || MISS=1
+            elif [[ "$WINE_KIND_ARM" == "arm64ec-split-wow64-x11" ]]; then
+              # v3.2.4：wine <10 树（official 9.x 等）无 ARM64X 混合 —— arm64ec PE
+              # 独立 arm64ec-windows/ 目录，aarch64-windows/ 为纯 aarch64 DLL（校验
+              # CHPE 元数据必失败）。改为校验 EC 侧关键产物存在性。
+              echo "  [SKIP-ARM64X] wine<10 split 布局：arm64ec PE 独立目录（无 ARM64X 混合）"
+              check "$W/opt/lib/wine/arm64ec-windows/ntdll.dll"
+              check "$W/opt/lib/wine/arm64ec-windows/kernel32.dll"
             else
               echo "  [SKIP] 源码树不支持 arm64ec，已降级 aarch64,i386（跳过 ARM64X 校验）"
               echo "         该包运行 ARM64/i386 Windows 程序；x86_64 PE 需换用三大默认源或 x86_64 形态"

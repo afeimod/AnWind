@@ -229,8 +229,9 @@ object WineEnvironment {
      *      同一守卫块 —— [WineRegistry.loaderSmokeTest] 已在测试前剥离，
      *      不受影响。
      *    - 子进程不经该变量（preloader_exec 不检查它）—— 子进程的
-     *      预加载器风险由 [WineLayoutRepair] 的 bin/*-preloader 停用
-     *      根治（ENOENT 官方兕底直连 loader）；本变量让首进程先不走弯路。
+     *      预加载器风险由 [WineLayoutRepair] 停用 bin 目录下的
+     *      `*-preloader` 文件根治（ENOENT 官方兜底直连 loader）；
+     *      本变量让首进程先不走弯路。
      *
      * ①c（v3.2.3 勘误）：此前版本在此处导出过 WINE_DISABLE_KERNEL_WRITEWATCH=1，
      *    但全 wine 源码（proton_10.0 / wine-10.0 / hangover-11.16）均无此变量，

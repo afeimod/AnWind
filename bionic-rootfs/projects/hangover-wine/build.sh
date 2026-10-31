@@ -163,6 +163,28 @@ pre_setup() {
     fi
   done
 
+  # v3.2.4：winebuild 汇编器路径硬校验（防御性升级）。using_cc=1（9999=
+  # 11.16 树形态 / 9999b=9.x+proton 树形态，按树形态互斥套用）是 aarch64
+  # 交叉构建的硬前提：winebuild 组装 PE .s 汇编必须经 cc_command（带
+  # 正确 -target 的交叉 clang）；using_cc=0 时回退宿主裸 clang/as，宿主
+  # 是 x86_64 runner，汇编 aarch64 代码必失败。此前补丁全落空只打一行
+  # 警告、构建继续 —— 28 分钟后死在编译深处、根因难查（CI run#36
+  # official-9.2 arm64ec 排查实录）。此处升级为立即失败 + 明示补丁锚点，
+  # 未来树结构漂移 1 秒内报清根因。
+  if ! grep -q "int using_cc = 1;" "${srcDir}/${pjName}/tools/winebuild/utils.c" 2>/dev/null; then
+    echo "::error::winebuild 汇编器补丁（9999/9999b，using_cc=1）未套用 —— 本源码树形态需新增变体补丁"
+    echo "   位置: tools/winebuild/utils.c get_as_command()（9999=11.16 树形态 / 9999b=9.x+proton 树形态）"
+    echo "   后果: aarch64 交叉构建的 PE .s 汇编将以宿主 x86_64 clang 执行，构建必失败"
+    return 1
+  fi
+  # winegcc android 三元组变换（9998/9998b/9998c/9998d 按树形态互斥）：
+  # 命不中仅告警（x86_64 形态 wine-9.2 曾在全部未命中下构建成功 —— 非硬性
+  # 依赖；但 aarch64 交叉下 NDK 裸三元组风险更高，亮出来便于排查）。
+  if ! grep -qF 'strmake( "%s24"' "${srcDir}/${pjName}/tools/winegcc/winegcc.c" 2>/dev/null; then
+    echo "⚠️  winegcc android 目标补丁（9998 系列全部变体）未命中 —— winegcc 将向 NDK clang 传裸 android 三元组"
+    echo "    若后续 unix 侧编译报 NDK 三元组/API level 类错误，需为该树形态新增 9998 系列变体"
+  fi
+
   mkdir -p "${srcDir}/${pjName}/wine-tools-build"
   cd "${srcDir}/${pjName}/wine-tools-build"
   FREETYPE_CFLAGS=-I/usr/include/freetype2 FREETYPE_LIBS=-lfreetype ../configure \
@@ -675,8 +697,19 @@ pre_package() {
     local _kind="arm64-wow64-x11"
     if grep -q "aarch64|arm64ec" "${srcDir}/${pjName}/configure.ac" 2>/dev/null || \
        grep -q "aarch64|arm64ec" "${srcDir}/${pjName}/configure" 2>/dev/null; then
-      _kind="arm64ec-wow64-x11"
       _isArm64ec=1
+      if grep -q "arm64x" "${srcDir}/${pjName}/tools/makedep.c" 2>/dev/null; then
+        _kind="arm64ec-wow64-x11"
+      else
+        # v3.2.4：wine <10 树（official 9.x 等）—— configure 已接受 arm64ec
+        # （archs 校验分支存在），但 makedep 无 ARM64X 混合生成：arm64ec PE
+        # 独立产出 arm64ec-windows/ 目录，不并入 aarch64-windows/（其 DLL
+        # 为纯 aarch64）。功能上仍是完整 arm64ec 形态（_isArm64ec=1，FEX
+        # 注入照常），但下游 ARM64X 混合校验必须跳过（对纯 aarch64 DLL
+        # 校验 CHPE 元数据必失败，1.5 小时构建后误杀整包）。
+        _kind="arm64ec-split-wow64-x11"
+        echo "提示: 源码树无 ARM64X 混合（wine <10）—— arm64ec PE 独立 arm64ec-windows/ 目录"
+      fi
     fi
     cat > "${_wineDir}/.anwind-wine-info" << EOF
 kind=${_kind}
@@ -746,6 +779,17 @@ EOF
         echo "错误: 仿真器 DLL 注入异常（仅 ${_hit}/3 个），x86_64/i386 程序将无法运行"
         return 1
       }
+      # v3.2.4：split 布局（wine <10，无 ARM64X 合并）双目录注入 —— EC 进程
+      # 的 DLL 搜索首选 arm64ec-windows/（独立目录），仿真器 DLL 必须同时
+      # 落两处（App 侧探测点仍是 aarch64-windows/libarm64ecfex.dll，不受影
+      # 响）。目录不存在（ARM64X 树）自然跳过，零行为变化。
+      local _ecDir="${_wineDir}/lib/wine/arm64ec-windows"
+      if [[ -d "${_ecDir}" ]] && [[ ! -f "${_ecDir}/libarm64ecfex.dll" ]]; then
+        for _dll in libarm64ecfex.dll libwow64fex.dll wowbox64.dll; do
+          [[ -f "${_fexTmp}/${_dll}" ]] && cp -p "${_fexTmp}/${_dll}" "${_ecDir}/${_dll}"
+        done
+        echo "已同步注入仿真器 DLL → lib/wine/arm64ec-windows/（split 布局双目录）"
+      fi
       echo "仿真器 DLL 注入完成（${_hit} 个）—— 运行期默认：HODLL64=libarm64ecfex.dll HODLL=libwow64fex.dll"
     fi
   fi

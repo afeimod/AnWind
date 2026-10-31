@@ -78,8 +78,9 @@ object WineProbePatch {
     /**
      * 对 wine 目录做探测改写（幂等、不阻断启动链）。
      *
-     * 目标文件：`lib/wine/*-unix/ntdll.so`（fsync_init/do_fsync 所在）与
-     * wineserver（旧布局 bin/ 真实 ELF；新布局符号链接解析回 lib 侧真实文件）。
+     * 目标文件：`lib/wine` 目录下各 `*-unix` 形态里的 `ntdll.so`
+     * （fsync_init/do_fsync 所在）与 wineserver（旧布局 bin/ 真实 ELF；
+     * 新布局符号链接解析回 lib 侧真实文件）。
      *
      * @param wineDir wine 安装目录（/usr/opt/<槽位>）
      * @param log     决策行回调（只在真实发生改写时输出，正常启动零噪音）
