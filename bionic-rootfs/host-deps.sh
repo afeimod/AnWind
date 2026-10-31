@@ -18,6 +18,9 @@ archPkgs=(
   lz4
   unzip
 
+  # box64（glibc 形态）改写 ELF 解释器/RUNPATH 用
+  patchelf
+
   gobject-introspection
 
   gperf
@@ -45,13 +48,6 @@ debianPkgs=(
   ccache
   cmake
   ninja-build
-  # v3.2.5：box64 glibc 形态交叉构建（aarch64-linux-gnu-gcc 带 glibc
-  # sysroot；bionic NDK 工具链产出的 box64 真实负载 SIGSEGV，已弃用）
-  gcc-aarch64-linux-gnu
-  g++-aarch64-linux-gnu
-  # v3.2.5：box64 PT_INTERP/DT_RPATH 改写（glibc 形态在 Android 上
-  # exec 的硬前提；wine/hangover 配方的 llvm-mingw 路径与它无关）
-  patchelf
   bzip2
   xz-utils
   zstd
@@ -60,6 +56,12 @@ debianPkgs=(
   ncompress
   lz4
   unzip
+  # box64（glibc 形态）所需：aarch64 glibc 交叉编译器
+  # （依赖闭包自带 libc6-dev-arm64-cross，与 glibc-aarch64
+  #   配方安装的 noble 运行库同源同版本 2.39，编译/运行匹配）
+  # 与 ELF 解释器/RUNPATH 改写工具
+  gcc-aarch64-linux-gnu
+  patchelf
   gobject-introspection
   gperf
   glslang-tools
@@ -101,6 +103,15 @@ if [[ -f /etc/os-release ]]; then
     pacman-key --init
     pacman -Syyu --noconfirm || exit 1
     pacman -S --noconfirm --needed ${archPkgs[@]} || exit 1
+    # box64（glibc 形态）交叉工具链：Arch 官方 extra 提供
+    # aarch64-linux-gnu-gcc/glibc；镜像未同步时仅告警不阻断
+    # （只影响 box64 配方，不影响其余配方）
+    if pacman -Si aarch64-linux-gnu-gcc >/dev/null 2>&1; then
+      pacman -S --noconfirm --needed aarch64-linux-gnu-gcc aarch64-linux-gnu-glibc \
+        || echo "警告: aarch64-linux-gnu-gcc 安装失败（box64 glibc 配方将不可用）"
+    else
+      echo "警告: 仓库无 aarch64-linux-gnu-gcc（仅影响 box64 配方；CI 在 Ubuntu 上不受影响）"
+    fi
     pip install PyYAML --break-system-packages || python3 -m pip install PyYAML --break-system-packages || true
     sed -i 's/^#[[:space:]]*\(en_US.UTF-8\)/\1/' /etc/locale.gen && locale-gen
     ;;
@@ -174,6 +185,14 @@ if [[ -f /etc/os-release ]]; then
         || echo "警告: libtool 仍不可用（当前配方链已不依赖；若新增 autogen 包需注意）"
     fi
     command -v libtool >/dev/null 2>&1 && libtool --version | head -1 || true
+    # box64（glibc 形态）构建前置校验：交叉工具链与 patchelf 缺失
+    # 会让 box64 配方在构建中途才折掉，这里提前硬校验给出可读错误
+    command -v aarch64-linux-gnu-gcc >/dev/null 2>&1 \
+      || { echo "错误: aarch64-linux-gnu-gcc 不可用（box64 glibc 配方构建必需，请检查 apt 源）"; exit 1; }
+    aarch64-linux-gnu-gcc --version | head -1
+    command -v patchelf >/dev/null 2>&1 \
+      || { echo "错误: patchelf 不可用（box64 配方构建必需）"; exit 1; }
+    patchelf --version | head -1
     sed -i 's/^#[[:space:]]*\(en_US.UTF-8\)/\1/' /etc/locale.gen && locale-gen
     ;;
   *)
