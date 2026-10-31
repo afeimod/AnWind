@@ -1,4 +1,4 @@
-revision="noble"
+revision="2.39-0ubuntu8.9"
 urlType="others"
 arch="aarch64"
 buildSys="others"
@@ -6,181 +6,176 @@ license="LGPL-2.1+"
 pkgSrcDir="${wsDir}/projects/glibc-aarch64"
 
 # ============================================================
-# box64 用的 aarch64 glibc 运行库 + 私有加载器
-# （usr/lib/aarch64-linux-gnu，含 ld-linux-aarch64.so.1）
+# bionic-box64 用的 aarch64 glibc 运行库（usr/lib/aarch64-linux-gnu）
 # ------------------------------------------------------------
-# 【设备实测根因】aarch64 rootfs 的 box64 需要自己的
-# ld-linux-aarch64.so.1 —— 此前 rootfs 里根本没有，box64 也
-# 没有 patchelf 指向它。本配方在 bionic-rootfs 构建体系内
-# 补齐这一层（与既有 glibc-x86_64 配方同一思路，不引入任何
-# 体系外的 glibc 环境）：
-#   * 从 Ubuntu noble【arm64】的 libc6 / libgcc-s1 / libstdc++6 /
-#     zlib1g 四个核心 deb 取运行库，平铺安装到
-#       ${prefix}/lib/aarch64-linux-gnu/
-#     其中 ld-linux-aarch64.so.1 是 box64 配方 patchelf
-#     --set-interpreter 的钉死目标
-#   * bionic 加载器（linker64）永不搜索该目录，与 rootfs 自身
-#     库零串扰；只有被 patchelf 到私有加载器上的 glibc 程序
-#     （box64）使用它
-#   * 编译侧对齐：box64 配方用宿主交叉工具链
-#     aarch64-linux-gnu-gcc 构建（noble 同源 glibc 2.39），
-#     编译期与运行期版本一致
-# 仅 aarch64 rootfs 需要（x86_64 设备原生运行，无需模拟层）。
+# 背景（设备日志 wine-9.2-1 实证）：桌面 wine 容器的 box64 是
+# glibc 链接形态（终端 box64 同款 WINLATOR_GLIBC 模型，见
+# projects/box64/build.sh），其 PT_INTERP 由 patchelf 钉到
+#   /data/data/com.anwind/files/rootfs/usr/lib/aarch64-linux-gnu/
+#   ld-linux-aarch64.so.1
+# 该加载器与配套 glibc 运行库【必须随 bionic-rootfs 构建体系产
+# 出并安装进 rootfs】，否则 box64 在设备上直接段错误（退出码
+# 139、零输出）—— 此前 rootfs 缺整个 aarch64-linux-gnu 目录。
 #
-# 版本发现（防 pool 漂移）：
-#   arm64 二进制不在 archive.ubuntu.com（那里只有 amd64/i386），
-#   在 ports.ubuntu.com/ubuntu-ports。旧版 glibc-x86_64 配方把
-#   版本号写死在 URL 里，pool 清理旧修订后即 404（其注释自证：
-#   "1.3.dfsg-3.1ubuntu2.2 已 404，导致 CI 整轮报废"）。本配方
-#   改为解析 noble 套件索引（noble-updates → noble-security →
-#   noble 逐级查找，dpkg 比较取最高版本）自动锁定当前存活
-#   版本，不随上游清理报废。
-# 环境变量覆盖（需钉死版本时用）：
-#   ANWIND_PORTS_URL       镜像根（默认 http://ports.ubuntu.com/ubuntu-ports）
-#   ANWIND_GLIBC_AARCH64_URL / ANWIND_GCC_AARCH64_URL /
-#   ANWIND_ZLIB_AARCH64_URL 直接指定 deb 完整 URL（优先级最高，
-#   适合内网镜像或离线场景）
+# 与 glibc-x86_64 配方（仓库既有、已随 rootfs 交付验证）完全同构：
+#   * glibc-x86_64 面向"box64 仿真的 x86_64 glibc 程序"
+#     （usr/lib/x86_64-linux-gnu，仿真侧加载器）
+#   * 本配方面向"box64 自身的宿主侧"（usr/lib/aarch64-linux-gnu，
+#     PT_INTERP 由内核直接加载，真机原生执行）
+#   两个目录只有 box64 会用（rootfs 自身库全部 bionic 链接、走
+#   Android linker64，永不搜索这两个目录），零串扰。
+#
+# 实现（glibc-x86_64 同款思路，位置对齐 Debian 布局）：
+#   * 从 Ubuntu noble（glibc 2.39，与 ubuntu-24.04 CI 宿主的
+#     aarch64-linux-gnu-gcc 交叉工具链同源，ABI 严格一致）的
+#     ports.ubuntu.com 抓取 libc6 / libgcc-s1 / libstdc++6 /
+#     zlib1g 四个核心 deb（arm64）
+#   * 版本优先从 noble 套件索引（Packages.gz）自动发现存活版本，
+#     防 Ubuntu pool 清理旧修订导致 404 报废整轮 CI（glibc-x86_64
+#     配方已吃过 zlib 1.3.dfsg-3.1ubuntu2.2 被 404 的亏）；
+#     可用环境变量钉死版本绕过发现（ANWIND_GLIBC_VER 等）
+#   * 解包后把 usr/lib/aarch64-linux-gnu/* 平铺安装到
+#       $prefix/lib/aarch64-linux-gnu/
+#     （含 ld-linux-aarch64.so.1；usrmerge 后实体就在该目录）
+# 仅 aarch64 rootfs 需要（x86_64 设备原生运行 wine，无 box64）。
 # ============================================================
 
-PORTS_URL="${ANWIND_PORTS_URL:-http://ports.ubuntu.com/ubuntu-ports}"
-POCKETS="${ANWIND_AARCH64_POCKETS:-noble-updates noble-security noble}"
+UBUNTU_PORTS="http://ports.ubuntu.com/ubuntu-ports"
+# 套件优先级：updates > security > 基础 noble（新修订通常在 updates/security）
+SUITES="noble-updates noble-security noble"
 
-# 目标包（Debian 源码包 → 运行库 deb）
-PKG_LIBC6="libc6"
-PKG_LIBGCC="libgcc-s1"
-PKG_LIBSTDCXX="libstdc++6"
-PKG_ZLIB="zlib1g"
+# 版本钉死（可选）：设置任一 ANWIND_*_VER 即跳过索引发现，直接用
+# 指定版本构造 pool URL。未设置时从 Packages.gz 自动发现存活版本。
+GLIBC_VER="${ANWIND_GLIBC_VER:-}"
+GCC_VER="${ANWIND_GCC_VER:-}"
+ZLIB_VER="${ANWIND_ZLIB_VER:-}"
+
+# 索引不可用时的硬编码兜底版本（若届时 pool 也已清理，构建会在
+# 下载步骤报错并提示用环境变量钉死存活版本）
+GLIBC_FALLBACK="2.39-0ubuntu8.9"
+GCC_FALLBACK="14.2.0-4ubuntu2~24.04.1"
+ZLIB_FALLBACK="1.3.dfsg-3.1ubuntu2.3"
+
+# deb 规格表：包名 | pool 子目录 | 版本环境变量名 | 硬编码兜底
+# pool 路径规律：libc6 在 g/glibc/，libgcc-s1 与 libstdc++6 在
+# g/gcc-14/（noble 的 gcc 主版本），zlib1g 在 z/zlib/
+DEB_SPECS="
+libc6|g/glibc|GLIBC_VER|2.39-0ubuntu8.9
+libgcc-s1|g/gcc-14|GCC_VER|14.2.0-4ubuntu2~24.04.1
+libstdc++6|g/gcc-14|GCC_VER|14.2.0-4ubuntu2~24.04.1
+zlib1g|z/zlib|ZLIB_VER|1.3.dfsg-3.1ubuntu2.3
+"
+
+# 从套件索引里发现某个包当前存活的版本与 pool 文件名。
+# 输出 "<version> <pool相对路径>"（单行）；找不到返回非 0。
+discover_pkg() {
+  local _pkg="$1" _suite _idx _hit
+  for _suite in ${SUITES}; do
+    _idx="${srcDir}/${pjName}/pkgindex/${_suite}.gz"
+    [[ -f "${_idx}" ]] || continue
+    _hit="$(zcat "${_idx}" 2>/dev/null | awk -v pkg="${_pkg}" '
+      /^Package: /{ p = ($2 == pkg) }
+      p && /^Version: /{ v = $2 }
+      p && /^Filename: /{ f = $2; print v, f; p = 0 }
+    ' | sort -V | tail -n 1)"
+    [[ -n "${_hit}" ]] && { echo "${_hit}"; return 0; }
+  done
+  return 1
+}
 
 custom_url() {
   # 必须用绝对路径：get_src 在 cd "${srcDir}" 后调用本函数，而
   # extra_fuction 执行时构建系统已 cd 进 pkgSrcDir（源码树目录），
-  # 相对路径在两个阶段指向不同位置 -> 下载成功但校验报"缺少已下载
-  # 的包"（glibc-x86_64 配方 CI run#14 的老坑，此处照抄防护）。
-  local _debDir="${srcDir}/${pjName}"
-  local _idxDir="${_debDir}/pkgindex"
-  local _found
+  # 相对路径在两个阶段指向不同位置（glibc-x86_64 配方注释同款坑）。
+  local _spec _pkg _poolDir _verVar _fallback _ver _url _name
+  local _urls=()
+  mkdir -p "${srcDir}/${pjName}/pkgindex"
 
-  mkdir -p "${_debDir}" "${_idxDir}"
-
-  # ---- 逐包解析存活版本（URL 覆盖优先） ----
-  # resolve_pkg <包名>：从套件索引解析，stdout 输出 "版本|相对路径"，
-  # 三个 pocket 中取 dpkg 版本最高者；全部落空时 stderr 报错并 return 1
-  # （注意：本函数在命令替换子 shell 里运行，错误必须走 stderr、
-  # 失败必须用返回码——子 shell 里的 exit 1 不会中止父进程）
-  resolve_pkg() {
-    local _want="$1"
-    local _bestV="" _bestF="" _v _f _line _pocket
-    for _pocket in ${POCKETS}; do
-      # 索引每轮构建只拉一次：get_src 进入前会 rm -rf ${srcDir}/${pjName}，
-      # 整个下载目录每轮都是全新的，这里的“存在即复用”只在本次
-      # custom_url 的 4 次解析之间生效（12 次下载缩为 3 次），
-      # 不存在跨构建的陈旧索引问题
-      if [[ ! -s "${_idxDir}/Packages-${_pocket}.gz" ]]; then
-        wget -nv --timeout=90 --tries=2 --waitretry=3 \
-          -O "${_idxDir}/.tmp-${_pocket}.gz" \
-          "${PORTS_URL}/dists/${_pocket}/main/binary-arm64/Packages.gz" \
-          || { echo "警告: 套件索引下载失败 => ${_pocket}" >&2; continue; }
-        mv -f "${_idxDir}/.tmp-${_pocket}.gz" "${_idxDir}/Packages-${_pocket}.gz"
-      fi
-      _line="$(zcat "${_idxDir}/Packages-${_pocket}.gz" 2>/dev/null | awk -v _want="$_want" '
-        /^Package: / { p=$2 }
-        /^Version: / { v=$2 }
-        /^Filename: / { f=$2 }
-        /^$/ { if (p==_want) print v "|" f; p=v=f="" }
-        END { if (p!="" && p==_want) print v "|" f }' | tail -n 1)"
-      [[ -n "${_line}" ]] || continue
-      _v="${_line%%|*}"
-      _f="${_line#*|}"
-      if [[ -z "${_bestV}" ]] || dpkg --compare-versions "${_v}" gt "${_bestV}"; then
-        _bestV="${_v}"
-        _bestF="${_f}"
-      fi
-    done
-    if [[ -z "${_bestF}" ]]; then
-      echo "错误: 套件索引中找不到 ${_want}（arm64/main，口袋: ${POCKETS}）" >&2
-      return 1
-    fi
-    echo "${_bestV}|${_bestF}"
-  }
-
-  DEB_PATHS=()
-  DEB_NAMES=()
-
-  # URL 直覆盖（不走索引发现）
-  if [[ -n "${ANWIND_GLIBC_AARCH64_URL:-}" ]]; then
-    DEB_PATHS+=("${ANWIND_GLIBC_AARCH64_URL}")
-  else
-    _found="$(resolve_pkg "${PKG_LIBC6}")" \
-      || { echo "错误: 解析 libc6 版本失败（索引不可达或包被移除）" && exit 1; }
-    echo "libc6 => ${_found%%|*}"
-    DEB_PATHS+=("${PORTS_URL}/${_found#*|}")
-  fi
-  if [[ -n "${ANWIND_GCC_AARCH64_URL:-}" ]]; then
-    DEB_PATHS+=("${ANWIND_GCC_AARCH64_URL}")
-  else
-    _found="$(resolve_pkg "${PKG_LIBGCC}")" \
-      || { echo "错误: 解析 libgcc-s1 版本失败" && exit 1; }
-    echo "libgcc-s1 => ${_found%%|*}"
-    DEB_PATHS+=("${PORTS_URL}/${_found#*|}")
-    _found="$(resolve_pkg "${PKG_LIBSTDCXX}")" \
-      || { echo "错误: 解析 libstdc++6 版本失败" && exit 1; }
-    echo "libstdc++6 => ${_found%%|*}"
-    DEB_PATHS+=("${PORTS_URL}/${_found#*|}")
-  fi
-  if [[ -n "${ANWIND_ZLIB_AARCH64_URL:-}" ]]; then
-    DEB_PATHS+=("${ANWIND_ZLIB_AARCH64_URL}")
-  else
-    _found="$(resolve_pkg "${PKG_ZLIB}")" \
-      || { echo "错误: 解析 zlib1g 版本失败" && exit 1; }
-    echo "zlib1g => ${_found%%|*}"
-    DEB_PATHS+=("${PORTS_URL}/${_found#*|}")
-  fi
-
-  # ---- 下载 ----
-  local _deb _name
-  for _deb in "${DEB_PATHS[@]}"; do
-    _name="$(basename "${_deb}")"
-    echo "下载 => ${_name}"
+  # 下载套件索引（失败仅告警：版本发现是兜底能力，失败回退硬编码）
+  for _spec in ${SUITES}; do
     wget -nv --timeout=60 --tries=2 --waitretry=3 \
-      -O "${_debDir}/${_name}" "${_deb}" \
-      || { echo "下载失败 => ${_deb}" && exit 1; }
-    DEB_NAMES+=("${_name}")
+      -O "${srcDir}/${pjName}/pkgindex/.tmp-${_spec}.gz" \
+      "${UBUNTU_PORTS}/dists/${_spec}/main/binary-arm64/Packages.gz" \
+      && mv "${srcDir}/${pjName}/pkgindex/.tmp-${_spec}.gz" \
+            "${srcDir}/${pjName}/pkgindex/${_spec}.gz" \
+      || echo "警告: 套件索引下载失败 => ${_spec}（将回退硬编码版本）"
+  done
+
+  while IFS='|' read -r _pkg _poolDir _verVar _fallback; do
+    [[ -z "${_pkg}" ]] && continue
+    if [[ -n "${!_verVar:-}" ]]; then
+      # 环境变量钉死版本
+      _ver="${!_verVar}"
+      _name="${_pkg}_${_ver}_arm64.deb"
+      _url="${UBUNTU_PORTS}/pool/main/${_poolDir}/${_name}"
+      echo "${_pkg} => ${_ver}（环境变量钉死）"
+    else
+      local _disc
+      if _disc="$(discover_pkg "${_pkg}")"; then
+        # 套件索引发现的存活版本（Filename 字段即 pool 相对路径）
+        _ver="${_disc%% *}"
+        _url="${UBUNTU_PORTS}/${_disc#* }"
+        _name="$(basename "${_url}")"
+        echo "${_pkg} => ${_ver}（套件索引发现）"
+      else
+        # 索引不可用：硬编码兜底
+        _ver="${_fallback}"
+        _name="${_pkg}_${_ver}_arm64.deb"
+        _url="${UBUNTU_PORTS}/pool/main/${_poolDir}/${_name}"
+        echo "${_pkg} => ${_ver}（索引不可用，硬编码兜底）"
+      fi
+    fi
+    _urls+=("${_url}")
+    echo "下载 => ${_name}"
+  done <<< "${DEB_SPECS}"
+
+  local _u
+  for _u in "${_urls[@]}"; do
+    wget -nv --timeout=60 --tries=2 --waitretry=3 \
+      -O "${srcDir}/${pjName}/$(basename "${_u}")" "${_u}" \
+      || { echo "下载失败 => ${_u}（Ubuntu pool 可能已清理该版本，请用 ANWIND_*_VER 环境变量钉死存活版本）" && exit 1; }
   done
 }
 
 extra_fuction() {
   local _destLib="${destDir}${prefix}/lib/aarch64-linux-gnu"
   local _debDir="${srcDir}/${pjName}"   # custom_url 的绝对下载目录，见上
-  local _deb _name _ext
+  local _pkg _poolDir _verVar _fallback _path _name _ext
 
   mkdir -p "${_destLib}"
 
-  for _deb in "${DEB_PATHS[@]}"; do
-    _name="$(basename "${_deb}")"
-    _ext="${pjName}/deb-${_name%.deb}"
+  while IFS='|' read -r _pkg _poolDir _verVar _fallback; do
+    [[ -z "${_pkg}" ]] && continue
+    # 下载目录里的实际文件（钉死/发现/兜底三种来源都落在这里；
+    # 同名多版本时取最新）
+    _path="$(ls "${_debDir}/${_pkg}_"*_arm64.deb 2>/dev/null | sort -V | tail -n 1)"
+    [[ -n "${_path}" ]] || { echo "错误: 缺少已下载的包 => ${_debDir}/${_pkg}_*_arm64.deb" && exit 1; }
+    _name="$(basename "${_path}")"
+    # 解包到 srcDir 暂存区（.gitignore 已忽略 /src/），必须用绝对路径：
+    # 本函数执行时 cwd 已是 pkgSrcDir（projects/ 下的仓库目录），相对
+    # 路径会把 300+ 解包文件直接污染进 git 工作区
+    _ext="${_debDir}/deb-${_name%.deb}"
 
-    if [[ ! -f "${_debDir}/${_name}" ]]; then
-      echo "错误: 缺少已下载的包 => ${_debDir}/${_name}" && exit 1
-    fi
     rm -rf "${_ext}"
     mkdir -p "${_ext}"
     dpkg-deb -x "${_debDir}/${_name}" "${_ext}" \
       || { echo "deb 解包失败 => ${_name}" && exit 1; }
 
-    # 平铺 usr/lib/aarch64-linux-gnu/*（libc/libm/libpthread/libdl/
-    # librt/ld-linux-aarch64.so.1/libstdc++/libgcc_s/libz 及其符号
-    # 链接；noble arm64 为 usrmerge 布局，实体都在该目录）
+    # 平铺 usr/lib/aarch64-linux-gnu/*（libc/libm/libpthread/ld-linux/
+    # libstdc++/libgcc_s/libz 及其符号链接；Ubuntu usrmerge 后
+    # ld-linux-aarch64.so.1 实体就在该目录）
     if [[ -d "${_ext}/usr/lib/aarch64-linux-gnu" ]]; then
       cp -a "${_ext}/usr/lib/aarch64-linux-gnu/." "${_destLib}/"
     fi
-    # 兼容旧布局扫描（noble 实测无此目录，防上游回退）
+    # 兼容旧布局：lib/aarch64-linux-gnu 也扫一遍（若有）
     [[ -d "${_ext}/lib/aarch64-linux-gnu" ]] && \
       cp -a "${_ext}/lib/aarch64-linux-gnu/." "${_destLib}/"
-  done
+  done <<< "${DEB_SPECS}"
 
-  # ---- 安装校验：加载器与核心运行库必须齐 ----
-  # ld-linux-aarch64.so.1 列首位——它是 box64 patchelf 的钉死目标，
-  # 缺它整条 glibc-box64 链路都不成立。
+  # ---- 安装校验：box64 宿主侧核心文件必须齐 ----
+  # ld-linux-aarch64.so.1 是 box64 的 PT_INTERP（patchelf 钉死目标），
+  # 其余是 box64 自身 DT_NEEDED（noble glibc 2.39 把 libpthread/
+  # libdl/librt 并入 libc，占位 .so 随包自带）。
   local _f _miss=0
   for _f in ld-linux-aarch64.so.1 libc.so.6 libm.so.6 libdl.so.2 \
             libpthread.so.0 librt.so.1 libstdc++.so.6 libgcc_s.so.1 libz.so.1; do
@@ -191,8 +186,6 @@ extra_fuction() {
   done
   [[ "$_miss" == "0" ]] || { echo "安装内容:" && ls "${_destLib}" | head -30 && exit 1; }
 
-  # glibc 2.34+ 把 libpthread/libdl/librt 并入 libc（留占位兼容旧
-  # 二进制），noble 的 deb 自带这三个占位 .so —— 上面校验已覆盖。
   echo "glibc-aarch64 安装完成: $(ls "${_destLib}" | wc -l) 项, $(du -sh "${_destLib}" | cut -f1)"
-  echo "私有加载器: ${prefix}/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1"
+  echo "box64 私有加载器: ${_destLib}/ld-linux-aarch64.so.1"
 }

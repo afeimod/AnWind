@@ -1,29 +1,23 @@
 name: AnWind Bionic Box64 (aarch64)
 
 # ============================================================
-# 构建面向 AnWind bionic rootfs 的 Box64（aarch64 / ARM_DYNAREC）
+# 构建面向 AnWind bionic rootfs 的 Box64（aarch64 / glibc 链接）
 # ------------------------------------------------------------
-# v3.2.6：【glibc 形态修复】旧版用 -DANDROID=ON 以 NDK/bionic 目标
-# 构建，设备实测 box64 本体能跑但 wineboot 全量初始化在 ntdll
-# unix 侧 SIGSEGV 零输出（bionic 版 box64 缺 glibc 运行语义）。
-# 设备侧根因：rootfs 缺 box64 需要的 ld-linux-aarch64.so.1，且
-# box64 未 patchelf --set-interpreter 指向它。
-# 现构建链（全部在 bionic-rootfs 体系内）：
-#   1. deps 自动补齐：先构建 projects/glibc-aarch64（Ubuntu noble
-#      arm64 的 libc6/libgcc-s1/libstdc++6/zlib1g，套件索引自动
-#      发现存活版本），平铺进 usr/lib/aarch64-linux-gnu/，含
-#      ld-linux-aarch64.so.1（bionic 加载器永不搜索该目录）
-#   2. box64 用宿主交叉工具链 aarch64-linux-gnu-gcc 按 Linux/
-#      glibc 目标构建（noble 同源 glibc 2.39，编译/运行匹配）
-#   3. patchelf --set-interpreter 钉死私有加载器 + --set-rpath
-#      指向私有库目录（进程内只有这一份 glibc，不与 bionic 混载）
-#   4. 发行包同时捆绑私有 glibc 运行库：解包安装即自带加载器，
-#      不依赖 rootfs 重装
-# 默认 v0.4.4：对齐 hangover-11.16 官方配套（hangover↔box64 的
-# PE/wow64 协议版本敏感，错配可致 wineboot SEH 级联崩溃）
+# v3.2.5：bionic-box64 改为 aarch64 glibc 目标（WINLATOR_GLIBC
+# 模型，与终端 box64 build-box64.yml 同款运行形态）：
+#   - aarch64-linux-gnu-gcc 交叉构建（host-deps.sh 安装），
+#     ARM_DYNAREC + SD845/865/888/8G2 dynarec 调优
+#   - patchelf 把 PT_INTERP 钉到 rootfs 私有 glibc 加载器：
+#     /data/data/com.anwind/files/rootfs/usr/lib/aarch64-linux-gnu/
+#     ld-linux-aarch64.so.1（由 glibc-aarch64 配方随本轮构建安装，
+#     构建顺序经 deps 拓扑保证：glibc-aarch64 → box64）
+#   - 产物校验 PT_INTERP / RPATH / 加载器存在，发行包捆绑
+#     glibc 运行库（usr/lib/aarch64-linux-gnu），解包即自洽
+# 旧 -DANDROID=ON/NDK 形态设备实测 wineboot 直接 SIGSEGV(139)
+# 零输出，已废弃（详见 projects/box64/build.sh 注释）。
 # 产物：anwind-box64-<ver>-aarch64-bionic.tar.gz
-#   设备安装：anwind-container install-box64（v2.2+ 一键升级，旧版
-#   自动备份/验证回滚）；或手动解包至 /（data/data/com.anwind/... 布局），
+#   设备安装：解包至 /（data/data/com.anwind/... 布局，box64 落
+#   usr/local/bin，glibc 运行库落 usr/lib/aarch64-linux-gnu），
 #   anwind-container 自动从 /usr/local/bin/box64 探测。
 # ============================================================
 
@@ -104,10 +98,11 @@ jobs:
             anwind-bionic-ccache-v1
 
       # ============ 5. 构建 box64 ============
-      # 依赖自动补齐：build-rootfs-arch.sh 依据 toposort 先构建
-      # glibc-aarch64（私有加载器/运行库）再构建 box64；
-      # 配方按 ANWIND_BOX64_REF 检出指定版本
-      - name: 构建 Box64 aarch64（glibc 形态 + 私有加载器）
+      # deps 拓扑自动补齐 glibc-aarch64（rootfs 私有 glibc 加载器与
+      # 运行库），构建顺序：glibc-aarch64 → box64（box64 构建后
+      # patchelf 钉死 PT_INTERP 到该加载器）；配方按 ANWIND_BOX64_REF
+      # 检出指定版本
+      - name: 构建 Box64 aarch64
         shell: bash
         run: |
           cd "${GITHUB_WORKSPACE}/bionic-rootfs"
@@ -134,48 +129,60 @@ jobs:
           free -h
 
       # ============ 6. 产物校验 ============
-      # 解包 box64 + glibc-aarch64 两个包到同一棵验证树：既校验二进制
-      # 本体，也校验 PT_INTERP/RUNPATH 改写命中、私有加载器与核心
-      # 运行库齐全（发行包在步骤 7 原样重打这棵树，校验即发行内容）
-      - name: 校验 box64 产物（含私有 glibc 加载器）
+      # 硬校验：box64 必须是 aarch64 ELF、PT_INTERP 必须钉到 rootfs
+      # 私有 glibc 加载器、RPATH 必须包含 glibc 运行库目录；
+      # glibc-aarch64 包里的加载器与 libc 必须在场（发行包会捆绑）
+      - name: 校验 box64 产物
         run: |
           PKG_TAR=$(ls "${GITHUB_WORKSPACE}/bionic-rootfs/pkgs/"box64-*aarch64.tar | head -n 1)
           [[ -n "$PKG_TAR" ]] || { echo "::error::未找到 box64 包 tar"; exit 1; }
-          GLIBC_TAR=$(ls "${GITHUB_WORKSPACE}/bionic-rootfs/pkgs/"glibc-aarch64-*aarch64.tar | head -n 1)
-          [[ -n "$GLIBC_TAR" ]] || { echo "::error::未找到 glibc-aarch64 包 tar（box64 私有加载器来源，deps 未生效？）"; exit 1; }
           echo "box64 包: $PKG_TAR"
+          GLIBC_TAR=$(ls "${GITHUB_WORKSPACE}/bionic-rootfs/pkgs/"glibc-aarch64-*aarch64.tar | head -n 1)
+          [[ -n "$GLIBC_TAR" ]] || { echo "::error::未找到 glibc-aarch64 包 tar（box64 加载器缺失）"; exit 1; }
           echo "glibc-aarch64 包: $GLIBC_TAR"
+
           rm -rf /tmp/box64-verify && mkdir -p /tmp/box64-verify
           tar -xf "$PKG_TAR" -C /tmp/box64-verify
           tar -xf "$GLIBC_TAR" -C /tmp/box64-verify
-          RFS=/tmp/box64-verify/data/data/com.anwind/files/rootfs
-          B="$RFS/usr/local/bin/box64"
-          LOADER="$RFS/usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1"
+
+          B=/tmp/box64-verify/data/data/com.anwind/files/rootfs/usr/local/bin/box64
+          GLIBCDIR=/tmp/box64-verify/data/data/com.anwind/files/rootfs/usr/lib/aarch64-linux-gnu
           [[ -f "$B" ]] || { echo "::error::box64 二进制缺失"; exit 1; }
-          [[ -f "$LOADER" ]] || { echo "::error::私有 glibc 加载器缺失 => $LOADER"; exit 1; }
+
           echo "=== 二进制架构校验（应为 aarch64 ELF） ==="
           file "$B" || true
-          head -c 20 "$B" | od -An -tx1 | head -1
-          AARCH64_MAGIC=$(head -c 20 "$B" | od -An -tx1 | tr -d ' \n' | grep -c '^7f454c4602.*b700')
-          if [[ "$(file -b "$B" 2>/dev/null)" == *"ARM aarch64"* ]] || [[ "$AARCH64_MAGIC" != "0" ]]; then
+          if [[ "$(file -b "$B" 2>/dev/null)" == *"ARM aarch64"* ]]; then
             echo "  [OK] aarch64 ELF"
           else
             echo "  [!!] 非 aarch64 ELF，请检查构建"; exit 1
           fi
-          echo "=== PT_INTERP 校验（必须钉死私有加载器） ==="
-          readelf -l "$B" | grep -F "/data/data/com.anwind/files/rootfs/usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1" \
-            || { echo "::error::PT_INTERP 未指向私有加载器（patchelf 未生效？）"; exit 1; }
-          echo "  [OK] 解释器已钉死 usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1"
-          echo "=== RUNPATH 校验（必须指向私有 glibc 目录） ==="
-          readelf -d "$B" | grep -F "/data/data/com.anwind/files/rootfs/usr/lib/aarch64-linux-gnu" \
-            || { echo "::error::RUNPATH 未指向私有 glibc 目录"; exit 1; }
-          echo "  [OK] RUNPATH 指向私有 glibc 目录"
-          echo "=== 私有 glibc 运行库清单 ==="
-          ls "$RFS/usr/lib/aarch64-linux-gnu" | head -30
+
+          echo "=== PT_INTERP 校验（必须钉到 rootfs 私有 glibc 加载器） ==="
+          EXPECT_INTERP=/data/data/com.anwind/files/rootfs/usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1
+          INTERP=$(readelf -l "$B" 2>/dev/null | sed -n 's/.*Requesting program interpreter: \(.*\)\]/\1/p' | head -n 1)
+          echo "  期望: $EXPECT_INTERP"
+          echo "  实际: ${INTERP:-（无 PT_INTERP）}"
+          [[ "$INTERP" == "$EXPECT_INTERP" ]] || { echo "::error::PT_INTERP 未钉到 rootfs 私有加载器！"; exit 1; }
+          echo "  [OK] PT_INTERP 已钉死"
+
+          echo "=== RPATH 校验（必须包含 glibc 运行库目录） ==="
+          readelf -d "$B" | grep -E "RPATH|RUNPATH" || true
+          readelf -d "$B" 2>/dev/null | grep -E "RPATH|RUNPATH" \
+            | grep -q "/data/data/com.anwind/files/rootfs/usr/lib/aarch64-linux-gnu" \
+            || { echo "::error::RPATH 缺失或不包含 glibc 运行库目录！"; exit 1; }
+          echo "  [OK] RPATH 就位"
+
+          echo "=== glibc 运行库校验（随发行包捆绑） ==="
+          for f in ld-linux-aarch64.so.1 libc.so.6 libm.so.6 libdl.so.2 \
+                   libpthread.so.0 librt.so.1 libstdc++.so.6 libgcc_s.so.1 libz.so.1; do
+            [[ -e "$GLIBCDIR/$f" ]] || { echo "::error::glibc 运行库缺失: $GLIBCDIR/$f"; exit 1; }
+          done
+          echo "  [OK] 加载器与 glibc 运行库齐备（$(ls "$GLIBCDIR" | wc -l) 项）"
+          echo "=== 校验通过：box64(glibc) + 私有加载器 + 运行库 ==="
 
       # ============ 7. 打包发行 ============
-      # /tmp/box64-verify 此时已含 box64 二进制 + 私有 glibc 运行库
-      # （步骤 6 解包的同一棵树），原样重打为发行包
+      # 发行包捆绑 box64 + 私有 glibc 加载器/运行库（aarch64-linux-gnu
+      # 全目录），解包至 / 即自洽 —— 不依赖终端 glibc 系统的任何文件
       - name: 打包 box64 发行包
         run: |
           PKG_TAR=$(ls "${GITHUB_WORKSPACE}/bionic-rootfs/pkgs/"box64-*aarch64.tar | head -n 1)
@@ -184,9 +191,10 @@ jobs:
           PACKAGE_NAME="anwind-box64-${BOX64_VER}-aarch64-bionic"
           echo "PACKAGE_NAME=${PACKAGE_NAME}" >> "$GITHUB_ENV"
           cd "${GITHUB_WORKSPACE}"
+          # /tmp/box64-verify 已含 box64 包 + glibc-aarch64 包的全部内容
           tar -czf "${PACKAGE_NAME}.tar.gz" -C /tmp/box64-verify .
           sha256sum "${PACKAGE_NAME}.tar.gz" > checksums-box64-aarch64.txt
-          echo "=== 打包完成（含私有 glibc 加载器/运行库） ==="
+          echo "=== 打包完成（box64 + glibc 运行库） ==="
           ls -lh "${PACKAGE_NAME}.tar.gz" checksums-box64-aarch64.txt
 
       # ============ 8. 上传日志与产物 ============
@@ -214,20 +222,17 @@ jobs:
           tag_name: bionic-box64-${{ env.BOX64_VER }}
           name: AnWind Bionic Box64 ${{ env.BOX64_VER }} (aarch64)
           body: |
-            AnWind bionic rootfs 专用 Box64（aarch64 / ARM_DYNAREC / glibc 形态）
+            AnWind bionic rootfs 专用 Box64（aarch64 / glibc 链接 / WINLATOR_GLIBC / ARM_DYNAREC）
 
-            v3.2.6 根因修复：box64 改为 glibc 链接 + patchelf 钉死私有加载器
-            `usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1`（旧版 -DANDROID=bionic
-            构建，设备实测 wineboot 在 ntdll unix 侧 SIGSEGV 零输出）。
-
-            - 本包自带私有 glibc 运行库（Ubuntu noble arm64，与 box64 同源 2.39）：
-              解包安装即自带加载器，不依赖 rootfs 重装
-            - 一键升级: `anwind-container install-box64`（v2.2+，旧版自动备份/验证回滚）
-            - 手动安装: 解包 `anwind-box64-*.tar.gz` 至 /（data/data/com.anwind/... 自动就位）
+            - PT_INTERP 已钉到 rootfs 私有 glibc 加载器
+              （usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1，随包捆绑）
+            - 手动安装: 解包 `anwind-box64-*.tar.gz` 至 /（data/data/com.anwind/... 自动就位：
+              box64 → usr/local/bin，glibc 运行库 → usr/lib/aarch64-linux-gnu）
             - 安装后 anwind-container 自动探测 /usr/local/bin/box64
             - 用途: 在 aarch64 设备上运行 x86_64 Wine（backend=box64）；
-              同时是 hangover 兑底后端的 i386 模拟依赖 —— v0.4.4 为
-              hangover-11.16 官方配套版本（错配可致 wineboot SEH 级联崩溃）
+              v0.4.4 为 hangover-11.16 官方配套版本（错配可致 wineboot SEH 级联崩溃）
+            - 注意: 与完整 rootfs 包（build-bionic-rootfs）同源 —— rootfs 已内置
+              同款 box64 与加载器，单独升级时才需要本包
           files: |
             ${{ env.PACKAGE_NAME }}.tar.gz
             checksums-box64-aarch64.txt

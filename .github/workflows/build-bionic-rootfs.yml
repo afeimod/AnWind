@@ -299,6 +299,24 @@ jobs:
             check "$RFS/lib/x86_64-linux-gnu/libc.so.6"
             check "$RFS/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2"
             check "$RFS/lib/x86_64-linux-gnu/libstdc++.so.6"
+            # ---- bionic-box64 宿主侧 glibc 加载器与运行库（v3.2.5）----
+            # box64 自身为 glibc 链接（WINLATOR_GLIBC 模型），PT_INTERP 由
+            # projects/box64 的 patchelf 钉到该目录的 ld-linux-aarch64.so.1；
+            # 加载器由 glibc-aarch64 配方安装（box64 的 deps 拓扑依赖）
+            check "$RFS/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1"
+            check "$RFS/lib/aarch64-linux-gnu/libc.so.6"
+            check "$RFS/lib/aarch64-linux-gnu/libstdc++.so.6"
+            # PT_INTERP 硬校验：未钉死则设备上 box64 直接 SIGSEGV(139) 零输出
+            # （v3.2.5 前实测故障形态：wine-9.2-1 日志冒烟即 139）
+            _b64_interp="$(readelf -l "$RFS/local/bin/box64" 2>/dev/null \
+              | sed -n 's/.*Requesting program interpreter: \(.*\)\]/\1/p' | head -n 1)"
+            if [[ "$_b64_interp" != "/data/data/com.anwind/files/rootfs/usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1" ]]; then
+              echo "  [MISS] box64 PT_INTERP 未钉到 rootfs 私有加载器（实际: ${_b64_interp:-无 PT_INTERP}）"
+              MISS=1
+              MISS_LIST+="$RFS/local/bin/box64 (PT_INTERP 未钉死)"$'\n'
+            else
+              echo "  [OK] box64 PT_INTERP => $_b64_interp"
+            fi
             # wine 自带 NLS/字体（locale.nls 为 wine 启动必需）
             check "$RFS/opt/share/wine/nls/locale.nls"
             check "$RFS/opt/share/wine/fonts/tahoma.ttf"
