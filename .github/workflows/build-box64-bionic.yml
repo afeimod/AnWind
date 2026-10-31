@@ -16,11 +16,21 @@ name: AnWind Bionic Box64 (aarch64)
 # x86 的 yasm（"unrecognized object format unwind-tables"），
 # 现由配方 pre_setup 显式钉死 ASM=NDK clang 根治。
 #
-# 产物：anwind-box64-<ver>-aarch64-bionic.tar.gz（完整安装集，
-# 不止单个 box64 文件）：
-#   usr/local/bin/box64                              仿真器本体
-#   usr/lib/box64-x86_64-linux-gnu/libc++_shared.so  x86_64 C++ 库
+# 【完整文件集】box64 配方 deps 挂了 glibc-aarch64 / glibc-x86_64
+# 两个运行时配套层（构建系统按拓扑序先产出），`--build box64`
+# 一次到位，产物不再只有单个 box64 执行文件：
+#   usr/local/bin/box64                              仿真器本体（bionic）
+#   usr/bin/box64 → ../local/bin/box64               PATH 入口链接
+#   usr/lib/box64-x86_64-linux-gnu/libc++_shared.so  x86_64 C++ 库（上游 ANDROID 配套）
 #   usr/etc/box64.box64rc                            系统级调优开关
+#   usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1  aarch64 glibc 运行层
+#     （+ usr/lib/ld-linux-aarch64.so.1 便捷链接；libc.so.6 等）
+#     —— glibc 形态 box64（build-box64.yml 产物）与 rootfs 内
+#     glibc 链接的 aarch64 二进制的私有加载器/运行库
+#   usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2    被仿真 x86_64 程序
+#     （+ libc.so.6 / libstdc++.so.6 等）            的 glibc 运行库
+#
+# 产物：anwind-box64-<ver>-aarch64-bionic.tar.gz（上述完整安装集）。
 # 设备安装：解包至 /（data/data/com.anwind/... 布局自动就位），
 # anwind-container 自动从 /usr/local/bin/box64 探测。
 # ============================================================
@@ -65,15 +75,16 @@ jobs:
             echo "::error::未找到 bionic-rootfs/build-rootfs-arch.sh！"
             exit 1
           fi
-          if [[ ! -f "${GITHUB_WORKSPACE}/bionic-rootfs/projects/box64/build.sh" ]]; then
-            echo "::error::未找到 bionic-rootfs/projects/box64/ 配方！"
-            exit 1
-          fi
-          if [[ -d "${GITHUB_WORKSPACE}/bionic-rootfs/projects/glibc-aarch64" ]]; then
-            echo "::error::projects/glibc-aarch64 仍存在（bionic rootfs 不应有宿主 glibc），请先移除！"
-            exit 1
-          fi
-          echo "构建系统与 box64 配方就绪（纯 bionic）"
+          # box64 配方 deps 挂了 glibc-aarch64 / glibc-x86_64 两个运行时
+          # 配套层（ld-linux-aarch64.so.1 私有加载器 + 被仿真程序的
+          # x86_64 glibc 运行库），三个配方缺一即构建不完整
+          for _pj in box64 glibc-aarch64 glibc-x86_64; do
+            if [[ ! -f "${GITHUB_WORKSPACE}/bionic-rootfs/projects/${_pj}/build.sh" ]]; then
+              echo "::error::未找到 bionic-rootfs/projects/${_pj}/ 配方（box64 完整文件集的组成部分）！"
+              exit 1
+            fi
+          done
+          echo "构建系统与 box64 完整文件集配方（box64 + glibc-aarch64 + glibc-x86_64）就绪"
 
       # ============ 2. 宿主依赖 ============
       # 只装通用构建工具：box64 走 NDK clang，宿主不需要
@@ -108,10 +119,14 @@ jobs:
             anwind-bionic-ccache-aarch64-v2
             anwind-bionic-ccache-aarch64-v1
 
-      # ============ 5. 构建 box64 ============
+      # ============ 5. 构建 box64（含 deps 配套层） ============
       # 构建系统自动下载/复用 NDK；配方按 ANWIND_BOX64_REF 检出
-      # 指定版本，NDK 补丁状态变化时自动重打
-      - name: 构建 Box64 aarch64（NDK bionic）
+      # 指定版本，NDK 补丁状态变化时自动重打。deps 声明使构建系统
+      # 按拓扑序先产出 glibc-aarch64（ld-linux-aarch64.so.1 私有
+      # 加载器 + aarch64 glibc 运行库）与 glibc-x86_64（被仿真程序
+      # 的 x86_64 glibc 运行库）两个配套层，再产出 box64 本体 ——
+      # "--build box64" 即完整文件集，无需 --build all
+      - name: 构建 Box64 aarch64（NDK bionic，含双 glibc 运行层）
         shell: bash
         run: |
           cd "${GITHUB_WORKSPACE}/bionic-rootfs"
@@ -138,19 +153,36 @@ jobs:
           free -h
 
       # ============ 6. 产物校验 ============
-      # 硬校验：box64 必须是 aarch64 ELF、PT_INTERP 必须是 bionic
-      # 的 /system/bin/linker64（出现 ld-linux-aarch64.so.1 即刻失败
-      # —— 说明又混入 glibc 方案）；DT_NEEDED 只允许 bionic 系统库；
-      # 上游 ANDROID 模式配套的 x86_64 libc++_shared.so 与
-      # box64.box64rc 必须在包内
+      # 硬校验 box64 完整文件集（deps 保证三个包 tar 都已产出）：
+      #   a) box64 本体：aarch64 ELF、PT_INTERP 必须是 bionic 的
+      #      /system/bin/linker64（出现 ld-linux-aarch64.so.1 即刻
+      #      失败 —— 说明又混入 glibc 方案）；DT_NEEDED 只允许
+      #      bionic 系统库
+      #   b) PATH 入口链接 usr/bin/box64（相对链接，解包后仍成立）
+      #   c) 上游 ANDROID 模式配套：x86_64 libc++_shared.so + box64rc
+      #   d) aarch64 glibc 运行层：usr/lib/aarch64-linux-gnu/
+      #      ld-linux-aarch64.so.1（+ lib/ 便捷链接、libc.so.6）
+      #   e) x86_64 glibc 运行层：usr/lib/x86_64-linux-gnu/
+      #      ld-linux-x86-64.so.2（+ libc.so.6、libstdc++.so.6）
       - name: 校验 box64 产物（bionic 形态 + 完整安装集）
         run: |
-          PKG_TAR=$(ls "${GITHUB_WORKSPACE}/bionic-rootfs/pkgs/"box64-*aarch64.tar | head -n 1)
-          [[ -n "$PKG_TAR" ]] || { echo "::error::未找到 box64 包 tar"; exit 1; }
-          echo "box64 包: $PKG_TAR"
+          PKGS="${GITHUB_WORKSPACE}/bionic-rootfs/pkgs"
+          BOX64_TAR=$(ls "${PKGS}/"box64-*aarch64.tar 2>/dev/null | head -n 1)
+          GLIBC_A64_TAR=$(ls "${PKGS}/"glibc-aarch64-*aarch64.tar 2>/dev/null | head -n 1)
+          GLIBC_X64_TAR=$(ls "${PKGS}/"glibc-x86_64-*aarch64.tar 2>/dev/null | head -n 1)
+          for _t in "BOX64_TAR:${BOX64_TAR}" "GLIBC_A64_TAR:${GLIBC_A64_TAR}" "GLIBC_X64_TAR:${GLIBC_X64_TAR}"; do
+            _var="${_t%%:*}"; _val="${_t#*:}"
+            [[ -n "${_val}" ]] || { echo "::error::包 tar 缺失 => ${_var}（pkgs/ 下未找到，deps 未随建？）"; exit 1; }
+          done
+          echo "box64 包: ${BOX64_TAR}"
+          echo "aarch64 glibc 运行层包: ${GLIBC_A64_TAR}"
+          echo "x86_64 glibc 运行层包: ${GLIBC_X64_TAR}"
 
+          # 三个包 tar 都解进同一校验目录 —— 即发行包的最终布局
           rm -rf /tmp/box64-verify && mkdir -p /tmp/box64-verify
-          tar -xf "$PKG_TAR" -C /tmp/box64-verify
+          tar -xf "${GLIBC_A64_TAR}" -C /tmp/box64-verify
+          tar -xf "${GLIBC_X64_TAR}" -C /tmp/box64-verify
+          tar -xf "${BOX64_TAR}" -C /tmp/box64-verify
 
           RFS=/tmp/box64-verify/data/data/com.anwind/files/rootfs/usr
           B="$RFS/local/bin/box64"
@@ -169,7 +201,9 @@ jobs:
           INTERP=$(readelf -l "$B" 2>/dev/null | sed -n 's/.*Requesting program interpreter: \(.*\)\]/\1/p' | head -n 1)
           echo "  实际: ${INTERP:-（无 PT_INTERP）}"
           if [[ "$INTERP" == *ld-linux* ]]; then
-            echo "::error::box64 混入了 glibc 加载器（$INTERP）—— bionic rootfs 不应有 glibc 产物！"
+            echo "::error::box64 本体混入了 glibc 加载器（$INTERP）—— bionic 形态 box64 必须是 NDK bionic 链接！"
+            echo "  注: rootfs 里的 ld-linux-aarch64.so.1 是配套运行层（供 glibc 形态 box64 /"
+            echo "      glibc 二进制使用），box64 本体不应链接它 —— 查构建参数/工具链"
             exit 1
           fi
           [[ "$INTERP" == "/system/bin/linker64" ]] \
@@ -184,13 +218,48 @@ jobs:
           fi
           echo "  [OK] 无 glibc SONAME（bionic 链接：libc.so / libm.so / libdl.so）"
 
+          echo "=== PATH 入口链接校验 ==="
+          if [[ -L "$RFS/bin/box64" && "$(readlink "$RFS/bin/box64")" == "../local/bin/box64" && -e "$RFS/bin/box64" ]]; then
+            echo "  [OK] usr/bin/box64 → ../local/bin/box64"
+          else
+            echo "::error::PATH 入口链接缺失/失效 => $RFS/bin/box64"
+            ls -l "$RFS/bin/box64" 2>/dev/null || true
+            exit 1
+          fi
+
           echo "=== 上游 ANDROID 模式配套文件校验 ==="
           for f in "lib/box64-x86_64-linux-gnu/libc++_shared.so" \
                    "etc/box64.box64rc"; do
             [[ -e "$RFS/$f" ]] && echo "  [OK] $f" \
               || { echo "::error::产物不完整: $RFS/$f"; exit 1; }
           done
-          echo "=== 校验通过：bionic box64 + 完整安装集 ==="
+
+          echo "=== aarch64 glibc 运行层校验（glibc-aarch64 配方） ==="
+          for f in "lib/aarch64-linux-gnu/ld-linux-aarch64.so.1" \
+                   "lib/aarch64-linux-gnu/libc.so.6" \
+                   "lib/aarch64-linux-gnu/libstdc++.so.6" \
+                   "lib/ld-linux-aarch64.so.1"; do
+            [[ -e "$RFS/$f" || -L "$RFS/$f" ]] && echo "  [OK] $f" \
+              || { echo "::error::产物不完整: $RFS/$f"; exit 1; }
+          done
+          _a64_machine="$(readelf -h "$RFS/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1" 2>/dev/null \
+            | awk '/^ *Machine:/{print $2; exit}')"
+          [[ "$_a64_machine" == "AArch64" ]] \
+            && echo "  [OK] ld-linux-aarch64.so.1 为 aarch64 ELF" \
+            || { echo "::error::ld-linux-aarch64.so.1 非 aarch64 ELF（Machine: ${_a64_machine:-未知}）"; exit 1; }
+
+          echo "=== x86_64 glibc 运行层校验（glibc-x86_64 配方） ==="
+          for f in "lib/x86_64-linux-gnu/ld-linux-x86-64.so.2" \
+                   "lib/x86_64-linux-gnu/libc.so.6" \
+                   "lib/x86_64-linux-gnu/libstdc++.so.6"; do
+            [[ -e "$RFS/$f" ]] && echo "  [OK] $f" \
+              || { echo "::error::产物不完整: $RFS/$f"; exit 1; }
+          done
+
+          echo "=== 校验通过：bionic box64 + 完整安装集（双 glibc 运行层） ==="
+          echo "文件清单摘要:"
+          (cd /tmp/box64-verify && find data/data/com.anwind/files/rootfs/usr \
+            -maxdepth 3 \( -name 'box64*' -o -name 'ld-linux*' \) | sort | sed 's/^/  /') || true
 
       # ============ 7. 打包发行 ============
       - name: 打包 box64 发行包
@@ -201,13 +270,14 @@ jobs:
           PACKAGE_NAME="anwind-box64-${BOX64_VER}-aarch64-bionic"
           echo "PACKAGE_NAME=${PACKAGE_NAME}" >> "$GITHUB_ENV"
           cd "${GITHUB_WORKSPACE}"
-          # /tmp/box64-verify 已含完整安装集（box64 本体 + x86_64
-          # libc++_shared.so + box64.box64rc），解包至 / 即自洽
+          # /tmp/box64-verify 已含完整安装集（校验步骤已解入三个包：
+          # box64 本体 + bin 入口链接 + 上游 ANDROID 配套 + aarch64
+          # glibc 运行层 + x86_64 glibc 运行层），解包至 / 即自洽
           tar -czf "${PACKAGE_NAME}.tar.gz" -C /tmp/box64-verify .
           sha256sum "${PACKAGE_NAME}.tar.gz" > checksums-box64-aarch64.txt
           echo "=== 打包完成（bionic box64 完整安装集） ==="
           ls -lh "${PACKAGE_NAME}.tar.gz" checksums-box64-aarch64.txt
-          tar -tzf "${PACKAGE_NAME}.tar.gz" | head -20
+          tar -tzf "${PACKAGE_NAME}.tar.gz" | head -30
 
       # ============ 8. 上传日志与产物 ============
       - name: 上传构建日志
@@ -237,11 +307,18 @@ jobs:
             AnWind bionic rootfs 专用 Box64（aarch64 / NDK bionic 链接 / -DANDROID=ON / ARM_DYNAREC）
 
             - bionic ELF（PT_INTERP=/system/bin/linker64），与 rootfs 内
-              wine / mesa / pulseaudio 等二进制同链同形态，无 glibc 产物
-            - 完整安装集（不止单个 box64 文件）：
-              `usr/local/bin/box64` + `usr/lib/box64-x86_64-linux-gnu/libc++_shared.so`
+              wine / mesa / pulseaudio 等二进制同链同形态；box64 本体零
+              glibc 依赖
+            - 完整安装集（不再只有单个 box64 执行文件）：
+              `usr/local/bin/box64` + `usr/bin/box64` PATH 入口链接
+              + `usr/lib/box64-x86_64-linux-gnu/libc++_shared.so`
               （上游 ANDROID 模式配套，被仿真 x86_64 程序的 C++ 标准库）
               + `usr/etc/box64.box64rc`（系统级调优开关）
+              + `usr/lib/aarch64-linux-gnu/`（`ld-linux-aarch64.so.1`
+              私有加载器与 aarch64 glibc 运行库 —— glibc 形态 box64
+              与 rootfs 内 glibc 二进制的运行层）
+              + `usr/lib/x86_64-linux-gnu/`（被仿真 x86_64 程序的
+              glibc 运行库，box64 经 BOX64_LD_LIBRARY_PATH 查找）
             - 手动安装: 解包 `anwind-box64-*.tar.gz` 至 /（data/data/com.anwind/...
               自动就位），或 `anwind-container install-box64 <tar.gz|URL>`
             - 安装后 anwind-container 自动探测 /usr/local/bin/box64

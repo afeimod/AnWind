@@ -8,22 +8,37 @@ license="MIT"
 # ============================================================
 # AnWind bionic-box64（aarch64 / NDK bionic 链接）
 # ------------------------------------------------------------
-# 桌面 wine 容器的 x86_64 仿真核心（/usr/local/bin/box64）。
-# 与 rootfsbc 体系同链构建：NDK clang（api=28）+
-# android.toolchain.cmake（由框架 cmakeBaseArgs 注入），产物为
-# bionic ELF（PT_INTERP=/system/bin/linker64），与 rootfs 内
-# wine / mesa / pulseaudio 等全部二进制的运行形态完全一致 ——
-# rootfs 是 bionic 系统，box64 就是 bionic 二进制，不需要也不
-# 应当引入任何 glibc 产物（宿主侧 libc 与仿真侧无关：box64 的
-# elfloader 只检测被仿真程序的 PT_INTERP 存在性，从不执行它）。
+# 桌面 wine 容器的 x86_64 仿真核心（usr/local/bin/box64）。
+# 与 rootfsbc 参考配方（project_legacy/box64）同链构建：NDK clang
+# （api=28）+ android.toolchain.cmake（由框架 cmakeBaseArgs 注入），
+# 产物为 bionic ELF（PT_INTERP=/system/bin/linker64），与 rootfs 内
+# wine / mesa / pulseaudio 等全部二进制的运行形态完全一致。
 #
-# 【历史教训：glibc 方案已废弃】v3.2.4~v3.2.5 曾改为
-# aarch64-linux-gnu-gcc 交叉构建 + WINLATOR_GLIBC + patchelf 把
-# PT_INTERP 钉到 rootfs 私有加载器（Ubuntu glibc deb 解包的
-# ld-linux-aarch64.so.1 + libc.so.6 等，glibc-aarch64 配方）——
-# 该形态与 bionic rootfs 不相容，设备上连 box64 自身都起不来
-# （"连 box64 的启动都没有"），且把终端 glibc 体系（另一套系统）
-# 的模型错误搬进 bionic。glibc-aarch64 配方同步删除。
+# 【双形态生态】AnWind 同时支持两种 box64 发行形态，rootfs 两种都
+# 能承载（本配方的 deps 保证配套运行层随 rootfs 一次到位）：
+#   * bionic 形态（本配方，build-box64-bionic.yml 产出
+#     anwind-box64-<ver>-aarch64-bionic.tar.gz）：NDK bionic 链接，
+#     原生 exec，宿主侧零 glibc 依赖；
+#   * glibc 形态（build-box64.yml 产出 anwind-box64-*-aarch64-
+#     glibc.tar.gz，Winlator/MiceWine 同款 -DWINLATOR_GLIBC +
+#     patchelf）：PT_INTERP/DT_RPATH 钉到 rootfs 私有加载器
+#     /data/data/com.anwind/files/rootfs/usr/lib/aarch64-linux-gnu/
+#     ld-linux-aarch64.so.1 —— 该加载器与整套 aarch64 glibc 运行库
+#     由 glibc-aarch64 配方安装进 rootfs（本包 deps 之一）。
+#
+# 【deps 说明】glibc-aarch64 / glibc-x86_64 都不是编译期依赖
+# （bionic box64 链接 NDK 系统库），而是【运行时配套闭包】——
+# 挂在 deps 上保证构建顺序与完整性：
+#   * glibc-aarch64 → usr/lib/aarch64-linux-gnu/（私有加载器
+#     ld-linux-aarch64.so.1 + libc.so.6 等）：glibc 形态 box64 与
+#     glibc 链接的 aarch64 二进制在 rootfs 内的运行层；
+#   * glibc-x86_64 → usr/lib/x86_64-linux-gnu/（ld-linux-x86-64.so.2
+#     + libc.so.6 等）：被仿真的 x86_64 程序（含 x86_64 wine unix
+#     侧）的运行库，box64 经 BOX64_LD_LIBRARY_PATH 查找。
+# 因此 `--build box64`（独立构建工作流）与 `--build all`（rootfs
+# 全量构建）都会先产出这两层再产出 box64 —— "box64 完整文件集"
+# （仿真器本体 + 双 glibc 运行层 + 上游 ANDROID 配套库 + rc + 链接）
+# 一次到位，不再出现"只有单个 box64 执行文件"的残缺产物。
 #
 # 【上游 ANDROID 模式】（CMakeLists.txt option(ANDROID)）：
 #   - add_definitions(-DANDROID)；BAD_SIGNAL 自动 ON（上游对
@@ -36,32 +51,45 @@ license="MIT"
 #     会覆盖框架 cflags 的 -O3，遵上游）
 #   - ARM64 / ARM_DYNAREC 由 toolchain 的 CMAKE_SYSTEM_PROCESSOR=
 #     aarch64 自动使能，跑 x86_64 wine 的动态二进制翻译
+#   - 上游安装规则（install 段）在 ANDROID 下会把
+#     x64android/libc++_shared.so 装进 lib/box64-x86_64-linux-gnu/、
+#     system/box64.box64rc 装进 etc/ —— 本配方自定义 install()
+#     按同路径落位（$prefix 为 rootfs 绝对前缀，不能用上游的 / 与
+#     /usr 默认 DESTINATION）
 #
 # 【ASM 编译器钉死】load_env 导出 ASM=NDK yasm（仅支持 x86 的
 # 汇编器），CMake 的 ASM 探测会命中它 —— arm64_prolog.S 直接
-# "yasm: FATAL: unrecognized object format unwind-tables"
-# （v3.2.4 报废根因；旧配方的 -DCMAKE_ASM_FLAGS= 空参数治不了
-# 编译器选择问题）。显式把 ASM 编译器钉到 NDK clang（与 C 同一
-# 工具链，集成汇编器原生支持 .S）。
+# "yasm: FATAL: unrecognized object format unwind-tables"（v3.2.4
+# CI 实报根因；旧配方的 -DCMAKE_ASM_FLAGS= 空参数治不了编译器
+# 选择问题）。显式把 ASM 编译器钉到 NDK clang（与 C 同一工具链，
+# 集成汇编器原生支持 .S）。
 #
-# 【产物完整集】上游 ANDROID 模式的安装内容，缺一不可：
+# 【产物完整集】缺一不可（install() 逐项硬校验）：
 #   local/bin/box64                               仿真器本体
+#   bin/box64 → ../local/bin/box64                PATH 入口链接
+#     （rootfs 的 profile 只把 $prefix/bin 放进 PATH，usr-merge 后
+#     即 rootfs/usr/bin —— 终端直接敲 box64 / anwind-wine 的
+#     find_box64 第二探测位均命中该链接）
 #   lib/box64-x86_64-linux-gnu/libc++_shared.so  x86_64 C++ 标准库
 #     （上游 x64android/ 预制产物：被仿真的 x86_64 程序 dlopen
-#     libc++_shared.so 时从该目录解析；wine 的 glibc 系 x86_64
-#     运行库另由 glibc-x86_64 配方安装在 lib/x86_64-linux-gnu，
-#     两者职责不同、互不替代）
+#     libc++_shared.so 时经 BOX64_LD_LIBRARY_PATH 从该目录解析；
+#     wine 的 glibc 系 x86_64 运行库另由 glibc-x86_64 配方安装在
+#     lib/x86_64-linux-gnu，两者职责不同、互不替代）
 #   etc/box64.box64rc                             系统级调优开关
 # ============================================================
 
 # 与 rootfsbc 参考配方（project_legacy/box64）同参数集：
 # ANDROID + BAD_SIGNAL + ARM_DYNAREC；BAD_SIGNAL 在 ANDROID=ON 时
 # 上游本就自动置 ON（CMakeLists if(ANDROID) set(BAD_SIGNAL ON)），
-# 显式写出以对齐参考语义。NO_CONF_INSTALL / NO_LIB_INSTALL 不再
+# 显式写出以对齐参考语义。NO_CONF_INSTALL / NO_LIB_INSTALL 不
 # 保留 —— 两者正是产物只剩单个 box64 文件的原因（配套的
 # x64android/libc++_shared.so 与 system/box64.box64rc 被 install
-# 规则跳过），本次由自定义 install() 补齐完整集
+# 规则跳过），由自定义 install() 补齐完整集。
 args="-DANDROID=ON -DBAD_SIGNAL=ON -DARM_DYNAREC=ON"
+
+# 运行时配套闭包（见头部【deps 说明】：非编译期依赖，是保证
+# "完整文件集"一次到位的构建顺序声明）
+deps="glibc-aarch64 glibc-x86_64"
 
 # 用 make 而非 ninja：与 rootfs 其余 cmake 包同一验证路径
 doNotUseNinja=1
@@ -108,12 +136,18 @@ install() {
   mkdir -p "${destDir}${prefix}/etc/"
   cp -p "${_src}/system/box64.box64rc" "${destDir}${prefix}/etc/"
 
-  # ---- 4. strip（发布体积；llvm-strip 是 NDK 自带） ----
+  # ---- 4. PATH 入口链接：usr/bin/box64 → ../local/bin/box64 ----
+  # 相对链接在 $prefix（rootfs 绝对前缀）与 tar 解包后均成立；
+  # anwind-container 的 find_box64 第二探测位即 $RFS_USR/bin/box64
+  mkdir -p "${destDir}${prefix}/bin/"
+  ln -sfn ../local/bin/box64 "${destDir}${prefix}/bin/box64"
+
+  # ---- 5. strip（发布体积；llvm-strip 是 NDK 自带） ----
   if [[ -x "${_strip}" ]]; then
     "${_strip}" "${_bin}" || true
   fi
 
-  # ---- 5. 硬校验：aarch64 ELF + bionic PT_INTERP，任何一项不对直接判失败 ----
+  # ---- 6. 硬校验：aarch64 ELF + bionic PT_INTERP，任何一项不对直接判失败 ----
   local _machine _interp
   _machine="$(readelf -h "${_bin}" 2>/dev/null | awk '/^ *Machine:/{print $2; exit}')"
   if [[ "${_machine}" != "AArch64" ]]; then
@@ -123,15 +157,30 @@ install() {
   _interp="$(readelf -l "${_bin}" 2>/dev/null \
     | sed -n 's/.*Requesting program interpreter: \(.*\)\]/\1/p' | head -n 1)"
   if [[ "${_interp}" != "/system/bin/linker64" ]]; then
-    echo "错误: box64 PT_INTERP 非 bionic 形态"
-    echo "  期望: /system/bin/linker64（NDK bionic 链接）"
+    echo "错误: 本配方产物应为 bionic 形态（NDK 链接），PT_INTERP 校验失败"
+    echo "  期望: /system/bin/linker64"
     echo "  实际: ${_interp:-（无 PT_INTERP）}"
-    echo "  若为 ld-linux-aarch64.so.1 => 又混入了 glibc 方案，查 pre_setup/toolchain"
+    echo "  注: glibc 形态（PT_INTERP=ld-linux-aarch64.so.1）是 build-box64.yml"
+    echo "       独立工作流的产物，不应出现在本配方链里 —— 查构建参数/工具链"
+    return 1
+  fi
+  # 入口链接自检（相对目标存在）
+  if [[ ! -e "${destDir}${prefix}/bin/box64" ]]; then
+    echo "错误: ${prefix}/bin/box64 入口链接失效"
     return 1
   fi
 
+  # ---- 7. 配套运行层就位报告（deps 保证已装进 prefix，纯诊断） ----
+  [[ -e "${prefix}/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1" ]] \
+    && echo "配套 aarch64 glibc 层: ${prefix}/lib/aarch64-linux-gnu/（glibc 形态 box64 / glibc 二进制运行层）" \
+    || echo "警告: prefix 缺 aarch64-linux-gnu（glibc-aarch64 未先行安装？）"
+  [[ -e "${prefix}/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2" ]] \
+    && echo "配套 x86_64 glibc 层: ${prefix}/lib/x86_64-linux-gnu/（被仿真程序运行库）" \
+    || echo "警告: prefix 缺 x86_64-linux-gnu（glibc-x86_64 未先行安装？）"
+
   echo "bionic-box64 安装完成:"
   echo "  ${_bin}（PT_INTERP => /system/bin/linker64）"
+  echo "  ${prefix}/bin/box64 → ../local/bin/box64（PATH 入口）"
   echo "  ${prefix}/lib/box64-x86_64-linux-gnu/libc++_shared.so"
   echo "  ${prefix}/etc/box64.box64rc"
 }

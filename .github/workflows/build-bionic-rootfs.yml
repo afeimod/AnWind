@@ -284,6 +284,10 @@ jobs:
             check "$RFS/opt/bin/wine"
             check "$RFS/opt/lib/wine"
             check "$RFS/local/bin/box64"
+            # box64 PATH 入口链接（v3.3.1）：profile 只把 $prefix/bin 放进
+            # PATH，usr/bin/box64 → ../local/bin/box64 —— 终端直接敲
+            # box64 / anwind-wine 的 find_box64 第二探测位均命中该链接
+            check "$RFS/bin/box64"
             # box64 上游 ANDROID 模式配套（v3.3.0）：被仿真 x86_64 程序的
             # C++ 标准库 + 系统级调优 rc —— 产物完整集，缺一不可
             check "$RFS/lib/box64-x86_64-linux-gnu/libc++_shared.so"
@@ -304,14 +308,26 @@ jobs:
             check "$RFS/lib/x86_64-linux-gnu/libc.so.6"
             check "$RFS/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2"
             check "$RFS/lib/x86_64-linux-gnu/libstdc++.so.6"
-            # PT_INTERP 硬校验（v3.3.0）：box64 是 NDK bionic 链接，
-            # 解释器必须是 /system/bin/linker64 —— 出现
-            # ld-linux-aarch64.so.1 即说明又混入了 glibc 方案（v3.2.5
-            # 废弃形态，设备上连 box64 都起不来），直接判失败
+            # aarch64 glibc 运行层（glibc-aarch64 配方，v3.3.1）：私有
+            # 加载器 ld-linux-aarch64.so.1 + libc.so.6 等 —— rootfs 内
+            # glibc 链接的 aarch64 二进制与 glibc 形态 box64
+            # （build-box64.yml 产物，PT_INTERP 指向该加载器）的运行层；
+            # lib/ld-linux-aarch64.so.1 为 Ubuntu usrmerge 同款便捷链接。
+            # 注意：这是【兼容目录】，bionic 加载器（linker64）永不搜索
+            # aarch64-linux-gnu 目录，与 rootfs 自身 bionic 库零串扰
+            check "$RFS/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1"
+            check "$RFS/lib/aarch64-linux-gnu/libc.so.6"
+            check "$RFS/lib/ld-linux-aarch64.so.1"
+            # PT_INTERP 硬校验（v3.3.0）：rootfs 内置的 box64 本体是
+            # NDK bionic 链接，解释器必须是 /system/bin/linker64 ——
+            # 出现 ld-linux-aarch64.so.1 即说明 box64 本体又混入了
+            # glibc 方案（v3.2.5 废弃形态，设备上连 box64 都起不来），
+            # 直接判失败。aarch64-linux-gnu 目录是配套运行层，
+            # 与 box64 本体的形态校验互不冲突
             _b64_interp="$(readelf -l "$RFS/local/bin/box64" 2>/dev/null \
               | sed -n 's/.*Requesting program interpreter: \(.*\)\]/\1/p' | head -n 1)"
             if [[ "$_b64_interp" == *ld-linux* ]]; then
-              echo "  [MISS] box64 PT_INTERP 为 glibc 加载器（$_b64_interp）—— bionic rootfs 不应有 glibc 产物！"
+              echo "  [MISS] box64 PT_INTERP 为 glibc 加载器（$_b64_interp）—— rootfs 内置 box64 本体应回 NDK bionic 构建！"
               MISS=1
               MISS_LIST+="$RFS/local/bin/box64 (glibc 形态，应回 NDK bionic 构建)"$'\n'
             elif [[ "$_b64_interp" != "/system/bin/linker64" ]]; then
@@ -320,6 +336,16 @@ jobs:
               MISS_LIST+="$RFS/local/bin/box64 (PT_INTERP 非 bionic)"$'\n'
             else
               echo "  [OK] box64 PT_INTERP => $_b64_interp（bionic）"
+            fi
+            # ld-linux-aarch64.so.1 架构硬校验：防索引解析拉错架构的包
+            _ld_machine="$(readelf -h "$RFS/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1" 2>/dev/null \
+              | awk '/^ *Machine:/{print $2; exit}')"
+            if [[ "$_ld_machine" == "AArch64" ]]; then
+              echo "  [OK] ld-linux-aarch64.so.1 为 aarch64 ELF"
+            else
+              echo "  [MISS] ld-linux-aarch64.so.1 非 aarch64 ELF（Machine: ${_ld_machine:-未知}）"
+              MISS=1
+              MISS_LIST+="$RFS/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1 (非 aarch64 ELF)"$'\n'
             fi
             # wine 自带 NLS/字体（locale.nls 为 wine 启动必需）
             check "$RFS/opt/share/wine/nls/locale.nls"
@@ -463,6 +489,15 @@ jobs:
               rootfs 内 X 客户端已补丁对齐该路径，直接 `DISPLAY=:1` 即可连接
             - rootfs 自带完整 X11 客户端库（libX11/libxcb/全套 Xext 扩展）
               + Mesa GLX/EGL + Vulkan（XCB/XLIB WSI）
+
+            ## box64 完整文件集（aarch64）
+            - `usr/local/bin/box64`（bionic 形态，PT_INTERP=/system/bin/linker64）
+              + `usr/bin/box64` PATH 入口链接
+            - `usr/lib/box64-x86_64-linux-gnu/libc++_shared.so`（上游 ANDROID
+              配套）+ `usr/etc/box64.box64rc`
+            - `usr/lib/aarch64-linux-gnu/`（`ld-linux-aarch64.so.1` 私有加载器
+              + aarch64 glibc 运行库，glibc 形态 box64 / glibc 二进制运行层）
+            - `usr/lib/x86_64-linux-gnu/`（被仿真 x86_64 程序的 glibc 运行库）
 
             ## 文件
             - `anwind-bionic-rootfs-*.tar.gz` — 完整 rootfs
