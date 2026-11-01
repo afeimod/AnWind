@@ -412,16 +412,31 @@ object RootfsLauncher {
                 env, resolved.arch, resolved.wineDir, container.env
             )
 
-            // v3.1.6：wineboot -i（前缀构建）会话不注入 HODLL64/HODLL ——
-            // 前缀创建只执行 aarch64 PE（wineboot/services/explorer 全部
-            // 原生 arm64ec 代码），仿真器 DLL 在 wow64 层的早期加载纯属
-            // 额外风险面，却是 proton10 arm64ec "无任何输出挂死"的高度
-            // 可疑点（同环境 hangover 11.16 正常，wine 10 与 11 的 wow64
-            // 初始化路径不同）。构建完成后的游戏/程序会话照常注入。
+            // v3.2.10（用户问题：syswow64 无法生成）：恢复 wineboot 会话的
+            // HODLL64/HODLL 注入，撤销 v3.1.6 的移除。
+            // 【v3.1.6 误判复盘】当时以为"前缀创建只执行 aarch64 PE"，把
+            // proton10 arm64ec 前缀构建挂死归嫌疑于仿真器早期加载而剥离了
+            // HODLL64/HODLL。实际两条都不成立：
+            //   1. wineboot -u 会为所有受支持架构派生 rundll32 执行 wine.inf
+            //      的 PreInstall/DefaultInstall/【Wow64Install】段 —— i386 段
+            //      由 32 位 syswow64\rundll32.exe 运行（设备日志实证：
+            //      "00dc:err:environ:init_peb starting ...syswow64\rundll32.exe
+            //       in experimental wow64 mode"后紧跟
+            //      "err:wow:load_64bit_module failed to load dll c0000135"）。
+            //      32 位进程 wow64 初始化需要 CPU 仿真 dll；剥离环境变量 +
+            //      vanilla 树找 xtajit.dll → 进程即死 → Wow64Install 段从未
+            //      执行 → C:\windows\syswow64 整个目录没有内容。
+            //   2. v3.1.6 时代的 proton10（vanilla wine-10）根本没有读取
+            //      HODLL64/HODLL 的代码，注入与否对当时的挂死毫无影响（挂死
+            //      根因是 bionic 堆标记/预加载器/esync，已由 v3.2.x 修复）。
+            // 【现在】0010/0011 补丁把 HODLL/HODLL64 机制移植进 official/
+            // proton 树（对齐 hangover-11.16）：前缀构建会话【必须】注入，
+            // 否则 syswow64 依旧是空目录。构建完成后的游戏/程序会话照常注入。
             if (wineArgs.firstOrNull() == "wineboot") {
-                env.remove("HODLL64")
-                env.remove("HODLL")
-                sink.stamp("前缀构建会话：跳过 HODLL64/HODLL 注入（仅 aarch64 PE，规避仿真器早期加载风险）")
+                sink.stamp(
+                    "前缀构建会话：保持 HODLL64/HODLL 仿真器注入" +
+                        "（Wow64Install 段需 32 位 rundll32；剥离会导致 syswow64 为空）"
+                )
                 // v3.2.0（用户诉求 4）：前缀构建画面指引 —— 构建已包 explorer
                 // 虚拟桌面（见 buildCommand），mono/gecko 等安装提示框从此在
                 // 『X11 桌面』窗口内可见可点，不再是无 WM 裸窗口堆在 (0,0) 黑屏角落。

@@ -191,8 +191,8 @@ android {
         // TrackpadRouter 之前）+ TrackpadController/TrackpadRouter（触控板
         // 模式指针处与手指轻点处）按窗口几何直判置前；WindowChrome/
         // WinDialogFrame onGloballyPositioned 上报几何；focus 加诊断日志。
-        versionCode = 71
-        versionName = "2.38.8"
+        versionCode = 72
+        versionName = "2.38.9"
         // v2.38.7（源码包 v3.2.5）：box64 glibc 形态切换 + aarch64 glibc
         // 运行库补齐 —— x86_64 形态 wine 前缀构建秒退(139)的根治。
         // [根因]（用户诊断 + 构建链核对）：bionic 形态 box64（-DANDROID=1，

@@ -248,10 +248,16 @@ object WineEnvironment {
      *    不读它，零影响。用户 env= 可覆盖（putIfAbsent 语义）。
      *
      * ② HODLL64/HODLL（仅 arm64ec 形态）：arm64ec 跑 x86_64/i386 程序
-     *    靠仿真器 DLL —— 上游 official/proton 树默认是 xtajit64 桩（只报
+     *    靠仿真器 DLL —— 上游 official/proton 树默认是 xtajit64 桨（只报
      *    不支持），hangover 树默认 wowbox64（需 box64 PE）。v3.1.4 起
      *    wine 包自带 libarm64ecfex + libwow64fex（FEX），存在即默认启用；
      *    用户 HODLL64/HODLL 覆盖优先（先探测用户值再落默认）。
+     *    【v3.2.10】official/proton 树已由 0010/0011 补丁移植了 HODLL/
+     *    HODLL64 读取机制（对齐 hangover-11.16）：此前 vanilla 树根本不
+     *    读这两个变量，xtajit(.64).dll 在 Linux 不存在 → 32 位 wow64 进程
+     *    死于 c0000135（syswow64 无法生成）、EC 进程装载 x64 仿真器失败。
+     *    本函数注入的变量【必须】在 wineboot 前缀构建会话保留（Wow64Install
+     *    段靠 32 位 rundll32 执行，见 RootfsLauncher v3.2.10 注）。
      */
     fun applyWineCompatEnv(
         env: MutableMap<String, String>,

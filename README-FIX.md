@@ -426,3 +426,108 @@ libarm64ecfex.dll     4751360  （x86_64 仿真，HODLL64）
 libwow64fex.dll       4214784  （i386 仿真，HODLL）
 wowbox64.dll          4676096  （box64 PE，i386 备选）
 ```
+
+# v3.2.10 —— wine-9.7 arm64ec 构建炸点 + proton arm64ec syswow64 空（2026-11-01）
+
+## 设备实测根因（两份日志逐条定位）
+
+### 问题 1：official wine-9.7 arm64ec 构建失败（v3.2.9 日志）
+
+```
+dlls/msvcrt/string.c:3056:12: error: call to undeclared function 'sse2_memmove'
+make: *** [Makefile:14654: dlls/crtdll/arm64ec-windows/string.o] Error 1
+```
+
+wine-9.6/9.7 新增 SSE2 memmove 快路径：**定义段**（~2789 行）与**调用点**
+（~3055 行）是两道守卫。0007（9.2 锚点）只修了定义段总守卫
+`#if defined(__i386__) || defined(__x86_64__)`；EC 趟下定义被排除、
+3055 行调用点的独立 `#ifdef __x86_64__` 漏网（llvm-mingw arm64ec 同时预
+定义 `__arm64ec__` 与 `__x86_64__`）→ 调用未声明函数。上游 wine-10 已把
+两处守卫统一为 `#if defined(__x86_64__) && !defined(__arm64ec__)`。
+
+伴随：rpcrt4/cstub.c 的 vtbl_thunks x64 THUNK_ENTRY 裸汇编同样只在 EC 趟
+炸（上游 wine-10 起整段重写为纯 C）；kernelbase/debug.c 与
+rpcrt4/ndr_stubless.c 的 0007 hunk 未命中是【无害的】——9.7 上游已自带
+EC 分支（.rej 仅是锚点漂移噪音）。
+
+### 问题 2：proton arm64ec 前缀 syswow64 目录为空（设备会话日志）
+
+```
+00dc:err:environ:init_peb starting L"C:\windows\syswow64\rundll32.exe" in experimental wow64 mode
+00dc:err:wow:load_64bit_module failed to load dll c0000135
+```
+
+链路：wineboot -u 为所有受支持架构派生 rundll32 执行 wine.inf 的
+PreInstall / DefaultInstall / **Wow64Install** 段 —— syswow64 的全部假
+DLL、注册表、字体等正是 **Wow64Install 段**（32 位 `syswow64\rundll32.exe`）
+生成的。而 vanilla wine（9.x/10.x）的 wow64 CPU 仿真 dll 选择
+（`dlls/wow64/syscall.c get_cpu_dll_name`）走注册表
+`HKLM\Software\Microsoft\Wow64\x86`，wine.inf 写入的默认是 **xtajit.dll**
+—— Linux 上不存在 → 32 位进程初始化即死（c0000135）→ Wow64Install 从未
+执行 → **syswow64 整个目录无内容**。同理 EC 进程的 x64 仿真器
+（`ntdll/loader.c load_arm64ec_module`）默认 **xtajit64.dll** 也不存在。
+
+HODLL64/HODLL 是 **hangover-11.16 专属机制**（`wow64/syscall.c:941` /
+`ntdll/loader.c:4317` 读环境变量选择仿真 dll）；vanilla official/proton
+树根本没有读取代码 —— 启动器注了也白发。且 v3.1.6 起 wineboot 会话还
+【主动剥离】了这两个变量（当时误判"前缀创建只跑 aarch64 PE"），双重
+叠加导致 syswow64 恒空。
+
+## 修复（三个新补丁 + 校验 + 启动器）
+
+1. `0007c-fix-arm64ec-x64-asm-wine97.patch` — 9.7 构建炸点（wine-9.7 锚点）：
+   string.c 调用点守卫回填上游修法 + cstub.c EC 走空桩分支
+   （上游对不支持架构的 #else 兜底同款，delegating stubs 在 EC 无用户）。
+2. `0010-fix-arm64ec-hodll-wow64.patch` — **HODLL 机制移植**（对齐 hangover）：
+   `wow64/syscall.c get_cpu_dll_name` 读 HODLL 环境变量优先；I386 在
+   ARM64/ARM64EC 宿主下默认 libwow64fex.dll（不再读 xtajit 注册表）。
+   9.7 与 proton_10.0/wine-11.16 该函数逐字一致，一套 hunk 通吃；
+   hangover-11.16 自带机制 → 全 hunk 静默跳过。
+3. `0011-fix-arm64ec-hodll64-suspend-wine10.patch` — **HODLL64 + Wow64 线程
+   挂起管道移植**（对齐 hangover，完整复刻其 11.16 与 vanilla 的全部差异
+   12 文件中的 9 个）：loader.c 读 HODLL64 + 默认 libarm64ecfex.dll；
+   ntdll.spec 导出 RtlWow64SuspendThread；signal_arm64.c 完整实现（远进程
+   breakin 挂起）/ signal_arm64ec.c 直通桩；wow64.spec 把
+   Wow64SuspendLocalThread 由 stub 转真导出 + syscall.c BTCpu 挂起转发 +
+   process.c NtSuspendMethod 改走 RtlWow64SuspendThread；loader.c
+   init_wow64 增取 Wow64SuspendLocalThread。**双锚点**：wine-10 形态
+   （virtual_unwind 带 dump_backtrace 签名 / arm64_features 返回）与
+   wine-9.x 形态（KiUserExceptionDispatcher 汇编尾 / __chkstk）各一套互斥
+   hunk，同一树只命中一套；wine-11.16 vanilla 自带 RtlWow64SuspendThread
+   （process.c）→ spec/桩 hunk 不命中防重复定义；hangover-11.16 全不命中。
+4. `build.sh` 新增 4 道 arm64ec 防呆校验（延续 0009 校验风格）：string.c
+   调用点守卫 / cstub.c EC 分支 / HODLL / HODLL64 —— 未生效立即报清
+   根因中止，不再让构建死在 28 分钟后的编译深处。
+5. `RootfsLauncher.kt` — **恢复 wineboot 会话 HODLL64/HODLL 注入**
+   （撤销 v3.1.6 剥离）：Wow64Install 段需要 32 位 rundll32 + 仿真器；
+   旧包（vanilla 树）不读这两个变量，注入零副作用。
+6. `WineEnvironment.kt` — KDoc 补记 v3.2.10 机制与"前缀会话必须保留注入"。
+
+## 四树交叉验证（本地 patch --forward 实测）
+
+| 源码树 | 0007c | 0010 | 0011 | 结果 |
+| --- | --- | --- | --- | --- |
+| wine-9.7 | ✅ 全命中 | ✅ | ✅ 9.x 锚点（10 形态 hunk 落 .rej 预期） | 构建修复 + i386 wow64 仿真 |
+| proton_10.0 | 全 .rej（上游已修，无害） | ✅ | ✅ 10 形态全套（9.x 锚点 .rej 预期） | syswow64 修复 + x64-in-EC |
+| wine-11.16 | 全 .rej | ✅ | HODLL64/挂起管道命中；spec+桩不命中（自带 process.c 实现，防重复） | 与 11.x 自身机制协同 |
+| hangover-11.16 | 全 .rej | 全 .rej | 全 .rej（原生机制保持，零重复定义） | 完全互斥 |
+
+已知限制：wine-9.x 形态无 x64-in-EC 机制（上游 10.x 才有
+load_arm64ec_module/CHPEV2），9.7 官方树 arm64ec 跑纯 x64 dll 不支持
+（i386 仿真不受影响）；x86_64 flavor 本配方不构建，无 signal_x86_64.c
+桩需求。
+
+## 验证顺序
+
+1. 重跑 `build-wine-bionic.yml` arm64ec 形态：
+   - official **wine-9.7**：应能编过（不再死于 string.o 的 sse2_memmove）；
+     日志不应出现 4 道 v3.2.10 校验的 ::error
+   - **proton_10.0**：日志应出现 `0010/0011` 补丁应用行
+     （`应用主补丁: 0010-fix-arm64ec-hodll-wow64.patch` 等且无对应 .rej）
+2. 安装新 wine 包 → 删容器重建（或删 prefix）→ wineboot -i：
+   - 会话日志应出现 `前缀构建会话：保持 HODLL64/HODLL 仿真器注入`
+   - 不再出现 `err:wow:load_64bit_module failed to load dll c0000135`
+   - `ls <prefix>/drive_c/windows/syswow64` 应有 i386 dll（v3.1.5 就
+     想要验证的项，这次真的能过）
+3. arm64ec 跑 x86 游戏：HODLL=libwow64fex.dll 生效；跑 x64 exe：
+   HODLL64=libarm64ecfex.dll 生效（不再 NtTerminateProcess）。

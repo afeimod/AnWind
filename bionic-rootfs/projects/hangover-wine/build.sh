@@ -315,6 +315,67 @@ pre_setup() {
     return 1
   fi
 
+  # v3.2.10：0007c string.c 调用点守卫校验（wine 9.6+/9.7 新增的 SSE2 memmove
+  # 快路径）。0007（9.2 锚点）只修了 2789 行定义段总守卫；9.6 起 memmove 调用
+  # 点自带独立 #ifdef __x86_64__ —— EC 趟定义被排除、调用漏网 →
+  # "call to undeclared function 'sse2_memmove'"（CI official-9.7 v3.2.9 实证
+  # 阵亡点）。wine-10+ 树上游已统一两处守卫 → 本校验自然通过。
+  if [[ "${args}" == *"--enable-archs=arm64ec,"* ]] \
+     && [[ -f dlls/msvcrt/string.c ]] \
+     && grep -q 'sse2_memmove' dlls/msvcrt/string.c 2>/dev/null \
+     && grep -A1 '^#ifdef __x86_64__$' dlls/msvcrt/string.c 2>/dev/null | grep -q 'return sse2_memmove'; then
+    echo "::error::0007c-fix-arm64ec-x64-asm-wine97 补丁未生效（string.c 的 sse2_memmove 调用点仍为旧 #ifdef __x86_64__ 守卫）！"
+    echo "   arm64ec 编译趟必炸于 dlls/crtdll/arm64ec-windows/string.o：call to undeclared function 'sse2_memmove'"
+    echo "   请核查源码树形态与补丁锚点：projects/hangover-wine/0007c-fix-arm64ec-x64-asm-wine97.patch"
+    return 1
+  fi
+
+  # v3.2.10：0007c cstub.c EC 排除校验。wine ≤9.x 的 rpcrt4/cstub.c
+  # vtbl_thunks x64 THUNK_ENTRY 裸汇编在 EC 编译趟必炸（上游 wine-10 起整段
+  # 重写为纯 C）；9.x 树若仍无 arm64ec 分支即未生效。
+  if [[ "${args}" == *"--enable-archs=arm64ec,"* ]] \
+     && [[ -f dlls/rpcrt4/cstub.c ]] \
+     && grep -q 'THUNK_ENTRY' dlls/rpcrt4/cstub.c 2>/dev/null \
+     && ! grep -q '__arm64ec__' dlls/rpcrt4/cstub.c 2>/dev/null; then
+    echo "::error::0007c-fix-arm64ec-x64-asm-wine97 补丁未生效（cstub.c 的 vtbl_thunks 仍无 arm64ec 排除分支）！"
+    echo "   arm64ec 编译趟的 x64 thunk 裸汇编（movq/jmp *offset）必然报错"
+    echo "   请核查源码树形态与补丁锚点：projects/hangover-wine/0007c-fix-arm64ec-x64-asm-wine97.patch"
+    return 1
+  fi
+
+  # v3.2.10：0010 HODLL 生效校验（设备实证 wine-proton10 arm64ec 根因）。
+  # vanilla wow64/syscall.c get_cpu_dll_name 按注册表 HKLM\Wow64\x86 选 CPU
+  # dll，wine.inf 默认写入 xtajit.dll —— Linux 不存在 → 32 位 wow64 进程
+  # 必死于 load_64bit_module c0000135 → wineboot 的 Wow64Install 段不执行
+  # → C:\windows\syswow64 整目录无内容、x86 程序全不可用。0010 移植
+  # hangover 的 HODLL 环境变量机制后本校验自然通过；hangover-11.16 自带
+  # 机制（无 xtajit 字样）亦跳过。
+  if [[ "${args}" == *"--enable-archs=arm64ec,"* ]] \
+     && [[ -f dlls/wow64/syscall.c ]] \
+     && grep -q 'xtajit' dlls/wow64/syscall.c 2>/dev/null \
+     && ! grep -q 'HODLL' dlls/wow64/syscall.c 2>/dev/null; then
+    echo "::error::0010-fix-arm64ec-hodll-wow64 补丁未生效（wow64/syscall.c 仍按注册表找 xtajit.dll，无 HODLL 机制）！"
+    echo "   32 位 wow64 进程必死于 load_64bit_module c0000135（找不到 CPU 仿真 dll）"
+    echo "   后果：wineboot Wow64Install 段不执行 → syswow64 目录为空、x86 程序无法运行"
+    echo "   请核查源码树形态与补丁锚点：projects/hangover-wine/0010-fix-arm64ec-hodll-wow64.patch"
+    return 1
+  fi
+
+  # v3.2.10：0011 HODLL64 生效校验（x64-in-EC 仿真装载）。vanilla wine-10/11
+  # 的 ntdll/loader.c load_arm64ec_module 按注册表 HKLM\Wow64\amd64 选 x64
+  # 仿真器，默认 xtajit64.dll —— Linux 不存在 → EC 进程（x64 exe/纯 x64 dll）
+  # 必死于 NtTerminateProcess。wine-9.x 无该机制（无 xtajit64 字样）自然跳过
+  # （9.x 形态不支持 x64-in-EC，为已知限制）；hangover-11.16 自带机制亦跳过。
+  if [[ "${args}" == *"--enable-archs=arm64ec,"* ]] \
+     && [[ -f dlls/ntdll/loader.c ]] \
+     && grep -q 'xtajit64' dlls/ntdll/loader.c 2>/dev/null \
+     && ! grep -q 'HODLL64' dlls/ntdll/loader.c 2>/dev/null; then
+    echo "::error::0011-fix-arm64ec-hodll64-suspend 补丁未生效（loader.c 仍按注册表找 xtajit64.dll，无 HODLL64 机制）！"
+    echo "   EC 进程装载 x64 仿真器必失败（NtTerminateProcess），x64 exe/纯 x64 dll 无法运行"
+    echo "   请核查源码树形态与补丁锚点：projects/hangover-wine/0011-fix-arm64ec-hodll64-suspend-wine10.patch"
+    return 1
+  fi
+
   # bionic POSIX shm 兼容注入（幂等）：
   # bionic 任何 API 级别都没有 shm_open/shm_unlink（bionic 官方文档
   # status.md 列为 "Missing functions ... explicitly disallowed by
