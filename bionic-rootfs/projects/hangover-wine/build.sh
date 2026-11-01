@@ -133,6 +133,52 @@ pre_setup() {
     args="${args/--enable-archs=arm64ec,aarch64,i386/--enable-archs=aarch64,i386}"
   fi
 
+  # 0b. v3.2.8：wine ≤9.x 树 PE 探测程序补丁（arm64ec configure 检测根治）
+  #   【根因】（llvm-mingw-20251202 实测复现，与 CI official-9.7 失败逐字一致）：
+  #     lld-link 对 arm64ec 目标强制要求镜像含 load config —— 测试程序
+  #     无 _load_config_used 时直接：
+  #       lld-link: error: EC version of '_load_config_used' is missing
+  #     → configure 误判 "arm64ec PE cross-compiler not found" → 构建中止。
+  #     上游 wine 10 起（proton_10.0 树已核对）给 WINE_TRY_PE_CFLAGS 测试
+  #     程序补了 `const unsigned int _load_config_used[0x50] = {...};` ——
+  #     这就是 hangover-11.16/proton_10.0 能过、official-9.7 不能过的
+  #     全部差异。真实构建不受影响（winebuild spec32.c output_load_config
+  #     为每个 DLL 生成 load config），仅测试程序落后。
+  #   【修法】把上游同款一行补进【已生成的】configure（tarball 自带，
+  #     autogen 仅在缺失时跑，改 aclocal.m4 不生效）+ aclocal.m4（防
+  #     autoreconf 路径）+ configure.ac 无需动（程序文本在宏里）。
+  #     实测：补丁后 arm64ec/aarch64/i386 三目标全过、±--no-default-config
+  #     两遍全过、-s/-O3/-pipe/-D__WINE_PE_BUILD 全旗标组合无回归。
+  #     wine 10+ 树自带该行自动跳过；幂等。
+  patch_pe_test_load_config() {
+    local _dir="${srcDir}/${pjName}"
+    local _hit=0
+    # configure：测试程序独立成行（每处 WINE_TRY_PE_CFLAGS 展开一份，~35 处）
+    if [[ -f "${_dir}/configure" ]] && grep -q '^void \*__os_arm64x_dispatch_ret = 0;$' "${_dir}/configure" \
+       && ! grep -q '_load_config_used\[0x50\]' "${_dir}/configure"; then
+      sed -i 's|^void \*__os_arm64x_dispatch_ret = 0;$|void *__os_arm64x_dispatch_ret = 0;\nconst unsigned int _load_config_used[0x50] = { sizeof(_load_config_used) };|' "${_dir}/configure" \
+        && _hit=1
+      echo "已补 configure PE 探测程序的 _load_config_used（wine ≤9.x 树，arm64ec lld-link 检测失败根治）"
+    fi
+    # aclocal.m4：宏内联形态（AC_LANG_SOURCE([[void *... 在行尾）
+    if [[ -f "${_dir}/aclocal.m4" ]] \
+       && grep -q '^AC_LINK_IFELSE(\[AC_LANG_SOURCE(\[\[void \*__os_arm64x_dispatch_ret = 0;$' "${_dir}/aclocal.m4" \
+       && ! grep -q '_load_config_used\[0x50\]' "${_dir}/aclocal.m4"; then
+      sed -i 's|^AC_LINK_IFELSE(\[AC_LANG_SOURCE(\[\[void \*__os_arm64x_dispatch_ret = 0;$|AC_LINK_IFELSE([AC_LANG_SOURCE([[void *__os_arm64x_dispatch_ret = 0;\nconst unsigned int _load_config_used[0x50] = { sizeof(_load_config_used) };|' "${_dir}/aclocal.m4" \
+        && _hit=1
+      echo "已补 aclocal.m4 WINE_TRY_PE_CFLAGS 宏的 _load_config_used（autoreconf 路径同步）"
+    fi
+    if [[ "${_hit}" == "0" ]] && [[ -f "${_dir}/configure" ]]; then
+      if grep -q '_load_config_used\[0x50\]' "${_dir}/configure" 2>/dev/null; then
+        echo "源码树 PE 探测程序已含 _load_config_used（wine 10+ 树），跳过"
+      else
+        echo "ℹ️ 未匹配到旧版 PE 探测程序形态（树结构差异），跳过 —— arm64ec 检测若失败请核查 configure 的 WINE_TRY_PE_CFLAGS 测试"
+      fi
+    fi
+    return 0
+  }
+  patch_pe_test_load_config
+
   # 1. 下载并设置 llvm-mingw 工具链
   if [[ ! -d "${_llvmMingwDir}" ]]; then
     echo "下载 llvm-mingw 工具链..."
@@ -413,6 +459,80 @@ ESYNCGUARD
     done
   }
   disable_esync_android
+
+  # v3.2.8：userfaultfd Android 硬禁用 —— proton_10.0 / wine-10.0 树
+  # arm64ec wineboot 退出码 159（SIGSYS）的【真正根因】（fsync 探测只是
+  # 前一轮的误诊方向：构建守卫早已生效，159 依旧）。
+  # [证据链]（proton_10.0 源码逐行核实 + 设备日志时序对齐）：
+  #   * wine 10 系树的 dlls/ntdll/unix/virtual.c 在 virtual_init() 里
+  #     无条件执行（除非 WINE_DISABLE_KERNEL_WRITEWATCH=1）：
+  #       kernel_writewatch_init() → syscall( __NR_userfaultfd,
+  #       O_CLOEXEC|O_NONBLOCK|UFFD_USER_MODE_ONLY )   // aarch64 号 374
+  #   * Android 应用沙箱 seccomp 白名单不含 userfaultfd → SECCOMP_RET_TRAP
+  #     → SIGSYS(31) → 退出码 159（128+31）。进程死在 virtual_init，
+  #     即 "anwind: bionic heap tagging disabled" 打印后、wineserver 握手
+  #     前 —— 与设备日志"打印一行后秒退 159"逐毫秒吻合；
+  #   * wine --version 不走 virtual_init（check_command_line 提前 exit(0)）
+  #     —— 加载器冒烟测试通过、真实 wineboot 阵亡的完整解释；
+  #   * hangover-11.16（wine 11）上游已带 `!defined(__ANDROID__)` 编译期
+  #     排除（virtual.c:76）+ configure 探测 linux/userfaultfd.h（本配方
+  #     ac_cv_header_linux_userfaultfd_h=no 双保险）—— 同设备可用；
+  #     wine 10/proton_10.0 树既无编译期守卫也无 configure 探测，本配方
+  #     此前传的 ac_cv_header_linux_userfaultfd_h=no 对它【完全无效】
+  #     （configure.ac 压根没有该项检查，virtual.c 无条件 include）。
+  # [修法] 对无编译期守卫的树（wine 10 系/proton_10.0）注入 __ANDROID__
+  #   早退守卫（对齐 wine 11 上游行为；写监视回退用户态实现，Android 沙箱
+  #   无损失）；wine 11+ 树自带守卫自动跳过。幂等。
+  # [运行期兜底] WINE_DISABLE_KERNEL_WRITEWATCH=1（wine 10 树自带该变量，
+  #   virtual_init 读取）已由 App 侧 WineEnvironment 与 anwind-wine 脚本
+  #   默认导出 —— 旧包免重编即修。
+  disable_userfaultfd_android() {
+    local _f="dlls/ntdll/unix/virtual.c"
+    [[ -f "$_f" ]] || { echo "ℹ️ 无 $_f（树结构差异），跳过 userfaultfd 守卫"; return 0; }
+    if grep -q "ANWIND_FIX_UFFD_ANDROID" "$_f"; then
+      echo "userfaultfd Android 守卫已注入过，跳过 => $_f"
+      return 0
+    fi
+    # wine 11+ 树：编译期已排除（上游自带 __ANDROID__ 守卫），零改动
+    if grep -q '!defined(__ANDROID__)' "$_f" && grep -q 'userfaultfd' "$_f"; then
+      echo "源码树已带 userfaultfd __ANDROID__ 编译期守卫（wine 11+），跳过 => $_f"
+      return 0
+    fi
+    # wine 10 系树：kernel_writewatch_init 内的裸 syscall 必须存在
+    if ! grep -q 'syscall( __NR_userfaultfd' "$_f"; then
+      echo "ℹ️ $_f 无 userfaultfd 调用（旧树/已重构），跳过守卫注入"
+      return 0
+    fi
+    # 首选锚点：函数体首行声明（wine 10 树结构稳定）—— 其后插入早退守卫
+    if grep -q 'struct uffdio_api uffdio_api;' "$_f"; then
+      cat > ".anwind-uffd-guard.h" <<'UFFDGUARD'
+#if defined(__ANDROID__)
+    /* ANWIND_FIX_UFFD_ANDROID: userfaultfd (aarch64 nr 374) is not in the
+     * Android app seccomp allowlist -> SECCOMP_RET_TRAP -> SIGSYS (signal
+     * 31) kills the process with exit code 159 during virtual_init(),
+     * right after "bionic heap tagging disabled" is printed and before the
+     * wineserver handshake. Wine 11+ guards this with !defined(__ANDROID__)
+     * at compile time; wine 10 / proton_10.0 trees do not. Write watches
+     * fall back to the userspace implementation - zero loss on Android. */
+    uffd_fd = -1;
+    return;
+#endif
+UFFDGUARD
+      sed -i '/struct uffdio_api uffdio_api;/r .anwind-uffd-guard.h' "$_f" \
+        && echo "已注入 userfaultfd Android 守卫（159/SIGSYS 根治）=> $_f"
+      rm -f ".anwind-uffd-guard.h"
+    else
+      # 锚点漂移兜底：整行改写 syscall 行为 uffd_fd=-1（软路径；.* 吞掉
+      # 管道符等特殊字符，# 分隔符避开模式内的 | 与 /）
+      sed -i 's#^    uffd_fd = syscall( __NR_userfaultfd.*#    uffd_fd = -1; /* ANWIND_FIX_UFFD_ANDROID: userfaultfd blocked by Android app seccomp (SIGSYS/159) */#' "$_f"
+      if grep -q "ANWIND_FIX_UFFD_ANDROID" "$_f"; then
+        echo "已改写 userfaultfd 调用为软路径（159/SIGSYS 根治，锚点漂移路径）=> $_f"
+      else
+        echo "⚠️ userfaultfd 守卫未命中锚点（树结构差异）—— 若运行期仍 159 请核查 $_f"
+      fi
+    fi
+  }
+  disable_userfaultfd_android
 
   # v3.2.3：wine-preloader Android 全面禁用 —— proton 两形态前缀构建
   # 失败（arm64ec 阵亡 / x86_64 静默阵亡）的根治之一（另一根因 = Valve

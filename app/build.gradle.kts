@@ -193,21 +193,27 @@ android {
         // WinDialogFrame onGloballyPositioned 上报几何；focus 加诊断日志。
         versionCode = 71
         versionName = "2.38.8"
-        // v2.38.8（源码包 v3.3.1）：proton arm64ec 前缀构建"无任何输出挂死"
-        // 根治 —— 陈旧/冻结 wineserver 硬清理（WineServerUtils 三段式：
-        // -k/-w 优雅 + /proc 扫描 SIGKILL 冻结守护 + 残留 socket/lock 清除），
-        // wineboot 会话无条件清理 + 挂死看门狗 8 分钟自动恢复；构建侧
-        // 0008 补丁给握手加 SO_RCVTIMEO=60s 兜底（旧包重编后生效）。
-        // v2.38.7（源码包 v3.3.0）：bionic-box64 回归 NDK bionic 构建。
-        // v3.2.4~v3.2.5 曾把 box64 切到 glibc 交叉构建（Winlator 式
-        // patchelf --set-interpreter + glibc-aarch64 配方），该形态与
-        // bionic rootfs 不相容，设备上连 box64 启动都不行，已整体废弃，
-        // glibc-aarch64 配方同步删除。现行方案（bionic 原生，与 rootfsbc
-        // 参考配方同参数集）：NDK clang + ANDROID/ARM_DYNAREC/BAD_SIGNAL，
-        // 产物为 bionic ELF（PT_INTERP=/system/bin/linker64），完整产物集
-        // box64 + lib/box64-x86_64-linux-gnu/libc++_shared.so +
-        // etc/box64.box64rc，详见 bionic-rootfs/projects/box64/build.sh
-        // 头部说明。早期修复记录见 git 历史。
+        // v2.38.7（源码包 v3.2.5）：box64 glibc 形态切换 + aarch64 glibc
+        // 运行库补齐 —— x86_64 形态 wine 前缀构建秒退(139)的根治。
+        // [根因]（用户诊断 + 构建链核对）：bionic 形态 box64（-DANDROID=1，
+        // NDK clang）冒烟可过（wine --version 轻路径）但真实 wine 负载
+        // （explorer ... wineboot -i）SIGSEGV；而 glibc 形态 box64（Winlator/
+        // MiceWine 同款）所需的 ld-linux-aarch64.so.1 从未构建过——rootfs
+        // 只有 glibc-x86_64（amd64 deb，给被仿真的 x86_64 程序用），aarch64
+        // 侧 glibc 加载器/运行库缺失，glibc box64 装上即 ENOENT。
+        // [本版]：①新配方 bionic-rootfs/projects/glibc-aarch64（Ubuntu
+        //      noble arm64 deb，ports.ubuntu.com → $prefix/lib/
+        //      aarch64-linux-gnu/，含 ld-linux-aarch64.so.1）；②box64 配方
+        //      切 glibc 交叉构建（aarch64-linux-gnu-gcc + WINLATOR_GLIBC/
+        //      BAD_SIGNAL/ARM_DYNAREC）+ install 阶段 patchelf --set-
+        //      interpreter/--set-rpath 指到 rootfs 设备绝对路径 + glibc
+        //      运行库随包自带；③host-deps.sh 补 gcc-aarch64-linux-gnu/
+        //      patchelf；④anwind-container 新增 install-box64（备份/校验/
+        //      回滚，免重建 rootfs 升级）+ doctor 加载器体检；⑤App 启动链
+        //      与 anwind-wine 双端加载器缺失前置诊断（glibc 形态判定：
+        //      二进制头部含 ld-linux-aarch64.so.1 字符串）。
+        // （v2.38.6/源码包 v3.2.3 记录见下，v2.38.5 及更早见 git 历史与
+        //  README-FIX.md）
         // v2.38.6（源码包 v3.2.3）：proton 两形态前缀构建修复。
         // [根因]（proton_10.0 / hangover 两树源码逐行核对 + 设备日志对齐，
         // 本轮勘误了早前的单因归因）：
@@ -234,7 +240,38 @@ android {
         //      wine 源码无此名）；v3.2.0 对 "_r_debug not found in ld.so"
         //      的 esync 归因是误诊（消息出自预加载器 preloader.c:1516
         //      GDB 集成，非致命）。
-        // （v2.38.5/源码包 v3.2.2 记录见 git 历史）
+        //      【v2.38.8 二次勘误】上一行勘误本身是误判：proton_10.0 /
+        //      wine-10.0 的 virtual.c:3847 实测存在该变量检查，WINE_
+        //      DISABLE_KERNEL_WRITEWATCH=1 已重新导出（见 v2.38.8 块）。
+        // （v2.38.5/源码包 v3.2.2 记录见 git 历史与 README-FIX.md）
+
+        // v2.38.8（源码包 v3.2.8）：arm64ec 159 根治 + official arm64ec
+        // 构建修复 + X11 失焦丢画面修复。
+        // [问题①根因]（proton_10.0 源码逐行核实 + 设备日志时序对齐）：
+        //   wine 10 系树 virtual_init() 无条件调 kernel_writewatch_init()
+        //   → 裸 syscall(__NR_userfaultfd)（aarch64 nr 374）不在 Android
+        //   应用 seccomp 白名单 → SIGSYS(31) → 退出码 159 —— 死点在
+        //   "bionic heap tagging disabled" 打印后、wineserver 握手前；
+        //   wine --version 不走 virtual_init，故冒烟测试能过而真实
+        //   wineboot 秒退（fsync 探测守卫早已生效，159 依旧的真因）。
+        //   hangover-11.16 可用：上游 wine 11 已带 !defined(__ANDROID__)
+        //   编译期排除。
+        // [本版]：①WineEnvironment 重新导出 WINE_DISABLE_KERNEL_WRITEWATCH=1
+        //      （wine 10 树自带该变量开关，旧包免重装即修）+ anwind-wine
+        //      脚本同步导出；②两 wine 配方注入 userfaultfd __ANDROID__
+        //      早退守卫（新包根治）；③hangover-wine 配方补 wine ≤9.x 树
+        //      configure PE 探测程序的 _load_config_used（lld-link 对
+        //      arm64ec 目标强制要求镜像含 load config，实测报
+        //      "EC version of '_load_config_used' is missing"—— 上游
+        //      wine 10 起测试程序已带该行，official-9.7 树落后；补后
+        //      configure 实测 exit 0、PE_ARCHS=arm64ec,aarch64,i386）；
+        //      ④X11 失焦丢画面双修：WindowHost 置前改 Modifier.zIndex 纯
+        //      绘制分层（消除子节点重排引发的 SurfaceView detach→surface
+        //      销毁链）+ X11Surface surface 死亡追踪与重获顶层时
+        //      regenerate() 重建恢复（上游 termux-x11 onWindowFocusChanged
+        //      同款机制）。
+        // （v2.38.7/源码包 v3.2.5 记录见上方，v2.38.5 及更早见 git 历史与
+        //  README-FIX.md）
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {

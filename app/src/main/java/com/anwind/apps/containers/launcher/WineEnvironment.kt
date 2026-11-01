@@ -183,18 +183,6 @@ object WineEnvironment {
                 "${glibcDir.absolutePath}:$existing"
             }
         }
-        // box64 上游 ANDROID 模式配套的 x86_64 C++ 标准库目录
-        // （v3.3.0，bionic-box64 配方安装 lib/box64-x86_64-linux-gnu）：
-        // 被仿真的 x86_64 程序 dlopen libc++_shared.so 时从该目录解析。
-        val box64X64Dir = File("$RFS_USR/lib/box64-x86_64-linux-gnu")
-        if (box64X64Dir.isDirectory) {
-            val existing = env["BOX64_LD_LIBRARY_PATH"]
-            env["BOX64_LD_LIBRARY_PATH"] = if (existing.isNullOrBlank()) {
-                box64X64Dir.absolutePath
-            } else {
-                "${box64X64Dir.absolutePath}:$existing"
-            }
-        }
         when (container.preset) {
             Box64Preset.COMPATIBILITY -> {
                 env["BOX64_DYNAREC_BIGBLOCK"] = "0"
@@ -245,11 +233,19 @@ object WineEnvironment {
      *      `*-preloader` 文件根治（ENOENT 官方兜底直连 loader）；
      *      本变量让首进程先不走弯路。
      *
-     * ①c（v3.2.3 勘误）：此前版本在此处导出过 WINE_DISABLE_KERNEL_WRITEWATCH=1，
-     *    但全 wine 源码（proton_10.0 / wine-10.0 / hangover-11.16）均无此变量，
-     *    属无效安慰剂 —— 已移除。写监视（userfaultfd）风险实际在构建侧
-     *    双重关闭：配方参数 ac_cv_header_linux_userfaultfd_h=no +
-     *    hangover-11.16 源码自身 `!defined(__ANDROID__)` 排除。
+     * ①c（v3.2.8 二次勘误，恢复 v3.2.3 误删的变量）：重新导出
+     *    WINE_DISABLE_KERNEL_WRITEWATCH=1。v3.2.3 的"勘误"声称全 wine
+     *    源码均无此变量而将其移除 —— 该结论【只对 hangover-11.16 成立】
+     *    （wine 11 删除了该变量、改为编译期 `!defined(__ANDROID__)` 排除）；
+     *    proton_10.0 / wine-10.0 树的 virtual.c:3847 实测存在：
+     *      if (!((env_var = getenv( "WINE_DISABLE_KERNEL_WRITEWATCH" )) && atoi( env_var )))
+     *          kernel_writewatch_init();
+     *    而 kernel_writewatch_init() 内的裸 syscall(__NR_userfaultfd)
+     *    （aarch64 nr 374）不在 Android 应用 seccomp 白名单 → SIGSYS(31)
+     *    → 退出码 159 —— 正是 proton arm64ec "打印一行 heap-tagging 后
+     *    秒退 159"的真正根因（fsync 探测守卫早已生效，159 依旧）。
+     *    本变量让 wine 10 系旧包【免重装免重编】跳过该探测；wine 11 树
+     *    不读它，零影响。用户 env= 可覆盖（putIfAbsent 语义）。
      *
      * ② HODLL64/HODLL（仅 arm64ec 形态）：arm64ec 跑 x86_64/i386 程序
      *    靠仿真器 DLL —— 上游 official/proton 树默认是 xtajit64 桩（只报
@@ -269,6 +265,12 @@ object WineEnvironment {
         // WineLayoutRepair 停用 bin/*-preloader + WineProbePatch 改写
         // futex_waitv 探测兕底，两者均免重编作用于旧包）
         env.putIfAbsent("WINELOADERNOEXEC", "1")
+        // v3.2.8：userfaultfd 写监视探测的 Android seccomp SIGSYS(159)
+        // 根治（详见 KDoc ①c）—— wine 10 系树（proton_10.0/wine-10.0）
+        // 在 virtual_init 读取本变量，置 1 即跳过 kernel_writewatch_init
+        // 的裸 syscall(__NR_userfaultfd)。wine 11 树不读此变量（编译期已
+        // 排除），导出无副作用。
+        env.putIfAbsent("WINE_DISABLE_KERNEL_WRITEWATCH", "1")
         if (arch != WineRuntime.Arch.AARCH64) return
         val peDir = File(wineDir, "lib/wine/aarch64-windows")
         val hasUserHodll64 = userEnv.contains("HODLL64=")

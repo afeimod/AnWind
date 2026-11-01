@@ -42,7 +42,9 @@ import com.termux.x11.Prefs
 import com.termux.x11.X11InputHub
 import com.termux.x11.input.InputStub
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -97,11 +99,45 @@ fun X11Surface(scope: WindowContentScope) {
     var touchBridge by remember { mutableStateOf<SmartTouchBridge?>(null) }
     val resState by X11ResolutionLink.state.collectAsState()
 
+    // v3.2.8（用户问题 3 修复·恢复）：surface 死亡追踪。LorieView 的
+    // surface 可能被系统销毁（视图重排/遮挡/最小化恢复路径），X server
+    // 随即失去输出面 —— 表现为“画面丢失但声音还在”。回调收到 0x0 即标记
+    // 死亡；窗口重获顶层时强制 regenerate()（格式翻转 → surface 重建 →
+    // 重新交给 X server，上游 termux-x11 onWindowFocusChanged(true) 同款
+    // 机制）无缝找回画面。与 WindowHost 的 zIndex 防 detach 改造配套。
+    val surfaceDead = remember { java.util.concurrent.atomic.AtomicBoolean(false) }
+
     // 连接建立即应用分辨率协议文件（兜底时序：glibc-runner 写文件可能
     // 早于/晚于窗口打开；FileObserver 只覆盖窗口已打开的情况）。
     LaunchedEffect(connState) {
         if (connState == X11WindowController.State.Connected) {
             X11ResolutionLink.applyFromFile()
+        }
+    }
+
+    // v3.2.8（用户问题 3 修复·恢复）：窗口重回顶层且 surface 已死 →
+    // 立刻重建（点击其他窗口置前后点回 X11 窗口的主路径）。
+    LaunchedEffect(connState, wmRevision) {
+        if (connState != X11WindowController.State.Connected) return@LaunchedEffect
+        if (!surfaceDead.get()) return@LaunchedEffect
+        if (wm.topWindow()?.id != scope.windowState.id) return@LaunchedEffect
+        if (surfaceDead.compareAndSet(true, false)) {
+            lorieViewRef?.let { lv -> lv.post { lv.regenerate(); lv.requestLayout() } }
+        }
+    }
+
+    // v3.2.8：死亡状态下周期兜底（覆盖“顶层未变但 surface 被弹窗/遮盖层
+    // 杀死”的场景；连接断开自动停止，正常时零轮询开销）。
+    LaunchedEffect(connState) {
+        if (connState != X11WindowController.State.Connected) return@LaunchedEffect
+        while (isActive) {
+            delay(1500)
+            if (surfaceDead.get() &&
+                wm.topWindow()?.id == scope.windowState.id &&
+                surfaceDead.compareAndSet(true, false)
+            ) {
+                lorieViewRef?.let { lv -> lv.post { lv.regenerate(); lv.requestLayout() } }
+            }
         }
     }
 
@@ -235,7 +271,14 @@ fun X11Surface(scope: WindowContentScope) {
                         // 到 0 尺寸后不再重绘（设备实测“点击其他窗口后画面
                         // 消失、游戏声音还在”）。此处吞掉 0x0：X 屏幕维持
                         // 上次有效尺寸，surface 重建后按原尺寸无缝恢复。
-                        if (screenW <= 0 || screenH <= 0) return@setCallback
+                        // v3.2.8：同时标记 surfaceDead —— 单吞 0x0 不够（X
+                        // server 的输出面已随 null surface 失效），重获顶层时
+                        // 由上方 LaunchedEffect 强制 regenerate 重建恢复。
+                        if (screenW <= 0 || screenH <= 0) {
+                            surfaceDead.set(true)
+                            return@setCallback
+                        }
+                        surfaceDead.set(false)
                         bridge.updateTransform(surfaceW, surfaceH, screenW, screenH)
                         // fix15：自适应客户端同步当前 X 屏幕尺寸（已铺满则跳过判断）
                         X11FitClient.screenW = screenW

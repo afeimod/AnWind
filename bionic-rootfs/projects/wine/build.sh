@@ -379,6 +379,60 @@ ESYNCGUARD
   }
   disable_esync_android
 
+  # v3.2.8：userfaultfd Android 硬禁用 —— wine 10 系树（proton_10.0/
+  # official-10.x）virtual_init() 无条件调 kernel_writewatch_init() →
+  # 裸 syscall(__NR_userfaultfd)（x86_64 nr 323 / aarch64 nr 374）。
+  # Android 应用 seccomp 白名单不含 userfaultfd → SIGSYS(31) → 退出码
+  # 159 —— x86_64 形态下 wine 经 box64 仿真执行，该 libc 调用照常落到
+  # 真内核（box64 不拦截 libc syscall）→ 整个 box64 进程被击杀。
+  # wine 10 树运行期开关 WINE_DISABLE_KERNEL_WRITEWATCH=1 已由 App 侧
+  # （WineEnvironment）与 anwind-wine 脚本默认导出兜底旧包；此处构建期
+  # 注入 __ANDROID__ 早退守卫根治新包（wine 11 树自带编译期守卫自动跳过；
+  # wine ≤9.x 无此代码自动跳过）。与 hangover-wine 配方同款，幂等。
+  disable_userfaultfd_android() {
+    local _f="dlls/ntdll/unix/virtual.c"
+    [[ -f "$_f" ]] || { echo "ℹ️ 无 $_f（树结构差异），跳过 userfaultfd 守卫"; return 0; }
+    if grep -q "ANWIND_FIX_UFFD_ANDROID" "$_f"; then
+      echo "userfaultfd Android 守卫已注入过，跳过 => $_f"
+      return 0
+    fi
+    if grep -q '!defined(__ANDROID__)' "$_f" && grep -q 'userfaultfd' "$_f"; then
+      echo "源码树已带 userfaultfd __ANDROID__ 编译期守卫（wine 11+），跳过 => $_f"
+      return 0
+    fi
+    if ! grep -q 'syscall( __NR_userfaultfd' "$_f"; then
+      echo "ℹ️ $_f 无 userfaultfd 调用（wine ≤9.x/已重构），跳过守卫注入"
+      return 0
+    fi
+    if grep -q 'struct uffdio_api uffdio_api;' "$_f"; then
+      cat > ".anwind-uffd-guard.h" <<'UFFDGUARD'
+#if defined(__ANDROID__)
+    /* ANWIND_FIX_UFFD_ANDROID: userfaultfd (x86_64 nr 323 / aarch64 nr 374)
+     * is not in the Android app seccomp allowlist -> SECCOMP_RET_TRAP ->
+     * SIGSYS (signal 31) kills the process with exit code 159 during
+     * virtual_init(). Wine 11+ guards this with !defined(__ANDROID__) at
+     * compile time; wine 10 trees do not. Under box64 emulation (x86_64
+     * flavor) the libc syscall still reaches the real kernel and kills the
+     * whole box64 process. Write watches fall back to the userspace
+     * implementation - zero loss on Android. */
+    uffd_fd = -1;
+    return;
+#endif
+UFFDGUARD
+      sed -i '/struct uffdio_api uffdio_api;/r .anwind-uffd-guard.h' "$_f" \
+        && echo "已注入 userfaultfd Android 守卫（159/SIGSYS 根治）=> $_f"
+      rm -f ".anwind-uffd-guard.h"
+    else
+      sed -i 's#^    uffd_fd = syscall( __NR_userfaultfd.*#    uffd_fd = -1; /* ANWIND_FIX_UFFD_ANDROID: userfaultfd blocked by Android app seccomp (SIGSYS/159) */#' "$_f"
+      if grep -q "ANWIND_FIX_UFFD_ANDROID" "$_f"; then
+        echo "已改写 userfaultfd 调用为软路径（159/SIGSYS 根治，锚点漂移路径）=> $_f"
+      else
+        echo "⚠️ userfaultfd 守卫未命中锚点（树结构差异）—— 若运行期仍 159 请核查 $_f"
+      fi
+    fi
+  }
+  disable_userfaultfd_android
+
   # v3.2.3：wine-preloader Android 全面禁用 —— proton x86_64 + box64
   # 前缀构建"零输出静默阵亡"的根治之一（另一根因 = Valve 树 start_main_thread
   # 无条件调 fsync_init → do_fsync 的 futex_waitv 裸探测 → seccomp

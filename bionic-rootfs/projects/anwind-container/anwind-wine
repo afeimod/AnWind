@@ -1,13 +1,5 @@
 #!/data/data/com.anwind/files/usr/bin/bash
 # ============================================================
-# anwind-wine v2.13 —— v2.12 + 陈旧 wineserver 硬清理
-# 2026-11-01：新增 clean_stale_wineserver（run_wine 入口处调用）——
-#   冻结/挂死的残留 wineserver 守护（setsid 脱离会话树 + Android
-#   cgroup freezer）会让新客户端永久阻塞在握手 receive_fd 上：无输出、
-#   无退出码、前缀永远建不出来（proton arm64ec 前缀构建挂死的直接
-#   载体）。按 /proc 扫描 SIGKILL + 清残留 socket/lock，幂等、无
-#   .wineserver 目录时零成本。其余行为与 v2.12 完全一致。
-# ============================================================
 # anwind-wine v2.12 —— 基线恢复版（v2.3 语义 + 纯日志）
 # 2026-10-27：回滚 v2.4~v2.11 全部行为改动（会话日志 tee 接管、zink GL
 # 默认、wineboot 前置善后/残缺前缀清理、模拟器 DLL 预置、SONAME 运行时
@@ -93,7 +85,7 @@ CONF_GLOBAL="$RFS_USR/etc/anwind/container.conf"
 X11_SOCK_DIR="$APP_PREFIX/tmp/.X11-unix"
 LOG_DIR="$CONT_ROOT/logs"
 
-version() { echo "anwind-wine 2.13.0 (v2.3 基线 + 纯日志 + v3.3.1 陈旧 wineserver 硬清理)"; }
+version() { echo "anwind-wine 2.12.0 (v2.3 基线恢复 + 纯日志，零行为改动)"; }
 
 # ---------- 纯日志（v2.12 唯一新增的执行代码） ----------
 # 仅当 App 会话传入 ANWIND_SESSION_LOG（可写文件路径）时生效；终端直跑
@@ -587,6 +579,14 @@ apply_android_safe_env() {
     # MiceWine 同款），用户 extra env 可覆盖（apply_extra_env 在后面执行）。
     [ -z "${WINEFSYNC:-}" ] && export WINEFSYNC=0
     [ -z "${WINEESYNC:-}" ] && export WINEESYNC=0
+    # v3.2.8：userfaultfd 写监视探测（wine 10/proton_10.0 树 virtual_init
+    # 无条件调 kernel_writewatch_init → 裸 syscall(__NR_userfaultfd)，
+    # aarch64 nr 374）不在 Android 应用 seccomp 白名单 → SIGSYS(31) →
+    # 退出码 159 —— proton arm64ec "打印一行 heap-tagging 后秒退"的真正
+    # 根因（fsync 守卫早已生效仍 159 的原因）。wine 10 树自带本变量开关
+    # （virtual.c: getenv("WINE_DISABLE_KERNEL_WRITEWATCH")），置 1 跳过
+    # 探测；wine 11 树不读它（编译期已排除），导出零副作用。旧包免重装。
+    [ -z "${WINE_DISABLE_KERNEL_WRITEWATCH:-}" ] && export WINE_DISABLE_KERNEL_WRITEWATCH=1
     # arm64ec 形态仿真器 DLL 默认（v3.1.4 wine 包自带 FEX/box64 PE，
     # 配方 pre_package 注入 lib/wine/aarch64-windows/）：上游
     # official/proton 树默认 xtajit64 桩（只报不支持），hangover 树默认
@@ -634,11 +634,18 @@ apply_box64_env() {
     if [ -d "$RFS_USR/lib/x86_64-linux-gnu" ]; then
         export BOX64_LD_LIBRARY_PATH="$RFS_USR/lib/x86_64-linux-gnu${BOX64_LD_LIBRARY_PATH:+:$BOX64_LD_LIBRARY_PATH}"
     fi
-    # box64 上游 ANDROID 模式配套的 x86_64 C++ 标准库目录（v3.3.0，
-    # bionic-box64 配方安装）：被仿真的 x86_64 程序 dlopen
-    # libc++_shared.so 时从该目录解析 —— 追加进搜索路径。
-    if [ -d "$RFS_USR/lib/box64-x86_64-linux-gnu" ]; then
-        export BOX64_LD_LIBRARY_PATH="$RFS_USR/lib/box64-x86_64-linux-gnu${BOX64_LD_LIBRARY_PATH:+:$BOX64_LD_LIBRARY_PATH}"
+    # v3.2.5：glibc 形态 box64 的加载器自检 —— CI 构建的 box64 是
+    # glibc 链接 ELF（PT_INTERP 已被配方 patchelf 指到 rootfs 内的
+    # ld-linux-aarch64.so.1，运行库由 glibc-aarch64 配方/随包提供）。
+    # 加载器缺失时 exec 直接 ENOENT（"not found"），会话零输出即死
+    # —— 把结论前置进日志，不再让用户对着空输出猜原因。
+    # （.interp 字符串出现在二进制头部，grep 即判形态；bionic 形态
+    #  box64 不含该字符串，零打扰。）
+    if [ -n "$BOX64_BIN" ] && [ -f "$BOX64_BIN" ] \
+        && grep -aq "ld-linux-aarch64.so.1" "$BOX64_BIN" 2>/dev/null \
+        && [ ! -e "$RFS_USR/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1" ]; then
+        warn "box64 为 glibc 形态，但 rootfs 缺少 $RFS_USR/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1"
+        warn "→ exec 将以 ENOENT 失败（表现为零输出/退出码 127）；执行 anwind-container install-box64 <新版 tar.gz>（含 glibc 运行库）或重建 rootfs"
     fi
     case "$_preset" in
         compatibility)
@@ -662,58 +669,6 @@ apply_box64_env() {
     local _extra
     _extra="$(conf_read "$CONT_CONF" env "")"
     case "$_extra" in *BOX64_*) export $_extra ;; esac
-}
-
-# ---------- v3.3.1：陈旧/冻结 wineserver 硬清理 ----------
-# 根因：wineserver 守护在 server 侧 open_master_socket() 里 setsid() 脱离
-# 会话树后自管生命周期 —— 不在 App/终端会话的进程组里：上次会话被杀 /
-# Android cgroup freezer 冻结后台应用全组时，它以“socket 仍在监听、
-# 但进程永不应答”的形态残留。新 wine 客户端发现 socket 已存在 →
-# 不再拉起新 server → connect 成功（内核 backlog）→ 阻塞在握手
-# receive_fd() 的 recvmsg() 上：无输出、无退出码、system.reg 永不落盘
-# —— proton arm64ec 前缀构建“无任何输出挂死”的直接载体。
-# wineserver -k 救不了（-k 客户端同样阻塞）。此处按 /proc 硬清理：
-# cwd 在 $WINEPREFIX/.wineserver/ 下的 wineserver 一律 SIGKILL，再删掉
-# .wineserver 残留 socket/lock（新 server 启动时上游 acquire_lock 自行
-# 重建）。仅用 cwd 判据：wineserver 守护启动时 chdir 进 server 目录且
-# 永不离开（上游 create_server_dir），这是“属于本前缀”的权威特征 ——
-# 绝不能按 cmdline 含 wine 目录兜底：同 wine 安装跑多个容器时那会误杀
-# 别的前缀的活 server；-k/-w 客户端等瞬态进程 cwd 不在 server 目录，
-# 天然不命中。
-# 幂等；无 .wineserver 目录（全新前缀）时零成本直接返回。
-clean_stale_wineserver() {
-    [ -d "$WINEPREFIX/.wineserver" ] || return 0
-    local _dir _pid _cmd _cwd _killed=0 _sock=0
-    for _dir in /proc/[0-9]*; do
-        [ -r "${_dir}/cmdline" ] || continue
-        _pid="${_dir#/proc/}"
-        [ "$_pid" != "$$" ] || continue
-        _cmd="$(tr '\0' ' ' < "${_dir}/cmdline" 2>/dev/null)"
-        case "$_cmd" in *wineserver*) ;; *) continue ;; esac
-        _cwd="$(readlink "${_dir}/cwd" 2>/dev/null)"
-        case "$_cwd" in
-            "$WINEPREFIX"/.wineserver/*) ;;
-            *) continue ;;
-        esac
-        if kill -9 "$_pid" 2>/dev/null; then
-            _killed=$((_killed + 1))
-            info "已清理陈旧/冻结 wineserver（pid=$_pid cwd=$_cwd）——它会阻断新客户端握手（前缀构建无输出挂死的直接载体）"
-        fi
-    done
-    # 死 server 残留（无存活进程但 socket 文件仍在）也要清 —— 否则客户端
-    # 要空转 6 次重试（约 5.5s）才报错（残留文件哪怕不是真 socket，上游
-    # 客户端也会 fatal "is not a socket"，一并清掉最稳）
-    for _dir in "$WINEPREFIX"/.wineserver/server-*/socket; do
-        [ -e "$_dir" ] && { _sock=1; break; }
-    done
-    if [ "$_killed" -gt 0 ] || [ "$_sock" -gt 0 ]; then
-        [ "$_killed" -eq 0 ] && info "检测到陈旧 wineserver socket（无存活进程），清理 $WINEPREFIX/.wineserver"
-        if [ "$_killed" -gt 0 ]; then
-            sleep 0.5 2>/dev/null || sleep 1
-        fi
-        rm -rf "$WINEPREFIX/.wineserver" 2>/dev/null || true
-    fi
-    return 0
 }
 
 # ---------- 后端执行 ----------
@@ -766,9 +721,6 @@ wine_run() {
 run_wine() {
     # 纯日志：前缀状态观测（只读探测，不改任何流程）
     log "run_wine: 前缀 system.reg $([ -f "$WINEPREFIX/system.reg" ] && echo 已存在 || echo 不存在-将首次初始化)"
-    # v3.3.1：陈旧/冻结 wineserver 硬清理（幂等；详见函数头注释）——
-    # 必须先于任何 wine 调用：残留守护会让首个客户端永久阻塞在握手上
-    clean_stale_wineserver
     # wineserver：真实 Unix ELF 宿主程序 → 直连宿主二进制（box64 形态包装）
     if [ "${1:-}" = "wineserver" ]; then
         local _bin
