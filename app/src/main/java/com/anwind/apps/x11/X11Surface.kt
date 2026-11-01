@@ -1082,10 +1082,14 @@ internal class SmartTouchBridge(private val context: Context, private val view: 
                 moved = false
                 diagDowns++
                 val p = snapPoint(downX, downY)
-                // tap 失灵根修：定位 + 左键按下合并为单条 absolute 按钮消息
-                //（对齐上游 TouchInputHandler simulated touchscreen 同款
-                // sendMouseEvent(x, y, LEFT, true, false)）。旧实现"absolute
-                // 移动 + (0,0) relative 按钮"是混合序列，wine 下 tap 失灵。
+                // v3.2.9（用户问题 3 根修）：恢复上游"先定位后点击"两段式。
+                // 【反汇编实证】打包的 libXlorie.so 的 EVENT_MOUSE 按钮路径
+                // （detail=1/2/3）QueuePointerEvents(..., mask=NULL)——按钮
+                // 事件【完全丢弃坐标】，ButtonPress/Release 发生在 sprite
+                // 当前位置；只有纯移动（detail=0）才携带坐标。旧实现把定位
+                // 寄望于带坐标的按钮消息——坐标被 native 丢弃 → tap 点击
+                // 落在 sprite 旧位置而非手指位置（游戏内点击失控的根因）。
+                // 上游 TouchInputHandler 的正确模式：先绝对定位再发按钮。
                 // 局部 val 捕获快照（post 执行时 tapX/tapY 已可被新手势改写）。
                 val px = p[0]
                 val py = p[1]
@@ -1097,8 +1101,15 @@ internal class SmartTouchBridge(private val context: Context, private val view: 
                 // X11WindowOps.raiseAt）。fire-and-forget，不阻塞触摸线程。
                 X11WindowOps.raiseAt(px.toInt(), py.toInt())
                 postSend {
-                    if (LorieView.connected())
-                        view.sendMouseEvent(px, py, InputStub.BUTTON_LEFT, true, false)
+                    if (LorieView.connected()) {
+                        // ① 绝对定位 sprite 到手指位置（上游同款；wine 相对
+                        //    模式/grab 下本条先于 ButtonPress 到达，事件路由
+                        //    始终正确——grab 只影响路由不影响定位生效）
+                        view.sendMouseEvent(px, py, InputStub.BUTTON_UNDEFINED, false, false)
+                        // ② 在当前位置按下左键（(0,0) relative 纯按钮，native
+                        //    正确处理——与 InputDeviceManager 注入路径一致）
+                        view.sendMouseEvent(0f, 0f, InputStub.BUTTON_LEFT, true, true)
+                    }
                 }
                 pressedLeft = true
             }
@@ -1129,12 +1140,17 @@ internal class SmartTouchBridge(private val context: Context, private val view: 
                         // 相对增量不受 warp 影响：桌面拖拽与游戏视角都真实。
                         // 累加进合并器，16ms 节流冲刷 —— 事件量减半以上，
                         // 消除 wine 游戏滑动掉帧；总量精确守恒。
+                        // v3.2.9（用户问题 3 根修·移动）：消除 slop 死区吞
+                        // 增量 —— 旧实现未超 slop 前所有 MOVE 不发任何事件，
+                        // 游戏内小幅滑动（准星微调）完全无反应；现从首个 MOVE
+                        // 起就累计增量（tap 判定仍用累计距离，点按期间的
+                        // 1~2px 微移对桌面无感、对游戏是真实增量）。
                         if (!moved) {
                             val ddx = event.x - downX
                             val ddy = event.y - downY
-                            moved = ddx * ddx + ddy * ddy > slopPx * slopPx
-                            if (moved)
-                                accumulateMove(ddx * scaleX, ddy * scaleY)
+                            if (ddx * ddx + ddy * ddy > slopPx * slopPx)
+                                moved = true
+                            accumulateMove(ddx * scaleX, ddy * scaleY)
                         } else {
                             accumulateMove((event.x - curX) * scaleX, (event.y - curY) * scaleY)
                         }
@@ -1165,15 +1181,18 @@ internal class SmartTouchBridge(private val context: Context, private val view: 
 
             MotionEvent.ACTION_POINTER_UP -> {
                 if (mode == Mode.TWO) {
-                    // 双指轻点（未滑动、时间短）→ 右键单击（单条 absolute 消息）
+                    // 双指轻点（未滑动、时间短）→ 右键单击
+                    // v3.2.9：先绝对定位再点击（按钮坐标被 native 丢弃，
+                    // 同左键 tap 根修；两条消息 FIFO 保序）
                     if (!twoMoved && android.os.SystemClock.uptimeMillis() - twoStartAt < 320L) {
                         val p = toXpx(curX, curY)
                         val px = p[0]
                         val py = p[1]
                         postSend {
                             if (LorieView.connected()) {
-                                view.sendMouseEvent(px, py, InputStub.BUTTON_RIGHT, true, false)
-                                view.sendMouseEvent(px, py, InputStub.BUTTON_RIGHT, false, false)
+                                view.sendMouseEvent(px, py, InputStub.BUTTON_UNDEFINED, false, false)
+                                view.sendMouseEvent(0f, 0f, InputStub.BUTTON_RIGHT, true, true)
+                                view.sendMouseEvent(0f, 0f, InputStub.BUTTON_RIGHT, false, true)
                             }
                         }
                     }
@@ -1187,13 +1206,12 @@ internal class SmartTouchBridge(private val context: Context, private val view: 
                 if (pressedLeft) {
                     postFlushMoves()
                     if (!moved && mode == Mode.ONE) {
-                        // tap 释放：absolute 同位置（与按下点一致，零位移、零 warp）
-                        val rx = tapX
-                        val ry = tapY
-                        postSend {
-                            if (LorieView.connected())
-                                view.sendMouseEvent(rx, ry, InputStub.BUTTON_LEFT, false, false)
-                        }
+                        // tap 释放：sprite 已在按下点（DOWN 时绝对定位过，
+                        // 期间未发移动增量），(0,0) relative 纯释放即可 ——
+                        // 不再回 warp（游戏 warp 循环不受扰动）。v3.2.9：
+                        // 旧实现发带坐标的 absolute 释放，坐标同样被 native
+                        // 按钮路径丢弃，语义上依赖了错误假设。
+                        sendButton(InputStub.BUTTON_LEFT, false)
                     } else {
                         // 拖拽/双指后释放：当前指针位置抬键（relative 0,0，
                         // 不回 warp —— 拖拽中游戏 warp 循环不受扰动）

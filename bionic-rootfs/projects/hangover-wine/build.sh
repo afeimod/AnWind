@@ -299,6 +299,22 @@ pre_setup() {
     echo "    构建继续；若运行期异常请检查源码树内 *.rej 文件"
   fi
 
+  # v3.2.9：0009 math.c arm64ec 补丁生效校验（wine ≤9.x 树的必然炸点）。
+  # 0007 的"失败仅告警"哲学对 math.c 不适用：arm64ec 形态下补丁未生效
+  # 时，make 首批 PE 编译（~28 分钟后）必炸于 dlls/crtdll/arm64ec-
+  # windows/math.o 的 sqrtss/stmxcsr 内联汇编（CI official-9.7 实证，
+  # 0007 全量扫描漏掉 math.c —— 三处 x86 专属代码在 EC 编译趟激活）。
+  # wine 10+/hangover-11 树自带全部修复（无 sse2_sqrtf 旧形态标记），
+  # 本校验自然通过；x86_64 形态/降级 aarch64,i386 无 EC 编译趟，亦跳过。
+  if [[ "${args}" == *"--enable-archs=arm64ec,"* ]] \
+     && [[ -f dlls/msvcrt/math.c ]] \
+     && grep -q 'sse2_sqrtf' dlls/msvcrt/math.c 2>/dev/null; then
+    echo "::error::0009-fix-arm64ec-math-msvcrt 补丁未生效（math.c 仍含 sse2_sqrtf 旧形态）！"
+    echo "   arm64ec 编译趟的 sqrtss/stmxcsr x86 内联汇编必然报错（28 分钟后于 math.o 阵亡）"
+    echo "   请核查源码树形态与补丁锚点：projects/hangover-wine/0009-fix-arm64ec-math-msvcrt-wine9x.patch"
+    return 1
+  fi
+
   # bionic POSIX shm 兼容注入（幂等）：
   # bionic 任何 API 级别都没有 shm_open/shm_unlink（bionic 官方文档
   # status.md 列为 "Missing functions ... explicitly disallowed by

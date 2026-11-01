@@ -35,6 +35,30 @@ guard_dev_null() {
 }
 guard_dev_null
 
+# v3.2.9：磁盘水位监控（proton arm64ec runner 失联无日志的根因防御）
+# GitHub Actions runner 磁盘写满时 runner 进程自身无法写日志/心跳，服务端
+# 标记 job 失败且一切后续步骤（含 if:always() 的日志上传）全部 skipped
+#（CI run 41287894412 实证：构建步骤 failure、上传日志 skipped、连 Post
+# 缓存步骤都 skipped）。wine arm64ec 构建链（ccache + wine 树 + 3 目标
+# PE 编译产物）在 ubuntu-24.04 标准盘上接近满载。每包开始前检查水位：
+# 低于 4G 清理 ccache 缓存并告警；仍低于 2G 硬失败（明确报错优于
+# runner 失联无日志）。
+disk_watermark_guard() {
+  local _avail _avail2
+  _avail=$(df -BG --output=avail / 2>/dev/null | tail -1 | tr -dc '0-9')
+  [[ -n "${_avail:-}" ]] || return 0
+  if (( _avail < 4 )); then
+    warn "磁盘剩余 ${_avail}G < 4G：清理 ccache 缓存释放空间..."
+    ccache -c >/dev/null 2>&1 || true
+    _avail2=$(df -BG --output=avail / 2>/dev/null | tail -1 | tr -dc '0-9')
+    if [[ -n "${_avail2:-}" ]] && (( _avail2 < 2 )); then
+      err "磁盘剩余 ${_avail2}G，不足以继续构建 —— 请扩大 runner 磁盘或减少缓存"
+      df -h / || true
+      exit 1
+    fi
+  fi
+}
+
 if [[ -f ${wsDir}/custom.conf ]]; then
   info "加载自定义配置文件"
   . ${wsDir}/custom.conf
@@ -394,6 +418,12 @@ load_env() {
   export CCACHE_EXEC="/usr/bin/ccache"
   export CCACHE_DIR="${wsDir}/bionic_ccache/${targetArch}"
   mkdir -p "$CCACHE_DIR"
+  # v3.2.9：ccache 限容（默认 5G/无限因平台而异）——wine arm64ec 三目标 PE
+  # + 全依赖闭包的缓存对象在多次 CI 迭代后持续膨胀，叠加 wine 源码树与
+  # 编译产物把 runner 磁盘顶爆（runner 失联无日志的头部嫌凶，见
+  # disk_watermark_guard 注释）。8G 上限兼顾命中率与磁盘安全；超出部分
+  # 自动 LRU 淘汰。
+  CCACHE_DIR="$CCACHE_DIR" ccache -M 8G >/dev/null 2>&1 || true
 }
 
 load_env_host() {
@@ -1281,6 +1311,7 @@ build() {
     fi
     local _project
     for _project in "${_buildOrder_[@]}"; do
+      disk_watermark_guard
       info "构建=> $_project"
       . "${wsDir}/empty.sh"
       . "${wsDir}/projects/$_project/build.sh" || { err "配置获取失败" && exit 1; }
@@ -1344,6 +1375,7 @@ build_all_deps() {
     info "构建顺序: ${_buildOrder_[*]}"
     local _project
     for _project in "${_buildOrder_[@]}"; do
+      disk_watermark_guard
       info "构建=> $_project"
       . "${wsDir}/empty.sh"
       . "${wsDir}/projects/$_project/build.sh" || { err "配置获取失败" && exit 1; }
