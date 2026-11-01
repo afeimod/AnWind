@@ -191,8 +191,13 @@ android {
         // TrackpadRouter 之前）+ TrackpadController/TrackpadRouter（触控板
         // 模式指针处与手指轻点处）按窗口几何直判置前；WindowChrome/
         // WinDialogFrame onGloballyPositioned 上报几何；focus 加诊断日志。
-        versionCode = 70
-        versionName = "2.38.7"
+        versionCode = 71
+        versionName = "2.38.8"
+        // v2.38.8（源码包 v3.3.1）：proton arm64ec 前缀构建"无任何输出挂死"
+        // 根治 —— 陈旧/冻结 wineserver 硬清理（WineServerUtils 三段式：
+        // -k/-w 优雅 + /proc 扫描 SIGKILL 冻结守护 + 残留 socket/lock 清除），
+        // wineboot 会话无条件清理 + 挂死看门狗 8 分钟自动恢复；构建侧
+        // 0008 补丁给握手加 SO_RCVTIMEO=60s 兜底（旧包重编后生效）。
         // v2.38.7（源码包 v3.3.0）：bionic-box64 回归 NDK bionic 构建。
         // v3.2.4~v3.2.5 曾把 box64 切到 glibc 交叉构建（Winlator 式
         // patchelf --set-interpreter + glibc-aarch64 配方），该形态与

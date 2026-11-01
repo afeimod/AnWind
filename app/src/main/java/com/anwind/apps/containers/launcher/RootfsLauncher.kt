@@ -364,11 +364,23 @@ object RootfsLauncher {
             X11Support.ensureX11Window(context) { sink.stamp(it) }
             X11Support.awaitSocketReady(env["DISPLAY"] ?: ":1") { sink.stamp(it) }
 
-            // 5) 清残留 wineserver（仅 freshSession：注册表落盘 + 断开旧
-            //    会话锚点，"第一次能启动之后起不来"的根治步骤；工具类
-            //    子命令跳过 —— 附加语义，不打断运行中的会话）
-            if (freshSession) {
-                WineServerUtils.stop(resolved, container, env)
+            // 5) 清残留 wineserver（v3.3.1 语义升级）：
+            //    - freshSession（runExe）：照旧必清（替换旧会话语义不变）；
+            //    - 前缀构建会话（wineboot）：**无条件硬清** —— 挂死/冻结的
+            //      旧 wineserver 守护（setsid 脱离会话树 + Android cgroup
+            //      freezer 冻结）会让新客户端连上旧 socket 后永久阻塞在
+            //      握手 receive_fd 上：无输出、无退出码、system.reg 永不
+            //      落盘 —— proton arm64ec 前缀构建"无任何输出挂死"的
+            //      直接载体。此前 freshSession=false 的工具会话完全不清理
+            //      = 挂死一次后每次重试都挂在同一处；
+            //    - 其余工具命令：容器无运行中会话时才清理（保持"不打断
+            //      运行中会话"的附加语义）。
+            //    清理由 WineServerUtils 三段式完成（-k/-w 优雅 + /proc 扫描
+            //    SIGKILL 冻结守护 + 残留 socket/lock 清除），决策行进会话日志。
+            val isPrefixCmd = wineArgs.firstOrNull() == "wineboot"
+            val hasRunningSession = synchronized(sessions) { sessions.containsKey(key) }
+            if (freshSession || isPrefixCmd || !hasRunningSession) {
+                WineServerUtils.ensureCleanBeforeStart(resolved, container, env) { sink.stamp(it) }
             }
 
             // 6) GPU / Box64 环境叠加
@@ -567,8 +579,12 @@ object RootfsLauncher {
             // initializePrefixIfNeeded 同款语义）—— 4 分钟零输出且
             // system.reg 未落盘时自动抓取 /proc 进程现场（R/S/D/Z +
             // 各线程 wchan），只取证不杀进程（mono/gecko 提示框等待
-            // 用户确认属正常场景）。proton 旧包“预加载器交接挂死”这类
-            // 日志戛然而止的静默故障从此有内核级证据面。
+            // 用户确认属正常场景）。
+            // v3.3.1：+8 分钟仍无输出 → 判定挂死并**自动恢复**（终止会话 +
+            // 硬清理 wineserver）—— 此前该路径只取证不处置，proton
+            // arm64ec 挂死时用户只能干等 15 分钟超时或手动强停，且强停
+            // 后冻结的 wineserver 守护依然残留（-k 杀不掉），下次重试
+            // 继续挂死。自动恢复把"挂死一次 = 永远挂死"的死循环拆掉。
             if (isPrefixSession) {
                 val prefixMarker = File(container.prefixPath, "system.reg")
                 Thread({
@@ -576,8 +592,19 @@ object RootfsLauncher {
                     if (!sessionEnded.get() && !gotSessionOutput.get() && !prefixMarker.isFile) {
                         sink.stamp("wineboot 会话已 4 分钟无任何输出且 system.reg 未落盘 —— 疑似挂死，抓取进程现场：")
                         WineRegistry.dumpWineHangSnapshot(resolved, container) { sink.stamp(it) }
-                        sink.stamp("→ 排障提示：v3.2.3 已自动停用预加载器并改写 futex_waitv 探测（免重编作用于旧包）；")
-                        sink.stamp("→ 若现场中 wine 进程仍在而 wineserver 缺席/已死 = 握手阻塞（把上面几行现场发回即可精确定位）；若 R=死循环/S+futex=死锁，同样发回现场")
+                        // v3.3.1：再等 4 分钟（mono/gecko 提示框等待确认的
+                        // 合法窗口已给足）→ 仍无输出且前缀未落盘即判定挂死
+                        try { Thread.sleep(4 * 60_000L) } catch (_: InterruptedException) { return@Thread }
+                        if (!sessionEnded.get() && !gotSessionOutput.get() && !prefixMarker.isFile) {
+                            sink.stamp("wineboot 会话累计 8 分钟无输出且前缀未落盘 —— 判定挂死，自动恢复：终止会话 + 硬清理 wineserver")
+                            runCatching { executor.stopAndWait(true, 10, TimeUnit.SECONDS) }
+                            runCatching {
+                                WineServerUtils.ensureCleanBeforeStart(resolved, container, env) { sink.stamp(it) }
+                            }
+                            sink.stamp("→ 已自动恢复（挂死现场已记录于上方日志）；请重新构建前缀")
+                            sink.stamp("→ 若再次挂死：请把本窗口完整日志（含进程现场与清理决策行）反馈给开发者")
+                            _prefixBuildFlow.value = null
+                        }
                     }
                 }, "anwind-prefix-session-watchdog").apply { isDaemon = true; start() }
             }

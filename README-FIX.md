@@ -1,5 +1,87 @@
 # AnWind Bionic 修复包 v2（2026-09-19）
 
+> **v3.3.1（2026-11-01）**：proton arm64ec 前缀构建"无任何输出挂死"根治
+>
+> ## 根因（2026-11-01 设备会话日志 + proton_10.0 源码逐行核实）
+>
+> **冻结/挂死的残留 wineserver 守护使新客户端永久阻塞在握手。**
+>
+> 证据链（用户会话日志，wine-proton / aarch64 / arm64ec）：
+>
+> 1. 客户端打出 `anwind: bionic heap tagging disabled (TBI 0xB4
+>    free-check off)`（0006 补丁插在 `__wine_main` 第一行）之后**戛然
+>    而止**——无输出、无退出码、system.reg 永不落盘；
+> 2. **wineserver 侧的 heap-tagging 打印（0006 的 server/main.c hunk，
+>    插在 wineserver main() 第一行）从未出现**—— wineserver stderr 经
+>    fork/posix_spawn 链继承自客户端，会照常进会话日志。它不出现 =
+>    **本次会话根本没有拉起新 wineserver**：客户端在 `server_connect()`
+>    发现 socket 文件已存在（上游 wine 10 布局：Android 构建的 server
+>    目录为 `$WINEPREFIX/.wineserver/server-<dev>-<ino>`），直接 connect
+>    成功（内核 backlog 对"活而冻结"的监听 socket 照样放行）后阻塞在
+>    `receive_fd()` 的 `recvmsg()` 上，永久无响应；
+> 3. wineserver 守护在 `server/request.c open_master_socket()` 里
+>    `setsid()` 脱离会话树后自管生命周期——**它不在 App 会话执行器的
+>    进程组里**。上次挂死会话被停止 / Android cgroup freezer 冻结后台
+>    应用全组时，它以"socket 仍在监听、但进程永不应答"的形态残留；
+> 4. `wineserver -k` 救不了它：-k 客户端同样阻塞在这个 socket 上直到
+>    App 的 12s 超时把它杀掉，冻结的守护毫发无损——**于是"挂死一次 =
+>    每次重试都挂在同一处"**（用户日志里 X11 与 PulseAudio 的陈旧
+>    socket 都被 App 清理了，唯独 wineserver 没有任何清理机制——
+>    手动 wineboot 会话 freshSession=false 连 -k 都不跑）。
+>
+> 同设备 hangover-11.16 arm64ec 正常的原因：它跑在**别的容器/前缀**上，
+> 各前缀 server 目录互相隔离——被毒化的只是出问题前缀的 `.wineserver`。
+>
+> ## 修复（三层，App 侧即刻生效、无需重编 wine）
+>
+> 1. **`WineServerUtils` 三段式清理**（`-k`/`-w` 优雅停止 → **/proc 扫描
+>    SIGKILL 残留守护** → 删除 `.wineserver` 残留 socket/lock）。识别判据：
+>    cmdline 含 wineserver **且** `/proc/<pid>/cwd` 位于
+>    `$WINEPREFIX/.wineserver/` 下 —— 守护启动时 chdir 进 server 目录且
+>    永不离开，是「属于本前缀」的权威特征；他 UID 的 /proc 条目读取即
+>    失败天然过滤。绝不能用「cmdline 含 wine 目录」兜底 —— 同 wine 安装
+>    可同时跑多个容器，那会误杀别的前缀的活 server。幂等；全新前缀
+>    （无 .wineserver 目录）零成本。
+> 2. **`RootfsLauncher`**：wineboot（前缀构建）会话**无条件**清理（旧版
+>    仅 freshSession 清，工具会话完全不清 = 挂死循环的温床）；挂死
+>    看门狗升级为 **4 分钟取证 + 8 分钟自动恢复**（终止会话 + 硬清
+>    wineserver + 明确指引，旧版只取证不处置，手动 wineboot 路径连
+>    超时都没有）。
+> 3. **`WineRegistry`**：wineboot 两次尝试之间改用三段式硬清（旧版仅
+>    -k/-w，冻结守护杀不掉，重试必再挂）；挂死现场抓取新增 wineserver
+>    cwd 与 `.wineserver` socket/lock 状态（证据面升级：socket 在而守护
+>    无响应 = 握手阻塞的铁证）。
+>
+> ## 构建侧兜底（重编 wine 包后生效）
+>
+> 新增 `0008-android-wineserver-handshake-timeout.patch`（hangover-wine
+> 与 wine 两配方同步放置，proton_10.0 源码实测干净套用、幂等）：
+> - `server_init_process()` 握手 `receive_fd()` 前给 fd_socket 设
+>   **SO_RCVTIMEO=60s**、握手完成立即清零（只影响首次握手，后续正常
+>   server 通信零影响）；
+> - `receive_fd()` 对 EAGAIN（超时）给出可操作致命错误（删
+>   `.wineserver` 或 `wineserver -k` 后重试），替代笼统的
+>   "recvmsg: Resource temporarily unavailable"。
+>
+> 即使在旧 App / 纯终端用法下，冻结守护导致的挂死也会在 60 秒内转为
+> 可见错误退出，不再永久静默挂死。
+>
+> ## 终端链路同步
+>
+> `anwind-wine` 脚本（assets 与 rootfs 两份同步，v2.12 → v2.13）：
+> `run_wine` 入口新增 `clean_stale_wineserver`（同款 /proc 扫描 +
+> SIGKILL + 残留清理；无 .wineserver 目录零成本）。
+>
+> ## 验证
+>
+> 1. 在原挂死容器上直接重跑"构建前缀"（App 2.38.8）——会话日志应出现
+>    `检测到残留 wineserver（pid=…）… SIGKILL 清理` 决策行，随后
+>    wineserver 侧 heap-tagging 打印出现（= 新 server 真正被拉起），
+>    wineboot 正常推进、system.reg 落盘；
+> 2. 若 8 分钟仍无输出：看门狗会自动恢复并把 wineserver cwd + socket
+>    状态现场写进日志——把该日志反馈即可精确定位剩余问题；
+> 3. 终端：`anwind-wine --container <名> wineboot -i` 应看到同款清理行。
+
 > **v3.1.6 增量（2026-10-29）**：修复 v3.1.5 三线 CI 失败 + D3D 软渲染回退 + 前缀日志 UI
 >
 > ## CI 三线失败根因（v3.1.5 日志实锤）

@@ -234,7 +234,7 @@ object WineRegistry {
                     lastCode = -1
                     log("wineboot -i 第 ${attempt} 次超时（>${TIMEOUT_MIN} 分钟无退出），已强制结束" +
                         if (attempt == 1) "，清残留后重试一次…" else "")
-                    log("→ 典型原因：wineserver 握手挂起 / wow64 初始化崩溃 / 提示框等待确认；请把本窗口日志反馈给开发者")
+                    log("→ 典型原因：残留/冻结的 wineserver 使客户端阻塞在握手（v3.3.1 已自动硬清理）/ 提示框等待确认 / 早期初始化崩溃；请把本窗口日志反馈给开发者")
                 } else {
                     lastCode = runCatching { executor.waitFor() }.getOrDefault(-1)
                 }
@@ -255,8 +255,11 @@ object WineRegistry {
                     }
                 }
                 if (attempt == 1) {
-                    // 残留 wineserver 可能让重试挂死——清一次再试
-                    runCatching { WineServerUtils.stop(resolved, container, env) }
+                    // v3.3.1：重试前硬清 wineserver（旧版仅 -k/-w —— 冻结/挂死的
+                    // 守护 -k 杀不掉，重试必再挂在同一处；决策行进前缀日志）
+                    runCatching {
+                        WineServerUtils.ensureCleanBeforeStart(resolved, container, env) { log(it) }
+                    }
                 }
             }
             if (lastCode == 0 || File(container.prefixPath, "system.reg").isFile) {
@@ -398,6 +401,22 @@ object WineRegistry {
                     }.getOrNull() ?: return@mapNotNull null
                     if (markers.any { cmdline.contains(it) }) proc to cmdline else null
                 }
+            // v3.3.1：wineserver 运行目录状态（socket/lock 残留 = 握手阻塞
+            // 判定的另一面证据：socket 在而守护无响应）—— 先于进程清单打印：
+            // 无任何 wine 进程但 socket 仍在 = 死 server 残留；两者俱全而
+            // 客户端无输出 = 冻结/挂死 server 使握手阻塞
+            val serverRoot = File(container.prefixPath, ".wineserver")
+            if (serverRoot.isDirectory) {
+                val subdirs = serverRoot.listFiles()?.filter { it.isDirectory } ?: emptyList()
+                log("wineserver 目录: ${serverRoot.absolutePath}（${subdirs.size} 个 server 会话目录）")
+                for (dir in subdirs) {
+                    val sock = File(dir, "socket").exists()
+                    val lock = File(dir, "lock").exists()
+                    log("    ${dir.name}: socket=${if (sock) "存在" else "无"} lock=${if (lock) "存在" else "无"}")
+                }
+            } else {
+                log("wineserver 目录: 不存在（$serverRoot —— 客户端将拉起全新 server）")
+            }
             if (procs.isEmpty()) {
                 log("挂死现场: 未找到 wine 相关进程（可能已退出/被杀）")
                 return
@@ -408,6 +427,12 @@ object WineRegistry {
                     File(proc, "stat").readText().split(" ").getOrNull(2) ?: "?"
                 }.getOrDefault("?")
                 log("  pid=${proc.name} state=$state cmd=${cmdline.take(120)}")
+                // v3.3.1：wineserver 守护的 cwd（$WINEPREFIX/.wineserver/…）
+                // —— 判定其归属前缀与是否残留的权威证据
+                if (cmdline.contains("wineserver")) {
+                    val cwd = runCatching { android.system.Os.readlink("/proc/${proc.name}/cwd") }.getOrNull()
+                    if (cwd != null) log("    wineserver cwd=$cwd")
+                }
                 val tasks = runCatching {
                     File(proc, "task").listFiles { f -> f.name.toIntOrNull() != null }
                 }.getOrNull() ?: continue
