@@ -1,7 +1,0 @@
-revision="1.4.2"
-url="${gnuMirrorURL}/libunistring/libunistring-${revision}.tar.gz"
-urlType="tar"
-arch="aarch64 x86_64"
-buildSys="autotools"
-license="GPL-3.0"
-deps="libiconv"

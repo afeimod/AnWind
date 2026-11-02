@@ -1,7 +1,0 @@
-revision="pcre2-10.47"
-url="https://github.com/PCRE2Project/pcre2.git"
-urlType="git"
-arch="aarch64 x86_64"
-buildSys="autotools"
-license="BSD-3-Clause"
-args="--enable-jit"
