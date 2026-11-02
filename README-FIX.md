@@ -1,5 +1,89 @@
 # AnWind Bionic 修复包 v2（2026-09-19）
 
+> **v3.2.12（2026-11-02）**：三阻断修复轮 —— APK 编译失败（Kotlin 空安全）+ official-9.7 arm64ec 构建新阻断（wbemprox/mshtml）+ i386 编译趟既有阻断（0007 __fastfail x86 分支误留 ARM64 代码）
+>
+> ## 问题 1：APK 构建报错 `Only safe (?.) or non-null asserted (!!.) calls are allowed`（WineRegistry.kt:268/270/274/276）
+>
+> **根因**：v3.2.11 新增的 `findModernTheme`（wine 窗口现代化）里四处
+> `listFiles()?.orEmpty().firstOrNull { … }` —— Kotlin 把 `a()?.b().c()` 解析为
+> `(a()?.b()).c()`：`?.` 之后整条链仍是**可空类型**，后面裸调 `.firstOrNull`
+> 违反空安全。`orEmpty()` 本身就是可空扩展函数（`Array<out T>?.orEmpty()`），
+> 不需要 `?.` 前缀。v3.2.11 的 APK 因此**从未编译通过**，四个报错行与
+> CI 日志逐字一致。
+>
+> **修复**：四处改为 `listFiles().orEmpty().firstOrNull { … }`（其余
+> `?.filter ?: emptyList()` 等既有用法不受影响，全文件复查无同类问题）。
+>
+> ## 问题 2：official-9.7 arm64ec 构建仍失败（wbemprox `__cpuid` + 本地预判的 mshtml 汇编）
+>
+> 1. **实证阻断**：CI 日志（wine-build-log-arm64ec (9).zip）唯一错误：
+>    `dlls/wbemprox/builtin.c:3391: call to undeclared function '__cpuid'`
+>    （arm64ec-windows/builtin.o）。wine-9.7 的 `do_cpuid` 用
+>    `#if defined(__i386__) || defined(__x86_64__)` 分派，而 llvm-mingw
+>    arm64ec 趟同时预定义 `__arm64ec__` 与 `__x86_64__`（clang 21
+>    AArch64Targets.cpp：EC 定义 `__x86_64__`/`__amd64__`/`__arm64ec__`，
+>    **不定义** `__aarch64__`——wine 自己的 include/msvcrt/intrin.h 都有
+>    `&& !defined(__arm64ec__)` 排除，wbemprox 没同步）→ EC 趟进 x86 分支，
+>    `__cpuid` 内建函数在 EC 目标不存在 → 隐式声明即炸。
+> 2. **预判阻断**（修 wbemprox 后的下一个必炸点）：`dlls/mshtml/ifacewrap.c`
+>    的 `DEFINE_WRAPPER_FUNC` 分支链只有 i386/x86_64 两档 + C 存根
+>    `#else`，无任何 ARM/EC 分支 → EC 趟激活 `movq 8(%rcx),%rcx` x64
+>    AT&T 汇编，ARM64 代码生成器连报 21 errors。
+>    **验证方法**：下载 CI 同款 llvm-mingw-20251202（clang 21.1.7）+
+>    wine-9.7 全补丁树本地 configure（`--enable-archs=arm64ec,aarch64,i386`）
+>    + 逐目标编译：修复前 builtin.o/ifacewrap.o 双双失败（与 CI 报错
+>    逐字一致），修复后通过。
+>
+> **修复**：新增 `0007e-fix-arm64ec-wbemprox-mshtml-wine97.patch` —— 两处
+> `__x86_64__` 守卫均追加 `&& !defined(__arm64ec__)`，EC 趟落 `#else`：
+> wbemprox 走 FIXME 空桩（与原生 ARM 趟一致，WMI CPUID 数据本就不采集）、
+> mshtml 走 C 存根（E_NOTIMPL，与 aarch64-windows 趟一直编译的分支相同）。
+> wine-9.2 两文件与 9.7 逐字相同（diff 实证）一并受益；wine-10+/hangover
+> 树形态不同锚点不命中，静默跳过。**全量核查**：wine-9.7 全树 3541 个
+> arm64ec-windows 对象目标逐一编译扫描 + 30 个高危对象（vcomp/math/
+> string/ndr_stubless/cstub/cproxy/loader/debug/module/thread/relay/
+> setjmp/handler4/vartype/typelib/device×2/process/unwind/cpu_x86_64/
+> dinput 等）复测无回归。build.sh 同步加 0007e 生效校验（锚点漂移时
+> 1 秒内报清根因，不再烧 28 分钟 CI）。
+>
+> **附注**：本轮复核更正一处旧注释 —— 0007d 头注称"EC 趟落 __aarch64__
+> 分支"，实测 clang 的 arm64ec 目标**不定义** `__aarch64__`（0007 头注
+> 才是对的）；实际落点是链尾 `#else` 的 `#warning` C 存根（编译通过，
+> RPC 无 ThunkTable 的服务端分发在 EC 形态暂为空桩 —— 与 wine-9.x EC
+> 实验形态定位一致，上游 wine-10 已用 thunks.c + arm64ec_x64 趟根治）。
+>
+> ## 问题 3：i386 编译趟阻断 —— 0007 的 `__fastfail` x86 分支误留 ARM64 代码（v3.2.4 起既有 bug）
+>
+> **根因**：0007 补丁（v3.2.4 起）重排 `__fastfail` 分支（aarch64/arm64ec
+> 前置）时，x86 分支（`#elif __x86_64__ || __i386__`）的体误留了 ARM64
+> 代码（`x0` 寄存器 + `brk #0xf003`）而丢失上游的 `int $0x29`。hangover
+> 配方 `--enable-archs=arm64ec,aarch64,i386` 的 i386 编译趟里，
+> `__fastfail` 真实调用者（wbemprox/mshtml/ntdll/wined3d 等）必炸
+> `unknown register name 'x0' in asm`（llvm-mingw-20251202 本地实证）。
+> 此前一直未暴露：arm64ec/aarch64 趟走前置首分支不受影响，而编译趟
+> 顺序 arm64ec 在 i386 之前 —— v3.2.11 及更早都被问题 2 的 __cpuid/
+> x64 汇编错误挡在 arm64ec 趟，从未走到 i386 趟。
+>
+> **修复**：直接修正 0007 本体的该 hunk —— x86 分支恢复 `int $0x29`
+> （与 wine-11.16 上游形态逐字一致）。**为什么不能追加到 0007e**：CI
+> 的 locale 排序会把 0007c/d/e 系列排在 0007 之前应用（上轮 diff -rq
+> 已证明两种顺序最终树相同 —— 因为此前所有 hunk 锚点均为纯净形态、
+> 顺序无关），而 __fastfail 修复 hunk 的上下文是"0007 已应用后的形
+> 态"，追加式 hunk 在 CI 顺序里永不命中；修复内联在 0007 里则与顺序
+> 无关。另复核 0007 全部 hunk：这是唯一一处改动词句体（非守卫）的
+> hunk，i386 风险面就此一处。
+>
+> **受益范围**：0007 的 winnt.h 三 hunk 实测同时命中 official-9.2/
+> official-9.7/proton_10.0 树（proton_10.0 的 i386 趟同样被此 bug
+> 阻断）；hangover-11.16 树原生即为正确形态且 hunk 全不命中，不受影
+> 响。build.sh 加 mangled 形态校验（`#elif __x86_64__ || __i386__` 后
+> 跟 `__asm__("x0")` 即报错）且不限 arm64ec 形态 —— 降级 aarch64,i386
+> 形态同样有 i386 编译趟。
+>
+> **验证**：wine-9.7 全补丁树双顺序（C / locale collation）应用复核最
+> 终形态一致且正确；__fastfail 修复后 i386/x86_64 分支 gcc -m32/-m64
+> 语法级编译通过（ARM64 分支上轮已随 3541 个 EC 目标全量扫描验证）。
+
 > **v3.2.11（2026-11-02）**：三诉求修复轮 —— 容器误删根治 + wine 9.7/proton 10 arm64ec 构建双修复 + wine 窗口现代化
 >
 > ## 问题 1：点三个点删除一个容器，结果所有容器都被删了

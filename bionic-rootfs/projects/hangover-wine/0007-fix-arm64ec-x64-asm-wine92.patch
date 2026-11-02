@@ -9,7 +9,8 @@
 #
 # 【修复】逐站点对齐上游 wine-10/11 已落地的同款修法（hangover-11.16 源码
 # 逐处核对）：
-#   * include/winnt.h __fastfail：aarch64/arm64ec 分支前置（上游重排同款）
+#   * include/winnt.h __fastfail：aarch64/arm64ec 分支前置 + x86 分支保持
+#     int $0x29（wine-11.16 上游形态逐字一致）
 #   * include/winnt.h InterlockedExchange/Pointer：+|| defined(__clang__)
 #     （clang 报 __GNUC__=4，原子内建分支被跳过 → 落入 xchg 内联汇编）
 #   * kernelbase/loader.c GetProcAddress、kernelbase/debug.c RaiseException：
@@ -29,9 +30,21 @@
 #     configure 按 enable_wow64=aarch64,x86_64 对 EC 架构整体禁用，
 #     同样不参与 EC 编译）。
 #
-# 【互斥】本补丁锚点均为 wine-9.x 形态；hangover-11.16/proton_10.0 树
-#     （上游已自带各 EC 分支/已迁移 thunks.c）hunk 全部不命中 → 静默跳过，
-#     与 9998/9999 系列同款树形态互斥机制。
+# 【v3.2.12 修正】本补丁 __fastfail hunk 自 v3.2.4 起有既有 bug：分支
+#     重排时 x86 分支（#elif __x86_64__ || __i386__）的体误留了 ARM64 代码
+#     （x0 寄存器 + brk #0xf003）而丢失 int $0x29 —— i386 编译趟的
+#     __fastfail 真实调用者（wbemprox/mshtml/ntdll/wined3d 等）必炸
+#     "unknown register name 'x0' in asm"（llvm-mingw-20251202 本地实证）。
+#     arm64ec/aarch64 趟走前置首分支不受影响，wine 9.7 arm64ec 排障时
+#     因编译趟顺序（arm64ec 在 i386 前）先炸于 __cpuid/x64 汇编而未暴露。
+#     修复必须内联在本 hunk（而非 0007e 追加）：CI 的 locale 排序会把
+#     0007c/d/e 系列排在 0007 之前应用，追加式 hunk 的上下文（依赖本
+#     hunk 已应用）在 CI 里永不命中。
+#
+# 【互斥】本补丁锚点均为 wine-9.x 形态；hangover-11.16 树（上游已自带
+#     各 EC 分支/已迁移 thunks.c）hunk 全部不命中 → 静默跳过；proton_10.0
+#     树 winnt.h 三 hunk 实测命中（同受益，v3.2.12 起输出全架构正确形态），
+#     thunks 类 hunk 不命中，与 9998/9999 系列同款树形态互斥机制。
 #
 --- a/include/winnt.h
 +++ b/include/winnt.h
@@ -53,24 +66,27 @@
      ret = __atomic_exchange_n( dest, val, __ATOMIC_SEQ_CST );
  #elif defined(__x86_64__)
      __asm__ __volatile__( "lock; xchgq %0,(%1)" : "=r" (ret) :"r" (dest), "0" (val) : "memory" );
-@@ -7226,9 +7226,10 @@ static FORCEINLINE void WriteNoFence( LO
+@@ -7226,11 +7226,11 @@ static FORCEINLINE void WriteNoFence( LO
  
  static FORCEINLINE DECLSPEC_NORETURN void __fastfail(unsigned int code)
  {
 -#if defined(__x86_64__) || defined(__i386__)
 -    for (;;) __asm__ __volatile__( "int $0x29" :: "c" ((ULONG_PTR)code) : "memory" );
 -#elif defined(__aarch64__)
+-    register ULONG_PTR val __asm__("x0") = code;
+-    for (;;) __asm__ __volatile__( "brk #0xf003" :: "r" (val) : "memory" );
 +#if defined(__aarch64__) || defined(__arm64ec__)
 +    register ULONG_PTR val __asm__("x0") = code;
 +    for (;;) __asm__ __volatile__( "brk #0xf003" :: "r" (val) : "memory" );
 +#elif defined(__x86_64__) || defined(__i386__)
-     register ULONG_PTR val __asm__("x0") = code;
-     for (;;) __asm__ __volatile__( "brk #0xf003" :: "r" (val) : "memory" );
++    for (;;) __asm__ __volatile__( "int $0x29" :: "c" ((ULONG_PTR)code) : "memory" );
  #elif defined(__arm__)
+     register ULONG_PTR val __asm__("r0") = code;
+     for (;;) __asm__ __volatile__( "udf #0xfb" :: "r" (val) : "memory" );
 --- a/dlls/kernelbase/loader.c
 +++ b/dlls/kernelbase/loader.c
 @@ -430,7 +430,23 @@ BOOL WINAPI DECLSPEC_HOTPATCH GetModuleH
-  *	GetProcAddress   (kernelbase.@)
+  *     GetProcAddress   (kernelbase.@)
   */
  
 -#ifdef __x86_64__

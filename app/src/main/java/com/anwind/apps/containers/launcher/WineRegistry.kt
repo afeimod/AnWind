@@ -264,15 +264,15 @@ object WineRegistry {
         return runCatching {
             val windows = File(prefix, "drive_c/windows")
             if (!windows.isDirectory) return@runCatching null
-            val res = windows.listFiles()?.orEmpty()
+            val res = windows.listFiles().orEmpty()
                 .firstOrNull { it.isDirectory && it.name.equals("resources", true) }
-            val themes = (res ?: windows).listFiles()?.orEmpty()
+            val themes = (res ?: windows).listFiles().orEmpty()
                 .firstOrNull { it.isDirectory && it.name.equals("themes", true) }
                 ?: return@runCatching null
             for ((label, color) in listOf("light" to "Blue", "aero" to "NormalColor")) {
-                val dir = themes.listFiles()?.orEmpty()
+                val dir = themes.listFiles().orEmpty()
                     .firstOrNull { it.isDirectory && it.name.equals(label, true) } ?: continue
-                val f = dir.listFiles()?.orEmpty()
+                val f = dir.listFiles().orEmpty()
                     .firstOrNull { it.isFile && it.name.equals("$label.msstyles", true) } ?: continue
                 // 从 msstyles 文件回溯到 windows 目录，用实际名拼 Windows 路径
                 // （保真大小写，避免注册表值指向不存在的路径）

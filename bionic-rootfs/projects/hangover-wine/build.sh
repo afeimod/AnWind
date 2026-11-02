@@ -361,6 +361,54 @@ pre_setup() {
     return 1
   fi
 
+  # v3.2.12：0007e wbemprox/mshtml EC 排除校验（CI official-9.7 v3.2.11
+  # 实证阵亡点：arm64ec-windows/builtin.o 的 __cpuid 隐式声明；及本地
+  # llvm-mingw-20251202 逐文件复现的 ifacewrap.o x64 汇编 21 errors）。
+  # wine-9.7 wbemprox do_cpuid / mshtml DEFINE_WRAPPER_FUNC 均为裸
+  # `__x86_64__` 分派无 EC 排除 —— EC 趟 __x86_64__ 已定义（clang 21
+  # AArch64Targets.cpp 实证）→ __cpuid 未声明 / x64 AT&T 汇编送 ARM64
+  # 代码生成器即炸。wine-9.2 两文件形态相同（diff 实证 IDENTICAL）同受
+  # 保护；wine-10+/hangover 树形态不同（do_cpuid 已改/ifacewrap 已迁）
+  # → 锚点不命中自然跳过。
+  if [[ "${args}" == *"--enable-archs=arm64ec,"* ]] \
+     && [[ -f dlls/wbemprox/builtin.c ]] \
+     && grep -q '__cpuid( p, ax )' dlls/wbemprox/builtin.c 2>/dev/null \
+     && grep -q '#if defined(__i386__) || defined(__x86_64__)$' dlls/wbemprox/builtin.c 2>/dev/null; then
+    echo "::error::0007e-fix-arm64ec-wbemprox-mshtml 补丁未生效（wbemprox do_cpuid 的 x86 分支仍无 arm64ec 排除）！"
+    echo "   arm64ec 编译趟必炸于 dlls/wbemprox/arm64ec-windows/builtin.o（__cpuid 隐式声明，CI v3.2.11 实证）"
+    echo "   请核查源码树形态与补丁锚点：projects/hangover-wine/0007e-fix-arm64ec-wbemprox-mshtml-wine97.patch"
+    return 1
+  fi
+  if [[ "${args}" == *"--enable-archs=arm64ec,"* ]] \
+     && [[ -f dlls/mshtml/ifacewrap.c ]] \
+     && grep -q 'movq 8(%rcx), %rcx' dlls/mshtml/ifacewrap.c 2>/dev/null \
+     && grep -q '#elif defined(__x86_64__)$' dlls/mshtml/ifacewrap.c 2>/dev/null; then
+    echo "::error::0007e-fix-arm64ec-wbemprox-mshtml 补丁未生效（ifacewrap 的 DEFINE_WRAPPER_FUNC x64 分支仍无 arm64ec 排除）！"
+    echo "   arm64ec 编译趟必炸于 dlls/mshtml/arm64ec-windows/ifacewrap.o（x64 汇编误激活，21 errors 连片）"
+    echo "   请核查源码树形态与补丁锚点：projects/hangover-wine/0007e-fix-arm64ec-wbemprox-mshtml-wine97.patch"
+    return 1
+  fi
+
+  # v3.2.12：0007 __fastfail x86 分支校验（i386 编译趟阻断点）。0007 的
+  # __fastfail hunk 在 v3.2.4~v3.2.11 重排分支时把 x86 分支
+  # （#elif __x86_64__ || __i386__）的体误留为 ARM64 代码（x0 寄存器 +
+  # brk #0xf003）而丢失 int $0x29 → i386 编译趟的 __fastfail 真实调用者
+  # （wbemprox/mshtml/ntdll/wined3d）必炸 "unknown register name 'x0' in
+  # asm"（本地 llvm-mingw-20251202 实证）。arm64ec/aarch64 趟走前置首
+  # 分支不受影响；此前因编译趟顺序（arm64ec 先于 i386）先炸于 __cpuid/
+  # x64 汇编而一直未暴露。v3.2.12 修复 0007 本体：x86 分支恢复 int $0x29
+  # （与 wine-11.16 上游形态逐字一致）。本校验不限 arm64ec 形态 ——
+  # 降级 aarch64,i386 形态同样有 i386 编译趟，mangled 形态对任何架构
+  # 组合都是坏的；hangover-11.16 树原生即为正确形态且 0007 不命中，
+  # 本校验自然通过。
+  if [[ -f include/winnt.h ]] \
+     && grep -A1 '^#elif defined(__x86_64__) || defined(__i386__)$' include/winnt.h 2>/dev/null | grep -q '__asm__("x0")'; then
+    echo "::error::0007 __fastfail 的 x86 分支仍为 ARM64 代码（x0/brk）—— i386 编译趟必炸！"
+    echo "   0007-fix-arm64ec-x64-asm-wine92.patch 为 v3.2.12 前旧版：x86 分支丢失 int \$0x29（修复须内联于 0007 本体，不能追加到 0007e —— CI locale 排序会把 0007e 排在 0007 前）"
+    echo "   请核查源码树补丁：projects/hangover-wine/0007-fix-arm64ec-x64-asm-wine92.patch"
+    return 1
+  fi
+
   # v3.2.10：0010 HODLL 生效校验（设备实证 wine-proton10 arm64ec 根因）。
   # vanilla wow64/syscall.c get_cpu_dll_name 按注册表 HKLM\Wow64\x86 选 CPU
   # dll，wine.inf 默认写入 xtajit.dll —— Linux 不存在 → 32 位 wow64 进程

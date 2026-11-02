@@ -10,19 +10,20 @@
 # （先于 __x86_64__ 分支，EC 编译趟不激活 x64 汇编，0007 的 4 个 9.2 锚点
 # hunk 全部失配属预期良性）；唯 call_server_func 仍只有 i386/x86_64/arm/
 # aarch64 四分支 —— llvm-mingw arm64ec 目标同时预定义 __x86_64__ 与
-# __aarch64__ → x64 AT&T 汇编在 EC 趟激活 → ARM64 代码生成器不认即炸。
+# __arm64ec__（不定义 __aarch64__）→ x64 AT&T 汇编在 EC 趟激活 → ARM64
+# 代码生成器不认即炸。
 #
 # 【修复】x86_64 分支追加 && !defined __arm64ec__（0007 对 wine-9.2 的同款
-# 手法）；EC 趟落 __aarch64__ 分支 —— call_server_func 入参 4 个全在
-# x0-x3（EC 与 aarch64 对 ≤4 寄存器参数映射一致），assign_args 同为 EC 趟
-# 可见（#if defined(__aarch64__)||defined(__arm__) 在 EC 下为真）。
-# 已知折衷（与 0007/wine-9.2 arm64ec 一致）：被调 server 例程 ≥5 参数时
-# EC 约定（x4=栈参指针）与 aarch64 约定（x4-x7 继续传参）不同，运行期
-# 可能失真 —— 比无法编译好；wine-9.x EC 本为实验形态（x64-in-EC 上游
-# wine-10 才有），编译优先。
-# 上游 wine-10 起该段迁入 thunks.c 且整文件 #pragma makedep arm64ec_x64
-#（x64 汇编走专用 x64 趟产出 ARM64X 混合镜像），9.7 的 makedep 无此机制，
-# 不可移植，故用 9.2 同款守卫排除。
+# 手法）。EC 趟实际落点是链尾 #else 的 #warning C 存根 —— v3.2.12 实测
+# 更正：clang 21 的 arm64ec 目标【不定义 __aarch64__】（AArch64Targets.cpp
+# getTargetDefines：EC 定义 __x86_64__/__amd64__/__arm64ec__，__aarch64__
+# 仅非 EC 目标定义；0007 头注的记载才是对的），call_server_func 的
+# __aarch64__ 分支与 assign_args（守卫 #if defined(__aarch64__)||
+# defined(__arm__)，EC 下均假）在 EC 趟都不可见。C 存根编译通过（#warning
+# 非 error），代价是 RPC 无 ThunkTable 的服务端分发在 EC 形态暂返 0 ——
+# wine-9.x EC 本为实验形态，上游 wine-10 起该段迁入 thunks.c 且整文件
+# #pragma makedep arm64ec_x64（x64 汇编走专用 x64 趟产出 ARM64X 混合
+# 镜像），9.7 的 makedep 无此机制，不可移植，编译优先。
 #
 # 【互斥】锚点为 wine-9.7 形态（4 参签名含 const NDR_PROC_HEADER_EXTS *ext）：
 #   * wine-9.2：3 参签名（无 ext）→ 本 hunk 不命中，0007 hunk 2 命中

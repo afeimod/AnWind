@@ -191,8 +191,35 @@ android {
         // TrackpadRouter 之前）+ TrackpadController/TrackpadRouter（触控板
         // 模式指针处与手指轻点处）按窗口几何直判置前；WindowChrome/
         // WinDialogFrame onGloballyPositioned 上报几何；focus 加诊断日志。
-        versionCode = 73
-        versionName = "2.38.10"
+        versionCode = 74
+        versionName = "2.38.11"
+        // v2.38.11（源码包 v3.2.12）：双阻断修复轮。
+        // ①APK 编译失败（CI compileReleaseKotlin FAILED，用户日志逐字实证）：
+        //   WineRegistry.kt findModernTheme 四处 `listFiles()?.orEmpty().firstOrNull`
+        //   —— `?.` 后整条链仍为可空类型，后面裸调 .firstOrNull 违反空安全
+        //   （268/270/274/276 行 4 处）。orEmpty 本身就是可空扩展函数，
+        //   去掉 `?.` 直接调用即非空：`listFiles().orEmpty().firstOrNull`。
+        //   v3.2.11 的 APK 因此从未编译通过 —— 本轮为首个可安装版本。
+        // ②official-9.7 arm64ec 构建阻断（CI wine-build-log-arm64ec (9).zip
+        //   实证：dlls/wbemprox/arm64ec-windows/builtin.o "__cpuid 隐式声明"）：
+        //   新增 0007e 补丁双修复 —— wbemprox do_cpuid 与 mshtml
+        //   DEFINE_WRAPPER_FUNC 均为裸 __x86_64__ 分派无 EC 排除（llvm-mingw
+        //   arm64ec 趟 __x86_64__/__arm64ec__ 同定义，clang 21
+        //   AArch64Targets.cpp 实证），EC 趟落 #else 的 C 存根/FIXME 桩（与
+        //   原生 ARM 趟行为一致）。mshtml ifacewrap 为修复 wbemprox 后的下一个
+        //   必炸点（llvm-mingw-20251202 本地逐文件复现 21 errors；wine-9.2
+        //   两文件形态相同一并受益）；全树 30 个 EC 趟高危对象逐一编译复测
+        //   无回归，build.sh 加 0007e 生效校验（失败即 1 秒内报根因）。
+        // ③i386 编译趟阻断（本地 llvm-mingw 实证；此前被 ② 挡在 arm64ec
+        //   趟未暴露）：0007 的 __fastfail hunk（v3.2.4 起）重排分支时把
+        //   x86 分支体误留为 ARM64 代码（x0/brk，丢失 int $0x29）→ i386
+        //   趟真实调用者（wbemprox/mshtml/ntdll/wined3d）必炸 "unknown
+        //   register name 'x0' in asm"。修复内联于 0007 本体（x86 分支
+        //   恢复 int $0x29，与 wine-11.16 上游形态逐字一致；不能追加到
+        //   0007e —— CI locale 排序会把 0007e 排在 0007 前应用，追加
+        //   hunk 上下文永不命中），build.sh 加 mangled 形态校验。
+        //   official-9.2/9.7 与 proton_10.0 树同受保护（0007 winnt.h
+        //   hunk 实测命中三树；hangover-11.16 原生正确、hunk 不命中）。
         // v2.38.10（源码包 v3.2.11）：三诉求修复轮。
         // ①容器误删根治（用户实测“点三个点删一个容器把所有容器删了”）：
         //   唯一能一次删光的向量是 name 为空时 File(CONTAINERS_ROOT, "")
