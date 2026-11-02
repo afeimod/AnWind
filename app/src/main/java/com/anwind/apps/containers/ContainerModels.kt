@@ -198,8 +198,13 @@ data class ContainerData(
     val gallium: String = DEFAULT_GALLIUM,
     /** 附加环境变量（空格分隔 K=V 列表，原样透传 anwind-wine）。 */
     val env: String = "",
-    /** DXVK 版本戳（"off" = 未安装）。 */
-    val dxvk: String = "off",
+    /**
+     * DXVK 注入开关与版本戳（v3.2.14 语义）：
+     * "off" = 明确关闭（不注入）；"auto" = 开启（前缀构建时自动解压
+     * APK 内置 assets/dxvk/dxvk-<ver>.tar.gz 到 C:\\windows）；
+     * 具体版本号（如 "2.3.1"）= 已注入的版本戳（注入器回写，仍视为开启）。
+     */
+    val dxvk: String = DXVK_AUTO,
     /** VKD3D-Proton 版本戳（"off" = 未安装）。 */
     val vkd3d: String = "off",
     /** win32.drv 替换（DLL 覆盖列表，DXVK/VKD3D 安装器会自动改写）。 */
@@ -251,6 +256,11 @@ data class ContainerData(
         const val DEFAULT_SCREEN = "native"
         const val DEFAULT_GALLIUM = "auto"
 
+        /** v3.2.14：DXVK 注入开关的开启值（用户需求：构建前缀时自动打入
+         *  assets/dxvk 内的 dxvk-2.3.1.tar.gz）。 */
+        const val DXVK_AUTO = "auto"
+        const val DXVK_OFF = "off"
+
         /** 常用虚拟分辨率（"native" 表示跟随 X11 桌面窗口）。 */
         val SCREEN_CHOICES: List<String> = listOf(
             "native", "640x480", "800x600", "1024x768",
@@ -285,7 +295,9 @@ data class ContainerData(
                 dmode = DisplayMode.fromId(kv["dmode"]),
                 gallium = kv["gallium"] ?: DEFAULT_GALLIUM,
                 env = kv["env"] ?: "",
-                dxvk = kv["dxvk"] ?: "off",
+                // v3.2.14：无键 = 未配置 → 默认开启（auto）；旧容器显式
+                // dxvk=off 的保持关闭（用户明确选择）
+                dxvk = kv["dxvk"] ?: DXVK_AUTO,
                 vkd3d = kv["vkd3d"] ?: "off",
                 dxoverrides = kv["dxoverrides"] ?: "",
                 wine = kv["wine"] ?: "",

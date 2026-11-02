@@ -1008,6 +1008,48 @@ private fun PersonalizationSection() {
         Spacer(Modifier.height(8.dp))
     }
 
+    // ===== v3.2.14 启动动画（用户需求：start.mp4 加速 3 秒播放 + 可开关/自定义） =====
+    Text(L("启动动画"), color = if (theme.isDark) Color.White else Color.Black, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+    Spacer(Modifier.height(8.dp))
+    val bootAnimationEnabled by app.settingsStore.bootAnimationEnabled.collectAsState(initial = true)
+    SettingsCard(
+        icon = Icons.Default.Movie,
+        iconBackgroundColor = Color(0xFF5D5A58),
+        title = L("播放启动动画"),
+        subtitle = L("App 启动时全屏播放（约 3 秒，点击可跳过）"),
+        trailingContent = { ToggleSwitch(bootAnimationEnabled) { v -> scope0.launch { app.settingsStore.setBootAnimationEnabled(v) } } }
+    )
+    Spacer(Modifier.height(8.dp))
+    val customBootAnimation by app.settingsStore.customBootAnimation.collectAsState(initial = null)
+    SettingsCard(
+        icon = Icons.Default.PlayCircle,
+        iconBackgroundColor = Color(0xFF0D6E3F),
+        title = L("自定义启动动画"),
+        subtitle = L("从文件资源管理器选择视频替换内置动画"),
+        onClick = {
+            wm.open(
+                appId = "file_explorer",
+                title = "选择启动动画",
+                launchMode = AppRegistry.get("file_explorer")?.launchMode
+                    ?: com.anwind.core.window.LaunchMode.FLOATING,
+                launchArgs = mapOf("pickMode" to "boot_video"),
+                initialWidth = 920,
+                initialHeight = 620
+            )
+        }
+    )
+    if (customBootAnimation != null) {
+        Spacer(Modifier.height(8.dp))
+        SettingsCard(
+            icon = Icons.Default.Restore,
+            iconBackgroundColor = Color(0xFFCA5010),
+            title = L("恢复默认启动动画"),
+            subtitle = L("使用内置 start.mp4"),
+            onClick = { scope0.launch { app.settingsStore.setCustomBootAnimation(null) } }
+        )
+    }
+    Spacer(Modifier.height(16.dp))
+
     // ===== 颜色（v2.14：深浅模式作用于所有 Windows 主题 + 强调色覆盖） =====
     Box(
         modifier = Modifier

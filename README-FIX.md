@@ -1,5 +1,98 @@
 # AnWind Bionic 修复包 v2（2026-09-19）
 
+> **v3.2.14（2026-11-02）**：三诉求轮 —— ①wine9.7 arm64ec faudio SIMD 修复（0007f 补丁）+ box64 冒烟校验误报修正 + 框架 install() fail-fast ②start.mp4 启动动画（3 秒加速、可关闭、可自定义）③DXVK 资产注入（assets/dxvk → C:\windows）+ 容器组件配置（box64/fexcore/mesa/dxvk）+ DllOverrides 注册表（147 项）
+>
+> ## 修复 1：wine9.7 arm64ec 构建 — FAudio SIMD（CI 实报：wine-build-log-arm64ec (10).zip）
+>
+> **炸点**：`libs/faudio/arm64ec-windows/src/FAudio_internal_simd.o` 于
+> llvm-mingw-22（clang 21.1.7）的 `mmintrin.h` 连报 20 个
+> `invalid conversion between vector type '__v2di' and integer type 'int'`。
+>
+> **根因**（与 0007/0007c/0007d/0007e 同族的第五处 x86 宏错位）：
+> FAudio 的 SIMD 分发首分支
+> `#if defined(__x86_64__) || defined(_M_X64)` 自定 `__SSE2__` 并 include
+> `<emmintrin.h>` —— llvm-mingw arm64ec 目标同时预定义 `__arm64ec__` 与
+> `__x86_64__`（不预定义 `__aarch64__`）→ EC 编译趟落入 x86 SSE 分支，而
+> clang 的 AArch64 后端不提供任何 x86 向量 builtins → 硬性类型错。
+>
+> **修复**（`0007f-fix-arm64ec-faudio-simd-wine97.patch`，2 hunks）：
+> SIMD 分发最前插入 arm64ec 分支（silicon 是 AArch64，NEON 必有 ——
+> 定义 `__ARM_NEON__`、`NEED_SCALAR_CONVERTER_FALLBACKS=0`，x86 分支降为
+> `#elif`）+ NEON intrinsics 段判断补 `__arm64ec__/_M_ARM64EC`（原判断只认
+> `__aarch64__/_M_ARM64`）。x86_64/aarch64/i386/无-SIMD 四种组合行为与补丁
+> 前逐位一致（gcc `-E -dM` 分支矩阵验证：arm64ec 组合补丁前 EMM_INC=1 复现
+> 炸点、补丁后 NEON_INC=1/EMM_INC=0）。配套 build.sh 生效校验（arm64ec 形态
+> 下 faudio simd 无 `__arm64ec__` 字样即报错，锚点对 wine-10+/hangover 树
+> 自然跳过）。已对 wine-9.7 全树扫描确认 faudio 是唯一使用 x86 intrinsics
+> 的外置库（dlls/ 零命中）。
+>
+> ## 修复 2：box64 冒烟校验误报 + 框架 install() fail-fast
+>
+> **box64（CI 实报：box64-build-log-aarch64 (1).zip）**：v3.2.13 的冒烟校验
+> a)（`functions_list.txt 应含 shmget`）是**错误假设** —— 上游实证（v0.4.4
+> 与最新 main 全量重跑 + git diff）：shmget/shmat/shmctl 的包装在
+> `wrappedandroidshmem.c` **编译期**由 GO 宏 + wrappedlib_init.h 机制绑定，
+> 与 rebuild_wrappers.py 的生成物无关；functions_list.txt 只是该脚本的
+> 变更缓存对比文件（仅含 E 型/GOM 型符号 + 结构元数据，纯 GO 型符号从不
+> 进入），grep 它找 shmget 必然空 → 构建产物本身正常却被误报"错误"
+> （且框架对 install() 返回值不检查，出现"错误"字样后仍"构建完成"的矛盾
+> 输出）。**修正**：删错误校验 a)；符号校验改为产物二进制符号表直查
+> （nm/readelf 兜底：shmget/shmat/shmctl/getDB/FreeDynablock —— 全部为
+> v0.4.4 与最新 main 均稳定存在的符号，不使用版本敏感符号防跨 ref 误报）；
+> pre_setup 删预生成清单操作保留（确定性无害）但注释勘误。
+>
+> **框架（build-rootfs-arch.sh）**：cmake/meson/autotools 三处 install()
+> 调用补 `|| { err; exit 1; }` fail-fast（与 pre_package 的 v3.1.5 修复
+> 同款）—— 此前 install() return 1 被忽略，CI 绿灯发布带错误字样的残废包。
+>
+> ## 新增 3：start.mp4 启动动画（3 秒 / 可关闭 / 可自定义）
+>
+> - **播放**（`core/boot/StartupAnimation.kt`）：App 冷启动全屏播放
+>   `assets/anwind/boot/startup.mp4`（项目根 start.mp4 打入 APK）。用户
+>   明确要求"5 秒太长加速为 3 秒"：按 duration/3s 倍速播放
+>   （MediaPlayer `PlaybackParams.setSpeed`，内置 5s 视频约 1.667 倍速）；
+>   自定义视频超 3 秒同样加速收敛到 3 秒内。点击任意位置跳过；3.6 秒硬
+>   保底看门狗（视频损坏/解码失败静默直进桌面）；280ms 淡出转场
+>   （TextureView 而非 SurfaceView —— 后者独立合成层会盖住 alpha）。
+> - **一次性**：`AnWindApp.bootAnimationPlayed` 进程级标记 —— Activity
+>   旋转/重建不重播，冷启动重新播放。
+> - **设置**（设置→个性化→启动动画）：「播放启动动画」开关（DataStore
+>   `boot_animation_enabled`，默认开）+「自定义启动动画」（文件资源管理器
+>   pickMode=boot_video 选视频，持久化 `custom_boot_animation`）+「恢复默认」。
+> - APK 打包：`noCompress` 增加 mp4（openFd 播放要求未压缩存储）。
+>
+> ## 新增 4：DXVK 资产注入 + 容器组件配置 + DllOverrides 注册表
+>
+> **DXVK 自动注入**（用户约定 `assets/dxvk/dxvk-2.3.1.tar.gz` →
+> `C:\windows`）：
+> - 资产源扩展：`assets/dxvk/` 目录（`.tar.gz`/`.tgz`/`.tzst`/`.tar.zst`，
+>   TarCompressorUtils 新增 GZIP 类型支持）+ 旧契约 `assets/anwind/dxvk-*.tzst`
+>   并存合并应用；包内布局自动探测（system32+syswow64 直解 / 上游 x64+x32
+>   重映射 / 单根下钻 / 裸 dll→system32）。
+> - **注入时机**：前缀构建（wineboot）完成后立即注入（RootfsLauncher 启动
+>   链第 8 步新增）；App 启动/进容器界面自动补齐（指纹幂等，资产更新重铺）。
+> - **容器开关**：创建/编辑容器对话框「图形与 Wine」新增「DXVK 图形加速」
+>   药丸（`dxvk=auto` 开 / `dxvk=off` 关，默认开；容器组件配置至此全覆盖：
+>   box64/fexcore（后端）、mesa（渲染器）、dxvk（图形加速））。注入成功回写
+>   container.conf 版本戳 + `dxoverrides=`。
+>
+> **DllOverrides 注册表**（用户提供的 147 项配置逐字转换）：
+> 前缀构建时注入 `HKCU\Software\Wine\DllOverrides`（d3d9/dxgi/wined3d 等
+> native 优先、xinput/quartz/dinput builtin 优先），单次 `wine regedit /s`
+> 导入（与 ensureModernLook 同模式），幂等标记 `.anwind-dlloverrides`，
+> 失败不阻断启动链。native,builtin 语义下未注入 DXVK 的容器自动回退 wine
+> 内建，无副作用。
+>
+> **涉及文件**：`0007f-*.patch`、`hangover-wine/build.sh`、`box64/build.sh`、
+> `build-rootfs-arch.sh`、`StartupAnimation.kt`（新）、`MainActivity.kt`、
+> `AnWindApp.kt`、`SettingsStore.kt`、`SettingsApp.kt`、`FileExplorerApp.kt`、
+> `ContainerModels.kt`、`ContainerScreens.kt`、`WineRegistry.kt`、
+> `RootfsLauncher.kt`、`AnWindTzstAssets.kt`、`TarCompressorUtils.java`、
+> `assets/anwind/boot/startup.mp4`（新）、`assets/dxvk/`（新）、
+> `app/build.gradle.kts`（noCompress + 版本 76/2.38.13）。
+>
+> ---
+>
 > **v3.2.13（2026-11-02）**：五诉求产品轮 —— ①三窗口 UI 重做（容器新建/编辑、容器管理主窗口、X11 设置）②运行 exe 加文件管理器选择 ③文件管理器双击 exe/bat 调出「选择容器运行」④全游戏画面抖动修复（mesa/X11 显示链）⑤bionic box64 构建修复（启动零日志）
 >
 > ## 诉求 1：容器创建/编辑、容器管理主窗口、X11 设置窗口 UI 重做

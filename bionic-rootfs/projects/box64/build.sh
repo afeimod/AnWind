@@ -107,20 +107,20 @@ deps="glibc-aarch64 glibc-x86_64"
 doNotUseNinja=1
 
 pre_setup() {
-  # ---- v3.2.13 · 强制 wrapper 再生成（确定性根治 mtime 竞态） ----
-  # box64 仓库把 src/wrapped/generated/functions_list.txt（与 wrapper.c）
-  # 预生成后【随源码提交】—— 且提交版是【无 ANDROID 特性位】的生成物
-  # （v0.4.4 实测：7651 行，无 shmget/androidshmem）。CMake 的
-  # add_custom_command(OUTPUT functions_list.txt) 按 mtime 判断是否重跑：
-  # git clone 后全部文件 mtime 都是"现在"，谁更新纯粹取决于检出写入顺序
-  # —— 若 functions_list.txt 恰好不旧于 wrappedandroidshmem.c，make 跳过
-  # 再生成 → 构建出的 box64 wrapper 表缺 Android shm 系列（wine 的 X11/
-  # unix 侧大量依赖 SysV shm）→ 运行时符号解析错乱、加载即死、零输出
-  # —— 正是"启动时没有任何日志、box64 无法启动"的形态。
-  # 删掉 OUTPUT 文件即可强制 add_custom_command 必跑（make 语义：OUTPUT
-  # 缺失 = 无条件执行），ANDROID 特性位（CMake 命令行参数）随次带入。
+  # ---- v3.2.14 · wrapper 生成确定性（注释勘误 + 操作保留） ----
+  # 【勘误 v3.2.13 的错误论断】当时声称"预生成 functions_list.txt 无
+  # ANDROID 特性位，漏再生成 = shm 系列符号解析错乱"——上游实证（v0.4.4
+  # 与最新 main 全量实测）推翻：shmget/shmat 等 shm 包装是 wrappedandroidshmem.c
+  # 的【编译期 GO 宏绑定】（wrappedandroidshmem_private.h + wrappedlib_init.h
+  # 机制），与 rebuild_wrappers.py 的生成物【无关】；functions_list.txt
+  # 只是该脚本的"变更缓存对比文件"（仅含 E 型/GOM 型符号 + 结构元数据，
+  # 纯 GO 型符号从不进入），grep 它找 shmget 必然空 —— v3.2.13 的
+  # 冒烟校验 a) 因此误报（构建产物本身正常）。
+  # 删除预生成清单的操作本身仍保留：强制 add_custom_command 必跑，
+  # generated/wrapper.c 按本机 python 确定性再生成（无 mtime 竞态），
+  # 对正确性无害且把 wrapper 生成变成确定行为。
   if [[ -f "${srcDir}/${pjName}/src/wrapped/generated/functions_list.txt" ]]; then
-    echo "box64: 删除预生成的 wrapper 清单，强制按 ANDROID 特性位再生成"
+    echo "box64: 删除预生成的 wrapper 清单，强制确定性再生成"
     rm -f "${srcDir}/${pjName}/src/wrapped/generated/functions_list.txt"
   fi
 
@@ -199,47 +199,40 @@ install() {
     return 1
   fi
 
-  # ---- 6.5 v3.2.13 · 冒烟校验（wrapper 生成 + 内建符号 + NOLOADADDR 落地） ----
-  # 用户实测"启动时没有任何日志、box64 无法启动"且旧 CI 静态校验全绿 ——
-  # 说明纯 ELF 头校验挡不住"源码级/配置级构建错误"。此处补三道与运行时
-  # 行为直接挂钩的校验（构建树未 strip，符号完整可查）：
-  #   a) wrapper 再生成确证：rebuild_wrappers.py 必须带着 ANDROID 特性位跑过
-  #      —— functions_list.txt 里应能找到 wrappedandroidshmem 的 shmget（ANDROID
-  #      特有 wrapper，漏跑/错位生成的直接证据）。wrapper 是 box64 拦截转发
-  #      x86_64 符号请求的核心表，生成错 = 运行时符号解析全错（典型表现即
-  #      静默崩溃零输出）。
-  #   b) 未 strip 二进制符号表抽查：box64 内部应存在 shmget 包装与 dynarec
-  #      核心（find_next_dynarec_mem）——缺失说明 DYNAREC/ANDROID 编译单元
-  #      没被链进来（cmake 选项没生效的兜底证据）。
-  #   c) NOLOADADDR 落地确证：链接命令不得残留 --image-base / -no-pie
+  # ---- 6.5 v3.2.14 · 冒烟校验（ANDROID 编译单元 + 内建符号 + NOLOADADDR 落地） ----
+  # v3.2.13 的旧校验 a)（functions_list.txt 应含 shmget）是错误假设：
+  # shmget 等纯 GO 型符号的包装在 wrappedandroidshmem.c 【编译期】由
+  # GO 宏 + wrappedlib_init.h 机制绑定，从不进入 functions_list.txt
+  # （该文件只是 rebuild_wrappers.py 的变更缓存，仅含 E 型/GOM 型符号），
+  # 误报过"构建错误"而产物其实正常。正确的运行时挂钩校验是：
+  #   a) ANDROID 编译单元进链：产物二进制符号表应含 shmget/shmat/shmctl
+  #      （wrappedandroidshmem.o 的 GO 宏导出；wine X11/unix 侧的 SysV shm
+  #      依赖它们转发 bionic —— 缺失 = 符号解析错乱静默崩溃零输出）
+  #      —— 用 nm 查【构建树未 strip】的 box64 本体；strip 后只剩 dynsym
+  #      也可用 readelf 兜底。
+  #   b) DYNAREC 核心在链：FreeDynablock / InvalidDynablock（dynablock.c
+  #      的动态翻译块生命周期管理，v0.4.4 与最新 main 均稳定存在 ——
+  #      -DARM_DYNAREC=ON 未生效的兜底证据；不使用 find_next_dynarec_mem
+  #      等版本敏感符号，避免跨 ref 误报）。
+  #   c) NOLOADADDR 落地：链接命令不得残留 --image-base / -no-pie
   #      （v3.2.13 加 -DNOLOADADDR=ON 的配套自检，防上游 CMake 行为漂移）。
-  if [[ -f "${_src}/src/wrapped/generated/functions_list.txt" ]]; then
-    if ! grep -q "shmget" "${_src}/src/wrapped/generated/functions_list.txt"; then
-      echo "错误: wrapper 未按 ANDROID 特性位再生成（functions_list.txt 无 shmget）"
-      echo "  rebuild_wrappers.py 的 ANDROID 参数决定 androidshmem 包装是否进入"
-      echo "  wrapper 表；漏跑 = 运行时 shm 系列符号解析错乱（静默崩溃零输出）"
-      return 1
-    fi
-    echo "冒烟[1/3]: wrapper 含 ANDROID shmget 包装 ✓"
-  else
-    echo "警告: 未找到 src/wrapped/generated/functions_list.txt（上游源码布局变化？）"
-  fi
   local _sym_ok=1
-  for _sym in shmget getDB; do
-    if ! nm "${_src}/build/box64" 2>/dev/null | grep -qw "${_sym}"; then
-      echo "错误: box64 符号表缺 ${_sym}（ANDROID/DYNAREC 编译单元未链接？）"
+  for _sym in shmget shmat shmctl getDB FreeDynablock; do
+    if ! nm "${_src}/build/box64" 2>/dev/null | grep -qw "${_sym}" \
+       && ! readelf -Ws "${_src}/build/box64" 2>/dev/null | grep -qw "${_sym}"; then
+      echo "错误: box64 符号表缺 ${_sym}（ANDROID shm 包装 / DYNAREC 核心未链接）"
       _sym_ok=0
     fi
   done
   [[ "${_sym_ok}" == "1" ]] \
-    && echo "冒烟[2/3]: 符号表含 shmget/getDB（ANDROID shm 包装 + DYNAREC 核心）✓" \
+    && echo "冒烟[1/2]: 符号表含 shmget/shmat/shmctl/getDB/FreeDynablock（ANDROID shm 包装 + DYNAREC 核心）✓" \
     || return 1
   if grep -q "image-base\|no-pie" "${_src}/build/CMakeFiles/box64.dir/link.txt" 2>/dev/null; then
     echo "错误: 链接命令残留 --image-base/-no-pie（NOLOADADDR 未生效）"
     grep -h "image-base\|no-pie" "${_src}/build/CMakeFiles/box64.dir/link.txt"
     return 1
   fi
-  echo "冒烟[3/3]: 无 --image-base/-no-pie（NOLOADADDR 已生效）✓"
+  echo "冒烟[2/2]: 无 --image-base/-no-pie（NOLOADADDR 已生效）✓"
 
   # ---- 7. 配套运行层就位报告（deps 保证已装进 prefix，纯诊断） ----
   [[ -e "${prefix}/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1" ]] \

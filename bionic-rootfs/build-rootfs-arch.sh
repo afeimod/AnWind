@@ -947,7 +947,11 @@ build_system() {
       fi
 
       if declare -F install >/dev/null; then
-        DESTDIR="${destDir}" PREFIX="${prefix}" install
+        # v3.2.14：install() 失败必须中止 —— 此前返回值被忽略（box64
+        # v3.2.13 实证：冒烟校验 return 1 后框架照常"构建完成"，
+        # CI 绿灯带错误字样发布，残废包难定位）。
+        DESTDIR="${destDir}" PREFIX="${prefix}" install \
+          || { err "${pjName}: install() 返回失败，中止构建"; exit 1; }
       else
         if [[ $doNotRunCMakeInstallOnCmake == 1 ]]; then
           DESTDIR="${destDir}" PREFIX="${prefix}" make install
@@ -999,7 +1003,9 @@ build_system() {
       fi
       meson compile -C build || compile_err
       if declare -F install >/dev/null; then
-        DESTDIR="${destDir}" PREFIX="${prefix}" install
+        # v3.2.14：install() 失败必须中止（cmake 段同款修复）
+        DESTDIR="${destDir}" PREFIX="${prefix}" install \
+          || { err "${pjName}: install() 返回失败，中止构建"; exit 1; }
       else
         DESTDIR="${destDir}" PREFIX="${prefix}" meson install -C build
       fi
@@ -1075,7 +1081,9 @@ build_system() {
       fi
       make ${makeSilent:+-s} -j$(nproc) || compile_err
       if declare -F install >/dev/null; then
-        DESTDIR="${destDir}" PREFIX="${prefix}" install
+        # v3.2.14：install() 失败必须中止（cmake 段同款修复）
+        DESTDIR="${destDir}" PREFIX="${prefix}" install \
+          || { err "${pjName}: install() 返回失败，中止构建"; exit 1; }
       else
         PREFIX="${prefix}" make install DESTDIR="${destDir}"
       fi

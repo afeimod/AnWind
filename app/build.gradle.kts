@@ -191,8 +191,15 @@ android {
         // TrackpadRouter 之前）+ TrackpadController/TrackpadRouter（触控板
         // 模式指针处与手指轻点处）按窗口几何直判置前；WindowChrome/
         // WinDialogFrame onGloballyPositioned 上报几何；focus 加诊断日志。
-        versionCode = 75
-        versionName = "2.38.12"
+        versionCode = 76
+        versionName = "2.38.13"
+        // v2.38.13（源码包 v3.2.14）：①wine9.7 arm64ec faudio SIMD 修复
+        //   （0007f：EC 下走 NEON 不再 include emmintrin.h）+ box64 冒烟
+        //   校验误报修正 + 框架 install() fail-fast；②start.mp4 启动动画
+        //   （3 秒加速播放，设置→个性化 可关闭/自定义）；③DXVK 资产机制
+        //   （assets/dxvk/dxvk-<ver>.tar.gz 前缀构建时自动注入 C:\windows，
+        //   容器创建/编辑「图形与 Wine」加 DXVK 开关）+ DllOverrides 注册表
+        //   注入（147 项）。
         // v2.38.12（源码包 v3.2.13）：五诉求产品轮（UI 重做 + 运行链路完善）。
         // ①容器/X11 界面重做：新建/编辑容器改分区属性表（WinSectionCard
         //   分区卡 + WinOptionPills 药丸组，替代单行横滚 FilterChip）；
@@ -382,8 +389,11 @@ android {
 
     // bootstrap 归档（assets/termux/*.zip）保持不压缩：
     // 避免二次压缩浪费构建时间，安装期拷贝更快
+    // v3.2.14：mp4（启动动画 assets/anwind/boot/startup.mp4 经 openFd 播放，
+    // 压缩存储的 asset openFd 会抛 FileNotFoundException）；gz/tgz/zst/xz
+    // （DXVK 资产 assets/dxvk/dxvk-*.tar.gz 等，避免 aapt 二次压缩浪费）
     androidResources {
-        noCompress += listOf("zip")
+        noCompress += listOf("zip", "mp4", "gz", "tgz", "zst", "xz")
     }
 
     // ============================================================

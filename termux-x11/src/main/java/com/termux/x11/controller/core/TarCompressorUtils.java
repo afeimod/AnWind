@@ -9,6 +9,7 @@ import org.apache.commons.compress.archivers.tar.TarArchiveEntry;
 import org.apache.commons.compress.archivers.tar.TarArchiveInputStream;
 import org.apache.commons.compress.archivers.tar.TarArchiveOutputStream;
 import org.apache.commons.compress.archivers.tar.TarConstants;
+import org.apache.commons.compress.compressors.gzip.GzipCompressorInputStream;
 import org.apache.commons.compress.compressors.xz.XZCompressorInputStream;
 import org.apache.commons.compress.compressors.xz.XZCompressorOutputStream;
 import org.apache.commons.compress.compressors.zstandard.ZstdCompressorInputStream;
@@ -25,7 +26,9 @@ import java.io.InputStream;
 import java.io.OutputStream;
 
 public abstract class TarCompressorUtils {
-    public enum Type {XZ, ZSTD}
+    // v3.2.14 AnWind：新增 GZIP —— 用户资产包（assets/dxvk/dxvk-*.tar.gz）
+    // 为 tar.gz 格式（此前仅 XZ/ZSTD；AnWindTzstAssets 的 DXVK 注入依赖）
+    public enum Type {XZ, ZSTD, GZIP}
 
     private static void addFile(ArchiveOutputStream tar, File file, String entryName) {
         try {
@@ -181,6 +184,9 @@ public abstract class TarCompressorUtils {
         }
         else if (type == Type.ZSTD) {
             return new ZstdCompressorInputStream(source);
+        }
+        else if (type == Type.GZIP) {
+            return new GzipCompressorInputStream(source);
         }
         return null;
     }

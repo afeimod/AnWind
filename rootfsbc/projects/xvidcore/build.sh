@@ -1,7 +1,0 @@
-revision="1.3.7"
-url="https://downloads.xvid.com/downloads/xvidcore-${revision}.tar.gz"
-urlType="tar"
-arch="aarch64 x86_64"
-buildSys="autotools"
-license="GPL-2.0"
-pkgSrcDir="${srcDir}/xvidcore/build/generic"

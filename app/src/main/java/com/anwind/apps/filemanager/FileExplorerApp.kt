@@ -135,6 +135,9 @@ private fun FileExplorerContent(scope: WindowContentScope) {
     // exe/bat/msi/cmd/com 文件把【完整路径】经 FilePickBus 回传给发起窗口
     // 的程序路径输入框（直达 Download，无则内部存储根）
     val exePick = pickMode == "exe"
+    // v3.2.14（用户问题 2）：自定义启动动画选择 —— 点击视频文件直接设为
+    // app 启动动画（持久化到 SettingsStore；直达 Movies → Download）
+    val bootVideoPick = pickMode == "boot_video"
     if (exePick) {
         LaunchedEffect(Unit) {
             val dir = listOf("Download", "AnWind").map { File(storageRoot, it) }
@@ -146,6 +149,15 @@ private fun FileExplorerContent(scope: WindowContentScope) {
         // v2.18 桌面视频壁纸：直达 Movies → DCIM → Download → 内部存储根
         LaunchedEffect(Unit) {
             val dir = listOf("Movies", "DCIM", "Download")
+                .map { File(storageRoot, it) }
+                .firstOrNull { it.exists() && it.isDirectory } ?: storageRoot
+            currentRealDir = dir
+            isThisPcHome = false
+        }
+    } else if (bootVideoPick) {
+        // v3.2.14 启动动画选择：直达 Movies → Download → 内部存储根
+        LaunchedEffect(Unit) {
+            val dir = listOf("Movies", "Download")
                 .map { File(storageRoot, it) }
                 .firstOrNull { it.exists() && it.isDirectory } ?: storageRoot
             currentRealDir = dir
@@ -233,6 +245,19 @@ private fun FileExplorerContent(scope: WindowContentScope) {
             app.settingsStore.setLockWallpaper(uri)
         }
         Toast.makeText(context, "已设为锁屏壁纸", Toast.LENGTH_SHORT).show()
+        scope.onClose()
+    }
+
+    /**
+     * v3.2.14：设为自定义启动动画（file:// 绝对路径，持久化到 SettingsStore）
+     * 并关闭选择窗口。应用级 applicationScope 保证写入完成后窗口才被移除
+     * （同 setWallpaperAndClose 的 v2.17 修复理由：窗口组合销毁会取消协程）。
+     */
+    fun setBootVideoAndClose(file: File) {
+        app.applicationScope.launch {
+            app.settingsStore.setCustomBootAnimation("file://${file.absolutePath}")
+        }
+        Toast.makeText(context, "已设为启动动画（下次启动生效）", Toast.LENGTH_SHORT).show()
         scope.onClose()
     }
 
@@ -477,7 +502,7 @@ private fun FileExplorerContent(scope: WindowContentScope) {
 
         // ===== v2.14 壁纸选择模式横幅（v2.17：兼容锁屏壁纸/锁屏视频壁纸；
         //       v2.19：新增云音乐 image/dir 选择模式） =====
-        if (wallpaperPick || lockWallpaperPick || lockWallpaperVideoPick || textPick || mediaPick || imagePick || dirPick || exePick) {
+        if (wallpaperPick || lockWallpaperPick || lockWallpaperVideoPick || textPick || mediaPick || imagePick || dirPick || exePick || bootVideoPick) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -495,6 +520,7 @@ private fun FileExplorerContent(scope: WindowContentScope) {
                         textPick -> Icons.Default.Description
                         imagePick -> Icons.Default.Image
                         exePick -> Icons.Default.Apps
+                        bootVideoPick -> Icons.Default.Movie
                         dirPick -> Icons.Default.FolderOpen
                         else -> Icons.Default.PlayCircle
                     }, null,
@@ -511,6 +537,7 @@ private fun FileExplorerContent(scope: WindowContentScope) {
                         textPick -> "点击任意文本文件，在记事本中打开"
                         imagePick -> "点击任意图片文件，选为播放器自定义背景"
                         exePick -> "点击 exe / bat / msi / cmd / com 程序，回填到「运行」窗口的程序路径"
+                        bootVideoPick -> "点击任意视频文件，设为 App 启动动画（下次启动生效）"
                         dirPick -> "浏览到目标文件夹后，点右侧「选定此目录」回传给云音乐"
                         else -> "点击音频或视频文件进行播放"
                     },
@@ -626,6 +653,10 @@ private fun FileExplorerContent(scope: WindowContentScope) {
                             // v3.2.13：容器运行窗口的文件选择 —— 完整路径回填
                             if (isExecutableExtension(file.extension)) pickAndClose(file)
                             else Toast.makeText(context, "请选择程序文件（exe/bat/msi/cmd/com）", Toast.LENGTH_SHORT).show()
+                        } else if (bootVideoPick) {
+                            // v3.2.14：启动动画选择 —— 视频文件直接设为启动动画
+                            if (isVideoExtension(file.extension)) setBootVideoAndClose(file)
+                            else Toast.makeText(context, "请选择视频文件（mp4/webm/mkv 等）", Toast.LENGTH_SHORT).show()
                         } else if (mediaPick) {
                             if (isMediaExtension(file.extension)) pickAndClose(file)
                             else Toast.makeText(context, "请选择音频或视频文件", Toast.LENGTH_SHORT).show()
@@ -653,6 +684,10 @@ private fun FileExplorerContent(scope: WindowContentScope) {
                         } else if (exePick) {
                             if (isExecutableExtension(file.extension)) pickAndClose(file)
                             else Toast.makeText(context, "请选择程序文件（exe/bat/msi/cmd/com）", Toast.LENGTH_SHORT).show()
+                        } else if (bootVideoPick) {
+                            // v3.2.14：启动动画选择（列表视图分支，与网格视图同逻辑）
+                            if (isVideoExtension(file.extension)) setBootVideoAndClose(file)
+                            else Toast.makeText(context, "请选择视频文件（mp4/webm/mkv 等）", Toast.LENGTH_SHORT).show()
                         } else if (mediaPick) {
                             if (isMediaExtension(file.extension)) pickAndClose(file)
                             else Toast.makeText(context, "请选择音频或视频文件", Toast.LENGTH_SHORT).show()

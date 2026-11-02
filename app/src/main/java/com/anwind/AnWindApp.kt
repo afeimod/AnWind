@@ -42,6 +42,14 @@ class AnWindApp : Application() {
     val applicationScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     /**
+     * v3.2.14 启动动画进程级一次性标记：本次进程生命周期内启动动画
+     * 只播放一次 —— Activity 因旋转/主题切换/权限弹窗重建时不重播；
+     * 冷启动（新进程）会重新置 false 播放。
+     */
+    @Volatile
+    var bootAnimationPlayed: Boolean = false
+
+    /**
      * v2.22.2 fix9.6：终端侧 X server 的连接广播改由 X11WindowController 处理
      * （在 AnWind 桌面内弹出/聚焦 X11 窗口并完成渲染连接），不再拉起独立
      * 全屏 Activity（保留作兼容推障入口，可从等待页手动进入）。

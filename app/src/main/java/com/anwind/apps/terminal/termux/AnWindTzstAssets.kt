@@ -50,8 +50,14 @@ object AnWindTzstAssets {
 
     private const val TAG = "AnWindTzstAssets"
 
-    /** APK 内资产目录。 */
+    /** APK 内资产目录（rootfs/mesa/box64/turnip/dxvk tzst 契约目录）。 */
     const val ASSET_DIR = "anwind"
+
+    /** v3.2.14（用户问题 3）：DXVK 资产专用目录 —— assets/dxvk/。
+     *  用户约定放置 dxvk-<ver>.tar.gz（如 dxvk-2.3.1.tar.gz）；
+     *  兼容 .tgz / .tzst / .tar.zst 后缀，也兼容 assets/anwind/ 下的
+     *  旧契约 dxvk-*.tzst（两处并存时合并应用）。 */
+    const val DXVK_ASSET_DIR = "dxvk"
 
     /** bionic rootfs 根（与 ContainerManager.ROOTFS_ROOT 逐字一致）。 */
     const val ROOTFS_ROOT = "/data/data/com.anwind/files/rootfs"
@@ -117,13 +123,50 @@ object AnWindTzstAssets {
 
     private fun assetPath(name: String): String = "$ASSET_DIR/$name"
 
-    /** 资产指纹（名+长度+CRC32），资产更新后自动重铺。 */
-    private fun assetFingerprint(context: Context, name: String): String {
+    /** v3.2.14：DXVK 资产描述（相对 APK assets 的完整路径 + 压缩类型）。 */
+    data class DxvkAsset(val dir: String, val name: String, val type: TarCompressorUtils.Type) {
+        val path: String get() = "$dir/$name"
+    }
+
+    /** DXVK 资产压缩类型探测（tar.gz 优先支持 —— 用户约定格式）。 */
+    private fun dxvkAssetType(name: String): TarCompressorUtils.Type? {
+        val lower = name.lowercase()
+        return when {
+            lower.endsWith(".tar.gz") || lower.endsWith(".tgz") -> TarCompressorUtils.Type.GZIP
+            lower.endsWith(".tzst") || lower.endsWith(".tar.zst") -> TarCompressorUtils.Type.ZSTD
+            else -> null
+        }
+    }
+
+    /**
+     * v3.2.14：扫描全部 DXVK 资产（assets/dxvk/ 新约定 + assets/anwind/dxvk-*.tzst
+     * 旧契约），按文件名稳定排序。空列表 = 未内置任何 DXVK。
+     */
+    fun scanDxvkAssets(context: Context): List<DxvkAsset> {
+        val out = mutableListOf<DxvkAsset>()
+        try {
+            context.assets.list(DXVK_ASSET_DIR)?.forEach { name ->
+                dxvkAssetType(name)?.let { out.add(DxvkAsset(DXVK_ASSET_DIR, name, it)) }
+            }
+        } catch (_: Exception) {
+            // 目录不存在（未内置任何资产）：正常路径，不扫日志
+        }
+        try {
+            scanAssets(context)[Kind.DXVK].orEmpty().forEach { name ->
+                out.add(DxvkAsset(ASSET_DIR, name, TarCompressorUtils.Type.ZSTD))
+            }
+        } catch (_: Exception) {
+        }
+        return out.sortedBy { it.name }
+    }
+
+    /** 资产指纹（路径+长度+CRC32），资产更新后自动重铺。 */
+    private fun assetFingerprint(context: Context, path: String): String {
         var len = 0L
         var crc = 0L
         val buf = ByteArray(64 * 1024)
         try {
-            context.assets.open(assetPath(name)).use { input ->
+            context.assets.open(path).use { input ->
                 val crc32 = java.util.zip.CRC32()
                 while (true) {
                     val n = input.read(buf)
@@ -134,9 +177,9 @@ object AnWindTzstAssets {
                 crc = crc32.value
             }
         } catch (e: Exception) {
-            return "err:${name}:${e.message}"
+            return "err:${path}:${e.message}"
         }
-        return "$name:$len:$crc"
+        return "$path:$len:$crc"
     }
 
     // ------------------------------------------------------------------
@@ -199,7 +242,7 @@ object AnWindTzstAssets {
         var applied = 0
         for (kind in bionic) {
             for (name in assets[kind].orEmpty().sorted()) {
-                val fp = assetFingerprint(context, name)
+                val fp = assetFingerprint(context, assetPath(name))
                 newFps.add(fp)
                 if (fp in oldFps) continue   // 指纹一致：已铺装，跳过
                 val ok = extractToRootfs(context, name, kind)
@@ -277,44 +320,113 @@ object AnWindTzstAssets {
      * @return 本次实际应用了 DXVK 的前缀数
      */
     fun applyDxvkWhenPrefixReady(context: Context): Int {
-        val dxvkAssets = scanAssets(context)[Kind.DXVK].orEmpty().sorted()
+        val dxvkAssets = scanDxvkAssets(context)
         if (dxvkAssets.isEmpty()) {
             _dxvkReady.value = false
             return 0
         }
 
         // 指纹比对：全部 dxvk 资产的指纹串（单资产场景零开销）
-        val combinedFp = dxvkAssets.joinToString("|") { assetFingerprint(context, it) }
+        val combinedFp = dxvkAssets.joinToString("|") { assetFingerprint(context, it.path) }
 
         var appliedCount = 0
         for (prefix in knownPrefixes()) {
             if (!prefixBuilt(prefix)) continue          // ★ 前缀未构建：等待下次
-            val meta = File(prefix, "anwindmeta")
-            val mark = File(meta, ".anwind-dxvk-applied")
-            if (mark.isFile) {
-                val prev = try { mark.readText().trim() } catch (_: Exception) { "" }
-                if (prev == combinedFp) continue        // 已应用且资产未变
-            }
-            val windows = File(prefix, "drive_c/windows")
-            var ok = true
-            for (name in dxvkAssets) {
-                if (!extractDxvkToWindows(context, name, windows)) ok = false
-            }
-            if (ok) {
-                try {
-                    meta.mkdirs()
-                    mark.writeText(combinedFp)
-                    Os.chmod(mark.absolutePath, 420)
-                    stampContainerDxvk(prefix, dxvkAssets.last())
-                } catch (e: Exception) {
-                    android.util.Log.w(TAG, "dxvk 标记写入失败: ${e.message}")
-                }
+            // v3.2.14（用户问题 3）：bionic 容器按 container.conf 的 dxvk=
+            // 过滤 —— "off" = 用户明确关闭，不注入（glibc 前缀无 conf，
+            // 保持历史全量注入行为）
+            if (containerDxvkDisabled(prefix)) continue
+            if (applyDxvkAssetsToPrefix(context, prefix, dxvkAssets, combinedFp)) {
                 appliedCount++
-                android.util.Log.i(TAG, "DXVK 已解压到前缀: ${prefix.path} → drive_c/windows")
             }
         }
         _dxvkReady.value = appliedCount == 0
         return appliedCount
+    }
+
+    /**
+     * v3.2.14：bionic 容器的 DXVK 开关判定 —— 读容器目录内 container.conf
+     * 的 dxvk= 值（轻量自解析，不依赖容器数据类）。
+     * "off" = 明确关闭；缺键/其他值（auto/版本戳）= 开启。
+     */
+    private fun containerDxvkDisabled(prefix: File): Boolean {
+        val conf = File(prefix.parentFile, "container.conf")
+        if (!conf.isFile) return false
+        return try {
+            conf.readLines().any { raw ->
+                val line = raw.trim()
+                line.startsWith("dxvk=") && line.substring(5).trim() == "off"
+            }
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    /**
+     * v3.2.14（用户问题 3）：把内置 DXVK 资产定向注入【单个容器前缀】。
+     *
+     * 由 RootfsLauncher 在 wineboot 构建/启动链末尾调用（用户语义
+     * "构建前缀时自动打入 assets 内的 dxvk-<ver>.tar.gz 解压到 C 盘
+     * windows"）；也可从容器管理器手动触发。
+     *
+     * @param containerPrefix 容器的 WINEPREFIX 目录（…/containers/<name>/prefix）
+     * @param dxvkEnabled     容器配置开关（container.conf 的 dxvk= 非 off）
+     * @param log            进度回调（写入前缀日志窗口）
+     * @return true = 已应用/无需应用；false = 解压失败（下次自动重试）
+     */
+    fun applyDxvkToContainer(
+        context: Context,
+        containerPrefix: File,
+        dxvkEnabled: Boolean,
+        log: (String) -> Unit = {}
+    ): Boolean {
+        if (!dxvkEnabled) return true
+        if (!prefixBuilt(containerPrefix)) return true   // 未构建：留给构建后
+        val dxvkAssets = scanDxvkAssets(context)
+        if (dxvkAssets.isEmpty()) {
+            log("提示: APK 未内置 DXVK 资产（assets/dxvk/dxvk-<ver>.tar.gz），跳过注入")
+            return true
+        }
+        val combinedFp = dxvkAssets.joinToString("|") { assetFingerprint(context, it.path) }
+        if (!applyDxvkAssetsToPrefix(context, containerPrefix, dxvkAssets, combinedFp, log)) {
+            log("警告: DXVK 解压失败（下次启动自动重试）")
+            return false
+        }
+        return true
+    }
+
+    /** 单个前缀的 DXVK 注入核心（指纹幂等 + 解压 + 版本戳回写）。 */
+    private fun applyDxvkAssetsToPrefix(
+        context: Context,
+        prefix: File,
+        dxvkAssets: List<DxvkAsset>,
+        combinedFp: String,
+        log: (String) -> Unit = {}
+    ): Boolean {
+        val meta = File(prefix, "anwindmeta")
+        val mark = File(meta, ".anwind-dxvk-applied")
+        if (mark.isFile) {
+            val prev = try { mark.readText().trim() } catch (_: Exception) { "" }
+            if (prev == combinedFp) return true       // 已应用且资产未变
+        }
+        val windows = File(prefix, "drive_c/windows")
+        var ok = true
+        for (asset in dxvkAssets) {
+            if (!extractDxvkToWindows(context, asset, windows)) ok = false
+        }
+        if (ok) {
+            try {
+                meta.mkdirs()
+                mark.writeText(combinedFp)
+                Os.chmod(mark.absolutePath, 420)
+                stampContainerDxvk(prefix, dxvkAssets.last().name)
+            } catch (e: Exception) {
+                android.util.Log.w(TAG, "dxvk 标记写入失败: ${e.message}")
+            }
+            android.util.Log.i(TAG, "DXVK 已解压到前缀: ${prefix.path} → drive_c/windows")
+            log("DXVK ${dxvkAssets.last().name} 已解压到 C:\\windows（system32/syswow64）")
+        }
+        return ok
     }
 
     /** 已知的 wine 前缀集合（bionic 容器前缀 + glibc 默认前缀）。 */
@@ -337,23 +449,23 @@ object AnWindTzstAssets {
      * （tar 成员布局在解压前不可知，暂存 + 归位可同时支持
      * system32/syswow64 直解与 x64/x32 重映射，且不污染 windows 目录。）
      */
-    private fun extractDxvkToWindows(context: Context, name: String, windows: File): Boolean {
+    private fun extractDxvkToWindows(context: Context, asset: DxvkAsset, windows: File): Boolean {
         val prefix = windows.parentFile?.parentFile ?: return false
         val stage = File(prefix, "anwindmeta/.dxvk-stage")
         try {
             stage.deleteRecursively()
             stage.mkdirs()
             val extracted = TarCompressorUtils.extract(
-                TarCompressorUtils.Type.ZSTD, context, assetPath(name), stage
+                asset.type, context, asset.path, stage
             )
             if (!extracted) {
-                android.util.Log.e(TAG, "DXVK 解压失败: $name")
+                android.util.Log.e(TAG, "DXVK 解压失败: ${asset.name}")
                 return false
             }
             return installStagedDxvk(stage, windows)
         } catch (t: Throwable) {
             // 同 extractToRootfs：Error 级故障降级为日志，不穿透
-            android.util.Log.e(TAG, "DXVK 解压异常: $name: ${t.message}")
+            android.util.Log.e(TAG, "DXVK 解压异常: ${asset.name}: ${t.message}")
             return false
         } finally {
             stage.deleteRecursively()

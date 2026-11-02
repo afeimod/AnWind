@@ -115,6 +115,13 @@ class SettingsStore(private val context: Context) {
         // v2.19 首次启动存储权限引导：是否已经提示过（避免每次启动都弹）
         val STORAGE_PERM_ASKED = booleanPreferencesKey("storage_perm_asked")
 
+        // === v3.2.14 启动动画（用户问题 2） ===
+        // 启动动画总开关（设置→个性化→启动动画；关闭后启动直接进桌面）
+        val BOOT_ANIMATION_ENABLED = booleanPreferencesKey("boot_animation_enabled")
+        // 自定义启动动画：file://<绝对路径>（用户从文件管理器选择的视频），
+        // 空 = 内置 assets/anwind/boot/startup.mp4
+        val CUSTOM_BOOT_ANIMATION = stringPreferencesKey("custom_boot_animation")
+
         // === 虚拟键盘（v2.13：全键盘） ===
         // 总开关：off 时文本框回退系统输入法
         val KEYBOARD_MASTER = booleanPreferencesKey("keyboard_master")
@@ -240,6 +247,12 @@ class SettingsStore(private val context: Context) {
 
     // === v2.19 首次启动存储权限引导 ===
     val storagePermAsked: Flow<Boolean> = context.appPrefs.data.map { it[Keys.STORAGE_PERM_ASKED] ?: false }
+
+    // === v3.2.14 启动动画 ===
+    // 总开关（默认开）：app 冷启动时全屏播放启动动画（内置 start.mp4 或自定义视频）
+    val bootAnimationEnabled: Flow<Boolean> = context.appPrefs.data.map { it[Keys.BOOT_ANIMATION_ENABLED] ?: true }
+    // 自定义启动动画（file:// 绝对路径；null = 用内置 assets/anwind/boot/startup.mp4）
+    val customBootAnimation: Flow<String?> = context.appPrefs.data.map { it[Keys.CUSTOM_BOOT_ANIMATION] }
 
     // === 虚拟键盘（v2.13） ===
     // v2.13.2：keyboardMaster 默认关闭 —— 大多数场景手机系统输入法更顺手，
@@ -477,6 +490,20 @@ class SettingsStore(private val context: Context) {
     /** 首启引导已展示过（用户选了"稍后"或已授权），不再重复弹出 */
     suspend fun setStoragePermAsked() {
         context.appPrefs.edit { it[Keys.STORAGE_PERM_ASKED] = true }
+    }
+
+    // === v3.2.14 启动动画 setter ===
+    /** 启动动画总开关（设置→个性化→启动动画） */
+    suspend fun setBootAnimationEnabled(enabled: Boolean) {
+        context.appPrefs.edit { it[Keys.BOOT_ANIMATION_ENABLED] = enabled }
+    }
+
+    /** 自定义启动动画（"file://<绝对路径>"；null = 恢复内置 assets/anwind/boot/startup.mp4） */
+    suspend fun setCustomBootAnimation(uri: String?) {
+        context.appPrefs.edit {
+            if (uri == null) it.remove(Keys.CUSTOM_BOOT_ANIMATION)
+            else it[Keys.CUSTOM_BOOT_ANIMATION] = uri
+        }
     }
 
     // === 虚拟键盘 setter（v2.13） ===

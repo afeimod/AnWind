@@ -31,6 +31,7 @@ import com.anwind.core.theme.LocalWinTheme
 import com.anwind.core.window.WinConfirmDialog
 import com.anwind.core.window.WinDialog
 import com.anwind.core.window.WindowContentScope
+import com.anwind.AnWindApp
 import com.anwind.apps.containers.launcher.RootfsLauncher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -694,17 +695,24 @@ private fun CreateContainerDialog(onDismiss: () -> Unit, onCreated: () -> Unit) 
     var screen by remember { mutableStateOf(ContainerData.DEFAULT_SCREEN) }
     var dmode by remember { mutableStateOf(DisplayMode.OFF) }
     var gallium by remember { mutableStateOf(ContainerData.DEFAULT_GALLIUM) }
+    var dxvk by remember { mutableStateOf(ContainerData.DXVK_AUTO) }
     var wine by remember { mutableStateOf("") }
     var lang by remember { mutableStateOf(ContainerLangs.DEFAULT) }
     var audio by remember { mutableStateOf(ContainerAudio.PULSE) }
     var env by remember { mutableStateOf("") }
     var wines by remember { mutableStateOf<List<WineInstall>>(emptyList()) }
+    var dxvkAssetDesc by remember { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
 
     // wine 版本列表（rootfs /usr/opt 扫描；无 wine 时选择器只剩"默认"）
     LaunchedEffect(Unit) {
         kotlinx.coroutines.withContext(Dispatchers.IO) {
             wines = ContainerManager.listWines()
+            // v3.2.14：检测 APK 内置 DXVK 资产（assets/dxvk/dxvk-<ver>.tar.gz）
+            val ctx = AnWindApp.get()
+            val assets = com.anwind.apps.terminal.termux.AnWindTzstAssets.scanDxvkAssets(ctx)
+            dxvkAssetDesc = if (assets.isEmpty()) "未检测到内置 DXVK（assets/dxvk/ 为空）"
+            else "内置：${assets.joinToString(", ") { it.name }}"
         }
     }
 
@@ -798,6 +806,18 @@ private fun CreateContainerDialog(onDismiss: () -> Unit, onCreated: () -> Unit) 
                         onSelect = { gallium = it }
                     )
                 }
+                // v3.2.14（用户问题 3）：DXVK 组件开关 —— 前缀构建时自动把
+                // APK 内置 dxvk-<ver>.tar.gz 解压进 C:\windows
+                WinField("DXVK 图形加速", dxvkAssetDesc.ifEmpty { "前缀构建时自动解压到 C:\\windows（system32/syswow64）" }) {
+                    WinOptionPills(
+                        options = listOf(
+                            ContainerData.DXVK_AUTO to "开启",
+                            ContainerData.DXVK_OFF to "关闭"
+                        ),
+                        selected = dxvk,
+                        onSelect = { dxvk = it }
+                    )
+                }
             }
 
             // ---- 语言与音频 ----
@@ -852,7 +872,7 @@ private fun CreateContainerDialog(onDismiss: () -> Unit, onCreated: () -> Unit) 
                     ContainerData(
                         name = name.trim(), backend = backend,
                         preset = preset, screen = screen, dmode = dmode,
-                        gallium = gallium, wine = wine,
+                        gallium = gallium, wine = wine, dxvk = dxvk,
                         lang = lang, audio = audio, env = env.trim()
                     )
                 )
@@ -881,17 +901,28 @@ private fun EditContainerDialog(
     var screen by remember { mutableStateOf(container.screen) }
     var dmode by remember { mutableStateOf(container.dmode) }
     var gallium by remember { mutableStateOf(container.gallium) }
+    // v3.2.14：DXVK 开关（版本戳归一为开启态；保存时 off → off，其余 → auto，
+    // 实际版本戳由注入器回写，不在此处丢失）
+    var dxvk by remember {
+        mutableStateOf(if (container.dxvk == ContainerData.DXVK_OFF) ContainerData.DXVK_OFF else ContainerData.DXVK_AUTO)
+    }
     var env by remember { mutableStateOf(container.env) }
     var wine by remember { mutableStateOf(container.wine) }
     var lang by remember { mutableStateOf(container.lang) }
     var audio by remember { mutableStateOf(container.audio) }
     var wines by remember { mutableStateOf<List<WineInstall>>(emptyList()) }
+    var dxvkAssetDesc by remember { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
 
     // wine 版本列表（rootfs /usr/opt 扫描）
     LaunchedEffect(Unit) {
         kotlinx.coroutines.withContext(Dispatchers.IO) {
             wines = ContainerManager.listWines()
+            // v3.2.14：检测 APK 内置 DXVK 资产
+            val ctx = AnWindApp.get()
+            val assets = com.anwind.apps.terminal.termux.AnWindTzstAssets.scanDxvkAssets(ctx)
+            dxvkAssetDesc = if (assets.isEmpty()) "未检测到内置 DXVK（assets/dxvk/ 为空）"
+            else "内置：${assets.joinToString(", ") { it.name }}"
         }
     }
 
@@ -964,6 +995,18 @@ private fun EditContainerDialog(
                         onSelect = { gallium = it }
                     )
                 }
+                // v3.2.14（用户问题 3）：DXVK 组件开关（编辑可随时切换；
+                // 关闭后再开启，下次启动时重新解压资产）
+                WinField("DXVK 图形加速", dxvkAssetDesc.ifEmpty { "前缀构建时自动解压到 C:\\windows（system32/syswow64）" }) {
+                    WinOptionPills(
+                        options = listOf(
+                            ContainerData.DXVK_AUTO to "开启",
+                            ContainerData.DXVK_OFF to "关闭"
+                        ),
+                        selected = dxvk,
+                        onSelect = { dxvk = it }
+                    )
+                }
             }
 
             // ---- 语言与音频 ----
@@ -1015,6 +1058,14 @@ private fun EditContainerDialog(
                     container.copy(
                         backend = backend, preset = preset,
                         screen = screen, dmode = dmode, gallium = gallium,
+                        // v3.2.14：DXVK 开关保留原版本戳语义 —— 原值非 off
+                        // 且新值开启时维持原戳（注入器幂等不重解压）；关闭
+                        // 时写 off；重新开启时 auto（指纹变化会重新解压）
+                        dxvk = when {
+                            dxvk == ContainerData.DXVK_OFF -> ContainerData.DXVK_OFF
+                            container.dxvk == ContainerData.DXVK_OFF -> ContainerData.DXVK_AUTO
+                            else -> container.dxvk   // 保持原版本戳（已注入）
+                        },
                         env = env.trim(), wine = wine, lang = lang, audio = audio
                     )
                 )

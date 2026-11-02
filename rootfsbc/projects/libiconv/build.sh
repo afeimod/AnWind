@@ -1,7 +1,0 @@
-revision="1.19"
-url="${gnuMirrorURL}/libiconv/libiconv-${revision}.tar.gz"
-urlType="tar"
-arch="aarch64 x86_64"
-buildSys="autotools"
-license="LGPL-2.1-or-later"
-args="--enable-extra-encodings"

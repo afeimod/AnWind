@@ -389,6 +389,27 @@ pre_setup() {
     return 1
   fi
 
+  # v3.2.14：0007f faudio SIMD 走 NEON 校验（CI official-9.7 v3.2.13 实证
+  # 阵亡点：libs/faudio/arm64ec-windows/src/FAudio_internal_simd.o 的
+  # mmintrin.h "__v2di → int invalid conversion" 20 errors）。FAudio 的
+  # SIMD 分发以裸 __x86_64__/_M_X64 首分支自定 __SSE2__ → EC 趟（clang 21
+  # 预定义 __x86_64__）include emmintrin.h，而 AArch64 后端无 x86 向量
+  # builtins 即炸。0007f 在分发最前插入 arm64ec 分支（NEON）+ NEON 段
+  # 判断补 __arm64ec__；非 EC 目标（x86_64/aarch64/i386）行为逐位不变
+  # （gcc -E -dM 分支矩阵验证）。锚点："x86_64 guarantees SSE2" 为
+  # wine-9.x faudio 旧形态注释 + 全文无 __arm64ec__ 字样 = 补丁未生效。
+  # wine-10+/hangover 树 faudio 形态有变则锚点不命中自然跳过；若上游
+  # 自带 arm64ec 处理（含 __arm64ec__ 字样）亦跳过。
+  if [[ "${args}" == *"--enable-archs=arm64ec,"* ]] \
+     && [[ -f libs/faudio/src/FAudio_internal_simd.c ]] \
+     && grep -q 'x86_64 guarantees SSE2' libs/faudio/src/FAudio_internal_simd.c 2>/dev/null \
+     && ! grep -q '__arm64ec__' libs/faudio/src/FAudio_internal_simd.c 2>/dev/null; then
+    echo "::error::0007f-fix-arm64ec-faudio-simd 补丁未生效（FAudio SIMD 分发仍无 arm64ec 排除）！"
+    echo "   arm64ec 编译趟必炸于 libs/faudio/arm64ec-windows/src/FAudio_internal_simd.o（emmintrin.h/mmintrin.h 20 errors，CI v3.2.13 实证）"
+    echo "   请核查源码树形态与补丁锚点：projects/hangover-wine/0007f-fix-arm64ec-faudio-simd-wine97.patch"
+    return 1
+  fi
+
   # v3.2.12：0007 __fastfail x86 分支校验（i386 编译趟阻断点）。0007 的
   # __fastfail hunk 在 v3.2.4~v3.2.11 重排分支时把 x86 分支
   # （#elif __x86_64__ || __i386__）的体误留为 ARM64 代码（x0 寄存器 +

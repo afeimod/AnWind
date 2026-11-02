@@ -33,6 +33,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import com.anwind.core.theme.ThemeOverlay
 import com.anwind.core.theme.WinThemeScope
+import com.anwind.core.boot.StartupAnimationOverlay
 import com.anwind.core.desktop.DesktopEnvironment
 import com.anwind.data.prefs.SettingsStore
 import com.anwind.util.ImmersiveMode
@@ -134,6 +135,24 @@ class MainActivity : ComponentActivity() {
                         customWallpaperUri = customWallpaper,
                         soundEnabled = soundEnabled
                     )
+
+                    // ===== v3.2.14 启动动画（用户需求：start.mp4，5 秒加速为 3 秒） =====
+                    // 开关：设置→个性化→启动动画；自定义视频优先于内置 assets；
+                    // 进程级一次性（AnWindApp.bootAnimationPlayed）：Activity 重建不重播
+                    val bootAnimationEnabled by settingsStore.bootAnimationEnabled.collectAsState(initial = true)
+                    val customBootAnimation by settingsStore.customBootAnimation.collectAsState(initial = null)
+                    var showBootAnimation by remember {
+                        mutableStateOf(!app.bootAnimationPlayed && bootAnimationEnabled)
+                    }
+                    if (showBootAnimation) {
+                        StartupAnimationOverlay(
+                            customVideoUri = customBootAnimation,
+                            onFinished = {
+                                app.bootAnimationPlayed = true
+                                showBootAnimation = false
+                            }
+                        )
+                    }
 
                     // ===== v2.19 首次启动存储权限引导 =====
                     // 文件管理器/自定义壁纸/视频壁纸都依赖真实存储访问；

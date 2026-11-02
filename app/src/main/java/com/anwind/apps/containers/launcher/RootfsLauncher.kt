@@ -511,6 +511,25 @@ object RootfsLauncher {
                     // 强调色配色 / 程序化渐变壁纸。单次 regedit 导入 + 前缀内幂等
                     // 标记；游戏自绘皮肤不受影响，失败不阻断启动（下次自动重试）。
                     WineRegistry.ensureModernLook(resolved, container, env) { sink.stamp(it) }
+                    // v3.2.14（用户问题 3）：构建前缀时注入 DllOverrides 注册表
+                    // （DXVK/DirectX 组件组合拳，147 项；幂等，失败不阻断）。
+                    runCatching {
+                        WineRegistry.ensureDllOverrides(resolved, container, env) { sink.stamp(it) }
+                    }.onFailure {
+                        sink.stamp("警告: DllOverrides 注入异常: ${it.message}（下次启动自动重试）")
+                    }
+                    // v3.2.14（用户问题 3）：构建前缀时自动打入 APK 内置 DXVK
+                    // （assets/dxvk/dxvk-<ver>.tar.gz → C:\windows 的 system32/
+                    // syswow64，容器 dxvk=off 时跳过；幂等指纹，失败不阻断）。
+                    runCatching {
+                        com.anwind.apps.terminal.termux.AnWindTzstAssets.applyDxvkToContainer(
+                            context,
+                            File(container.prefixPath),
+                            dxvkEnabled = container.dxvk != ContainerData.DXVK_OFF
+                        ) { sink.stamp(it) }
+                    }.onFailure {
+                        sink.stamp("警告: DXVK 注入异常: ${it.message}（下次启动自动重试）")
+                    }
                 } finally {
                     _prefixBuildFlow.value = null
                 }
