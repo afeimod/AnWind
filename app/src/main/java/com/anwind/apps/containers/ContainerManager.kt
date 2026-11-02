@@ -339,11 +339,48 @@ object ContainerManager {
             "$ROOTFS_ROOT/usr/bin/box64",
             "$APP_PREFIX/bin/box64"
         ).map(::File).firstOrNull { it.isFile && it.canExecute() }
+        // v3.2.13（用户问题 5）：文件存在 ≠ 能启动。旧体检只查 canExecute，
+        // "构建根本不对、加载即死"的 box64 一样全绿（设备实测启动零日志）。
+        // 现在真实 exec `box64 --version`（5 秒超时）拿运行结论：
+        //  - 输出含版本串 → ✓（版本号进详情，与静态信息并列）；
+        //  - 非零退出 / 无输出 / 超时 → ✗，退出码 + 前几行输出直接给用户，
+        //    "box64 无法启动"从猜测变成可截图反馈的证据。
+        var box64Detail = box64?.let { "box64 就绪：${it.absolutePath}" }
+            ?: "未安装 box64（容器仍可用 hangover/fexcore/native 后端）"
+        var box64Ok = box64 != null
+        if (box64 != null) {
+            try {
+                val proc = ProcessBuilder(box64.absolutePath, "--version")
+                    .redirectErrorStream(true)
+                    .start()
+                // waitFor 限时（阻塞读不可取消，先等退出再读流）：
+                // 5 秒不退出 = 挂死，按"无法运行"处理并强杀
+                val exited = proc.waitFor(5, java.util.concurrent.TimeUnit.SECONDS)
+                val out = if (exited) {
+                    runCatching { proc.inputStream.readBytes().decodeToString() }
+                        .getOrDefault("")
+                } else ""
+                runCatching { proc.destroyForcibly() }
+                val exit = if (exited) proc.exitValue() else -1
+                val trimmed = out.trim().lineSequence().take(3).joinToString(" / ")
+                if (exit == 0 && trimmed.contains("box64", ignoreCase = true)) {
+                    box64Detail = "就绪且可运行：$trimmed（${box64.absolutePath}）"
+                } else {
+                    box64Ok = false
+                    box64Detail = "文件存在但无法运行（" + (if (exited) "退出码 $exit" else "5 秒未退出（挂死）") +
+                        (if (trimmed.isNotEmpty()) "，输出：$trimmed" else "，无任何输出 —— 动态链接失败或加载即崩") +
+                        "）。多为构建/安装损坏：请重跑 build-box64-bionic 工作流并重装，" +
+                        "终端执行 `${box64.absolutePath} --version` 与 `logcat | grep -i linker` 取证反馈"
+                }
+            } catch (e: Exception) {
+                box64Ok = false
+                box64Detail = "运行探活失败：${e.message ?: e.javaClass.simpleName}（${box64.absolutePath}）"
+            }
+        }
         checks += DoctorCheck(
-            ok = box64 != null,
-            title = "Box64 后端",
-            detail = box64?.let { "box64 就绪：${it.absolutePath}" }
-                ?: "未安装 box64（容器仍可用 hangover/fexcore/native 后端）"
+            ok = box64Ok,
+            title = "Box64 后端（运行探活）",
+            detail = box64Detail
         )
 
         // 6) FEX（可选）

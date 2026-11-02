@@ -3,6 +3,7 @@ package com.anwind.apps
 import com.anwind.apps.browser.BrowserApp
 import com.anwind.apps.calculator.CalculatorApp
 import com.anwind.apps.containers.ContainersApp
+import com.anwind.apps.containers.ExeRunChooserApp
 import com.anwind.apps.clock.ClockApp
 import com.anwind.apps.filemanager.FileExplorerApp
 import com.anwind.apps.imageviewer.ImageViewerApp
@@ -40,6 +41,8 @@ object AppBootstrap {
         AppRegistry.register(X11App)
         // v2.26：Wine 容器管理（box64/FEXCore/Hangover 后端，X11 显示）
         AppRegistry.register(ContainersApp)
+        // v3.2.13：文件管理器双击 exe/bat 调出的「选择容器运行」窗口
+        AppRegistry.register(ExeRunChooserApp)
         AppRegistry.register(MediaPlayerApp)
         AppRegistry.register(MusicPlayerApp)
         AppRegistry.register(MinesweeperApp)

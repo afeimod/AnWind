@@ -85,7 +85,19 @@ license="MIT"
 # 保留 —— 两者正是产物只剩单个 box64 文件的原因（配套的
 # x64android/libc++_shared.so 与 system/box64.box64rc 被 install
 # 规则跳过），由自定义 install() 补齐完整集。
-args="-DANDROID=ON -DBAD_SIGNAL=ON -DARM_DYNAREC=ON"
+#
+# 【v3.2.13 · NOLOADADDR=ON】（用户实测"bionic box64 启动时没有任何日志、
+# 无法启动"的排查修复之一，与 Winlator / MiceWine 两条已验证的 Android
+# bionic 部署链对齐）：
+#   上游默认（NOLOADADDR=OFF）经 lld `--image-base=0x34800000` 把 box64
+#   钉在低地址 —— 这是桌面 glibc ld.so 的手法。Android 的 linker64 对 PIE
+#   不遵守 image-base（ASLR 随机化加载基址），该链接参数在设备上零收益；
+#   且 0x34800000 低地址段在 Android 应用进程布局里与 zygote/heap 常驻区
+#   相邻，不同 ROM 的 mmap_min_addr / 布局差异下存在加载即死的风险面。
+#   Winlator（WINLATOR_GLIBC 链）与 MiceWine（NDK bionic 链）的 box64
+#   构建【均显式 -DNOLOADADDR=ON】，本配方对齐 —— box64 运行时按
+#   /proc/self/maps 自适应任意基址（Termux 同款形态）。
+args="-DANDROID=ON -DBAD_SIGNAL=ON -DARM_DYNAREC=ON -DNOLOADADDR=ON"
 
 # 运行时配套闭包（见头部【deps 说明】：非编译期依赖，是保证
 # "完整文件集"一次到位的构建顺序声明）
@@ -95,6 +107,23 @@ deps="glibc-aarch64 glibc-x86_64"
 doNotUseNinja=1
 
 pre_setup() {
+  # ---- v3.2.13 · 强制 wrapper 再生成（确定性根治 mtime 竞态） ----
+  # box64 仓库把 src/wrapped/generated/functions_list.txt（与 wrapper.c）
+  # 预生成后【随源码提交】—— 且提交版是【无 ANDROID 特性位】的生成物
+  # （v0.4.4 实测：7651 行，无 shmget/androidshmem）。CMake 的
+  # add_custom_command(OUTPUT functions_list.txt) 按 mtime 判断是否重跑：
+  # git clone 后全部文件 mtime 都是"现在"，谁更新纯粹取决于检出写入顺序
+  # —— 若 functions_list.txt 恰好不旧于 wrappedandroidshmem.c，make 跳过
+  # 再生成 → 构建出的 box64 wrapper 表缺 Android shm 系列（wine 的 X11/
+  # unix 侧大量依赖 SysV shm）→ 运行时符号解析错乱、加载即死、零输出
+  # —— 正是"启动时没有任何日志、box64 无法启动"的形态。
+  # 删掉 OUTPUT 文件即可强制 add_custom_command 必跑（make 语义：OUTPUT
+  # 缺失 = 无条件执行），ANDROID 特性位（CMake 命令行参数）随次带入。
+  if [[ -f "${srcDir}/${pjName}/src/wrapped/generated/functions_list.txt" ]]; then
+    echo "box64: 删除预生成的 wrapper 清单，强制按 ANDROID 特性位再生成"
+    rm -f "${srcDir}/${pjName}/src/wrapped/generated/functions_list.txt"
+  fi
+
   # 钉死 ASM 编译器为 NDK clang（v3.2.4 yasm 事故根治）。
   # 双保险：-D 进 CMake cache（探测最高优先级）+ 覆盖 env ASM
   # （load_env 导出的 ASM 是 NDK yasm，仅支持 x86，是探测的
@@ -169,6 +198,48 @@ install() {
     echo "错误: ${prefix}/bin/box64 入口链接失效"
     return 1
   fi
+
+  # ---- 6.5 v3.2.13 · 冒烟校验（wrapper 生成 + 内建符号 + NOLOADADDR 落地） ----
+  # 用户实测"启动时没有任何日志、box64 无法启动"且旧 CI 静态校验全绿 ——
+  # 说明纯 ELF 头校验挡不住"源码级/配置级构建错误"。此处补三道与运行时
+  # 行为直接挂钩的校验（构建树未 strip，符号完整可查）：
+  #   a) wrapper 再生成确证：rebuild_wrappers.py 必须带着 ANDROID 特性位跑过
+  #      —— functions_list.txt 里应能找到 wrappedandroidshmem 的 shmget（ANDROID
+  #      特有 wrapper，漏跑/错位生成的直接证据）。wrapper 是 box64 拦截转发
+  #      x86_64 符号请求的核心表，生成错 = 运行时符号解析全错（典型表现即
+  #      静默崩溃零输出）。
+  #   b) 未 strip 二进制符号表抽查：box64 内部应存在 shmget 包装与 dynarec
+  #      核心（find_next_dynarec_mem）——缺失说明 DYNAREC/ANDROID 编译单元
+  #      没被链进来（cmake 选项没生效的兜底证据）。
+  #   c) NOLOADADDR 落地确证：链接命令不得残留 --image-base / -no-pie
+  #      （v3.2.13 加 -DNOLOADADDR=ON 的配套自检，防上游 CMake 行为漂移）。
+  if [[ -f "${_src}/src/wrapped/generated/functions_list.txt" ]]; then
+    if ! grep -q "shmget" "${_src}/src/wrapped/generated/functions_list.txt"; then
+      echo "错误: wrapper 未按 ANDROID 特性位再生成（functions_list.txt 无 shmget）"
+      echo "  rebuild_wrappers.py 的 ANDROID 参数决定 androidshmem 包装是否进入"
+      echo "  wrapper 表；漏跑 = 运行时 shm 系列符号解析错乱（静默崩溃零输出）"
+      return 1
+    fi
+    echo "冒烟[1/3]: wrapper 含 ANDROID shmget 包装 ✓"
+  else
+    echo "警告: 未找到 src/wrapped/generated/functions_list.txt（上游源码布局变化？）"
+  fi
+  local _sym_ok=1
+  for _sym in shmget getDB; do
+    if ! nm "${_src}/build/box64" 2>/dev/null | grep -qw "${_sym}"; then
+      echo "错误: box64 符号表缺 ${_sym}（ANDROID/DYNAREC 编译单元未链接？）"
+      _sym_ok=0
+    fi
+  done
+  [[ "${_sym_ok}" == "1" ]] \
+    && echo "冒烟[2/3]: 符号表含 shmget/getDB（ANDROID shm 包装 + DYNAREC 核心）✓" \
+    || return 1
+  if grep -q "image-base\|no-pie" "${_src}/build/CMakeFiles/box64.dir/link.txt" 2>/dev/null; then
+    echo "错误: 链接命令残留 --image-base/-no-pie（NOLOADADDR 未生效）"
+    grep -h "image-base\|no-pie" "${_src}/build/CMakeFiles/box64.dir/link.txt"
+    return 1
+  fi
+  echo "冒烟[3/3]: 无 --image-base/-no-pie（NOLOADADDR 已生效）✓"
 
   # ---- 7. 配套运行层就位报告（deps 保证已装进 prefix，纯诊断） ----
   [[ -e "${prefix}/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1" ]] \

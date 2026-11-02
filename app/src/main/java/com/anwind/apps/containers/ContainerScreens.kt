@@ -112,8 +112,10 @@ fun ContainerListContent(scope: WindowContentScope) {
             .background(themeBg())
             .padding(12.dp)
     ) {
-        // ---------------- 标题行 ----------------
+        // ---------------- 标题行（v3.2.13 重做：图标 + 计数徽章） ----------------
         Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("🍷", fontSize = 20.sp)
+            Spacer(Modifier.width(8.dp))
             Text(
                 "Wine 容器",
                 fontSize = 18.sp,
@@ -121,11 +123,17 @@ fun ContainerListContent(scope: WindowContentScope) {
                 color = LocalWinTheme.current.windowTitleBarTextColor
             )
             Spacer(Modifier.width(8.dp))
-            Text(
-                "X11 · box64 / FEXCore / Hangover",
-                fontSize = 11.sp,
-                color = themeSec()
-            )
+            if (containers.isNotEmpty()) {
+                Text(
+                    "${containers.size} 个容器 · 运行中 ${WineSessionLauncher.activeSessions.size}",
+                    fontSize = 11.sp,
+                    color = themeSec(),
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(9.dp))
+                        .background(themeCard())
+                        .padding(horizontal = 8.dp, vertical = 2.dp)
+                )
+            }
             Spacer(Modifier.weight(1f))
             TextButton(onClick = { showDoctor = true }) { Text("体检") }
             Button(
@@ -317,96 +325,131 @@ private fun ContainerCard(
     onPrefixLog: () -> Unit = {}
 ) {
     var menuOpen by remember { mutableStateOf(false) }
+    val theme = LocalWinTheme.current
 
+    // v3.2.13（用户问题 1）：卡片重做 —— 图标 + 名称行 / 信息徽章网格 /
+    // 主操作行（日志、前缀日志等低频入口收进 ⋯ 菜单，按钮行不再拥挤）。
     Card(
         colors = CardDefaults.cardColors(containerColor = themeCard()),
         shape = RoundedCornerShape(10.dp),
-        modifier = Modifier.fillMaxWidth()
+        modifier = Modifier
+            .fillMaxWidth()
+            .border(
+                1.dp,
+                if (running) theme.accentColor.copy(alpha = 0.55f) else androidx.compose.ui.graphics.Color.Transparent,
+                RoundedCornerShape(10.dp)
+            )
     ) {
         Column(Modifier.padding(12.dp)) {
-            // 名称行
+            // 名称行：图标 + 名称（★ 默认 / ● 运行中）+ 设为默认
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    (if (isDefault) "★ " else "") + data.name,
-                    fontWeight = FontWeight.Bold, fontSize = 15.sp,
-                    color = LocalWinTheme.current.windowTitleBarTextColor
-                )
-                if (running) {
-                    Spacer(Modifier.width(6.dp))
-                    Text("● 运行中", fontSize = 11.sp, color = themeAccent())
+                Text("🍷", fontSize = 18.sp)
+                Spacer(Modifier.width(8.dp))
+                Column(Modifier.weight(1f)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            (if (isDefault) "★ " else "") + data.name,
+                            fontWeight = FontWeight.Bold, fontSize = 15.sp,
+                            color = LocalWinTheme.current.windowTitleBarTextColor
+                        )
+                        if (running) {
+                            Spacer(Modifier.width(6.dp))
+                            Text("● 运行中", fontSize = 11.sp, color = themeAccent())
+                        }
+                    }
+                    Text(
+                        "创建于 " + data.created.ifEmpty { "—" },
+                        fontSize = 10.sp, color = themeSec(),
+                        maxLines = 1
+                    )
                 }
-                Spacer(Modifier.weight(1f))
-                AssistChip(
-                    onClick = onSetDefault,
-                    label = { Text(if (isDefault) "默认容器" else "设为默认", fontSize = 10.sp) }
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    if (isDefault) "默认容器" else "设为默认",
+                    fontSize = 10.sp,
+                    color = if (isDefault) theme.accentColor else theme.secondaryTextColor,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(
+                            if (isDefault) theme.accentColor.copy(alpha = 0.14f)
+                            else androidx.compose.ui.graphics.Color.Transparent
+                        )
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null,
+                            onClick = onSetDefault
+                        )
+                        .padding(horizontal = 8.dp, vertical = 3.dp)
                 )
             }
-            Spacer(Modifier.height(4.dp))
-            // 摘要行
-            Text(
-                buildString {
-                    append("后端 ${data.backend.label}")
-                    if (data.backend == ContainerBackend.BOX64) append(" · ${data.preset.label}")
-                    append(" · 显示 ${data.dmode.label}")
-                    if (data.dmode != DisplayMode.OFF && data.screen != "native") append(" ${data.screen}")
-                    append(" · 渲染 ${data.gallium}")
-                    if (data.wine.isNotEmpty()) append(" · wine ${data.wine}")
-                    if (data.lang.isNotEmpty() && data.lang != ContainerLangs.DEFAULT) append(" · ${data.lang}")
-                    if (data.audio == ContainerAudio.OFF) append(" · 静音")
-                    if (data.dxvk != "off") append(" · DXVK ${data.dxvk}")
-                    if (data.vkd3d != "off") append(" · VKD3D ${data.vkd3d}")
-                },
-                fontSize = 11.sp, color = themeSec()
-            )
 
-            Spacer(Modifier.height(8.dp))
+            Spacer(Modifier.height(10.dp))
 
-            // 操作行
+            // 信息徽章网格（2 行 3 列）：后端 / 显示 / 渲染 / wine / 语言·音频 / DX
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+                WinInfoBadge("后端", data.backend.label)
+                WinInfoBadge(
+                    "显示",
+                    data.dmode.label + if (data.dmode != DisplayMode.OFF && data.screen != "native") " ${data.screen}" else ""
+                )
+                WinInfoBadge("渲染", GalliumDriver.fromId(data.gallium).label)
+            }
+            Spacer(Modifier.height(6.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+                WinInfoBadge("wine", data.wine.ifEmpty { "默认" })
+                WinInfoBadge("音频", if (data.audio == ContainerAudio.OFF) "静音" else "PulseAudio")
+                WinInfoBadge(
+                    "图形 API",
+                    buildString {
+                        if (data.dxvk != "off") append("DXVK ${data.dxvk}")
+                        if (data.vkd3d != "off") {
+                            if (isNotEmpty()) append(" · ")
+                            append("VKD3D ${data.vkd3d}")
+                        }
+                        if (isEmpty()) append("wine 内建")
+                    }
+                )
+            }
+
+            Spacer(Modifier.height(10.dp))
+
+            // 操作行：高频动作保留按钮，低频动作收进 ⋯ 菜单
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
                 Button(
                     onClick = onRun,
                     colors = ButtonDefaults.buttonColors(containerColor = themeAccent()),
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
+                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 5.dp)
                 ) { Text("运行 exe", fontSize = 12.sp) }
 
                 OutlinedButton(
                     onClick = onWineCfg,
-                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 5.dp)
                 ) { Text("winecfg", fontSize = 12.sp) }
+
+                OutlinedButton(
+                    onClick = onShowLog,
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 5.dp)
+                ) { Text("日志", fontSize = 12.sp) }
 
                 if (running) {
                     OutlinedButton(
                         onClick = onStop,
-                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 5.dp)
                     ) { Text("停止", fontSize = 12.sp) }
                 }
-
-                OutlinedButton(
-                    onClick = onShowLog,
-                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
-                ) { Text("日志", fontSize = 12.sp) }
-
-                OutlinedButton(
-                    onClick = onPrefixLog,
-                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
-                ) { Text("前缀日志", fontSize = 12.sp) }
 
                 Box {
                     OutlinedButton(
                         onClick = { menuOpen = true },
-                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 5.dp)
                     ) { Text("⋯", fontSize = 12.sp) }
 
-                    // v3.2.0（用户诉求 1）：三点菜单缩小。Material3
-                    // DropdownMenu 的每项 48dp 触控目标 + 180dp 最小宽 +
-                    // 大字号在 Win 主题桌面里巨大突兀（用户实测“菜单太大
-                    // 了”）。改为同视觉语言的紧凑 Win 风格弹出菜单：行高
-                    // 30dp / 11sp / 主题底色 + 描边 + 阴影，与桌面右键菜单
-                    // （ContextMenuEntry）一脉相承。
                     if (menuOpen) {
                         WinCompactMenu(onDismiss = { menuOpen = false }) { close ->
                             WinCompactMenuItem("初始化前缀 (wineboot -i)") { close(); onWineBoot() }
                             WinCompactMenuItem("注册表编辑器 (regedit)") { close(); onRegEdit() }
+                            WinCompactMenuItem("前缀日志") { close(); onPrefixLog() }
+                            WinCompactMenuDivider()
                             WinCompactMenuItem("编辑配置") { close(); onEdit() }
                             WinCompactMenuItem("克隆容器") { close(); onClone() }
                             WinCompactMenuDivider()
@@ -494,7 +537,153 @@ private fun WinCompactMenuDivider() {
 }
 
 // ---------------------------------------------------------------------------
-// 新建容器
+// v3.2.13 · Win 风格分区表单组件（用户问题 1：容器创建/编辑窗口 UI 重做）
+// ---------------------------------------------------------------------------
+// 旧 UI：全部选项是横向 FilterChip 长条（单行横滚）+ 一根到底的纵向滚动，
+// 标签挤在一起、关联选项不相邻、无视觉分组 —— "太丑了"。
+// 新 UI：Windows 属性表风格 ——
+//   WinSectionCard  分区卡片（左侧强调条 + 标题 + 圆角卡片内容区）
+//   WinOptionPills  选项药丸组（FlowRow 自动换行，替代 FilterChip 横滚行）
+//   WinInfoBadge    轻量信息徽章（后端/版本等信息陈列）
+// ---------------------------------------------------------------------------
+
+/** 分区卡片：左侧强调条 + 标题（+可选副标题）+ 卡片化内容区。 */
+@Composable
+private fun WinSectionCard(
+    title: String,
+    subtitle: String? = null,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    val theme = LocalWinTheme.current
+    Column(Modifier.fillMaxWidth()) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                Modifier
+                    .size(width = 3.dp, height = 14.dp)
+                    .clip(RoundedCornerShape(2.dp))
+                    .background(theme.accentColor)
+            )
+            Spacer(Modifier.width(6.dp))
+            Text(title, fontSize = 13.sp, fontWeight = FontWeight.Bold, color = LocalWinTheme.current.windowTitleBarTextColor)
+            Spacer(Modifier.weight(1f))
+            if (subtitle != null) {
+                Text(subtitle, fontSize = 10.sp, color = theme.secondaryTextColor)
+            }
+        }
+        Spacer(Modifier.height(6.dp))
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(8.dp))
+                .background(theme.cardBackgroundColor)
+                .border(0.5.dp, theme.windowBorderColor.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            content()
+        }
+    }
+}
+
+/** 字段行：标签在上（含可选说明），控件在下。 */
+@Composable
+private fun WinField(
+    label: String,
+    hint: String? = null,
+    content: @Composable () -> Unit
+) {
+    Column {
+        Text(label, fontSize = 12.sp, fontWeight = FontWeight.Medium, color = LocalWinTheme.current.windowTitleBarTextColor)
+        if (hint != null) {
+            Text(hint, fontSize = 10.sp, color = themeSec())
+        }
+        Spacer(Modifier.height(5.dp))
+        content()
+    }
+}
+
+/**
+ * 选项药丸组（FlowRow 自动换行，不再横向滚动）。
+ *
+ * @param options (值, 展示名) 列表
+ */
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+@Composable
+private fun WinOptionPills(
+    options: List<Pair<String, String>>,
+    selected: String,
+    onSelect: (String) -> Unit
+) {
+    val theme = LocalWinTheme.current
+    androidx.compose.foundation.layout.FlowRow(
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        options.forEach { (value, label) ->
+            val sel = value == selected
+            val interaction = remember { MutableInteractionSource() }
+            val pressed by interaction.collectIsPressedAsState()
+            Row(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(
+                        when {
+                            pressed && sel -> theme.accentColor.copy(alpha = 0.85f)
+                            sel -> theme.accentColor
+                            pressed -> theme.accentColor.copy(alpha = 0.18f)
+                            else -> theme.windowBackgroundColor
+                        }
+                    )
+                    .border(
+                        0.5.dp,
+                        if (sel) theme.accentColor else theme.windowBorderColor.copy(alpha = 0.7f),
+                        RoundedCornerShape(14.dp)
+                    )
+                    .clickable(
+                        interactionSource = interaction,
+                        indication = null
+                    ) { onSelect(value) }
+                    .padding(horizontal = 11.dp, vertical = 5.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    label,
+                    fontSize = 11.sp,
+                    // 选中态文字固定白（强调色底），未选中跟随主题前景
+                    color = if (sel) Color.White
+                    else if (theme.isDark) Color.White else Color.Black,
+                    maxLines = 1
+                )
+            }
+        }
+    }
+}
+
+/** 信息徽章：后端/版本等键值陈列（容器卡片与运行选择器共用）。 */
+@Composable
+private fun WinInfoBadge(label: String, value: String) {
+    val theme = LocalWinTheme.current
+    Column(
+        Modifier
+            .clip(RoundedCornerShape(6.dp))
+            .background(theme.windowBackgroundColor.copy(alpha = if (theme.isDark) 0.35f else 0.6f))
+            .border(0.5.dp, theme.windowBorderColor.copy(alpha = 0.4f), RoundedCornerShape(6.dp))
+            .padding(horizontal = 8.dp, vertical = 5.dp)
+            .fillMaxWidth()
+    ) {
+        Text(label, fontSize = 9.sp, color = theme.secondaryTextColor)
+        Spacer(Modifier.height(1.dp))
+        Text(
+            value,
+            fontSize = 11.sp, fontWeight = FontWeight.Medium,
+            color = if (theme.isDark) Color.White else Color.Black,
+            maxLines = 1
+        )
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 新建容器（v3.2.13 UI 重做：分区属性表 + 药丸选项组）
 // ---------------------------------------------------------------------------
 
 @Composable
@@ -522,61 +711,138 @@ private fun CreateContainerDialog(onDismiss: () -> Unit, onCreated: () -> Unit) 
     WinDialog(
         title = "新建 Wine 容器",
         onDismiss = onDismiss,
-        width = 620.dp
+        width = 640.dp
     ) {
         Column(
             Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 14.dp, vertical = 10.dp)
+                .padding(horizontal = 16.dp, vertical = 12.dp)
                 .verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-                OutlinedTextField(
-                    value = name,
-                    onValueChange = { name = it; error = null },
-                    label = { Text("容器名（字母/数字开头）") },
-                    isError = error != null,
-                    singleLine = true
-                )
-                if (error != null) {
-                    Text(error ?: "", color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
-                }
-                LabeledEnumSelector("CPU 翻译后端", backend, ContainerBackend.entries.toList()) { backend = it }
-                LabeledEnumSelector("Box64 预设（仅 box64 后端）", preset, Box64Preset.entries.toList()) { preset = it }
-                LabeledEnumSelector("显示模式（glibc-runner -d/-v/-f）", dmode, DisplayMode.entries.toList()) { dmode = it }
-                // v3.2.1（用户问题 3）：分辨率与显示模式联动 —— 选非 native 分辨率
-                // 时若仍为“跟随窗口”，握手永远写 native，分辨率毫无效果
-                // （用户实测“分辨率选择无效果”的直接原因）；自动切到固定分辨率。
-                LabeledChoiceSelector("虚拟分辨率（仅非“跟随窗口”模式生效）", screen, ContainerData.SCREEN_CHOICES) { v ->
-                    screen = v
-                    if (v != "native" && dmode == DisplayMode.OFF) {
-                        dmode = DisplayMode.D
+            // ---- 基本信息 ----
+            WinSectionCard("基本信息") {
+                WinField(
+                    "容器名",
+                    "字母/数字开头，作为前缀目录名"
+                ) {
+                    OutlinedTextField(
+                        value = name,
+                        onValueChange = { name = it; error = null },
+                        isError = error != null,
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    if (error != null) {
+                        Text(error ?: "", color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
                     }
                 }
-                LabeledWineSelector(wines, wine) { wine = it }
-                LabeledChoiceSelector(
-                    "Mesa 渲染器", gallium,
-                    GalliumDriver.entries.map { it.id }, GalliumDriver.entries.map { it.label }
-                ) { gallium = it }
-                LabeledChoiceSelector("容器语言（与终端隔离）", lang, ContainerLangs.CHOICES, ContainerLangs.DISPLAY) { lang = it }
-                LabeledEnumSelector("音频", audio, ContainerAudio.entries.toList()) { audio = it }
+            }
+
+            // ---- 运行环境 ----
+            WinSectionCard("运行环境", subtitle = "CPU 翻译后端") {
+                WinField("CPU 翻译后端", backend.desc) {
+                    WinOptionPills(
+                        options = ContainerBackend.entries.map { it.id to it.label },
+                        selected = backend.id,
+                        onSelect = { backend = ContainerBackend.fromId(it) }
+                    )
+                }
+                if (backend == ContainerBackend.BOX64) {
+                    WinField("Box64 动态重编译预设", preset.desc) {
+                        WinOptionPills(
+                            options = Box64Preset.entries.map { it.id to it.label },
+                            selected = preset.id,
+                            onSelect = { preset = Box64Preset.fromId(it) }
+                        )
+                    }
+                }
+            }
+
+            // ---- 显示与分辨率 ----
+            WinSectionCard("显示与分辨率") {
+                WinField("显示模式", dmode.desc) {
+                    WinOptionPills(
+                        options = DisplayMode.entries.map { it.id to it.label },
+                        selected = dmode.id,
+                        onSelect = { dmode = DisplayMode.fromId(it) }
+                    )
+                }
+                WinField(
+                    "虚拟分辨率",
+                    "选非\"跟随窗口\"时若显示模式仍为跟随，自动切换为固定分辨率"
+                ) {
+                    WinOptionPills(
+                        options = ContainerData.SCREEN_CHOICES.map { it to resolutionLabel(it) },
+                        selected = screen,
+                        onSelect = { v ->
+                            screen = v
+                            // v3.2.1（用户问题 3）：分辨率与显示模式联动 —— 选非 native
+                            // 分辨率时若仍为"跟随窗口"，握手永远写 native，分辨率毫无
+                            // 效果；自动切到固定分辨率。
+                            if (v != "native" && dmode == DisplayMode.OFF) {
+                                dmode = DisplayMode.D
+                            }
+                        }
+                    )
+                }
+            }
+
+            // ---- 图形与 Wine ----
+            WinSectionCard("图形与 Wine") {
+                WineSlotSelector(wines, wine) { wine = it }
+                WinField("Mesa 渲染器", "Adreno 设备推荐 Freedreno 或 Zink") {
+                    WinOptionPills(
+                        options = GalliumDriver.entries.map { it.id to it.label },
+                        selected = gallium,
+                        onSelect = { gallium = it }
+                    )
+                }
+            }
+
+            // ---- 语言与音频 ----
+            WinSectionCard("语言与音频") {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Column(Modifier.weight(1f)) {
+                        WinField("容器语言", "与终端隔离") {
+                            WinOptionPills(
+                                options = ContainerLangs.CHOICES.zip(ContainerLangs.DISPLAY),
+                                selected = lang,
+                                onSelect = { lang = it }
+                            )
+                        }
+                    }
+                }
+                WinField("音频", audio.desc) {
+                    WinOptionPills(
+                        options = ContainerAudio.entries.map { it.id to it.label },
+                        selected = audio.id,
+                        onSelect = { audio = ContainerAudio.fromId(it) }
+                    )
+                }
+            }
+
+            // ---- 高级 ----
+            WinSectionCard("高级", subtitle = "可选") {
                 OutlinedTextField(
                     value = env,
                     onValueChange = { env = it },
                     label = { Text("附加环境变量（K=V 空格分隔，可空）") },
-                    singleLine = true
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
                 )
                 Text(
                     "显示：X11（AnWind 内置 X 服务，启动容器自动拉起，DISPLAY=:1）；" +
                         "环境/音频/语言均由容器自持，不受终端影响",
                     fontSize = 11.sp, color = themeSec()
                 )
+            }
         }
         // 底部按钮（右对齐，与原 AlertDialog confirm/dismiss 等价）
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 14.dp, vertical = 4.dp),
+                .padding(horizontal = 16.dp, vertical = 4.dp),
             horizontalArrangement = Arrangement.End
         ) {
             TextButton(onClick = onDismiss) { Text("取消") }
@@ -595,6 +861,10 @@ private fun CreateContainerDialog(onDismiss: () -> Unit, onCreated: () -> Unit) 
         }
     }
 }
+
+/** 分辨率展示名：native → 跟随窗口，其余原样。 */
+private fun resolutionLabel(v: String): String =
+    if (v == "native") "跟随窗口" else v
 
 // ---------------------------------------------------------------------------
 // 编辑容器
@@ -628,37 +898,100 @@ private fun EditContainerDialog(
     WinDialog(
         title = "编辑容器 · ${container.name}",
         onDismiss = onDismiss,
-        width = 620.dp
+        width = 640.dp
     ) {
         Column(
             Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 14.dp, vertical = 10.dp)
+                .padding(horizontal = 16.dp, vertical = 12.dp)
                 .verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-                LabeledEnumSelector("CPU 翻译后端", backend, ContainerBackend.entries.toList()) { backend = it }
-                LabeledEnumSelector("Box64 预设（仅 box64 后端）", preset, Box64Preset.entries.toList()) { preset = it }
-                LabeledEnumSelector("显示模式（glibc-runner -d/-v/-f）", dmode, DisplayMode.entries.toList()) { dmode = it }
-                // v3.2.1（用户问题 3）：分辨率与显示模式联动（同新建容器）
-                LabeledChoiceSelector("虚拟分辨率（仅非“跟随窗口”模式生效）", screen, ContainerData.SCREEN_CHOICES) { v ->
-                    screen = v
-                    if (v != "native" && dmode == DisplayMode.OFF) {
-                        dmode = DisplayMode.D
+            // ---- 运行环境 ----
+            WinSectionCard("运行环境", subtitle = "CPU 翻译后端") {
+                WinField("CPU 翻译后端", backend.desc) {
+                    WinOptionPills(
+                        options = ContainerBackend.entries.map { it.id to it.label },
+                        selected = backend.id,
+                        onSelect = { backend = ContainerBackend.fromId(it) }
+                    )
+                }
+                if (backend == ContainerBackend.BOX64) {
+                    WinField("Box64 动态重编译预设", preset.desc) {
+                        WinOptionPills(
+                            options = Box64Preset.entries.map { it.id to it.label },
+                            selected = preset.id,
+                            onSelect = { preset = Box64Preset.fromId(it) }
+                        )
                     }
                 }
-                LabeledWineSelector(wines, wine) { wine = it }
-                LabeledChoiceSelector(
-                    "Mesa 渲染器", gallium,
-                    GalliumDriver.entries.map { it.id }, GalliumDriver.entries.map { it.label }
-                ) { gallium = it }
-                LabeledChoiceSelector("容器语言（与终端隔离）", lang, ContainerLangs.CHOICES, ContainerLangs.DISPLAY) { lang = it }
-                LabeledEnumSelector("音频", audio, ContainerAudio.entries.toList()) { audio = it }
+            }
+
+            // ---- 显示与分辨率 ----
+            WinSectionCard("显示与分辨率") {
+                WinField("显示模式", dmode.desc) {
+                    WinOptionPills(
+                        options = DisplayMode.entries.map { it.id to it.label },
+                        selected = dmode.id,
+                        onSelect = { dmode = DisplayMode.fromId(it) }
+                    )
+                }
+                WinField(
+                    "虚拟分辨率",
+                    "选非\"跟随窗口\"时若显示模式仍为跟随，自动切换为固定分辨率"
+                ) {
+                    WinOptionPills(
+                        options = ContainerData.SCREEN_CHOICES.map { it to resolutionLabel(it) },
+                        selected = screen,
+                        onSelect = { v ->
+                            screen = v
+                            // v3.2.1（用户问题 3）：分辨率与显示模式联动（同新建容器）
+                            if (v != "native" && dmode == DisplayMode.OFF) {
+                                dmode = DisplayMode.D
+                            }
+                        }
+                    )
+                }
+            }
+
+            // ---- 图形与 Wine ----
+            WinSectionCard("图形与 Wine") {
+                WineSlotSelector(wines, wine) { wine = it }
+                WinField("Mesa 渲染器", "Adreno 设备推荐 Freedreno 或 Zink") {
+                    WinOptionPills(
+                        options = GalliumDriver.entries.map { it.id to it.label },
+                        selected = gallium,
+                        onSelect = { gallium = it }
+                    )
+                }
+            }
+
+            // ---- 语言与音频 ----
+            WinSectionCard("语言与音频") {
+                WinField("容器语言", "与终端隔离") {
+                    WinOptionPills(
+                        options = ContainerLangs.CHOICES.zip(ContainerLangs.DISPLAY),
+                        selected = lang,
+                        onSelect = { lang = it }
+                    )
+                }
+                WinField("音频", audio.desc) {
+                    WinOptionPills(
+                        options = ContainerAudio.entries.map { it.id to it.label },
+                        selected = audio.id,
+                        onSelect = { audio = ContainerAudio.fromId(it) }
+                    )
+                }
+            }
+
+            // ---- 高级 ----
+            WinSectionCard("高级", subtitle = "可选") {
                 OutlinedTextField(
                     value = env,
                     onValueChange = { env = it },
                     label = { Text("附加环境变量（K=V 空格分隔）") },
-                    singleLine = true
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
                 )
                 Text(
                     "wine 新版本：本窗下方分类在线安装，或终端 anwind-container install-wine <类别|URL>（wine-catalog 查看构建目录）",
@@ -667,11 +1000,12 @@ private fun EditContainerDialog(
                 if (error != null) {
                     Text(error ?: "", color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
                 }
+            }
         }
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 14.dp, vertical = 4.dp),
+                .padding(horizontal = 16.dp, vertical = 4.dp),
             horizontalArrangement = Arrangement.End
         ) {
             TextButton(onClick = onDismiss) { Text("取消") }
@@ -691,7 +1025,7 @@ private fun EditContainerDialog(
 }
 
 // ---------------------------------------------------------------------------
-// 运行 exe
+// 运行 exe（v3.2.13：新增文件管理器选择 exe/bat —— 用户问题 2）
 // ---------------------------------------------------------------------------
 
 @Composable
@@ -701,10 +1035,26 @@ private fun RunContainerDialog(
     onLaunched: () -> Unit
 ) {
     val context = LocalContext.current
-    val cs = rememberCoroutineScope()
     var exe by remember { mutableStateOf("C:\\windows\\notepad.exe") }
     var args by remember { mutableStateOf("") }
     var msg by remember { mutableStateOf<String?>(null) }
+    var picking by remember { mutableStateOf(false) }
+
+    // v3.2.13（用户问题 2）：文件选择回填 —— 拉起文件资源管理器
+    // （pickMode=exe，直达 Download），用户点选 exe/bat/msi/cmd/com 后
+    // 经 FilePickBus 把【完整路径】投递回本窗口的"程序路径"输入框。
+    // 发起窗口可能被容器管理器自身遮挡，选择器以独立浮窗打开（与
+    // 记事本/媒体播放器同一选择总线，不重复造轮子）。
+    DisposableEffect(container.name) {
+        val unregister = com.anwind.apps.filemanager.FilePickBus.listen(
+            targetApp = "containers_run_${container.name}",
+            targetWindow = ""
+        ) { path ->
+            exe = path
+            picking = false
+        }
+        onDispose { unregister() }
+    }
 
     WinDialog(
         title = "运行 · ${container.name}",
@@ -714,20 +1064,46 @@ private fun RunContainerDialog(
         Column(
             Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 14.dp, vertical = 10.dp)
+                .padding(horizontal = 16.dp, vertical = 12.dp)
                 .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-                OutlinedTextField(
-                    value = exe, onValueChange = { exe = it },
-                    label = { Text("程序路径（Windows 路径或容器内绝对路径）") },
-                    singleLine = true
-                )
-                OutlinedTextField(
-                    value = args, onValueChange = { args = it },
-                    label = { Text("启动参数（可空）") },
-                    singleLine = true
-                )
+                WinField(
+                    "程序路径",
+                    "Windows 路径（C:\\…）或容器内绝对路径（/storage/…）"
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        OutlinedTextField(
+                            value = exe, onValueChange = { exe = it; msg = null },
+                            singleLine = true,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        OutlinedButton(
+                            onClick = {
+                                picking = true
+                                com.anwind.core.window.WindowManager.get().open(
+                                    appId = "file_explorer",
+                                    title = "选择程序",
+                                    launchMode = com.anwind.core.window.LaunchMode.FLOATING,
+                                    launchArgs = mapOf(
+                                        "pickMode" to "exe",
+                                        "targetApp" to "containers_run_${container.name}",
+                                        "targetWindow" to ""
+                                    )
+                                )
+                            },
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
+                        ) { Text(if (picking) "选择中…" else "浏览…", fontSize = 12.sp) }
+                    }
+                }
+                WinField("启动参数", "传给程序的命令行参数（可空）") {
+                    OutlinedTextField(
+                        value = args, onValueChange = { args = it },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
                 Text(
                     "点击\"运行\"将自动打开 X11 桌面窗口并经 box64/FEXCore 启动 Wine。",
                     fontSize = 11.sp, color = themeSec()
@@ -739,7 +1115,7 @@ private fun RunContainerDialog(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 14.dp, vertical = 4.dp),
+                .padding(horizontal = 16.dp, vertical = 4.dp),
             horizontalArrangement = Arrangement.End
         ) {
             TextButton(onClick = onDismiss) { Text("取消") }
@@ -807,21 +1183,43 @@ private fun CloneContainerDialog(
 
 @Composable
 private fun DoctorDialog(onDismiss: () -> Unit) {
-    val checks = remember { ContainerManager.doctor() }
+    // v3.2.13：体检含 box64 运行探活（真实 exec，最长 5 秒）—— 从主线程
+    // remember 改为 IO 线程加载 + 加载态，避免探活期间卡死弹窗（ANR）。
+    var checks by remember { mutableStateOf<List<DoctorCheck>?>(null) }
+    LaunchedEffect(Unit) {
+        checks = withContext(Dispatchers.IO) { ContainerManager.doctor() }
+    }
+    val loaded = checks
 
     WinDialog(
         title = "AnWind Wine 容器体检",
         onDismiss = onDismiss,
         width = 560.dp
     ) {
-        LazyColumn(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 14.dp, vertical = 10.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-                items(checks.size) { i ->
-                    val c = checks[i]
+        if (loaded == null) {
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp, vertical = 20.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                androidx.compose.material3.CircularProgressIndicator(
+                    modifier = Modifier.size(28.dp),
+                    strokeWidth = 2.5.dp,
+                    color = themeAccent()
+                )
+                Spacer(Modifier.height(10.dp))
+                Text("正在体检（box64 运行探活最长 5 秒）…", fontSize = 12.sp, color = themeSec())
+            }
+        } else {
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp, vertical = 10.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                items(loaded.size) { i ->
+                    val c = loaded[i]
                     Row(verticalAlignment = Alignment.Top) {
                         Text(
                             if (c.ok) "✓" else "✗",
@@ -835,6 +1233,7 @@ private fun DoctorDialog(onDismiss: () -> Unit) {
                         }
                     }
                 }
+            }
         }
         Row(
             modifier = Modifier
@@ -941,110 +1340,38 @@ private fun PrefixBuildLogDialog(
 }
 
 // ---------------------------------------------------------------------------
-// 通用选择器
+// 通用选择器（v3.2.13：旧 FilterChip 横滚组由 WinOptionPills 取代；
+// 仅保留 Wine 槽位选择器 —— 含在线安装入口，重做为 WinField 风格）
 // ---------------------------------------------------------------------------
 
-/** 枚举单选组（标题 + 横向流式选项）。 */
+/** Wine 版本选择器（多版本：默认/主槽位/wine-<名> 槽位）+ 在线安装。 */
 @Composable
-private fun <T> LabeledEnumSelector(
-    label: String,
-    selected: T,
-    options: List<T>,
-    onSelect: (T) -> Unit
-) where T : Enum<T> {
-    Column {
-        Text(label, fontSize = 12.sp, color = themeSec())
-        Spacer(Modifier.height(4.dp))
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-            modifier = Modifier.horizontalScrollIfNeeded()
-        ) {
-            options.forEach { opt ->
-                val sel = opt == selected
-                val label2 = when (opt) {
-                    is ContainerBackend -> opt.label
-                    is Box64Preset -> opt.label
-                    else -> opt.name
-                }
-                FilterChip(
-                    selected = sel,
-                    onClick = { onSelect(opt) },
-                    label = { Text(label2, fontSize = 11.sp) }
-                )
-            }
-        }
-    }
-}
-
-/** 字符串单选组（可选值列表 + 可选展示名）。 */
-@Composable
-private fun LabeledChoiceSelector(
-    label: String,
-    selected: String,
-    values: List<String>,
-    displayNames: List<String>? = null,
-    onSelect: (String) -> Unit
-) {
-    Column {
-        Text(label, fontSize = 12.sp, color = themeSec())
-        Spacer(Modifier.height(4.dp))
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-            modifier = Modifier.horizontalScrollIfNeeded()
-        ) {
-            values.forEachIndexed { i, v ->
-                FilterChip(
-                    selected = v == selected,
-                    onClick = { onSelect(v) },
-                    label = { Text(displayNames?.getOrNull(i) ?: v, fontSize = 11.sp) }
-                )
-            }
-        }
-    }
-}
-
-/** Wine 版本选择器（多版本：默认/主槽位/wine-<名> 槽位）。 */
-@Composable
-private fun LabeledWineSelector(
+private fun WineSlotSelector(
     wines: List<WineInstall>,
     selected: String,
     onSelect: (String) -> Unit
 ) {
     val context = LocalContext.current
-    Column {
-        Text("Wine 版本（/usr/opt 槽位）", fontSize = 12.sp, color = themeSec())
-        Spacer(Modifier.height(4.dp))
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-            modifier = Modifier.horizontalScrollIfNeeded()
-        ) {
-            FilterChip(
-                selected = selected.isEmpty(),
-                onClick = { onSelect("") },
-                label = { Text("默认", fontSize = 11.sp) }
-            )
-            wines.forEach { w ->
-                FilterChip(
-                    selected = selected == w.name,
-                    onClick = { onSelect(w.name) },
-                    label = { Text(w.name, fontSize = 11.sp) }
-                )
-            }
-            if (wines.isEmpty()) {
-                Text(
-                    "（未装多版本，可点下方分类在线安装）",
-                    fontSize = 10.sp, color = themeSec(),
-                    modifier = Modifier.padding(top = 10.dp)
-                )
-            }
-        }
+    WinField(
+        "Wine 版本",
+        if (wines.isEmpty()) "未装多版本（/usr/opt 槽位），可点下方分类在线安装"
+        else "已装 ${wines.size} 个槽位，点选切换"
+    ) {
+        WinOptionPills(
+            options = buildList {
+                add("" to "默认")
+                wines.forEach { add(it.name to it.displayLabel) }
+            },
+            selected = selected,
+            onSelect = onSelect
+        )
         // v2.27：在线构建目录一键安装（wine-catalog：bionic 双形态 /
         // 普通 Wine / Proton；CLI 自动取最新 Release 资产并命名槽位，
         // 下载进度在"Wine 输出"面板查看，装完重开本窗即可选择）
+        Spacer(Modifier.height(2.dp))
         Text(
             "在线安装（自动取最新构建，进度见\"Wine 输出\"面板）:",
-            fontSize = 10.sp, color = themeSec(),
-            modifier = Modifier.padding(top = 6.dp)
+            fontSize = 10.sp, color = themeSec()
         )
         Row(
             horizontalArrangement = Arrangement.spacedBy(6.dp),

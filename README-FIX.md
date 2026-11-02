@@ -1,5 +1,134 @@
 # AnWind Bionic 修复包 v2（2026-09-19）
 
+> **v3.2.13（2026-11-02）**：五诉求产品轮 —— ①三窗口 UI 重做（容器新建/编辑、容器管理主窗口、X11 设置）②运行 exe 加文件管理器选择 ③文件管理器双击 exe/bat 调出「选择容器运行」④全游戏画面抖动修复（mesa/X11 显示链）⑤bionic box64 构建修复（启动零日志）
+>
+> ## 诉求 1：容器创建/编辑、容器管理主窗口、X11 设置窗口 UI 重做
+>
+> **旧形态**：三个窗口共用两种"丑"—— 容器新建/编辑是十来行 FilterChip
+> 单行横滚的纵向长条（标签互相挤压、关联选项不相邻、无分组）；容器卡片
+> 是"标题 + 一整行摘要串 + 六个按钮"；X11 设置是 340dp 窄窗里的小字
+> 文本按钮排。
+>
+> **新形态**（三窗口同一视觉语言，`ContainerScreens.kt` / `X11SettingsPanel.kt`）：
+> - `WinSectionCard` 分区卡片：左侧强调条 + 标题 + 副标题 + 圆角内容区。
+>   新建/编辑容器按「基本信息 / 运行环境 / 显示与分辨率 / 图形与 Wine /
+>   语言与音频 / 高级」六分区组织；X11 面板按「显示 / 窗口 / 键盘 / 触摸 /
+>   剪贴板 / 操作」六分区组织；
+> - `WinOptionPills` 药丸组（FlowRow 自动换行）替代 FilterChip 横滚行；
+>   X11 面板用连体分段控件（`XpSegmented`：整组一个圆角边框，选中项
+>   强调色填充）替代文本按钮排；
+> - 容器卡片：🍷 图标 + 名称行（★ 默认 / ● 运行中 / 创建时间）+ 六格
+>   信息徽章（后端/显示/渲染/wine/音频/图形API，`WinInfoBadge`）+ 精简
+>   按钮行（运行 exe / winecfg / 日志 / 运行中才显示的停止 / ⋯）——
+>   前缀日志、regedit、wineboot、编辑、克隆、删除收进 ⋯ 菜单；运行中
+>   容器整卡加强调色描边；
+> - 主窗口标题行：图标 + "N 个容器 · 运行中 M" 徽章；
+> - X11 面板 340 → 420dp；顶部"当前 X 屏幕"升级为状态卡（游戏握手时
+>   强调色高亮）。
+>
+> ## 诉求 2：「运行 exe」窗口缺少文件管理器直接选择 exe/bat（含路径）
+>
+> **修复**：`RunContainerDialog` 程序路径右侧新增「浏览…」按钮 → 拉起
+> 文件资源管理器（新增 `pickMode=exe`，直达 Download → AnWind → 内部
+> 存储根）→ 点选 exe/bat/msi/cmd/com/scr/lnk → 完整路径（含目录）经
+> `FilePickBus`（记事本/媒体播放器同一条选择总线）回填本窗口的程序
+> 路径输入框。Unix 绝对路径直接可用（`resolveExeWorkingDir` 已支持，
+> CWD 自动切到 exe 所在目录）。
+>
+> ## 诉求 3：文件管理器（此电脑）双击 exe/bat 调出选择框，选择容器运行（含分辨率/窗口设置/启动参数）
+>
+> **旧形态**：`openRealFile` 对 .exe 落到系统 `ACTION_VIEW` Intent ——
+> 必然"未找到可打开 .exe 文件的应用"。
+>
+> **修复**：新增 `ExeRunChooserApp`（`exe_run_chooser`，已注册
+> AppBootstrap）。双击（网格/列表单击同效）exe/msi/bat/cmd/com/scr/lnk
+> 打开「选择容器运行」窗口：
+> - **选择容器**：容器单选列表（名称 + ★默认 + ●运行中 + 后端/显示/
+>   wine 摘要，默认容器预选，切换容器时回填其显示配置）；
+> - **分辨率设置**：虚拟分辨率药丸组（跟随窗口 + 10 档预设）；
+> - **窗口设置**：显示模式药丸组（跟随窗口 / 固定分辨率(-d) / 虚拟桌面(-v)
+>   / 窗口直出(-f)），与容器编辑同款联动（选非"跟随窗口"分辨率自动切
+>   固定分辨率）；
+> - **启动参数**：自由文本透传。
+> 运行走 `container.copy(dmode=…, screen=…)` 的**会话级覆盖**（不回写
+> container.conf，单次运行参数不污染持久配置），原生链路自动拉起 X11、
+> 初始化前缀。
+>
+> ## 诉求 4：所有 wine 游戏画面移动一抖一抖（mesa 驱动 + X11 显示逻辑）
+>
+> 三处修复（`WineEnvironment.kt` / `X11Surface.kt`）：
+> 1. **撤销 aarch64 无条件 `TU_DEBUG=noconform,sysmem`**：`sysmem` 强制
+>    Turnip 把 buffer 对象落在系统内存 —— GPU 访存带宽骤降，滚屏/镜头
+>    移动持续掉帧，是"全游戏都抖"的系统性放大器。现 zink 档（Turnip
+>    真正参与时）仅保留 `noconform`（崩溃规避），sysmem 一律不设；
+>    经典 freedreno GL 路径完全不读 TU_*；
+> 2. **softpipe 软渲染兜底补 `vblank_mode=0`**：软渲染帧率本就低于屏幕
+>    刷新率，GLX 交换再等 vblank 只会引入 0~1 帧随机延迟（节奏抖动的
+>    直接来源）；关闭后按最快节奏上屏；
+> 3. **LorieView Surface 帧率对齐**（API 30+ `setFrameRate(FIXED_SOURCE)`）：
+>    把 X11 桌面 Surface 的帧率显式钉到当前显示刷新率，引导
+>    SurfaceFlinger 以该节奏做合成调度，降低 PRESENT 上帧与合成时刻的
+>    相位抖动。
+>
+> ## 诉求 5：bionic box64 构建问题（启动时没有任何日志 = 构建根本不对，无法启动，冒烟测试不对）
+>
+> 五处修复（配方 + CI + App 三层）：
+>
+> ### 5a. box64 wrapper 再生成 mtime 竞态（配方根治）
+>
+> **根因**：box64 仓库把 `src/wrapped/generated/functions_list.txt`（及
+> wrapper.c）**预生成后随源码提交**，且提交版是**无 ANDROID 特性位**的
+> 生成物（v0.4.4 实测 7651 行，无 shmget/androidshmem）。CMake 的
+> `add_custom_command(OUTPUT functions_list.txt)` 按 mtime 判断是否重跑：
+> git clone 后全部文件 mtime 都是"现在"，是否重跑纯看检出写入顺序 ——
+> 若 `functions_list.txt` 恰好不旧于 `wrappedandroidshmem.c`，make 跳过
+> 再生成 → 构建出的 box64 **wrapper 表缺 Android shm 系列**（wine 的
+> X11/unix 侧大量依赖 SysV shm）→ 运行时符号解析错乱、加载即死、
+> 零输出 —— 与"启动时没有任何日志、无法启动"完全同形。
+>
+> **修复**：`bionic-rootfs/projects/box64/build.sh` 的 `pre_setup` 删除
+> 预生成的 `functions_list.txt`（OUTPUT 缺失 = make 无条件执行再生成，
+> ANDROID 特性位随 CMake 命令行带入）。
+>
+> ### 5b. `NOLOADADDR=ON`（对齐 Winlator/MiceWine）
+>
+> 上游默认经 lld `--image-base=0x34800000` 钉低地址（桌面 glibc 手法）。
+> Android linker64 对 PIE 不遵守 image-base（ASLR 随机化加载基址），
+> 该参数设备上零收益，低地址段在应用进程布局里反而与 zygote/heap 常驻
+> 区相邻、存在加载即死风险。Winlator（glibc 链）与 MiceWine（NDK
+> bionic 链）**均显式 NOLOADADDR=ON**，本配方对齐。
+>
+> ### 5c. 冒烟测试重做（用户点名"冒烟测试估计就不对"）
+>
+> - **配方 install() 三道 ANDROID 专项冒烟**：① `functions_list.txt`
+>   必须含 shmget（wrapper 按 ANDROID 特性位再生成的直接证据）；
+>   ② 未 strip 二进制符号表必须含 `shmget` + `getDB`（ANDROID shm
+>   包装 + DYNAREC 编译单元链接进来了）③ 链接命令不得残留
+>   `--image-base`/`-no-pie`（NOLOADADDR 生效确证）。
+> - **CI 源码级实跑冒烟**（build-box64-bionic.yml 新步骤）：同 ref
+>   独立 clone + 宿主 x86_64 构建（上游 CI 同款 CI=ON）→ 实跑
+>   `box64 --version`（断言版本输出）→ 编译最小 x86_64 测试程序（含
+>   SysV shmget/shmat/shmdt 路径）经 box64 执行断言输出 ——
+>   "能链接出来但根本跑不了"的坏产物从此过不了 CI。
+>
+> ### 5d. App 侧日志与 rc 修复
+>
+> - `BOX64_LOG` 0 → 1：旧值 0 + `NOBANNER=1` 把 box64 的全部日志
+>   （含错误报告）整体静音 —— box64 加载失败时会话日志一行不吐，正是
+>   "没有任何日志"的直接成因。LOG=1 只出 error 级，正常启动依旧安静；
+> - 新增 `BOX64_ENVFILE` 指向 rootfs 的 `/usr/etc/box64.box64rc`：
+>   上游 box64 只读 `/etc/box64.box64rc` 或 `/data/data/com.termux/…`
+>   两个内置路径（v0.4.4 env.c 实证），rootfs 内 rc 一直是死文件 ——
+>   `BOX64_ENVFILE` 是上游官方入口（InitializeEnvFiles 首优先级）。
+>
+> ### 5e. 体检（doctor）box64 运行探活
+>
+> 旧体检只查 `canExecute()` —— "构建根本不对、加载即死"的 box64 一样
+> 全绿。现真实 exec `box64 --version`（waitFor 5 秒限时，挂死按失败
+> 处理）：成功 → 版本串进详情；失败 → 退出码 + 前 3 行输出（或"无任何
+> 输出 —— 动态链接失败或加载即崩"）+ 取证指引直接给用户。体检整体移
+> IO 线程（加载态提示，探活不再卡 UI）。
+
 > **v3.2.12（2026-11-02）**：三阻断修复轮 —— APK 编译失败（Kotlin 空安全）+ official-9.7 arm64ec 构建新阻断（wbemprox/mshtml）+ i386 编译趟既有阻断（0007 __fastfail x86 分支误留 ARM64 代码）
 >
 > ## 问题 1：APK 构建报错 `Only safe (?.) or non-null asserted (!!.) calls are allowed`（WineRegistry.kt:268/270/274/276）

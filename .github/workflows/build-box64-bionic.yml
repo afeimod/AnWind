@@ -152,6 +152,68 @@ jobs:
           df -h / | tail -2
           free -h
 
+      # ============ 5.7 源码级冒烟测试（同源 x86_64 宿主构建 + 实跑） ============
+      # v3.2.13（用户反馈"bionic box64 启动时没有任何日志，构建根本不对，
+      # 冒烟测试估计就不对"）：原校验（步骤 6）全部是静态检查（ELF 头/
+      # PT_INTERP/文件存在），一个"能链接出来"的坏产物照样全绿 —— 冒烟
+      # 名不副实。本步骤用【同一份源码】在 runner 上做一次原生 x86_64 构建
+      # 并真实执行：
+      #   1) ./box64 --version 端到端跑通 main → initialize → 退出路径；
+      #   2) 编译一个最小 x86_64 测试程序，经 box64 实跑断言输出 ——
+      #      验证 ELF 加载器 + wrapper 生成 + 执行引擎整条链路可用。
+      # 该测试不覆盖 Android 特有面（NDK/bionic），但能把"源码级/生成级
+      # 的根本性破坏"（上游坏提交、wrapper 生成逻辑变更等）挡在 CI ——
+      # 配方 install() 里的三道 ANDROID 专项冒烟（wrapper shmget/符号表/
+      # NOLOADADDR）与之互补。
+      - name: 源码级冒烟测试（宿主 x86_64 构建并实跑）
+        shell: bash
+        run: |
+          set -euo pipefail
+          BOX64_REF="${{ github.event.inputs.box64_ref }}"
+          SMOKE_SRC="$(mktemp -d)/box64"
+
+          echo "=== 冒烟[取源]: git clone ${BOX64_REF}（独立树，不与 aarch64 构建树互相污染 wrapper） ==="
+          git clone --depth 1 --branch "${BOX64_REF}" https://github.com/ptitSeb/box64.git "${SMOKE_SRC}"
+
+          echo "=== 冒烟[宿主构建]: cmake 原生 x86_64（-DARM_DYNAREC=ON，上游 CI 同款 CI=ON 走提交版 wrapper） ==="
+          SMOKEDIR="${SMOKE_SRC}/build"
+          cmake -S "${SMOKE_SRC}" -B "${SMOKEDIR}" \
+            -DCMAKE_BUILD_TYPE=Release -DARM_DYNAREC=ON -DCI=ON \
+            > /dev/null
+          cmake --build "${SMOKEDIR}" -j"$(nproc)" > /dev/null
+          SMOKE_BIN="${SMOKEDIR}/box64"
+          [[ -x "${SMOKE_BIN}" ]] || { echo "::error::宿主构建未产出 box64"; exit 1; }
+
+          echo "=== 冒烟[版本]: box64 --version ==="
+          VERSION_OUT="$("${SMOKE_BIN}" --version 2>&1 || true)"
+          echo "${VERSION_OUT}"
+          echo "${VERSION_OUT}" | grep -qi "box64" \
+            || { echo "::error::box64 --version 无有效输出 —— 源码级损坏，禁止放行 aarch64 产物"; exit 1; }
+
+          echo "=== 冒烟[实跑]: 最小 x86_64 测试程序经 box64 执行 ==="
+          TESTDIR="$(mktemp -d)"
+          cat > "${TESTDIR}/smoke.c" <<'EOF'
+          #include <stdio.h>
+          #include <sys/ipc.h>
+          #include <sys/shm.h>
+          int main(void) {
+              int id = shmget(IPC_PRIVATE, 4096, IPC_CREAT | 0600);
+              if (id < 0) { puts("SMOKE_FAIL_SHM"); return 2; }
+              void *p = shmat(id, NULL, 0);
+              if (p == (void*)-1) { puts("SMOKE_FAIL_SHMAT"); return 3; }
+              *(int*)p = 0x4243;
+              printf("ANWIND_SMOKE_OK %d\n", *(int*)p);
+              shmdt(p); shmctl(id, IPC_RMID, NULL);
+              return 0;
+          }
+          EOF
+          gcc -O2 -o "${TESTDIR}/smoke" "${TESTDIR}/smoke.c"
+          SMOKE_OUT="$("${SMOKE_BIN}" "${TESTDIR}/smoke" 2>&1 || true)"
+          echo "${SMOKE_OUT}"
+          echo "${SMOKE_OUT}" | grep -q "ANWIND_SMOKE_OK" \
+            || { echo "::error::box64 执行 x86_64 测试程序失败（含 SysV shm 路径）—— 源码级损坏，禁止放行"; exit 1; }
+          echo "=== 冒烟通过：同源构建物可加载 ELF、可执行、SysV shm 路径可用 ==="
+
       # ============ 6. 产物校验 ============
       # 硬校验 box64 完整文件集（deps 保证三个包 tar 都已产出）：
       #   a) box64 本体：aarch64 ELF、PT_INTERP 必须是 bionic 的

@@ -191,8 +191,47 @@ android {
         // TrackpadRouter 之前）+ TrackpadController/TrackpadRouter（触控板
         // 模式指针处与手指轻点处）按窗口几何直判置前；WindowChrome/
         // WinDialogFrame onGloballyPositioned 上报几何；focus 加诊断日志。
-        versionCode = 74
-        versionName = "2.38.11"
+        versionCode = 75
+        versionName = "2.38.12"
+        // v2.38.12（源码包 v3.2.13）：五诉求产品轮（UI 重做 + 运行链路完善）。
+        // ①容器/X11 界面重做：新建/编辑容器改分区属性表（WinSectionCard
+        //   分区卡 + WinOptionPills 药丸组，替代单行横滚 FilterChip）；
+        //   容器卡片改图标+信息徽章网格（后端/显示/渲染/wine/音频/图形API），
+        //   低频操作收进 ⋯ 菜单；X11 设置面板 340→420dp 全面重排（状态卡 +
+        //   分区卡 + 分段控件），三窗口同一视觉语言。
+        // ②「运行 exe」窗口新增"浏览…"按钮：拉起文件资源管理器（exe 选择
+        //   模式，直达 Download），点选 exe/bat/msi/cmd/com 后完整路径经
+        //   FilePickBus 回填程序路径输入框。
+        // ③文件管理器（此电脑）双击 exe/bat/msi/cmd/com：新增「选择容器
+        //   运行」窗口（exe_run_chooser）—— 容器单选列表 + 分辨率/显示
+        //   模式药丸组 + 启动参数，会话级覆盖（不回写 container.conf）；
+        //   旧版落到系统 VIEW Intent 必然失败。
+        // ④画面抖动修复（所有游戏）：撤销 aarch64 无条件 TU_DEBUG=sysmem
+        //   （强制系统内存访存 = GPU 带宽腰斩，滚屏/移动持续掉帧的直接
+        //   元凶；zink 档仅保留 noconform）；softpipe 兜底补 vblank_mode=0
+        //   （软渲染帧率低于刷新率时等 vblank 引入随机节奏抖动）；LorieView
+        //   Surface 钉帧率到显示刷新率（API 30+，引导 SF 合成调度）。
+        // ⑤bionic box64 构建修复（用户实测启动零日志无法启动）：
+        //   a.配方强制 wrapper 再生成 —— box64 仓库提交的是无 ANDROID 特性
+        //     位的预生成 wrapper，git clone 后 mtime 全"现在"，make 按写入
+        //     顺序决定是否跳过再生成 → wrapper 表可能缺 Android shm 系列
+        //     （wine X11/unix 侧大量依赖）→ 加载即死零输出；删除 OUTPUT
+        //     文件强制必跑，install() 三道冒烟（functions_list 含 shmget /
+        //     符号表含 shmget+getDB / 链接无 --image-base）。
+        //   b.NOLOADADDR=ON 对齐 Winlator/MiceWine 两条已验证 Android 部署
+        //     链（Android linker64 对 PIE 不遵守 image-base，桌面低地址钉死
+        //     在应用进程布局上无收益有风险）。
+        //   c.CI 加源码级冒烟测试：同 ref 独立 clone + 宿主 x86_64 构建 +
+        //     实跑 box64 --version + x86_64 测试程序（含 SysV shm 路径），
+        //     挡住"能链接出来但根本跑不了"的坏产物。
+        //   d.App 侧 BOX64_LOG 0→1（错误可见；旧值+NOBANNER=1 把加载失败
+        //     整体静音 = "没有任何日志"）+ BOX64_ENVFILE 指到 rootfs 的
+        //     box64rc（上游只读 /etc 或 com.termux 路径，rootfs 内 rc 一直
+        //     是死文件）。
+        //   e.体检（doctor）box64 改运行探活：真实 exec box64 --version
+        //     （5 秒限时），退出码+输出直接进体检详情，"无法启动"从猜测
+        //     变成可截图反馈的证据；体检整体移 IO 线程（含加载态）。
+        //
         // v2.38.11（源码包 v3.2.12）：双阻断修复轮。
         // ①APK 编译失败（CI compileReleaseKotlin FAILED，用户日志逐字实证）：
         //   WineRegistry.kt findModernTheme 四处 `listFiles()?.orEmpty().firstOrNull`

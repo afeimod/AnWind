@@ -299,6 +299,22 @@ fun X11Surface(scope: WindowContentScope) {
                         val name = if (display == null || display.displayId == Display.DEFAULT_DISPLAY)
                             "Builtin Display" else "External Display"
                         LorieView.sendWindowChange(screenW, screenH, framerate, name)
+                        // v3.2.13（用户问题 4，画面抖动专项）：Surface 帧率
+                        // 对齐 —— SurfaceFlinger 对未声明帧率的 Surface 按
+                        // 默认节奏合成；游戏经 X PRESENT 上帧的节奏与显示
+                        // 刷新率存在相位差时，合成时刻落在两帧之间的比例
+                        // 随机波动，表现为"画面移动一抖一抖"。把 Surface
+                        // 帧率显式钉到当前显示刷新率（API 30+），引导 SF
+                        // 以该节奏做合成调度，帧间时长更均匀。失败静默
+                        // （旧设备 / 非 GPU 合成场景无此接口）。
+                        runCatching {
+                            if (android.os.Build.VERSION.SDK_INT >= 30) {
+                                lv.holder.surface.setFrameRate(
+                                    display?.refreshRate ?: 60f,
+                                    android.view.Surface.FRAME_RATE_COMPATIBILITY_FIXED_SOURCE
+                                )
+                            }
+                        }
                     }
                     lv.setOnTouchListener { _, e ->
                         // v3.2.1（用户问题 1）：Android 层兜底置前 —— interop

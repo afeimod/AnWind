@@ -81,8 +81,17 @@ object WineEnvironment {
         env["MESA_SHADER_CACHE_DISABLE"] = "false"
         env["MESA_SHADER_CACHE_MAX_SIZE"] = "512MB"
         env["mesa_glthread"] = "true"
-        // aarch64：Turnip 一致性规避（对齐脚本 uname -m 分支）
-        if (isAarch64()) env["TU_DEBUG"] = "noconform,sysmem"
+        // v3.2.13（用户问题 4：所有 wine 游戏画面移动一抖一抖）：撤销
+        // aarch64 无条件注入的 TU_DEBUG=noconform,sysmem。
+        //   * sysmem 强制 Turnip 把 buffer 对象落在系统内存（UW 内存路径
+        //     绕过）—— GPU 访存带宽骤降，游戏滚屏/镜头移动持续掉帧、
+        //     顿挫感明显，是"全游戏都卡"的系统性放大器；
+        //   * noconform（关闭 Vulkan 一致性绕行）历史上用于规避旧 Turnip
+        //     在 AHB 路径的崩溃 —— 仅在使用 Turnip（zink/驱动内 Vulkan）
+        //     时才有意义，经典 freedreno GL 路径完全不读它。
+        // 现改为：基础环境不再注入任何 TU_*；zink 档（applyGpuEnv，Turnip
+        // 真正参与时）只补 noconform（稳定性兜底），sysmem 一律不设。
+        // 用户 env= 仍可整体覆盖。
 
         // --- GStreamer（§8；插件路径显式指向 rootfs，注册表缓存 fork 在
         //     Android 上偶发卡死，直接关掉） ---
@@ -109,6 +118,13 @@ object WineEnvironment {
         //      无权打开 → GL 整体初始化失败。auto 现在先探 /dev/dri
         //      渲染节点可达性，不可达回退 softpipe + LIBGL_ALWAYS_SOFTWARE
         //      （D3D 样例/茶壶类程序从此必出画面，慢但活）。
+        // v3.2.13（用户问题 4，画面抖动专项）：
+        //   * zink 档 TU_DEBUG 只保留 noconform（崩溃规避），不再带 sysmem
+        //     （系统内存强制 —— GPU 带宽腰斩，滚屏/移动持续掉帧的直接
+        //     元凶，见 buildBaseEnv §7 注释）；
+        //   * softpipe 兜底档补 vblank_mode=0：软渲染帧率本就低于屏幕
+        //     刷新率，GLX 交换再等 vblank 只会引入 0~1 帧的随机延迟，
+        //     表现为"移动一抖一抖"；关闭后按最快节奏上屏，节奏均匀。
         val raw = if (container.gallium.equals("auto", true) || container.gallium.isBlank())
             "auto" else container.gallium.trim().lowercase()
         val gallium = when (raw) {
@@ -121,12 +137,15 @@ object WineEnvironment {
                 env["GALLIUM_DRIVER"] = "zink"
                 env["ZINK_DESCRIPTORS"] = "lazy"
                 env["ZINK_DEBUG"] = "compact"
+                // Turnip 崩溃规避仅此一项（sysmem 已撤销，见上）
+                env.putIfAbsent("TU_DEBUG", "noconform")
             }
             "freedreno" -> env["GALLIUM_DRIVER"] = "freedreno"
             else -> {
-                // softpipe（含旧 llvmpipe 归一值）
+                // softpipe（含旧 llvmpipe 归一值）—— 软件渲染节奏配套
                 env["GALLIUM_DRIVER"] = "softpipe"
                 env["LIBGL_ALWAYS_SOFTWARE"] = "1"
+                env.putIfAbsent("vblank_mode", "0")
             }
         }
     }
@@ -156,9 +175,25 @@ object WineEnvironment {
      * x86_64 版（rootfs 里的插件是 aarch64，x86_64 libgstreamer 加载不了）。
      */
     fun applyBox64Env(env: MutableMap<String, String>, container: ContainerData, wineDir: File) {
-        env["BOX64_LOG"] = "0"
+        // v3.2.13（用户问题 5："启动时没有任何日志"）：BOX64_LOG 由 0 改 1。
+        // 旧值 0 + NOBANNER=1 = box64 的全部日志（含错误报告）被整体静音：
+        // box64 加载失败/符号缺失/wine 崩溃时会话日志窗口一行不吐，用户
+        // 只能对着"无任何日志"猜 —— 与"box64 无法启动"的可诊断性直接
+        // 冲突。LOG=1 仅输出 error 级（首行错误即可定位根因），正常启动
+        // 依旧安静（banner 仍由 NOBANNER=1 抑制，无性能开销）。
+        env["BOX64_LOG"] = "1"
         env["BOX64_NOBANNER"] = "1"
         env["BOX64_DYNAREC_TRACE"] = "0"
+        // v3.2.13：BOX64_ENVFILE —— 让 rootfs 的 /usr/etc/box64.box64rc
+        // 真正生效。上游 box64（v0.4.4 env.c InitializeEnvFiles）只读
+        // /etc/box64.box64rc 或 /data/data/com.termux/... 两个内置路径，
+        // rootfs 内 etc/box64.box64rc（com.anwind 路径）天然读不到 =
+        // 系统级调优开关一直是死文件。BOX64_ENVFILE 是上游官方入口
+        // （InitializeEnvFiles 首优先级），存在即注入；用户 env= 可覆盖。
+        val box64rc = File("$RFS_USR/etc/box64.box64rc")
+        if (box64rc.isFile && !container.env.contains("BOX64_ENVFILE=")) {
+            env["BOX64_ENVFILE"] = box64rc.absolutePath
+        }
         // wine 包自带的 x86_64-bionic 依赖闭包（存在才追加；旧版包无此目录）
         val bionicLibDir = File(wineDir, "lib/x86_64-bionic")
         val bionicGstDir = File(bionicLibDir, "gstreamer-1.0")
