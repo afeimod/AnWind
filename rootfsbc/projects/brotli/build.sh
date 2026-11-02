@@ -1,6 +1,0 @@
-revision="v1.2.0"
-url="https://github.com/google/brotli.git"
-urlType="git"
-arch="aarch64 x86_64"
-buildSys="cmake"
-license="MIT"
