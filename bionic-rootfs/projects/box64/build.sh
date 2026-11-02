@@ -43,8 +43,10 @@ license="MIT"
 # 【上游 ANDROID 模式】（CMakeLists.txt option(ANDROID)）：
 #   - add_definitions(-DANDROID)；BAD_SIGNAL 自动 ON（上游对
 #     Android 信号栈差异的规避 —— wine ntdll unix 侧依赖）
-#   - 内建 wrappedandroidshmem.c：被仿真 x86_64 程序的 SysV shm
-#     系列调用由 box64 拦截转发 bionic，rootfs 无需 libandroid-shmem
+#   - 内建 wrappedandroidshmem.c：v0.4.4 实为标准 wrappedlib 壳
+#     （对 libandroid-shmem.so 的纯 GO 型运行时 dlsym 映射，仅服务
+#     显式 dlopen 该库的程序；glibc 链接的 wine 的 shm 走 emulated
+#     syscall，不经此包装）—— rootfs 无需 libandroid-shmem
 #   - 链接 bionic 系统库 c / m / dl，无外部运行时依赖
 #   - Release 优化限制为 -O1（上游对 Android dynarec 稳定性的
 #     选择，CMakeLists "limit the optimization level" hack，
@@ -199,33 +201,48 @@ install() {
     return 1
   fi
 
-  # ---- 6.5 v3.2.14 · 冒烟校验（ANDROID 编译单元 + 内建符号 + NOLOADADDR 落地） ----
-  # v3.2.13 的旧校验 a)（functions_list.txt 应含 shmget）是错误假设：
-  # shmget 等纯 GO 型符号的包装在 wrappedandroidshmem.c 【编译期】由
-  # GO 宏 + wrappedlib_init.h 机制绑定，从不进入 functions_list.txt
-  # （该文件只是 rebuild_wrappers.py 的变更缓存，仅含 E 型/GOM 型符号），
-  # 误报过"构建错误"而产物其实正常。正确的运行时挂钩校验是：
-  #   a) ANDROID 编译单元进链：产物二进制符号表应含 shmget/shmat/shmctl
-  #      （wrappedandroidshmem.o 的 GO 宏导出；wine X11/unix 侧的 SysV shm
-  #      依赖它们转发 bionic —— 缺失 = 符号解析错乱静默崩溃零输出）
-  #      —— 用 nm 查【构建树未 strip】的 box64 本体；strip 后只剩 dynsym
-  #      也可用 readelf 兜底。
-  #   b) DYNAREC 核心在链：FreeDynablock / InvalidDynablock（dynablock.c
-  #      的动态翻译块生命周期管理，v0.4.4 与最新 main 均稳定存在 ——
-  #      -DARM_DYNAREC=ON 未生效的兜底证据；不使用 find_next_dynarec_mem
-  #      等版本敏感符号，避免跨 ref 误报）。
+  # ---- 6.5 v3.2.15 · 冒烟校验修正（ANDROID shm 包装在链 + DYNAREC + NOLOADADDR） ----
+  # 【v3.2.15 勘误 v3.2.14 的错误校验】v3.2.14 曾要求产物符号表含
+  # shmget/shmat/shmctl —— 上游源码实证（v0.4.4）+ 本轮 CI 日志推翻：
+  #   1) wrappedandroidshmem.c 只是标准 wrappedlib 壳（16 行），符号
+  #      映射全在其 private 头里且均为【纯 GO 型】（GO(shmget, iFiLi)…）；
+  #   2) wrappedlib_init.h 的非 STATICBUILD 分支 GO(N,W) 展开为
+  #      {#N, W, 0} —— 只登记名字字符串与签名，函数指针为 0，不取 &N；
+  #   3) 因此动态构建（默认；STATICBUILD 上游标注 "not working"）的
+  #      box64 二进制内【从不存在】shmget/shmat/shmctl 符号 —— 运行时
+  #      才经 dlsym 从 libandroid-shmem.so 解析（该路径仅服务显式
+  #      dlopen 该库的程序；glibc 链接的 wine 的 shm 走 emulated
+  #      syscall，不经此包装，rootfs 无需 libandroid-shmem）；
+  #   4) CI 日志实锤：wrappedandroidshmem.c.o 100% 编译进链，而
+  #      nm/readelf 均无 shmget —— 旧校验必挂，产物本身正常。
+  # 正确的静态证据（v3.2.15 改为）：
+  #   a) ANDROID shm 包装编译单元在链：mainobj 的 wrappedandroidshmem.c.o
+  #      存在 + 产物含 "libandroid-shmem.so" 字符串（androidshmemName
+  #      字面量 + library_list.h 注册，均在 .rodata，strip 不受影响）；
+  #   b) DYNAREC 核心真符号：getDB / FreeDynablock（dynablock.c 真函数
+  #      的导出符号；v0.4.4 与最新 main 均稳定存在，不使用版本敏感
+  #      符号，避免跨 ref 误报）；
   #   c) NOLOADADDR 落地：链接命令不得残留 --image-base / -no-pie
   #      （v3.2.13 加 -DNOLOADADDR=ON 的配套自检，防上游 CMake 行为漂移）。
   local _sym_ok=1
-  for _sym in shmget shmat shmctl getDB FreeDynablock; do
+  for _sym in getDB FreeDynablock; do
     if ! nm "${_src}/build/box64" 2>/dev/null | grep -qw "${_sym}" \
        && ! readelf -Ws "${_src}/build/box64" 2>/dev/null | grep -qw "${_sym}"; then
-      echo "错误: box64 符号表缺 ${_sym}（ANDROID shm 包装 / DYNAREC 核心未链接）"
+      echo "错误: box64 符号表缺 ${_sym}（DYNAREC 核心未链接）"
       _sym_ok=0
     fi
   done
-  [[ "${_sym_ok}" == "1" ]] \
-    && echo "冒烟[1/2]: 符号表含 shmget/shmat/shmctl/getDB/FreeDynablock（ANDROID shm 包装 + DYNAREC 核心）✓" \
+  local _shmem_ok=1
+  if [[ ! -f "${_src}/build/CMakeFiles/mainobj.dir/src/wrapped/wrappedandroidshmem.c.o" ]]; then
+    echo "错误: wrappedandroidshmem.c 编译单元不在链（-DANDROID=ON 未生效？）"
+    _shmem_ok=0
+  fi
+  if ! strings "${_src}/build/box64" 2>/dev/null | grep -q "libandroid-shmem\.so"; then
+    echo "错误: 产物未注册 libandroid-shmem.so 包装（ANDROID 编译单元缺失）"
+    _shmem_ok=0
+  fi
+  [[ "${_sym_ok}" == "1" && "${_shmem_ok}" == "1" ]] \
+    && echo "冒烟[1/2]: ANDROID shm 包装在链（wrappedandroidshmem.c.o + libandroid-shmem.so 注册）+ DYNAREC 核心（getDB/FreeDynablock）✓" \
     || return 1
   if grep -q "image-base\|no-pie" "${_src}/build/CMakeFiles/box64.dir/link.txt" 2>/dev/null; then
     echo "错误: 链接命令残留 --image-base/-no-pie（NOLOADADDR 未生效）"

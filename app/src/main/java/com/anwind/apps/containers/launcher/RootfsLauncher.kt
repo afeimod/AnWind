@@ -530,6 +530,14 @@ object RootfsLauncher {
                     }.onFailure {
                         sink.stamp("警告: DXVK 注入异常: ${it.message}（下次启动自动重试）")
                     }
+                    // v3.2.15（wineguanli.py 重制）：函数库设置注册表落地
+                    // （dsound/quartz DLL 加载序 + LogPixels DPI + Windows 版本
+                    // 三件套；regedit 导入，指纹幂等，失败不阻断）。
+                    runCatching {
+                        WineLibrary.ensureApplied(resolved, container, env) { sink.stamp(it) }
+                    }.onFailure {
+                        sink.stamp("警告: 函数库设置注入异常: ${it.message}（下次启动自动重试）")
+                    }
                 } finally {
                     _prefixBuildFlow.value = null
                 }
@@ -564,7 +572,9 @@ object RootfsLauncher {
                 sink.stamp("显示模式 dmode=$dmode 但未配置分辨率（跟随窗口）——请在容器设置选择虚拟分辨率")
             }
 
-            // 11) 用户附加环境（最后叠加 —— 可覆盖一切上游变量）
+            // 11) v3.2.15：容器调优环境（帧率/Unity/MangoHud/核心集），
+            //     用户附加环境最后叠加 —— 可覆盖一切上游变量
+            WineEnvironment.applyTuningEnv(env, container)
             WineEnvironment.applyExtraEnv(env, container)
 
             // 12) 构建命令并 exec（wine / wineserver / wineboot 特判）

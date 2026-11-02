@@ -28,6 +28,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Slider
@@ -49,6 +50,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -66,6 +68,21 @@ val LyricAccentColors = listOf(
     Color(0xFFBA68C8),
     Color(0xFFFF8A50),
     Color(0xFFF06292)
+)
+
+/**
+ * v1.2 非高亮歌词颜色预设（首项为默认浅灰紫 #D5D5DE，附白/暗灰与常用彩色）
+ */
+val LyricSubColors = listOf(
+    Color(0xFFD5D5DE),
+    Color(0xFFFFFFFF),
+    Color(0xFF9E9EAE),
+    Color(0xFF6C6C7A),
+    Color(0xFFEC4141),
+    Color(0xFFFFC53D),
+    Color(0xFF4DD0E1),
+    Color(0xFF66BB6A),
+    Color(0xFFBA68C8)
 )
 
 /**
@@ -88,6 +105,10 @@ fun SettingsPage(
     onChange: (MusicSettings) -> Unit,
     onPickLyricImage: () -> Unit,
     onPickHomeImage: () -> Unit,
+    /** v1.2 主页背景视频选择（系统文件选择器，video 类型） */
+    onPickHomeVideo: () -> Unit = {},
+    /** v1.2 歌词页背景视频选择 */
+    onPickLyricVideo: () -> Unit = {},
     onPickCoverImage: () -> Unit,
     onPickDiscImage: () -> Unit,
     onPickFolder: () -> Unit,
@@ -111,7 +132,8 @@ fun SettingsPage(
                     MusicSettings.HOME_BG_DEFAULT to "默认",
                     MusicSettings.BG_SOLID to "纯色",
                     MusicSettings.BG_GRADIENT to "渐变",
-                    MusicSettings.BG_IMAGE to "图片"
+                    MusicSettings.BG_IMAGE to "图片",
+                    MusicSettings.BG_VIDEO to "视频"
                 ),
                 selected = settings.homeBgMode,
                 onSelect = { onChange(settings.copy(homeBgMode = it)) }
@@ -143,8 +165,25 @@ fun SettingsPage(
                         onChange = { onChange(settings.copy(homeImageDim = it)) }
                     )
                 }
+                MusicSettings.BG_VIDEO -> {
+                    // v1.2 主页背景视频：静音循环铺底，文字/控件按暗色方案自适应
+                    VideoPickRow(
+                        label = "主页背景视频",
+                        picked = settings.homeBgVideo != null,
+                        onPick = onPickHomeVideo,
+                        onClear = { onChange(settings.copy(homeBgVideo = null)) }
+                    )
+                    SettingSlider(
+                        title = "视频压暗",
+                        display = "${(settings.homeImageDim * 100).toInt()}%",
+                        value = settings.homeImageDim,
+                        range = 0f..0.95f,
+                        steps = 18,
+                        onChange = { onChange(settings.copy(homeImageDim = it)) }
+                    )
+                }
             }
-            Caption("背景全局生效：侧栏、底栏与设置卡片/选项/搜索框自动半透明融入；选深色时文字仍为深色，建议搭配浅色图片或低压暗")
+            Caption("背景全局生效：顶栏/播放条/底栏与设置卡片/选项/搜索框自动半透明融入；并按背景明暗动态切换深浅文字与光晕，任意壁纸文字都清晰可读（图片过暗时可调「图片压暗」）；视频模式静音循环播放，退后台/被歌词页覆盖时自动暂停省电")
         }
 
         SettingsSection("歌词秀背景") {
@@ -153,7 +192,8 @@ fun SettingsPage(
                     MusicSettings.BG_COVER to "封面模糊",
                     MusicSettings.BG_SOLID to "纯色",
                     MusicSettings.BG_GRADIENT to "渐变",
-                    MusicSettings.BG_IMAGE to "图片"
+                    MusicSettings.BG_IMAGE to "图片",
+                    MusicSettings.BG_VIDEO to "视频"
                 ),
                 selected = settings.lyricBgMode,
                 onSelect = { onChange(settings.copy(lyricBgMode = it)) }
@@ -216,8 +256,25 @@ fun SettingsPage(
                         onChange = { onChange(settings.copy(lyricBgDim = it)) }
                     )
                 }
+                MusicSettings.BG_VIDEO -> {
+                    // v1.2 歌词秀背景视频：静音循环铺底，压暗强度与图片模式共用 lyricBgDim
+                    VideoPickRow(
+                        label = "歌词秀背景视频",
+                        picked = settings.lyricBgVideo != null,
+                        onPick = onPickLyricVideo,
+                        onClear = { onChange(settings.copy(lyricBgVideo = null)) }
+                    )
+                    SettingSlider(
+                        title = "背景压暗",
+                        display = "${(settings.lyricBgDim * 100).toInt()}%",
+                        value = settings.lyricBgDim,
+                        range = 0f..0.95f,
+                        steps = 18,
+                        onChange = { onChange(settings.copy(lyricBgDim = it)) }
+                    )
+                }
             }
-            Caption("三类图片均可独立自定义：背景铺满歌词页、封面替换左侧卡片、光盘替换旋转碟片盘面；光盘留空时与封面同图，都留空则用歌曲专辑图")
+            Caption("背景/封面/光盘三类图片均可独立自定义；视频模式选本地视频静音循环铺底，配合「背景压暗」保证歌词可读；编码不支持时自动透明兜底，不影响歌词显示")
         }
 
         SettingsSection("3D 歌词") {
@@ -256,13 +313,27 @@ fun SettingsPage(
             Text(
                 text = "当前行高亮颜色",
                 fontSize = 12.sp,
-                color = Mc.textSecondary,
+                color = LocalAdaptiveScheme.current.textSecondary,
+                style = TextStyle(shadow = LocalAdaptiveScheme.current.shadow),
                 modifier = Modifier.padding(top = 10.dp)
             )
             ColorSwatchRow(
                 colors = LyricAccentColors,
                 selected = settings.highlightColor,
                 onSelect = { onChange(settings.copy(highlightColor = it)) }
+            )
+            // v1.2：非高亮歌词颜色自定义（非当前行/翻译行/KTV 未唱部分）
+            Text(
+                text = "非高亮歌词颜色",
+                fontSize = 12.sp,
+                color = LocalAdaptiveScheme.current.textSecondary,
+                style = TextStyle(shadow = LocalAdaptiveScheme.current.shadow),
+                modifier = Modifier.padding(top = 10.dp)
+            )
+            ColorSwatchRow(
+                colors = LyricSubColors,
+                selected = settings.lyricSubColor,
+                onSelect = { onChange(settings.copy(lyricSubColor = it)) }
             )
             SettingSwitch(
                 title = "KTV 渐进显示",
@@ -296,7 +367,7 @@ fun SettingsPage(
                 checked = settings.showTranslation,
                 onChange = { onChange(settings.copy(showTranslation = it)) }
             )
-            Caption("真透视歌词墙：整面墙俯仰/偏航 + 纵深收敛 + 行内逐字左右字体差（行首小行尾大）；俯仰 0° + 视角 0° + 纵深 0 + 字体差 0 即为平面滚动歌词")
+            Caption("真透视歌词墙：整面墙俯仰/偏航 + 纵深收敛 + 行内逐字左右字体差（行首小行尾大）；俯仰 0° + 视角 0° + 纵深 0 + 字体差 0 即为平面滚动歌词；非高亮颜色同步作用于非当前行、翻译行与 KTV 未唱部分；竖屏时整体靠右（同 1.1），短行贴右缘，长行单行从行首起显、唱到后随播放滚入右侧隐藏部分（不换行，v1.2.3）")
         }
 
         SettingsSection("桌面歌词") {
@@ -308,7 +379,7 @@ fun SettingsPage(
                     if (enabled && !Settings.canDrawOverlays(context)) {
                         Toast.makeText(
                             context,
-                            "请先授予 AnWind「显示在应用上层」权限，返回后再打开此开关",
+                            "请先授予 AnWind云音乐「显示在应用上层」权限，返回后再打开此开关",
                             Toast.LENGTH_LONG
                         ).show()
                         runCatching {
@@ -334,7 +405,8 @@ fun SettingsPage(
                 Text(
                     text = "字体颜色",
                     fontSize = 12.sp,
-                    color = Mc.textSecondary,
+                    color = LocalAdaptiveScheme.current.textSecondary,
+                    style = TextStyle(shadow = LocalAdaptiveScheme.current.shadow),
                     modifier = Modifier.padding(top = 10.dp)
                 )
                 ColorSwatchRow(
@@ -432,10 +504,11 @@ fun SettingsPage(
                     )
                     Spacer(Modifier.width(6.dp))
                     Text(
-                        text = "在文件资源管理器中选择文件夹",
+                        text = "从系统文件选择器中选择文件夹",
                         fontSize = 13.sp,
                         color = Mc.red,
                         fontWeight = FontWeight.Medium,
+                        style = TextStyle(shadow = LocalAdaptiveScheme.current.shadow),
                         modifier = Modifier
                             .clip(RoundedCornerShape(6.dp))
                             .clickable(onClick = onPickFolder)
@@ -459,6 +532,7 @@ fun SettingsPage(
                     fontSize = 13.sp,
                     color = Mc.red,
                     fontWeight = FontWeight.Medium,
+                    style = TextStyle(shadow = LocalAdaptiveScheme.current.shadow),
                     modifier = Modifier
                         .clip(RoundedCornerShape(6.dp))
                         .clickable(onClick = onRescan)
@@ -467,13 +541,25 @@ fun SettingsPage(
             }
             Caption(
                 "指定目录模式只扫描你选择的文件夹，避免把铃声/语音等无关音频扫进曲库；" +
-                    "点击选择会拉起桌面【文件资源管理器】，浏览到目标文件夹后点「选定此目录」回传"
+                    "点击选择会拉起系统文件夹选择器（手机主存储自动换算为真实路径；其他位置请用下方手动输入）"
+            )
+        }
+
+        SettingsSection("屏幕方向") {
+            ModeChipsRow(
+                options = MusicSettings.ORIENTATION_LABELS.map { it.key to it.value },
+                selected = settings.orientation,
+                onSelect = { onChange(settings.copy(orientation = it)) }
+            )
+            Caption(
+                "自动 = 跟随系统旋转设置；竖屏/横屏锁定方向；自动旋转 = 无论系统设置如何均随重力感应旋转；" +
+                    "切换立即生效，界面状态不会被重建丢失"
             )
         }
 
         SettingsSection("关于") {
             Caption("音源：酷我（搜索 / 播放 / 下载） · 词源：酷我 / 网易云 / QQ 音乐 / LRCLIB")
-            Caption("AnWind 云音乐 v2.21.5 · 界面对照网易云音乐 PC 版 · 3D 歌词秀 · 桌面歌词")
+            Caption("AnWind云音乐（独立版）v1.2.3 · 源自 AnWind 云音乐 · 3D 歌词秀 · 桌面歌词 · 视频背景")
         }
         Spacer(Modifier.height(20.dp))
     }
@@ -481,19 +567,21 @@ fun SettingsPage(
 
 // ==================== 区块与通用控件 ====================
 
-/** 设置区块：标题 + 内容卡片 */
+/** 设置区块：标题 + 内容卡片（v1.2：标题与卡片随背景明暗自适应，标题叠加光晕） */
 @Composable
 private fun SettingsSection(title: String, content: @Composable ColumnScope.() -> Unit) {
+    val sch = LocalAdaptiveScheme.current
     Spacer(Modifier.height(10.dp))
     Text(
         text = title,
         fontSize = 13.sp,
         fontWeight = FontWeight.Bold,
-        color = Mc.textPrimary,
+        color = sch.textPrimary,
+        style = TextStyle(shadow = sch.shadow),
         modifier = Modifier.padding(start = 4.dp, bottom = 4.dp)
     )
-    // v2.21.5：自定义主页背景激活时区块卡片半透明融入（白 72%，同侧栏）
-    val cardBg = surfaceColor(Color.White, LocalHomeCustomBg.current, 0.72f)
+    // v1.2：自定义背景下区块卡片降透至 35%（白玻璃）/ 45%（黑玻璃），更轻薄通透
+    val cardBg = if (sch.isCustom) sch.glass else Color.White
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -505,14 +593,16 @@ private fun SettingsSection(title: String, content: @Composable ColumnScope.() -
     }
 }
 
-/** 说明性小字 */
+/** 说明性小字（v1.2：自定义背景下颜色随明暗自适应 + 光晕） */
 @Composable
 private fun Caption(text: String) {
+    val sch = LocalAdaptiveScheme.current
     Text(
         text = text,
         fontSize = 10.sp,
         lineHeight = 15.sp,
-        color = Mc.textTertiary,
+        color = if (sch.isCustom) sch.textSecondary else Mc.textTertiary,
+        style = TextStyle(shadow = sch.shadow),
         modifier = Modifier.padding(top = 8.dp, start = 4.dp)
     )
 }
@@ -525,15 +615,18 @@ private fun ModeChipsRow(
     onSelect: (Int) -> Unit
 ) {
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        // v2.21.5：自定义主页背景激活时未选中芯片半透明融入（选中态保持实心红保证对比）
-        val chipBg = surfaceColor(Mc.searchFieldBg, LocalHomeCustomBg.current, 0.60f)
+        // v1.2：自定义背景下芯片用小表面玻璃（42%/52%）+ 实心自适应文字 + 光晕；选中态保持实心红
+        val sch = LocalAdaptiveScheme.current
+        val chipBg = if (sch.isCustom) sch.glassField else Mc.searchFieldBg
+        val chipText = if (sch.isCustom) sch.textPrimary else Mc.textSecondary
         for ((value, label) in options) {
             val isSel = value == selected
             Text(
                 text = label,
                 fontSize = 12.sp,
-                color = if (isSel) Color.White else Mc.textSecondary,
+                color = if (isSel) Color.White else chipText,
                 fontWeight = if (isSel) FontWeight.Bold else FontWeight.Normal,
+                style = TextStyle(shadow = if (isSel) null else sch.shadow),
                 modifier = Modifier
                     .clip(RoundedCornerShape(14.dp))
                     .background(if (isSel) Mc.red else chipBg)
@@ -551,6 +644,7 @@ private fun ColorSwatchRow(colors: List<Color>, selected: Int, onSelect: (Int) -
         horizontalArrangement = Arrangement.spacedBy(10.dp),
         modifier = Modifier.padding(top = 10.dp)
     ) {
+        val borderColor = LocalAdaptiveScheme.current.border
         for (c in colors) {
             val isSel = c.toArgb() == selected
             Box(
@@ -560,7 +654,7 @@ private fun ColorSwatchRow(colors: List<Color>, selected: Int, onSelect: (Int) -
                     .background(c)
                     .border(
                         width = if (isSel) 2.dp else 1.dp,
-                        color = if (isSel) Mc.red else Mc.divider,
+                        color = if (isSel) Mc.red else borderColor,
                         shape = CircleShape
                     )
                     .clickable { onSelect(c.toArgb()) }
@@ -580,6 +674,7 @@ private fun GradientSwatchRow(
         horizontalArrangement = Arrangement.spacedBy(10.dp),
         modifier = Modifier.padding(top = 10.dp)
     ) {
+        val borderColor = LocalAdaptiveScheme.current.border
         gradients.forEachIndexed { i, pair ->
             val isSel = i == selected
             Box(
@@ -589,7 +684,7 @@ private fun GradientSwatchRow(
                     .background(Brush.verticalGradient(pair))
                     .border(
                         width = if (isSel) 2.dp else 1.dp,
-                        color = if (isSel) Mc.red else Mc.divider,
+                        color = if (isSel) Mc.red else borderColor,
                         shape = RoundedCornerShape(13.dp)
                     )
                     .clickable { onSelect(i) }
@@ -598,7 +693,7 @@ private fun GradientSwatchRow(
     }
 }
 
-/** 图片选择行（选择/清除 + 状态说明） */
+/** 图片选择行（选择/清除 + 状态说明；v1.2 文字自适应+光晕） */
 @Composable
 private fun ImagePickRow(
     label: String,
@@ -606,6 +701,7 @@ private fun ImagePickRow(
     onPick: () -> Unit,
     onClear: () -> Unit
 ) {
+    val sch = LocalAdaptiveScheme.current
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier.padding(top = 10.dp)
@@ -618,9 +714,10 @@ private fun ImagePickRow(
         )
         Spacer(Modifier.width(8.dp))
         Text(
-            text = if (picked) "已选择$label（点击可更换）" else "点击打开文件资源管理器选择$label",
+            text = if (picked) "已选择$label（点击可更换）" else "点击选择$label",
             fontSize = 13.sp,
-            color = Mc.textPrimary,
+            color = sch.textPrimary,
+            style = TextStyle(shadow = sch.shadow),
             modifier = Modifier
                 .weight(1f)
                 .clip(RoundedCornerShape(6.dp))
@@ -634,7 +731,53 @@ private fun ImagePickRow(
                 Icon(
                     Icons.Filled.Close,
                     contentDescription = "清除",
-                    tint = Mc.textTertiary,
+                    tint = sch.textTertiary,
+                    modifier = Modifier.size(14.dp)
+                )
+            }
+        }
+    }
+}
+
+/** 视频选择行（v1.2 新增：主页/歌词秀背景视频，交互与图片选择行一致） */
+@Composable
+private fun VideoPickRow(
+    label: String,
+    picked: Boolean,
+    onPick: () -> Unit,
+    onClear: () -> Unit
+) {
+    val sch = LocalAdaptiveScheme.current
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier.padding(top = 10.dp)
+    ) {
+        Icon(
+            Icons.Filled.Videocam,
+            contentDescription = null,
+            tint = Mc.red,
+            modifier = Modifier.size(18.dp)
+        )
+        Spacer(Modifier.width(8.dp))
+        Text(
+            text = if (picked) "已选择$label（点击可更换）" else "点击选择$label",
+            fontSize = 13.sp,
+            color = sch.textPrimary,
+            style = TextStyle(shadow = sch.shadow),
+            modifier = Modifier
+                .weight(1f)
+                .clip(RoundedCornerShape(6.dp))
+                .clickable(onClick = onPick)
+                .padding(vertical = 6.dp),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+        if (picked) {
+            IconButton(onClick = onClear, modifier = Modifier.size(24.dp)) {
+                Icon(
+                    Icons.Filled.Close,
+                    contentDescription = "清除",
+                    tint = sch.textTertiary,
                     modifier = Modifier.size(14.dp)
                 )
             }
@@ -654,6 +797,7 @@ private fun SettingSlider(
 ) {
     var dragging by remember(value) { mutableStateOf(false) }
     var dragValue by remember { mutableStateOf(value) }
+    val sch = LocalAdaptiveScheme.current
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier.fillMaxWidth()
@@ -661,7 +805,8 @@ private fun SettingSlider(
         Text(
             text = title,
             fontSize = 13.sp,
-            color = Mc.textPrimary,
+            color = sch.textPrimary,
+            style = TextStyle(shadow = sch.shadow),
             modifier = Modifier.width(150.dp)
         )
         Slider(
@@ -682,8 +827,8 @@ private fun SettingSlider(
             colors = SliderDefaults.colors(
                 thumbColor = Mc.red,
                 activeTrackColor = Mc.red,
-                // v2.21.5：未激活轨道随背景半透明（激活轨道保持实心红）
-                inactiveTrackColor = surfaceColor(Color(0xFFE5E5E8), LocalHomeCustomBg.current, 0.70f)
+                // v1.2：未激活轨道随明暗自适应（亮背景深色半透/暗背景白色半透）
+                inactiveTrackColor = if (sch.isCustom) sch.track else Color(0xFFE5E5E8)
             ),
             modifier = Modifier
                 .weight(1f)
@@ -692,14 +837,15 @@ private fun SettingSlider(
         Text(
             text = display,
             fontSize = 11.sp,
-            color = Mc.textSecondary,
+            color = sch.textSecondary,
+            style = TextStyle(shadow = sch.shadow),
             modifier = Modifier.width(58.dp),
             textAlign = androidx.compose.ui.text.style.TextAlign.Right
         )
     }
 }
 
-/** 开关设置行 */
+/** 开关设置行（v1.2 文字自适应+光晕） */
 @Composable
 private fun SettingSwitch(
     title: String,
@@ -707,9 +853,16 @@ private fun SettingSwitch(
     checked: Boolean,
     onChange: (Boolean) -> Unit
 ) {
+    val sch = LocalAdaptiveScheme.current
     Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(text = title, fontSize = 13.sp, color = Mc.textPrimary, modifier = Modifier.weight(1f))
+            Text(
+                text = title,
+                fontSize = 13.sp,
+                color = sch.textPrimary,
+                style = TextStyle(shadow = sch.shadow),
+                modifier = Modifier.weight(1f)
+            )
             Switch(
                 checked = checked,
                 onCheckedChange = onChange,
@@ -718,17 +871,24 @@ private fun SettingSwitch(
                     checkedTrackColor = Mc.red,
                     uncheckedThumbColor = Color.White,
                     uncheckedTrackColor = Color(0xFFC9C9CF)
-                ),
-                modifier = Modifier.height(24.dp)
+                )
+                // v2.25 安卓样式同步：去掉 height(24.dp) 压缩 —— M3 标准开关为 52x32dp，
+                // 强压 24dp 会把轨道/滑块压扁，与系统设置里的开关观感不一致
             )
         }
-        Text(text = desc, fontSize = 10.sp, color = Mc.textTertiary)
+        Text(
+            text = desc,
+            fontSize = 10.sp,
+            color = if (sch.isCustom) sch.textTertiary else Mc.textTertiary,
+            style = TextStyle(shadow = sch.shadow)
+        )
     }
 }
 
-/** 词源单选行 */
+/** 词源单选行（v1.2 文字与描边自适应） */
 @Composable
 private fun EngineRadioRow(label: String, selected: Boolean, onClick: () -> Unit) {
+    val sch = LocalAdaptiveScheme.current
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier
@@ -740,7 +900,7 @@ private fun EngineRadioRow(label: String, selected: Boolean, onClick: () -> Unit
             Modifier
                 .size(16.dp)
                 .clip(CircleShape)
-                .border(2.dp, if (selected) Mc.red else Mc.divider, CircleShape),
+                .border(2.dp, if (selected) Mc.red else sch.border, CircleShape),
             contentAlignment = Alignment.Center
         ) {
             if (selected) {
@@ -748,13 +908,19 @@ private fun EngineRadioRow(label: String, selected: Boolean, onClick: () -> Unit
             }
         }
         Spacer(Modifier.width(10.dp))
-        Text(text = label, fontSize = 13.sp, color = if (selected) Mc.red else Mc.textPrimary)
+        Text(
+            text = label,
+            fontSize = 13.sp,
+            color = if (selected) Mc.red else sch.textPrimary,
+            style = TextStyle(shadow = if (selected) null else sch.shadow)
+        )
     }
 }
 
-/** 已添加目录行 */
+/** 已添加目录行（v1.2 文字自适应） */
 @Composable
 private fun DirRow(path: String, onRemove: () -> Unit) {
+    val sch = LocalAdaptiveScheme.current
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier
@@ -764,14 +930,14 @@ private fun DirRow(path: String, onRemove: () -> Unit) {
         Icon(
             Icons.Filled.Folder,
             contentDescription = null,
-            tint = Mc.textSecondary,
+            tint = sch.textSecondary,
             modifier = Modifier.size(14.dp)
         )
         Spacer(Modifier.width(8.dp))
         Text(
             text = path,
             fontSize = 11.sp,
-            color = Mc.textSecondary,
+            color = sch.textSecondary,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f)
@@ -779,7 +945,7 @@ private fun DirRow(path: String, onRemove: () -> Unit) {
         Icon(
             Icons.Filled.Close,
             contentDescription = "移除目录",
-            tint = Mc.textTertiary,
+            tint = sch.textTertiary,
             modifier = Modifier
                 .size(14.dp)
                 .clickable(onClick = onRemove)
@@ -787,23 +953,28 @@ private fun DirRow(path: String, onRemove: () -> Unit) {
     }
 }
 
-/** 手动输入目录路径 */
+/** 手动输入目录路径（v1.2 输入框与文字自适应+光晕） */
 @Composable
 private fun ManualDirInput(onAdd: (String) -> Unit) {
     var text by remember { mutableStateOf("") }
-    // v2.21.5：自定义主页背景激活时输入框容器半透明融入
-    val fieldBg = surfaceColor(Mc.searchFieldBg, LocalHomeCustomBg.current, 0.60f)
+    val sch = LocalAdaptiveScheme.current
+    val fieldBg = if (sch.isCustom) sch.glassField else Mc.searchFieldBg
     Row(verticalAlignment = Alignment.CenterVertically) {
         TextField(
             value = text,
             onValueChange = { text = it },
             placeholder = {
-                Text("/storage/emulated/0/Music", fontSize = 11.sp, color = Mc.textTertiary)
+                Text(
+                    "/storage/emulated/0/Music",
+                    fontSize = 11.sp,
+                    color = if (sch.isCustom) sch.textTertiary else Mc.textTertiary
+                )
             },
             singleLine = true,
             textStyle = androidx.compose.ui.text.TextStyle(
                 fontSize = 12.sp,
-                color = Mc.textPrimary
+                color = sch.textPrimary,
+                shadow = sch.shadow
             ),
             colors = TextFieldDefaults.colors(
                 focusedContainerColor = fieldBg,

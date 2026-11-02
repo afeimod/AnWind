@@ -1,5 +1,7 @@
 # AnWind Bionic 修复包 v2（2026-09-19）
 
+> **v3.2.15（2026-11-02）**：六诉求轮 —— ①box64 bionic 构建修复（v3.2.14 符号校验假设错误：纯 GO 型符号非 STATICBUILD 下不进符号表；改为编译单元在链 + libandroid-shmem.so 注册字符串双证据）②启动动画去倍速原速播放 ③assets tar.gz/tar.xz 被 .tar 化的运行时兼容（aapt2 实验证明其不改名，扫描器补 .tar.xz/纯 .tar 识别 + TarCompressorUtils PLAIN 类型）④容器管理按 wineguanli.py 重制（左右分栏 + 五选项卡 + container.conf 十二新键 + 函数库注册表落地，/opt 清单见 docs/WINEGUANLI-OPT-FOLDERS.md）⑤云音乐 AnWindMusic 回移（双音源/本地元数据/黑胶歌词/背景视频/明暗自适应）⑥X11 方向跟随桌面 + 桌面默认横屏
+>
 > **v3.2.14（2026-11-02）**：三诉求轮 —— ①wine9.7 arm64ec faudio SIMD 修复（0007f 补丁）+ box64 冒烟校验误报修正 + 框架 install() fail-fast ②start.mp4 启动动画（3 秒加速、可关闭、可自定义）③DXVK 资产注入（assets/dxvk → C:\windows）+ 容器组件配置（box64/fexcore/mesa/dxvk）+ DllOverrides 注册表（147 项）
 >
 > ## 修复 1：wine9.7 arm64ec 构建 — FAudio SIMD（CI 实报：wine-build-log-arm64ec (10).zip）

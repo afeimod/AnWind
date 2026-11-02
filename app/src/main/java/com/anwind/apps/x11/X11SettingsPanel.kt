@@ -503,10 +503,11 @@ fun X11SettingsDialog() {
                 )
 
                 // ---- 屏幕方向（termux-x11 forceOrientation） ----
+                // v3.2.15："auto" 改为跟随桌面方向（不再跟随系统传感器）
                 XpField("屏幕方向") {
                     XpSegmented(
                         options = listOf(
-                            "auto" to "跟随系统",
+                            "auto" to "跟随桌面",
                             "portrait" to "竖屏",
                             "landscape" to "横屏"
                         ),

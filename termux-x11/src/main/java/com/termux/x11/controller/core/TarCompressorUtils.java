@@ -28,7 +28,10 @@ import java.io.OutputStream;
 public abstract class TarCompressorUtils {
     // v3.2.14 AnWind：新增 GZIP —— 用户资产包（assets/dxvk/dxvk-*.tar.gz）
     // 为 tar.gz 格式（此前仅 XZ/ZSTD；AnWindTzstAssets 的 DXVK 注入依赖）
-    public enum Type {XZ, ZSTD, GZIP}
+    // v3.2.15：新增 PLAIN —— 未压缩纯 tar。用户实测部分构建管线会把
+    // assets 内 *.tar.gz / *.tar.xz 去掉压缩层变成 *.tar（aapt2 本身不改名，
+    // 但下游处理链可能 gunzip）；资产扫描器对纯 .tar 也放行，内容仍完整可解。
+    public enum Type {XZ, ZSTD, GZIP, PLAIN}
 
     private static void addFile(ArchiveOutputStream tar, File file, String entryName) {
         try {
@@ -187,6 +190,10 @@ public abstract class TarCompressorUtils {
         }
         else if (type == Type.GZIP) {
             return new GzipCompressorInputStream(source);
+        }
+        else if (type == Type.PLAIN) {
+            // 未压缩纯 tar：直接透传（TarArchiveInputStream 自带缓冲）
+            return source;
         }
         return null;
     }

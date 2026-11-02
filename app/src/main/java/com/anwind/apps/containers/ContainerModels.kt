@@ -14,6 +14,12 @@ import java.io.File
  *   name / backend / preset / screen / dmode / gallium / env / dxvk /
  *   vkd3d / dxoverrides / wine / lang / audio / created
  *
+ * v3.2.15（wineguanli.py 重制）新增键：
+ *   frame（帧率限制 DXVK_FRAME_RATE）/ cores（主核心集）/ dsound /
+ *   dshow（DLL 加载序）/ dpi（LogPixels）/ winver（Windows 版本）/
+ *   mangohud（MANGOHUD_CONFIG）/ flags（高级启动开关 csv）/
+ *   turnip / zink / wined3d（驱动版本槽位，对接 /opt 生态）
+ *
  * 显示方案（重要）：本方案为 X11 —— X 服务为 AnWind 内置 termux-x11/
  * libXlorie，unix socket 位于 App 侧 $PREFIX/tmp/.X11-unix/Xn（默认 :1）。
  * rootfs 内 libX11/xtrans/libxcb 已按该 socket 路径打补丁，容器内程序
@@ -173,6 +179,71 @@ enum class ContainerAudio(val id: String, val label: String, val desc: String) {
 }
 
 // ---------------------------------------------------------------------------
+// v3.2.15：Windows 版本表（wineguanli.py update_windows_version_in_system_reg
+// 的版本映射表移植 —— system.reg 的 CurrentVersion/ProductName/CurrentBuild）
+// ---------------------------------------------------------------------------
+
+/** 一个 Windows 版本的注册表三件套。 */
+data class WindowsVersion(
+    val id: String,
+    val label: String,
+    val currentVersion: String,
+    val productName: String,
+    val currentBuild: String
+)
+
+object WindowsVersions {
+    val ALL: List<WindowsVersion> = listOf(
+        WindowsVersion("win10", "Windows 10", "10.0", "Windows 10", "19045"),
+        WindowsVersion("win81", "Windows 8.1", "6.3", "Windows 8.1", "9600"),
+        WindowsVersion("win8", "Windows 8", "6.2", "Windows 8", "9200"),
+        WindowsVersion("win7", "Windows 7", "6.1", "Windows 7", "7601"),
+        WindowsVersion("vista", "Windows Vista", "6.0", "Windows Vista", "6002"),
+        WindowsVersion("winxp", "Windows XP", "5.1", "Windows XP", "2600"),
+        WindowsVersion("win2000", "Windows 2000", "5.0", "Windows 2000", "2195"),
+        WindowsVersion("win98", "Windows 98", "4.1", "Windows 98", "2222"),
+        WindowsVersion("win95", "Windows 95", "4.0", "Windows 95", "950")
+    )
+    val DEFAULT_ID = "win10"
+    fun fromId(id: String?): WindowsVersion =
+        ALL.firstOrNull { it.id == id?.trim()?.lowercase() } ?: ALL.first()
+}
+
+// ---------------------------------------------------------------------------
+// v3.2.15：高级启动开关（wineguanli.py 基本设置勾选组的 AnWind 语义映射）
+// ---------------------------------------------------------------------------
+
+/**
+ * 高级启动开关（container.conf 的 flags= csv 子集）。
+ *
+ * 语义映射（wineguanli.py → AnWind 原生启动链）：
+ * - UNITY（Unity 单线程渲染）→ env BOX64_UNITYPLAYER=1（box64 官方开关）
+ * - OPENGL（OpenGL 驱动）→ 保持记录；不强制 DXVK 时 wine 自走 wined3d/OpenGL
+ * - F5TASK / IB / DEBUG / INDEPENDENT / CLOSESERVICE → 保留槽位，供用户
+ *   自带的 /opt 生态脚本（startwine 类）读取 container.conf 时消费。
+ */
+object ContainerFlags {
+    const val UNITY = "unity"
+    const val OPENGL = "opengl"
+    const val F5TASK = "f5task"
+    const val IB = "ib"
+    const val DEBUG = "debug"
+    const val INDEPENDENT = "independent"
+    const val CLOSESERVICE = "closeservice"
+
+    /** 全部合法开关（UI 勾选组展示顺序）。 */
+    val ALL = listOf(UNITY, OPENGL, F5TASK, IB, DEBUG, INDEPENDENT, CLOSESERVICE)
+
+    fun parse(csv: String?): Set<String> =
+        csv?.split(',', ';').orEmpty()
+            .map { it.trim().lowercase() }
+            .filter { it in ALL }.toSet()
+
+    fun serialize(flags: Set<String>): String =
+        ALL.filter { it in flags }.joinToString(",")
+}
+
+// ---------------------------------------------------------------------------
 // 容器数据模型
 // ---------------------------------------------------------------------------
 
@@ -216,13 +287,42 @@ data class ContainerData(
     /** 容器音频模式（rootfs 自带 PulseAudio / 禁用）。 */
     val audio: ContainerAudio = ContainerAudio.PULSE,
     /** 创建时间（仅记录，人类可读）。 */
-    val created: String = ""
+    val created: String = "",
+    // ---- v3.2.15（wineguanli.py 重制）新增字段 ----
+    /** 帧率限制（DXVK_FRAME_RATE）："0"=不限 / "60" / "120"。 */
+    val frame: String = FRAME_DEFAULT,
+    /** 主核心集（如 "0-3" 或 "0,1,2,3"）；空 = 不隔离，全核心。 */
+    val cores: String = "",
+    /** DirectSound DLL 加载序（user.reg dsound）。 */
+    val dsound: String = "builtin,native",
+    /** DirectShow(quartz) DLL 加载序（user.reg quartz）。 */
+    val dshow: String = "builtin,native",
+    /** DPI（user.reg LogPixels），60..240。 */
+    val dpi: String = DPI_DEFAULT,
+    /** Windows 版本（system.reg 三件套）：见 [WindowsVersions]。 */
+    val winver: String = WindowsVersions.DEFAULT_ID,
+    /** MANGOHUD_CONFIG 串（fps,cpu_stats,...）；空 = MangoHud 关。 */
+    val mangohud: String = "",
+    /** 高级启动开关 csv（见 [ContainerFlags]）。 */
+    val flags: String = "",
+    /** Turnip 驱动版本槽位（对接 /opt/tz 包名，用户生态自行消费）。 */
+    val turnip: String = "",
+    /** Zink 驱动版本槽位（对接 /opt/zink）。 */
+    val zink: String = "",
+    /** WineD3D 版本槽位（对接 /opt/vkord3d）。 */
+    val wined3d: String = ""
 ) {
     /** WINEPREFIX 绝对路径（容器目录内 prefix/）。 */
     val prefixPath: String get() = "${ContainerManager.CONTAINERS_ROOT}/$name/prefix"
 
     /** 容器目录绝对路径。 */
     val containerDir: String get() = "${ContainerManager.CONTAINERS_ROOT}/$name"
+
+    /** v3.2.15：flags csv → 开关集合。 */
+    val flagSet: Set<String> get() = ContainerFlags.parse(flags)
+
+    /** v3.2.15：是否启用指定开关。 */
+    fun hasFlag(flag: String): Boolean = flag in flagSet
 
     /**
      * 以键值对形式导出（顺序与 CLI write_new_conf 一致），
@@ -242,7 +342,19 @@ data class ContainerData(
         "wine" to wine,
         "lang" to lang,
         "audio" to audio.id,
-        "created" to created
+        "created" to created,
+        // v3.2.15：wineguanli.py 重制新增键（未知键的老 CLI 忽略即可）
+        "frame" to frame,
+        "cores" to cores,
+        "dsound" to dsound,
+        "dshow" to dshow,
+        "dpi" to dpi,
+        "winver" to winver,
+        "mangohud" to mangohud,
+        "flags" to flags,
+        "turnip" to turnip,
+        "zink" to zink,
+        "wined3d" to wined3d
     )
 
     /** 序列化为 container.conf 文本（# 头注释 + key=value）。 */
@@ -255,6 +367,12 @@ data class ContainerData(
     companion object {
         const val DEFAULT_SCREEN = "native"
         const val DEFAULT_GALLIUM = "auto"
+
+        /** v3.2.15：帧率限制/DPI 缺省值。 */
+        const val FRAME_DEFAULT = "0"
+        const val DPI_DEFAULT = "96"
+        val FRAME_CHOICES: List<String> = listOf("0", "60", "120")
+        val DPI_CHOICES: List<Int> = listOf(72, 96, 120, 144, 192)
 
         /** v3.2.14：DXVK 注入开关的开启值（用户需求：构建前缀时自动打入
          *  assets/dxvk 内的 dxvk-2.3.1.tar.gz）。 */
@@ -303,7 +421,19 @@ data class ContainerData(
                 wine = kv["wine"] ?: "",
                 lang = kv["lang"] ?: ContainerLangs.DEFAULT,
                 audio = ContainerAudio.fromId(kv["audio"]),
-                created = kv["created"] ?: ""
+                created = kv["created"] ?: "",
+                // v3.2.15：wineguanli.py 重制键（缺键/非法值 → 缺省）
+                frame = kv["frame"]?.trim()?.takeIf { it in FRAME_CHOICES } ?: FRAME_DEFAULT,
+                cores = kv["cores"] ?: "",
+                dsound = kv["dsound"]?.takeIf { it == "native,builtin" } ?: "builtin,native",
+                dshow = kv["dshow"]?.takeIf { it == "native,builtin" } ?: "builtin,native",
+                dpi = kv["dpi"]?.trim()?.toIntOrNull()?.coerceIn(60, 240)?.toString() ?: DPI_DEFAULT,
+                winver = kv["winver"]?.takeIf { v -> WindowsVersions.ALL.any { it.id == v } } ?: WindowsVersions.DEFAULT_ID,
+                mangohud = kv["mangohud"] ?: "",
+                flags = kv["flags"] ?: "",
+                turnip = kv["turnip"] ?: "",
+                zink = kv["zink"] ?: "",
+                wined3d = kv["wined3d"] ?: ""
             )
         }
     }

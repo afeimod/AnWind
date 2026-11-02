@@ -29,22 +29,20 @@ import java.io.File
 /**
  * v3.2.14 启动动画（用户需求：项目根目录 start.mp4 作为 app 启动动画）。
  *
- * 行为约定：
- * - 内置动画：assets/anwind/boot/startup.mp4（约 5 秒）—— 用户明确要求
- *   "5 秒时间太长，加速为 3 秒"，故按 duration/3s 倍速播放（MediaPlayer
- *   PlaybackParams.setSpeed，API 23+，minSdk 24 满足）。
+ * 行为约定（v3.2.15 更新：用户要求去掉倍速快进，原视频速度播放）：
+ * - 内置动画：assets/anwind/boot/startup.mp4（约 5 秒）—— 按视频自身
+ *   时长原速播放完整，不再加速。
  * - 自定义动画（设置→个性化→启动动画→自定义）：file:// 绝对路径的视频，
- *   时长 > 3 秒的一律加速到 3 秒内播完；短于 3 秒的原速播完 ——
- *   启动等待时间统一收敛在 ~3 秒。
+ *   同样原速播放完整。
  * - 交互：点击任意位置立即跳过。
- * - 硬保底：目标时长 + 600ms 后无论视频/播放器状态如何强制结束，防止
- *   自定义视频损坏、解码器报错等异常卡死启动流程。
+ * - 硬保底：视频时长 + 1200ms 后无论播放状态如何强制结束；视频
+ *   不可读/prepare 挂死（无任何回调）时 12 秒全局兕底，防止卡死启动。
  * - 播放失败（文件缺失/格式不支持/解码错误）：静默直接进入桌面。
  * - 进程级一次性：由调用方（MainActivity + AnWindApp 标记）控制 ——
  *   Activity 因旋转/主题切换重建不重播，app 冷启动重新播放。
  */
-private const val TARGET_DURATION_MS = 3000L
 private const val ASSET_BOOT_VIDEO = "anwind/boot/startup.mp4"
+private const val GLOBAL_FALLBACK_MS = 12_000L
 
 @Composable
 fun StartupAnimationOverlay(
@@ -53,6 +51,8 @@ fun StartupAnimationOverlay(
 ) {
     val context = LocalContext.current
     var fadeOut by remember { mutableStateOf(false) }
+    // 视频真实时长（onPrepared 回调里写入），看门狗据此保底
+    var videoDurationMs by remember { mutableStateOf(0L) }
     val alpha by animateFloatAsState(
         targetValue = if (fadeOut) 0f else 1f,
         animationSpec = tween(280),
@@ -69,12 +69,8 @@ fun StartupAnimationOverlay(
                 setAudioStreamType(AudioManager.STREAM_MUSIC)
                 setOnPreparedListener { mp ->
                     runCatching {
-                        val durationMs = mp.duration.toLong().coerceAtLeast(1)
-                        // 时长超过 3 秒 → 加速到 3 秒整（内置 5s 视频约 1.667 倍速）
-                        val speed = if (durationMs > TARGET_DURATION_MS)
-                            durationMs.toFloat() / TARGET_DURATION_MS.toFloat()
-                        else 1f
-                        mp.playbackParams = mp.playbackParams.setSpeed(speed)
+                        // v3.2.15：去掉倍速快进，原视频速度播放完整
+                        videoDurationMs = mp.duration.toLong().coerceAtLeast(1)
                         mp.isLooping = false
                         mp.start()
                     }.onFailure { finishNow() }
@@ -109,9 +105,20 @@ fun StartupAnimationOverlay(
         }
     }
 
-    // 硬保底看门狗：目标时长 + 600ms 缓冲，无论播放状态强制收尾
+    // 硬保底看门狗：视频时长 + 1200ms 缓冲，无论播放状态强制收尾。
+    // duration 状态在 onPrepared 后写入，LaunchedEffect 随之重启，保底
+    // 时机始终基于真实时长（原速播放完整后 1.2s 内必结束）。
+    LaunchedEffect(videoDurationMs) {
+        if (videoDurationMs > 0) {
+            delay(videoDurationMs + 1200)
+            finishNow()
+        }
+    }
+
+    // 极端兕底：数据源损坏/prepare 挂死（无任何回调）时全局超时，
+    // 不让启动动画卡死启动流程。
     LaunchedEffect(player) {
-        delay(TARGET_DURATION_MS + 600)
+        delay(GLOBAL_FALLBACK_MS)
         finishNow()
     }
 

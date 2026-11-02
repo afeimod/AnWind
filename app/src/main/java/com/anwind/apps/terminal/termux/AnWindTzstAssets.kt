@@ -128,12 +128,18 @@ object AnWindTzstAssets {
         val path: String get() = "$dir/$name"
     }
 
-    /** DXVK 资产压缩类型探测（tar.gz 优先支持 —— 用户约定格式）。 */
+    /** DXVK 资产压缩类型探测（tar.gz 优先支持 —— 用户约定格式）。
+     *  v3.2.15：① 补 .tar.xz/.txz → XZ；② 补纯 .tar → PLAIN —— 用户实测
+     *  部分构建管线会把 assets 内 *.tar.gz / *.tar.xz 剥掉压缩层变成 *.tar
+     *  （aapt2 实验证明其本身不改名，但下游处理链可能 gunzip）；纯 .tar
+     *  内容仍是完整 tar 流，照常解压，不再因后缀不识别而跳过注入。 */
     private fun dxvkAssetType(name: String): TarCompressorUtils.Type? {
         val lower = name.lowercase()
         return when {
             lower.endsWith(".tar.gz") || lower.endsWith(".tgz") -> TarCompressorUtils.Type.GZIP
+            lower.endsWith(".tar.xz") || lower.endsWith(".txz") -> TarCompressorUtils.Type.XZ
             lower.endsWith(".tzst") || lower.endsWith(".tar.zst") -> TarCompressorUtils.Type.ZSTD
+            lower.endsWith(".tar") -> TarCompressorUtils.Type.PLAIN
             else -> null
         }
     }
@@ -152,8 +158,12 @@ object AnWindTzstAssets {
             // 目录不存在（未内置任何资产）：正常路径，不扫日志
         }
         try {
-            scanAssets(context)[Kind.DXVK].orEmpty().forEach { name ->
-                out.add(DxvkAsset(ASSET_DIR, name, TarCompressorUtils.Type.ZSTD))
+            // v3.2.15：旧契约目录 assets/anwind/ 也按后缀自适应识别
+            // （此前只认 .tzst；现在 dxvk-*.tar.gz/.tar.xz/.tar 同样可用）
+            context.assets.list(ASSET_DIR)?.forEach { name ->
+                if (Kind.of(name) == Kind.DXVK) {
+                    dxvkAssetType(name)?.let { out.add(DxvkAsset(ASSET_DIR, name, it)) }
+                }
             }
         } catch (_: Exception) {
         }
@@ -386,6 +396,11 @@ object AnWindTzstAssets {
         if (dxvkAssets.isEmpty()) {
             log("提示: APK 未内置 DXVK 资产（assets/dxvk/dxvk-<ver>.tar.gz），跳过注入")
             return true
+        }
+        // v3.2.15：资产后缀兼容报告（帮助用户发现构建管线把 .tar.gz 剥成 .tar 的情况）
+        val stripped = dxvkAssets.filter { it.name.endsWith(".tar") }
+        if (stripped.isNotEmpty()) {
+            log("提示: 检测到未压缩 .tar 资产（${stripped.joinToString { it.name }}）—— 构建管线剥掉了压缩层，已按纯 tar 正常解压")
         }
         val combinedFp = dxvkAssets.joinToString("|") { assetFingerprint(context, it.path) }
         if (!applyDxvkAssetsToPrefix(context, containerPrefix, dxvkAssets, combinedFp, log)) {

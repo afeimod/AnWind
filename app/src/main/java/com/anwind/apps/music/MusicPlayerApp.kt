@@ -133,6 +133,8 @@ private fun MusicContent(scope: WindowContentScope) {
     var searching by remember { mutableStateOf(false) }
     var searchError by remember { mutableStateOf<String?>(null) }
     var searchPage by remember { mutableStateOf(0) }
+    // v3.2.15（AnWindMusic 回移）：搜索音源（0=酷我 / 1=简音 Meting 聚合）
+    var searchSource by remember { mutableStateOf(musicSettings.searchSource) }
 
     // ===== 歌单状态 =====
     var favorites by remember { mutableStateOf(engine.store.loadFavorites()) }
@@ -210,6 +212,13 @@ private fun MusicContent(scope: WindowContentScope) {
                 "lyricImage" -> updateSettings(
                     musicSettings.copy(lyricBgImage = path, lyricBgMode = MusicSettings.BG_IMAGE)
                 )
+                // v3.2.15（AnWindMusic 回移）：背景视频（BG_VIDEO 模式静音循环铺底）
+                "homeVideo" -> updateSettings(
+                    musicSettings.copy(homeBgVideo = path, homeBgMode = MusicSettings.BG_VIDEO)
+                )
+                "lyricVideo" -> updateSettings(
+                    musicSettings.copy(lyricBgVideo = path, lyricBgMode = MusicSettings.BG_VIDEO)
+                )
                 "coverImage" -> updateSettings(
                     musicSettings.copy(coverImage = path)
                 )
@@ -245,7 +254,10 @@ private fun MusicContent(scope: WindowContentScope) {
         downloads.add(0, item)
         uiScope.launch {
             // 1) 解析直链
-            val urlRes = KuwoMusicApi.getPlayUrl(song.id)
+            // v3.2.15（AnWindMusic 回移）：简音 Meting 音源走代理直链，其余走酷我
+            val urlRes = song.metingServer
+                ?.let { MetingMusicApi.resolvePlayUrl(it, song.id) }
+                ?: KuwoMusicApi.getPlayUrl(song.id)
             if (urlRes.isFailure) {
                 item.failed = true
                 item.error = urlRes.exceptionOrNull()?.message ?: "获取链接失败"
@@ -375,15 +387,56 @@ private fun MusicContent(scope: WindowContentScope) {
             val pair = HomeBgGradients.getOrElse(musicSettings.homeBgGradient) { HomeBgGradients[0] }
             Modifier.background(Brush.verticalGradient(pair))
         }
-        MusicSettings.BG_IMAGE -> Modifier.background(Color.Transparent)
+        // v3.2.15（AnWindMusic 回移）：视频背景 —— 透明底，BgVideo 在底层渲染
+        MusicSettings.BG_IMAGE, MusicSettings.BG_VIDEO -> Modifier.background(Color.Transparent)
         else -> Modifier.background(Mc.bg)
     }
+    // v3.2.15（AnWindMusic 回移）：背景明暗自适应 —— 文字按背景明暗自动
+    // 深浅 + 光晕（图片背景取采样亮度；视频按偏暗基准走暗背景方案）
+    var bgLuminance by remember { mutableStateOf<Float?>(null) }
+    LaunchedEffect(
+        musicSettings.homeBgMode,
+        musicSettings.homeBgImage,
+        musicSettings.homeBgVideo,
+        musicSettings.homeBgColor,
+        musicSettings.homeBgGradient,
+        musicSettings.homeImageDim
+    ) {
+        bgLuminance = when (musicSettings.homeBgMode) {
+            MusicSettings.BG_IMAGE -> {
+                val path = musicSettings.homeBgImage
+                if (path.isNullOrEmpty()) null
+                else loadBackgroundBitmap(context, path, 64)?.averageLuminance()
+                    ?.let { (it * (1f - musicSettings.homeImageDim)).coerceIn(0f, 1f) }
+            }
+            MusicSettings.BG_VIDEO -> 0.30f * (1f - musicSettings.homeImageDim)
+            MusicSettings.BG_SOLID -> Color(musicSettings.homeBgColor).luminance()
+            MusicSettings.BG_GRADIENT -> {
+                val pair = HomeBgGradients.getOrElse(musicSettings.homeBgGradient) { HomeBgGradients[0] }
+                (pair[0].luminance() + pair[1].luminance()) / 2f
+            }
+            else -> null
+        }
+    }
+    val scheme = remember(homeCustomBg, bgLuminance) { adaptiveScheme(homeCustomBg, bgLuminance) }
     // v2.21.5：向全内容区提供自定义背景激活标记 —— 设置卡片/选项芯片/输入框/搜索框等自动半透明融入
-    CompositionLocalProvider(LocalHomeCustomBg provides homeCustomBg) {
+    // v3.2.15：同时提供明暗自适应配色方案（AnWindMusic 回移）
+    CompositionLocalProvider(
+        LocalHomeCustomBg provides homeCustomBg,
+        LocalAdaptiveScheme provides scheme
+    ) {
     Box(Modifier.fillMaxSize()) {
-        // 自定义图片背景 + 压暗层（仅图片模式）
+        // 自定义图片/视频背景 + 压暗层（对应模式各自渲染）
         if (musicSettings.homeBgMode == MusicSettings.BG_IMAGE) {
             BgImage(musicSettings.homeBgImage, Modifier.matchParentSize())
+            Box(
+                Modifier
+                    .matchParentSize()
+                    .background(Color.Black.copy(alpha = musicSettings.homeImageDim))
+            )
+        } else if (musicSettings.homeBgMode == MusicSettings.BG_VIDEO) {
+            // v3.2.15：主页背景视频（静音循环 cover 铺满；歌词页覆盖时暂停省电）
+            BgVideo(musicSettings.homeBgVideo, Modifier.matchParentSize(), active = !showLyrics)
             Box(
                 Modifier
                     .matchParentSize()
@@ -403,18 +456,36 @@ private fun MusicContent(scope: WindowContentScope) {
                         Page.SEARCH -> SearchPage(
                             query = query,
                             onQueryChange = { query = it },
+                            searchSource = searchSource,
+                            onSourceChange = { src ->
+                                searchSource = src
+                                updateSettings(musicSettings.copy(searchSource = src))
+                            },
                             onSearch = { kw ->
                                 searching = true
                                 searchError = null
                                 uiScope.launch {
-                                    val r = KuwoMusicApi.search(kw, 0, 20)
-                                    if (r.isSuccess) {
-                                        searchResults = r.getOrThrow().map { SongInfo.fromKuwoSong(it) }
-                                        searchPage = 0
-                                        if (searchResults.isEmpty()) searchError = "未找到相关歌曲"
+                                    if (searchSource == MusicSettings.SEARCH_SOURCE_METING) {
+                                        // v3.2.15：简音音源（Meting 聚合，netease 空结果自动回落 kugou）
+                                        val r = MetingMusicApi.search(kw)
+                                        if (r.isSuccess) {
+                                            searchResults = r.getOrThrow().map { SongInfo.fromMetingSong(it) }
+                                            searchPage = 0
+                                            if (searchResults.isEmpty()) searchError = "未找到相关歌曲"
+                                        } else {
+                                            searchResults = emptyList()
+                                            searchError = r.exceptionOrNull()?.message ?: "搜索失败"
+                                        }
                                     } else {
-                                        searchResults = emptyList()
-                                        searchError = r.exceptionOrNull()?.message ?: "搜索失败"
+                                        val r = KuwoMusicApi.search(kw, 0, 20)
+                                        if (r.isSuccess) {
+                                            searchResults = r.getOrThrow().map { SongInfo.fromKuwoSong(it) }
+                                            searchPage = 0
+                                            if (searchResults.isEmpty()) searchError = "未找到相关歌曲"
+                                        } else {
+                                            searchResults = emptyList()
+                                            searchError = r.exceptionOrNull()?.message ?: "搜索失败"
+                                        }
                                     }
                                     searching = false
                                 }
@@ -422,8 +493,12 @@ private fun MusicContent(scope: WindowContentScope) {
                             results = searchResults,
                             searching = searching,
                             error = searchError,
+                            // v3.2.15：仅酷我源支持分页；简音源一次返回全部结果
+                            canLoadMore = searchSource == MusicSettings.SEARCH_SOURCE_KUWO,
                             onLoadMore = {
-                                if (!searching && searchResults.isNotEmpty()) {
+                                if (searchSource == MusicSettings.SEARCH_SOURCE_KUWO &&
+                                    !searching && searchResults.isNotEmpty()
+                                ) {
                                     val nextPage = searchPage + 1
                                     searching = true
                                     uiScope.launch {
@@ -504,6 +579,9 @@ private fun MusicContent(scope: WindowContentScope) {
                             onChange = { updateSettings(it) },
                             onPickLyricImage = { openDesktopPicker("lyricImage", "选择歌词秀背景图片", "image") },
                             onPickHomeImage = { openDesktopPicker("homeImage", "选择主页背景图片", "image") },
+                            // v3.2.15（AnWindMusic 回移）：背景视频选择（文件管理器 media 模式选视频）
+                            onPickHomeVideo = { openDesktopPicker("homeVideo", "选择主页背景视频", "media") },
+                            onPickLyricVideo = { openDesktopPicker("lyricVideo", "选择歌词秀背景视频", "media") },
                             onPickCoverImage = { openDesktopPicker("coverImage", "选择歌词秀封面图片", "image") },
                             onPickDiscImage = { openDesktopPicker("discImage", "选择歌词秀光盘图片", "image") },
                             onPickFolder = { openDesktopPicker("folder", "选择要扫描的音乐文件夹", "dir") },
@@ -544,6 +622,8 @@ private fun MusicContent(scope: WindowContentScope) {
                         onCycleMode = { engine.cycleMode() },
                         onDownloadLyric = { downloadLyricFile(engine.currentSong) },
                         onClose = { showLyrics = false },
+                        // v3.2.15（AnWindMusic 回移）：双界面（3D 歌词墙/黑胶唱片机）切换后持久化
+                        onUpdateSettings = { updateSettings(it) },
                         // v2.21.3：真全屏（F11 风格，隐藏标题栏/任务栏占满整屏）；返回键退出
                         isTrueFullscreen = scope.windowState.isTrueFullscreen,
                         onToggleFullscreen = {

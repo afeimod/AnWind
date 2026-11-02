@@ -30,6 +30,8 @@ data class SongInfo(
     val source: String = SOURCE_KUWO,
     /** 本地歌曲的 content:// 或 file:// URI */
     val localUri: String? = null,
+    /** 本地歌曲的绝对路径（MediaStore DATA / 目录扫描），供内嵌封面提取与播放兜底 */
+    val localPath: String? = null,
     /** 已下载到本地的文件路径（下载完成后回填，仅在线歌有） */
     val downloadedPath: String? = null
 ) {
@@ -39,6 +41,14 @@ data class SongInfo(
 
     val isLocal: Boolean get() = source == SOURCE_LOCAL
 
+    /** v2.24：简音 Meting 音源对应的 server（非 Meting 歌返回 null） */
+    val metingServer: String?
+        get() = when (source) {
+            SOURCE_METING_NETEASE -> "netease"
+            SOURCE_METING_KUGOU -> "kugou"
+            else -> null
+        }
+
     fun toOnlineSong(): KuwoMusicApi.Song? =
         if (source == SOURCE_KUWO) {
             KuwoMusicApi.Song(id, name, artist, album, durationMs, picUrl)
@@ -47,10 +57,20 @@ data class SongInfo(
     companion object {
         const val SOURCE_KUWO = "kuwo"
         const val SOURCE_LOCAL = "local"
+        /** v2.24：简音同款 Meting 聚合音源（source 形如 meting_netease / meting_kugou） */
+        const val SOURCE_METING_NETEASE = "meting_netease"
+        const val SOURCE_METING_KUGOU = "meting_kugou"
 
         fun fromKuwoSong(s: KuwoMusicApi.Song) = SongInfo(
             id = s.id, name = s.name, artist = s.artist, album = s.album,
             durationMs = s.durationMs, picUrl = s.pic, source = SOURCE_KUWO
+        )
+
+        /** v2.24：Meting 搜索结果 → SongInfo（无时长/专辑字段，prepared 后由播放器回填时长） */
+        fun fromMetingSong(s: MetingMusicApi.Song) = SongInfo(
+            id = s.id, name = s.name, artist = s.artist, album = "",
+            durationMs = 0L, picUrl = s.pic,
+            source = if (s.server == "kugou") SOURCE_METING_KUGOU else SOURCE_METING_NETEASE
         )
     }
 }
@@ -182,11 +202,11 @@ object LrcParser {
 
 /**
  * 播放器设置（v2.18 新增，设置中心持久化）：
- * - 歌词秀：背景（封面模糊/纯色/渐变/自定义图片）、3D 倾斜强度与上限、歌词墙视角、
- *   左右字体差、高亮颜色、KTV 渐进样式、当前行字号、行切换动画、高亮发光、翻译显示、
+ * - 歌词秀：背景（封面模糊/纯色/渐变/自定义图片/自定义视频）、3D 倾斜强度与上限、歌词墙视角、
+ *   左右字体差、高亮颜色、非高亮歌词颜色、KTV 渐进样式、当前行字号、行切换动画、高亮发光、翻译显示、
  *   自定义封面/光盘图片（v2.21）
  * - 桌面歌词（v2.21）：悬浮窗开关、两行/全屏双模式、字体颜色、背景不透明度、字号
- * - 主页：背景（默认/纯色/渐变/自定义图片）与图片压暗
+ * - 主页：背景（默认/纯色/渐变/自定义图片/自定义视频）与图片压暗
  * - 本地扫描：全库扫描 / 仅扫描指定目录（目录为绝对路径，依赖“所有文件访问”权限）
  * - 词源引擎：智能回退 / 指定优先词源（酷我、网易云、QQ 音乐、LRCLIB）
  */
@@ -196,6 +216,8 @@ data class MusicSettings(
     val lyricBgColor: Int = 0xFF191922.toInt(),
     val lyricBgGradient: Int = 0,
     val lyricBgImage: String? = null,
+    /** 歌词秀背景视频（v1.2 新增，绝对路径；BG_VIDEO 模式下静音循环铺底） */
+    val lyricBgVideo: String? = null,
     /** 封面模糊模式的模糊半径（dp），0 为不模糊（v2.20 可调；v2.21 默认接近清晰） */
     val coverBlur: Float = 3f,
     /** 封面模糊/自定义图片模式的背景压暗强度 0..0.95（v2.20 可调；v2.21 默认接近最亮） */
@@ -217,6 +239,8 @@ data class MusicSettings(
     val ktvMode: Boolean = false,
     /** 当前行字号（sp），非当前行按比例缩小 */
     val lyricFontSize: Int = 22,
+    /** 非高亮歌词颜色（v1.2 新增 ARGB）：默认非当前行/翻译行/KTV 未唱部分的字色 */
+    val lyricSubColor: Int = 0xFFD5D5DE.toInt(),
     // ---- 桌面歌词（v2.21 新增） ----
     /** 桌面歌词总开关（需「显示在应用上层/其他应用上层」权限） */
     val desktopLyricOn: Boolean = false,
@@ -236,6 +260,8 @@ data class MusicSettings(
     val coverImage: String? = null,
     /** 歌词秀自定义光盘盘面图片（空 = 与封面同图，v2.21） */
     val discImage: String? = null,
+    /** 歌词秀界面样式：0 = 3D 歌词墙（封面+CD），1 = 黑胶唱片机（v2.22 新增，点击封面/唱片切换） */
+    val lyricStyle: Int = LYRIC_STYLE_WALL,
     /** 行切换平滑动画 */
     val lyricDynamic: Boolean = true,
     /** 当前行高亮发光 */
@@ -244,13 +270,20 @@ data class MusicSettings(
     val showTranslation: Boolean = true,
     /** 词源引擎：auto / kuwo / netease / qq / lrclib */
     val lyricEngine: String = ENGINE_AUTO,
+    /** v2.24：搜索音源：0 = 酷我（默认），1 = 简音（Meting 聚合，netease/kugou） */
+    val searchSource: Int = SEARCH_SOURCE_KUWO,
     // ---- 主页背景 ----
     val homeBgMode: Int = HOME_BG_DEFAULT,
     val homeBgColor: Int = 0xFFFCFCFD.toInt(),
     val homeBgGradient: Int = 0,
     val homeBgImage: String? = null,
-    /** 自定义图片时的压暗系数 0..0.8 */
+    /** 主页背景视频（v1.2 新增，绝对路径；BG_VIDEO 模式下静音循环铺底） */
+    val homeBgVideo: String? = null,
+    /** 自定义图片/视频时的压暗系数 0..0.8 */
     val homeImageDim: Float = 0.25f,
+    // ---- 屏幕方向（独立版新增） ----
+    /** 0 跟随系统 / 1 竖屏 / 2 横屏 / 3 自动旋转（重力感应） */
+    val orientation: Int = ORIENTATION_AUTO,
     // ---- 本地扫描 ----
     val scanMode: Int = SCAN_ALL,
     /** 指定目录扫描的绝对路径列表 */
@@ -263,8 +296,26 @@ data class MusicSettings(
         const val BG_SOLID = 1      // 纯色
         const val BG_GRADIENT = 2   // 渐变预设
         const val BG_IMAGE = 3      // 自定义图片
+        const val BG_VIDEO = 4      // 自定义视频（v1.2 新增，静音循环铺底）
 
-        // 主页背景模式
+        // 歌词秀界面样式（v2.22）：点击封面/唱片互相切换，设置里持久化
+        const val LYRIC_STYLE_WALL = 0    // 3D 歌词墙 + 封面嵌合 CD（默认）
+        const val LYRIC_STYLE_VINYL = 1   // 黑胶唱片机（左侧歌词 + 右侧唱片 + 唱针）
+
+        // 屏幕方向
+        const val ORIENTATION_AUTO = 0          // 跟随系统
+        const val ORIENTATION_PORTRAIT = 1      // 锁定竖屏
+        const val ORIENTATION_LANDSCAPE = 2     // 锁定横屏
+        const val ORIENTATION_SENSOR = 3        // 自动旋转（重力感应）
+        /** 屏幕方向显示名（设置页用） */
+        val ORIENTATION_LABELS = linkedMapOf(
+            ORIENTATION_AUTO to "自动",
+            ORIENTATION_PORTRAIT to "竖屏",
+            ORIENTATION_LANDSCAPE to "横屏",
+            ORIENTATION_SENSOR to "自动旋转"
+        )
+
+        // 主页背景模式（HOME_BG_* 与 BG_* 同值：默认 0 / 纯色 1 / 渐变 2 / 图片 3 / 视频 4）
         const val HOME_BG_DEFAULT = 0
 
         // 本地扫描模式
@@ -277,6 +328,10 @@ data class MusicSettings(
         const val ENGINE_NETEASE = "netease"
         const val ENGINE_QQ = "qq"
         const val ENGINE_LRCLIB = "lrclib"
+
+        // 搜索音源（v2.24）：搜索页双源可切，选择持久化
+        const val SEARCH_SOURCE_KUWO = 0    // 酷我音乐（默认）
+        const val SEARCH_SOURCE_METING = 1  // 简音（Meting 聚合，netease/kugou）
 
         /** 词源显示名（设置页 / 词源标记共用） */
         val ENGINE_LABELS = linkedMapOf(
@@ -389,6 +444,7 @@ class MusicStore(private val context: Context) {
             lyricBgColor = o.optInt("lyricBgColor", 0xFF191922.toInt()),
             lyricBgGradient = o.optInt("lyricBgGradient", 0),
             lyricBgImage = o.optString("lyricBgImage", "").takeIf { it.isNotEmpty() },
+            lyricBgVideo = o.optString("lyricBgVideo", "").takeIf { it.isNotEmpty() },
             coverBlur = o.optDouble("coverBlur", 3.0).toFloat().coerceIn(0f, 60f),
             lyricBgDim = o.optDouble("lyricBgDim", 0.10).toFloat().coerceIn(0f, 0.95f),
             tilt3d = o.optDouble("tilt3d", 14.0).toFloat().coerceIn(0f, 45f),
@@ -399,6 +455,7 @@ class MusicStore(private val context: Context) {
             highlightColor = o.optInt("highlightColor", 0xFFFFFFFF.toInt()),
             ktvMode = o.optBoolean("ktvMode", false),
             lyricFontSize = o.optInt("lyricFontSize", 22).coerceIn(12, 60),
+            lyricSubColor = o.optInt("lyricSubColor", 0xFFD5D5DE.toInt()),
             desktopLyricOn = o.optBoolean("desktopLyricOn", false),
             desktopLyricFullscreen = o.optBoolean("desktopLyricFullscreen", false),
             desktopLyricColor = o.optInt("desktopLyricColor", 0xFFFFFFFF.toInt()),
@@ -412,15 +469,19 @@ class MusicStore(private val context: Context) {
             desktopLyricLines = o.optInt("desktopLyricLines", 4).coerceIn(1, 15),
             coverImage = o.optString("coverImage", "").takeIf { it.isNotEmpty() },
             discImage = o.optString("discImage", "").takeIf { it.isNotEmpty() },
+            lyricStyle = o.optInt("lyricStyle", MusicSettings.LYRIC_STYLE_WALL).coerceIn(0, 1),
             lyricDynamic = o.optBoolean("lyricDynamic", true),
             lyricGlow = o.optBoolean("lyricGlow", true),
             showTranslation = o.optBoolean("showTranslation", true),
             lyricEngine = o.optString("lyricEngine", MusicSettings.ENGINE_AUTO),
+            searchSource = o.optInt("searchSource", MusicSettings.SEARCH_SOURCE_KUWO).coerceIn(0, 1),
             homeBgMode = o.optInt("homeBgMode", MusicSettings.HOME_BG_DEFAULT),
             homeBgColor = o.optInt("homeBgColor", 0xFFFCFCFD.toInt()),
             homeBgGradient = o.optInt("homeBgGradient", 0),
             homeBgImage = o.optString("homeBgImage", "").takeIf { it.isNotEmpty() },
+            homeBgVideo = o.optString("homeBgVideo", "").takeIf { it.isNotEmpty() },
             homeImageDim = o.optDouble("homeImageDim", 0.25).toFloat().coerceIn(0f, 0.95f),
+            orientation = o.optInt("orientation", MusicSettings.ORIENTATION_AUTO).coerceIn(0, 3),
             scanMode = o.optInt("scanMode", MusicSettings.SCAN_ALL),
             scanDirs = dirs
         )
@@ -437,6 +498,7 @@ class MusicStore(private val context: Context) {
                     .put("lyricBgColor", s.lyricBgColor)
                     .put("lyricBgGradient", s.lyricBgGradient)
                     .put("lyricBgImage", s.lyricBgImage ?: "")
+                    .put("lyricBgVideo", s.lyricBgVideo ?: "")
                     .put("coverBlur", s.coverBlur.toDouble())
                     .put("lyricBgDim", s.lyricBgDim.toDouble())
                     .put("tilt3d", s.tilt3d.toDouble())
@@ -447,6 +509,7 @@ class MusicStore(private val context: Context) {
                     .put("highlightColor", s.highlightColor)
                     .put("ktvMode", s.ktvMode)
                     .put("lyricFontSize", s.lyricFontSize)
+                    .put("lyricSubColor", s.lyricSubColor)
                     .put("desktopLyricOn", s.desktopLyricOn)
                     .put("desktopLyricFullscreen", s.desktopLyricFullscreen)
                     .put("desktopLyricColor", s.desktopLyricColor)
@@ -456,15 +519,19 @@ class MusicStore(private val context: Context) {
                     .put("desktopLyricLines", s.desktopLyricLines)
                     .put("coverImage", s.coverImage ?: "")
                     .put("discImage", s.discImage ?: "")
+                    .put("lyricStyle", s.lyricStyle)
                     .put("lyricDynamic", s.lyricDynamic)
                     .put("lyricGlow", s.lyricGlow)
                     .put("showTranslation", s.showTranslation)
                     .put("lyricEngine", s.lyricEngine)
+                    .put("searchSource", s.searchSource)
                     .put("homeBgMode", s.homeBgMode)
                     .put("homeBgColor", s.homeBgColor)
                     .put("homeBgGradient", s.homeBgGradient)
                     .put("homeBgImage", s.homeBgImage ?: "")
+                    .put("homeBgVideo", s.homeBgVideo ?: "")
                     .put("homeImageDim", s.homeImageDim.toDouble())
+                    .put("orientation", s.orientation)
                     .put("scanMode", s.scanMode)
                     .put("scanDirs", dirs)
             )
@@ -577,6 +644,7 @@ class MusicStore(private val context: Context) {
             .put("picUrl", s.picUrl)
             .put("source", s.source)
             .put("localUri", s.localUri ?: "")
+            .put("localPath", s.localPath ?: "")
             .put("downloadedPath", s.downloadedPath ?: "")
 
     private fun songFromJson(o: JSONObject): SongInfo =
@@ -589,6 +657,7 @@ class MusicStore(private val context: Context) {
             picUrl = o.optString("picUrl", ""),
             source = o.optString("source", SongInfo.SOURCE_KUWO),
             localUri = o.optString("localUri", "").takeIf { it.isNotEmpty() },
+            localPath = o.optString("localPath", "").takeIf { it.isNotEmpty() },
             downloadedPath = o.optString("downloadedPath", "").takeIf { it.isNotEmpty() }
         )
 
@@ -692,6 +761,9 @@ suspend fun fetchLyrics(
     val queries = buildLyricQueries(song)
     if (queries.isEmpty()) return null
 
+    // v2.24：简音 Meting 音源歌曲优先直取自带歌词直链（按歌曲 ID 精准对应）
+    fetchMetingDirect(store, song)?.let { return it }
+
     for (eng in engineOrder(engine)) {
         var pair: Pair<String, String?>? = null
         for ((qi, q) in queries.withIndex()) {
@@ -751,6 +823,9 @@ suspend fun fetchLyricsDeep(
     val candidates = queries.filter { it.title.isNotBlank() }.distinctBy { it.keyword }
     if (candidates.isEmpty()) return null
 
+    // v2.24：简音 Meting 音源直取歌词（与 fetchLyrics 同优先级）
+    fetchMetingDirect(store, song)?.let { return it }
+
     for (eng in engineOrder(engine)) {
         var pair: Pair<String, String?>? = null
         for (q in candidates) {
@@ -806,6 +881,19 @@ private fun deepTitleVariants(title: String): List<String> {
     }
     out.remove(t)
     return out.filter { it.length >= 2 }
+}
+
+/**
+ * v2.24：简音 Meting 音源歌词直取（搜索结果自带 LRC 直链，按歌曲 ID 精准对应）。
+ * 非 Meting 歌直接返回 null；拉取失败返回 null 走常规四级词源回退。
+ */
+private suspend fun fetchMetingDirect(store: MusicStore, song: SongInfo): LyricsDoc? {
+    val server = song.metingServer ?: return null
+    val main = runCatching { MetingMusicApi.fetchLrc(server, song.id).getOrNull() }.getOrNull()
+    if (main.isNullOrBlank()) return null
+    val doc = LrcParser.merge(main, null, "meting")
+    store.cacheLyrics(song, main, null)
+    return doc
 }
 
 /**

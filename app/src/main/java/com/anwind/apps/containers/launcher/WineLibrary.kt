@@ -1,0 +1,129 @@
+package com.anwind.apps.containers.launcher
+
+import com.anwind.apps.containers.ContainerData
+import com.anwind.apps.containers.ContainerManager
+import com.anwind.apps.containers.WindowsVersions
+import java.io.File
+import java.util.concurrent.TimeUnit
+
+/**
+ * v3.2.15（wineguanli.py 重制）：容器「函数库」设置的注册表落地。
+ *
+ * 对应 wineguanli.py 的 update_user_registry_file / update_windows_
+ * version_in_system_reg：
+ *  - dsound / dshow（DirectShow=quartz）→ HKCU\Software\Wine\DllOverrides
+ *    的 DLL 加载序（builtin,native / native,builtin）；
+ *  - dpi → HKCU\Control Panel\Desktop 的 LogPixels（dword，十六进制 8 位）；
+ *  - winver → HKLM\Software\Microsoft\Windows NT\CurrentVersion 的
+ *    CurrentVersion / ProductName / CurrentBuild 三件套（wineguanli.py
+ *    版本映射表逐条移植，见 [WindowsVersions]）。
+ *
+ * 实现方式：单次 `wine regedit /s` 导入（与 [WineRegistry.ensureDllOverrides]
+ * 同一模式），不逐键起进程；wineguanli.py 的直接文本改写依赖其特定
+ * 前缀编码（UTF-8），而 wine 原生前缀的 .reg 为 UTF-16LE —— regedit
+ * 导入对两种形态都正确，且无需关心编码。
+ *
+ * 幂等：.anwind-library 标记记录已应用的四元组指纹，值变化才重新导入；
+ * 失败不阻断启动链（下次自动重试）。
+ */
+object WineLibrary {
+
+    private fun marker(prefix: File) = File(prefix, ".anwind-library")
+
+    /** 四元组指纹（值变化 → 重新导入）。 */
+    private fun fingerprint(c: ContainerData): String =
+        "${c.dsound}|${c.dshow}|${c.dpi}|${c.winver}"
+
+    /**
+     * 启动链集成点：前缀已构建且指纹变化时导入函数库设置。
+     *
+     * @return true = 已应用/无需应用；false = 导入失败（下次启动自动重试）
+     */
+    fun ensureApplied(
+        resolved: WineRuntime.Resolved,
+        container: ContainerData,
+        env: Map<String, String>,
+        log: (String) -> Unit = {}
+    ): Boolean {
+        val prefix = File(container.prefixPath)
+        if (!File(prefix, "system.reg").isFile) return true   // 前缀未建：留给 wineboot 后
+        val fp = fingerprint(container)
+        val mark = marker(prefix)
+        if (mark.isFile) {
+            val prev = runCatching { mark.readText().trim() }.getOrDefault("")
+            if (prev == fp) return true
+        }
+        log("应用函数库设置（dsound/quartz/DPI=${container.dpi}/Windows=${WindowsVersions.fromId(container.winver).label}）……")
+        return try {
+            val anwindDir = File(prefix, "drive_c/anwind")
+            anwindDir.mkdirs()
+            val regFile = File(anwindDir, "library.reg")
+            regFile.writeText(buildReg(container))
+
+            val cmd = NativeShellExecutor.create()
+                .setCommand(*WineRuntime.wineCommand(resolved).toTypedArray(),
+                            "regedit", "/s", "C:\\anwind\\library.reg")
+                .putEnv(env)
+                .putEnv("WINEPREFIX", container.prefixPath)
+                .setWorkingDir(WineEnvironment.HOME_DIR)
+                .exec()
+            val finished = runCatching { cmd.waitFor(120, TimeUnit.SECONDS) }.getOrDefault(false)
+            val code = if (finished) runCatching { cmd.waitFor() }.getOrDefault(-1) else -1
+            if (finished && code == 0) {
+                runCatching { mark.writeText(fp) }
+                log("函数库设置已写入注册表（dsound=${container.dsound} quartz=${container.dshow} DPI=${container.dpi}）")
+                true
+            } else {
+                log("警告: 函数库设置导入未确认成功（退出码=$code；下次启动自动重试）")
+                false
+            }
+        } catch (e: Exception) {
+            log("警告: 函数库设置注入异常：${e.message}（下次启动自动重试）")
+            false
+        }
+    }
+
+    /**
+     * 立即应用（UI「函数库」页按钮）：不等下次启动，当场导入。
+     * 前缀未构建时返回错误提示（此时 wineboot 后启动链会自动补）。
+     */
+    fun applyNow(
+        container: ContainerData,
+        log: (String) -> Unit = {}
+    ): String? {
+        val prefix = File(container.prefixPath)
+        if (!File(prefix, "system.reg").isFile) {
+            return "容器前缀尚未构建（先运行 wineboot 或启动一次容器）"
+        }
+        val resolved = runCatching { WineRuntime.resolve(container) }.getOrNull()
+            ?: return "wine 运行时解析失败（wine 未安装？）"
+        val env = WineEnvironment.buildBaseEnv(container, resolved.wineDir).toMutableMap()
+        env["WINEPREFIX"] = container.prefixPath
+        return if (ensureApplied(resolved, container, env, log)) null
+        else "函数库设置导入失败（详见日志；下次启动自动重试）"
+    }
+
+    /** 生成 regedit 导入文件（REGEDIT4 / ANSI-ASCII，wine regedit 原生支持）。 */
+    private fun buildReg(c: ContainerData): String = buildString {
+        val ver = WindowsVersions.fromId(c.winver)
+        appendLine("REGEDIT4")
+        appendLine()
+        appendLine("[HKEY_CURRENT_USER\\Software\\Wine\\DllOverrides]")
+        appendLine("\"dsound\"=\"${c.dsound}\"")
+        appendLine("\"quartz\"=\"${c.dshow}\"")
+        appendLine()
+        appendLine("[HKEY_CURRENT_USER\\Control Panel\\Desktop]")
+        appendLine("\"LogPixels\"=dword:${dpiHex(c.dpi)}")
+        appendLine()
+        appendLine("[HKEY_LOCAL_MACHINE\\Software\\Microsoft\\Windows NT\\CurrentVersion]")
+        appendLine("\"CurrentVersion\"=\"${ver.currentVersion}\"")
+        appendLine("\"ProductName\"=\"${ver.productName}\"")
+        appendLine("\"CurrentBuild\"=\"${ver.currentBuild}\"")
+    }
+
+    /** DPI 十六进制 8 位（wineguanli.py：hex(dpi)[2:].zfill(8)，如 96 → 00000060）。 */
+    internal fun dpiHex(dpi: String): String {
+        val v = dpi.trim().toIntOrNull()?.coerceIn(60, 240) ?: 96
+        return v.toString(16).padStart(8, '0')
+    }
+}

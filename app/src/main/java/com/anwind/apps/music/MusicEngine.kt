@@ -147,6 +147,13 @@ class MusicEngine(context: Context) {
     private var lastSessionSaveAt = 0L
 
     init {
+        // 独立版新增：锁屏后持 CPU 唤醒锁播放，避免息屏时音频停顿
+        runCatching {
+            player.setWakeMode(
+                appContext,
+                android.os.PowerManager.PARTIAL_WAKE_LOCK
+            )
+        }
         player.setOnCompletionListener { onCompleted() }
         player.setOnPreparedListener { mp ->
             // 仅当仍是当前这次加载时才生效（快速切歌时旧回调丢弃）
@@ -387,7 +394,10 @@ class MusicEngine(context: Context) {
                 song.isLocal -> song.localUri
                 song.downloadedPath != null && java.io.File(song.downloadedPath).isFile ->
                     Uri.fromFile(java.io.File(song.downloadedPath)).toString()
-                else -> KuwoMusicApi.getPlayUrl(song.id).getOrNull()
+                // v2.24：简音 Meting 音源 → 解析代理直链（302 跟随）；其余在线歌走酷我解析
+                else -> song.metingServer
+                    ?.let { MetingMusicApi.resolvePlayUrl(it, song.id).getOrNull() }
+                    ?: KuwoMusicApi.getPlayUrl(song.id).getOrNull()
             }
             if (myGen != gen) return@launch
             if (source.isNullOrEmpty()) {

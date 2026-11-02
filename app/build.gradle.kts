@@ -191,8 +191,33 @@ android {
         // TrackpadRouter 之前）+ TrackpadController/TrackpadRouter（触控板
         // 模式指针处与手指轻点处）按窗口几何直判置前；WindowChrome/
         // WinDialogFrame onGloballyPositioned 上报几何；focus 加诊断日志。
-        versionCode = 76
-        versionName = "2.38.13"
+        versionCode = 77
+        versionName = "2.38.14"
+        // v2.38.14（源码包 v3.2.15）：六诉求轮。
+        // ①box64 bionic 构建：v3.2.14 的符号校验（产物应含 shmget/shmat/
+        //   shmctl）是错误假设 —— 上游 v0.4.4 源码实证：wrappedandroidshmem
+        //   为纯 GO 型运行时 dlsym 映射（非 STATICBUILD 下符号表不存这些
+        //   符号），CI 实报"符号表缺 shmget"必挂而产物正常；改为「编译单元
+        //   在链（wrappedandroidshmem.c.o）+ 二进制含 libandroid-shmem.so
+        //   注册字符串」双证据校验（日志实锤两条全过）。
+        // ②启动动画去倍速：按视频原始时长原速播放完整（v3.2.14 是 3 秒
+        //   加速），看门狗随真实时长自适应（+1.2s 缓冲），无回调 12s 兜底。
+        // ③assets tar.gz/tar.xz 打包兼容：aapt2 实验证明其不改名（三格式
+        //   原样保留），改名发生在下游处理链；资产扫描器补 .tar.xz→XZ 与
+        //   纯 .tar→PLAIN 识别（内容仍完整可解，不再因后缀被剥而跳过注入），
+        //   TarCompressorUtils 新增 PLAIN 类型。
+        // ④容器管理按 wineguanli.py 重制：宽屏左右分栏（左容器列表 + 右
+        //   五选项卡：基本/CPU核心/函数库/图形与Wine/高级），container.conf
+        //   新增 frame/cores/dsound/dshow/dpi/winver/mangohud/flags/turnip/
+        //   zink/wined3d 键；函数库设置（dsound/quartz DLL 加载序 + LogPixels
+        //   DPI + Windows 版本三件套）启动链自动 regedit 落地 + 立即应用；
+        //   帧率限制/Unity/MangoHud/核心集环境注入；/opt 对接清单见
+        //   docs/WINEGUANLI-OPT-FOLDERS.md。
+        // ⑤云音乐按 AnWindMusic 独立版回移：双搜索音源（酷我/简音 Meting
+        //   聚合，netease→kugou 回落）、本地真实元数据与内嵌封面、黑胶
+        //   唱片机歌词界面、主页/歌词页背景视频、非高亮歌词颜色、背景明暗
+        //   自适应配色。
+        // ⑥X11 窗口方向改跟随桌面（不再直连系统传感器）；桌面默认横屏。
         // v2.38.13（源码包 v3.2.14）：①wine9.7 arm64ec faudio SIMD 修复
         //   （0007f：EC 下走 NEON 不再 include emmintrin.h）+ box64 冒烟
         //   校验误报修正 + 框架 install() fail-fast；②start.mp4 启动动画

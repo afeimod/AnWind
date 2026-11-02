@@ -328,6 +328,82 @@ object WineEnvironment {
     // 4) 音频 / 用户附加环境（audio_setup / apply_extra_env 的注入端）
     // ------------------------------------------------------------------
 
+    /**
+     * v3.2.15（wineguanli.py 重制）：容器调优环境注入。
+     *
+     *  - frame != "0" → DXVK_FRAME_RATE（wineguanli.py 帧数限制同款变量）
+     *  - flags 含 unity → BOX64_UNITYPLAYER=1（box64 官方 Unity 兼容开关，
+     *    对应 wineguanli.py「Unity 单线程渲染」勾选）
+     *  - mangohud 非空 → MANGOHUD=1 + MANGOHUD_CONFIG（rootfs 内置 MangoHud
+     *    时生效；对应 wineguanli.py 的 MangoHud 配置）
+     *  - cores 非空 → PRIMARY_CORES / SECONDARY_CORES（wineguanli.py 的
+     *    /opt/conf/cores.conf 同款语义；AnWind 原生链不做亲和性绑定，
+     *    变量供用户自带的 /opt 生态脚本与 box64 配置消费）
+     *
+     * 放在 applyExtraEnv 之前 —— 用户 env= 仍可覆盖一切。
+     */
+    fun applyTuningEnv(env: MutableMap<String, String>, container: ContainerData) {
+        val frame = container.frame.trim()
+        if (frame.isNotEmpty() && frame != "0") {
+            env["DXVK_FRAME_RATE"] = frame
+        }
+        if (container.hasFlag(com.anwind.apps.containers.ContainerFlags.UNITY)) {
+            env["BOX64_UNITYPLAYER"] = "1"
+        }
+        val mh = container.mangohud.trim()
+        if (mh.isNotEmpty()) {
+            env["MANGOHUD"] = "1"
+            env["MANGOHUD_CONFIG"] = mh
+        }
+        val cores = container.cores.trim()
+        if (cores.isNotEmpty()) {
+            env["PRIMARY_CORES"] = cores
+            val total = Runtime.getRuntime().availableProcessors()
+            val primary = parseCoreSpec(cores).filter { it in 0 until total }.toSortedSet()
+            val secondary = (0 until total).filter { it !in primary }
+            env["SECONDARY_CORES"] = formatCoreSpec(secondary)
+        }
+    }
+
+    /** "0-3" / "0,1,2" → [0,1,2,3]（wineguanli.py parse_core_string 移植）。 */
+    internal fun parseCoreSpec(spec: String): List<Int> {
+        val out = mutableListOf<Int>()
+        spec.split(',', ';').forEach { part ->
+            val p = part.trim()
+            if (p.isEmpty()) return@forEach
+            if (p.contains('-')) {
+                val range = p.split('-', limit = 2)
+                val s = range.getOrNull(0)?.trim()?.toIntOrNull()
+                val e = range.getOrNull(1)?.trim()?.toIntOrNull()
+                if (s != null && e != null && s <= e) {
+                    out.addAll(s..e)
+                }
+            } else {
+                p.toIntOrNull()?.let { out.add(it) }
+            }
+        }
+        return out
+    }
+
+    /** [0,1,2,3] → "0-3"（wineguanli.py format_cores 移植：连续段折叠）。 */
+    internal fun formatCoreSpec(cores: List<Int>): String {
+        if (cores.isEmpty()) return ""
+        val sorted = cores.distinct().sorted()
+        val parts = mutableListOf<String>()
+        var start = sorted[0]
+        var end = sorted[0]
+        for (i in 1 until sorted.size) {
+            if (sorted[i] == end + 1) {
+                end = sorted[i]
+            } else {
+                parts.add(if (start != end) "$start-$end" else "$start")
+                start = end = sorted[i]
+            }
+        }
+        parts.add(if (start != end) "$start-$end" else "$start")
+        return parts.joinToString(",")
+    }
+
     /** 音频关闭（audio=off）：清空 PULSE_SERVER，wine 走无声。 */
     fun applyAudioOff(env: MutableMap<String, String>) {
         env["PULSE_SERVER"] = ""

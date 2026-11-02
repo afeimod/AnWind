@@ -190,8 +190,18 @@ fun X11Surface(scope: WindowContentScope) {
     }
 
     // 屏幕方向（面板切换即时生效；关闭 X11 窗口还原应用全局设置）
-    LaunchedEffect(X11UiPrefs.orientation) {
-        activity?.requestedOrientation = when (X11UiPrefs.orientation) {
+    // v3.2.15（用户需求 4）："auto" 不再直连系统传感器（FULL_SENSOR），
+    // 改为跟随桌面 —— X11 窗口显示在桌面上，方向应随桌面的显示方向设置
+    // （设置→显示→屏幕方向），桌面锁横屏时 X11 窗口也锁横屏；显式选择
+    // 竖屏/横屏时仍覆盖桌面设置（用户在 X11 面板里的明确意愿优先）。
+    val appCtx = context.applicationContext as? com.anwind.AnWindApp
+    val desktopOrientation by (appCtx?.settingsStore?.displayOrientation
+        ?: kotlinx.coroutines.flow.flowOf("landscape"))
+        .collectAsState(initial = "landscape")
+    LaunchedEffect(X11UiPrefs.orientation, desktopOrientation) {
+        val effective = if (X11UiPrefs.orientation == "auto") desktopOrientation
+                        else X11UiPrefs.orientation
+        activity?.requestedOrientation = when (effective) {
             "portrait" -> ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
             "landscape" -> ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
             else -> ActivityInfo.SCREEN_ORIENTATION_FULL_SENSOR

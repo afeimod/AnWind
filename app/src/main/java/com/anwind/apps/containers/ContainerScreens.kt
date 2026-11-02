@@ -33,6 +33,7 @@ import com.anwind.core.window.WinDialog
 import com.anwind.core.window.WindowContentScope
 import com.anwind.AnWindApp
 import com.anwind.apps.containers.launcher.RootfsLauncher
+import com.anwind.apps.containers.launcher.WineEnvironment
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -107,135 +108,212 @@ fun ContainerListContent(scope: WindowContentScope) {
 
     fun refresh() { tick++ }
 
-    Column(
+    // v3.2.15（wineguanli.py 重制）：当前选中容器（宽屏右侧面板的数据源）
+    var selectedName by remember { mutableStateOf<String?>(null) }
+
+    // v3.2.15（wineguanli.py 重制）：左右分栏布局 —— 宽屏（≥700dp）左侧
+    // 容器列表 + 右侧配置选项卡（wineguanli.py 同款信息架构：基本/CPU/
+    // 函数库/图形/环境变量）；窄屏回落为原卡片列表（长按菜单操作齐备）。
+    BoxWithConstraints(
         Modifier
             .fillMaxSize()
             .background(themeBg())
-            .padding(12.dp)
     ) {
-        // ---------------- 标题行（v3.2.13 重做：图标 + 计数徽章） ----------------
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("🍷", fontSize = 20.sp)
-            Spacer(Modifier.width(8.dp))
-            Text(
-                "Wine 容器",
-                fontSize = 18.sp,
-                fontWeight = FontWeight.Bold,
-                color = LocalWinTheme.current.windowTitleBarTextColor
-            )
-            Spacer(Modifier.width(8.dp))
-            if (containers.isNotEmpty()) {
-                Text(
-                    "${containers.size} 个容器 · 运行中 ${WineSessionLauncher.activeSessions.size}",
-                    fontSize = 11.sp,
-                    color = themeSec(),
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(9.dp))
-                        .background(themeCard())
-                        .padding(horizontal = 8.dp, vertical = 2.dp)
-                )
-            }
-            Spacer(Modifier.weight(1f))
-            TextButton(onClick = { showDoctor = true }) { Text("体检") }
-            Button(
-                onClick = { showCreate = true },
-                enabled = rootfsReady,
-                colors = ButtonDefaults.buttonColors(containerColor = themeAccent())
-            ) { Text("+ 新建容器") }
-        }
-
-        Spacer(Modifier.height(8.dp))
-
-        // ---------------- rootfs 缺失提示 ----------------
-        if (!rootfsReady) {
-            Card(
-                colors = CardDefaults.cardColors(containerColor = themeCard()),
-                shape = RoundedCornerShape(8.dp)
+        if (maxWidth >= 700.dp) {
+            Row(
+                Modifier
+                    .fillMaxSize()
+                    .padding(12.dp)
             ) {
-                Column(Modifier.padding(12.dp)) {
-                    Text("未检测到 bionic rootfs", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.error)
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        "未检测到 bionic rootfs。若本 APK 内置了 rootfs 资产（assets/anwind/rootfs-*.tzst），" +
-                            "启动时会自动解压到 /data/data/com.anwind/files/rootfs（请稍候重进）；" +
-                            "也可在终端用 anwind-tarxz 导入 build-bionic-rootfs.yml 构建的 rootfs 包（内含 anwind-container CLI）。",
-                        fontSize = 12.sp, color = themeSec()
+                // ---------------- 左：容器列表 ----------------
+                Column(
+                    Modifier
+                        .width(288.dp)
+                        .fillMaxHeight()
+                ) {
+                    ContainerTitleRow(
+                        count = containers.size,
+                        rootfsReady = rootfsReady,
+                        onDoctor = { showDoctor = true },
+                        onCreate = { showCreate = true }
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    if (!rootfsReady) {
+                        RootfsMissingHint()
+                        Spacer(Modifier.height(8.dp))
+                    }
+                    LeftContainerList(
+                        containers = containers,
+                        selectedName = selectedName ?: containers.firstOrNull()?.name,
+                        running = { name -> WineSessionLauncher.activeSessions.containsKey(name) },
+                        isDefault = { name -> ContainerManager.isDefault(name) },
+                        onSelect = { selectedName = it }
                     )
                 }
-            }
-            Spacer(Modifier.height(8.dp))
-        }
-
-        // ---------------- 容器列表 ----------------
-        LazyColumn(
-            Modifier.weight(1f),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            items(containers, key = { it.name }) { c ->
-                ContainerCard(
-                    data = c,
-                    running = WineSessionLauncher.activeSessions.containsKey(c.name),
-                    isDefault = ContainerManager.isDefault(c.name),
-                    onRun = { showRunFor = c },
-                    onStop = {
-                        cs.launch(Dispatchers.IO) {
-                            WineSessionLauncher.stopContainer(context, c.name)
-                            withContext(Dispatchers.Main) { refresh() }
-                        }
-                    },
-                    onEdit = { showEditFor = c },
-                    onClone = { showCloneFor = c },
-                    onRemove = { confirmRemove = c },
-                    onSetDefault = {
-                        cs.launch(Dispatchers.IO) {
-                            ContainerManager.setDefault(c.name)
-                            withContext(Dispatchers.Main) { refresh() }
-                        }
-                    },
-                    onWineBoot = {
-                        cs.launch(Dispatchers.IO) {
-                            val err = WineSessionLauncher.initializePrefix(context, c)
-                            withContext(Dispatchers.Main) {
-                                err?.let {
-                                    android.widget.Toast.makeText(context, it, android.widget.Toast.LENGTH_LONG).show()
+                Spacer(Modifier.width(12.dp))
+                // ---------------- 右：配置选项卡 ----------------
+                val sel = containers.firstOrNull { it.name == selectedName }
+                    ?: containers.firstOrNull()
+                if (sel != null) {
+                    ContainerConfigPanel(
+                        container = sel,
+                        onSaved = { refresh() },
+                        onRun = { showRunFor = sel },
+                        onStop = {
+                            cs.launch(Dispatchers.IO) {
+                                WineSessionLauncher.stopContainer(context, sel.name)
+                                withContext(Dispatchers.Main) { refresh() }
+                            }
+                        },
+                        onWineBoot = {
+                            cs.launch(Dispatchers.IO) {
+                                val err = WineSessionLauncher.initializePrefix(context, sel)
+                                withContext(Dispatchers.Main) {
+                                    err?.let {
+                                        android.widget.Toast.makeText(context, it, android.widget.Toast.LENGTH_LONG).show()
+                                    }
+                                    refresh()
                                 }
-                                refresh()
+                            }
+                        },
+                        onClone = { showCloneFor = sel },
+                        onRemove = { confirmRemove = sel },
+                        onShowLog = { showLogFor = sel.name },
+                        onPrefixLog = { prefixLogFor = sel.name },
+                        onWineCfg = {
+                            cs.launch(Dispatchers.IO) {
+                                val err = WineSessionLauncher.openWineCfg(context, sel)
+                                withContext(Dispatchers.Main) {
+                                    err?.let {
+                                        android.widget.Toast.makeText(context, it, android.widget.Toast.LENGTH_LONG).show()
+                                    }
+                                    refresh()
+                                }
+                            }
+                        },
+                        onRegEdit = {
+                            cs.launch(Dispatchers.IO) {
+                                val err = WineSessionLauncher.openRegEdit(context, sel)
+                                withContext(Dispatchers.Main) {
+                                    err?.let {
+                                        android.widget.Toast.makeText(context, it, android.widget.Toast.LENGTH_LONG).show()
+                                    }
+                                    refresh()
+                                }
+                            }
+                        },
+                        onSetDefault = {
+                            cs.launch(Dispatchers.IO) {
+                                ContainerManager.setDefault(sel.name)
+                                withContext(Dispatchers.Main) { refresh() }
                             }
                         }
-                    },
-                    onPrefixLog = { prefixLogFor = c.name },
-                    onWineCfg = {
-                        cs.launch(Dispatchers.IO) {
-                            val err = WineSessionLauncher.openWineCfg(context, c)
-                            withContext(Dispatchers.Main) {
-                                err?.let {
-                                    android.widget.Toast.makeText(context, it, android.widget.Toast.LENGTH_LONG).show()
-                                }
-                                refresh()
-                            }
-                        }
-                    },
-                    onRegEdit = {
-                        cs.launch(Dispatchers.IO) {
-                            val err = WineSessionLauncher.openRegEdit(context, c)
-                            withContext(Dispatchers.Main) {
-                                err?.let {
-                                    android.widget.Toast.makeText(context, it, android.widget.Toast.LENGTH_LONG).show()
-                                }
-                                refresh()
-                            }
-                        }
-                    },
-                    onShowLog = { showLogFor = c.name }
-                )
-            }
-            if (containers.isEmpty() && rootfsReady) {
-                item {
-                    Text(
-                        "暂无容器。点击右上角\"新建容器\"创建第一个 Wine 容器。",
-                        fontSize = 13.sp, color = themeSec(),
-                        modifier = Modifier.padding(vertical = 24.dp)
                     )
+                } else {
+                    Column(
+                        Modifier
+                            .weight(1f)
+                            .fillMaxHeight(),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center
+                    ) {
+                        Text("🍷", fontSize = 40.sp)
+                        Spacer(Modifier.height(8.dp))
+                        Text("暂无容器", fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                        Spacer(Modifier.height(4.dp))
+                        Text("点击左上角\"新建容器\"创建第一个 Wine 容器", fontSize = 12.sp, color = themeSec())
+                    }
+                }
+            }
+        } else {
+            // ---------------- 窄屏：原卡片列表 ----------------
+            Column(
+                Modifier
+                    .fillMaxSize()
+                    .padding(12.dp)
+            ) {
+                ContainerTitleRow(
+                    count = containers.size,
+                    rootfsReady = rootfsReady,
+                    onDoctor = { showDoctor = true },
+                    onCreate = { showCreate = true }
+                )
+                Spacer(Modifier.height(8.dp))
+                if (!rootfsReady) {
+                    RootfsMissingHint()
+                    Spacer(Modifier.height(8.dp))
+                }
+                LazyColumn(
+                    Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    items(containers, key = { it.name }) { c ->
+                        ContainerCard(
+                            data = c,
+                            running = WineSessionLauncher.activeSessions.containsKey(c.name),
+                            isDefault = ContainerManager.isDefault(c.name),
+                            onRun = { showRunFor = c },
+                            onStop = {
+                                cs.launch(Dispatchers.IO) {
+                                    WineSessionLauncher.stopContainer(context, c.name)
+                                    withContext(Dispatchers.Main) { refresh() }
+                                }
+                            },
+                            onEdit = { showEditFor = c },
+                            onClone = { showCloneFor = c },
+                            onRemove = { confirmRemove = c },
+                            onSetDefault = {
+                                cs.launch(Dispatchers.IO) {
+                                    ContainerManager.setDefault(c.name)
+                                    withContext(Dispatchers.Main) { refresh() }
+                                }
+                            },
+                            onWineBoot = {
+                                cs.launch(Dispatchers.IO) {
+                                    val err = WineSessionLauncher.initializePrefix(context, c)
+                                    withContext(Dispatchers.Main) {
+                                        err?.let {
+                                            android.widget.Toast.makeText(context, it, android.widget.Toast.LENGTH_LONG).show()
+                                        }
+                                        refresh()
+                                    }
+                                }
+                            },
+                            onPrefixLog = { prefixLogFor = c.name },
+                            onWineCfg = {
+                                cs.launch(Dispatchers.IO) {
+                                    val err = WineSessionLauncher.openWineCfg(context, c)
+                                    withContext(Dispatchers.Main) {
+                                        err?.let {
+                                            android.widget.Toast.makeText(context, it, android.widget.Toast.LENGTH_LONG).show()
+                                        }
+                                        refresh()
+                                    }
+                                }
+                            },
+                            onRegEdit = {
+                                cs.launch(Dispatchers.IO) {
+                                    val err = WineSessionLauncher.openRegEdit(context, c)
+                                    withContext(Dispatchers.Main) {
+                                        err?.let {
+                                            android.widget.Toast.makeText(context, it, android.widget.Toast.LENGTH_LONG).show()
+                                        }
+                                        refresh()
+                                    }
+                                }
+                            },
+                            onShowLog = { showLogFor = c.name }
+                        )
+                    }
+                    if (containers.isEmpty() && rootfsReady) {
+                        item {
+                            Text(
+                                "暂无容器。点击右上角\"新建容器\"创建第一个 Wine 容器。",
+                                fontSize = 13.sp, color = themeSec(),
+                                modifier = Modifier.padding(vertical = 24.dp)
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -684,7 +762,636 @@ private fun WinInfoBadge(label: String, value: String) {
 }
 
 // ---------------------------------------------------------------------------
-// 新建容器（v3.2.13 UI 重做：分区属性表 + 药丸选项组）
+// v3.2.15（wineguanli.py 重制）：标题行 / rootfs 提示 / 左侧列表 / 配置面板
+// ---------------------------------------------------------------------------
+
+/** 标题行（图标 + 计数徽章 + 体检/新建；宽窄屏共用）。 */
+@Composable
+private fun ContainerTitleRow(
+    count: Int,
+    rootfsReady: Boolean,
+    onDoctor: () -> Unit,
+    onCreate: () -> Unit
+) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text("🍷", fontSize = 20.sp)
+        Spacer(Modifier.width(8.dp))
+        Text(
+            "Wine 容器",
+            fontSize = 18.sp,
+            fontWeight = FontWeight.Bold,
+            color = LocalWinTheme.current.windowTitleBarTextColor
+        )
+        Spacer(Modifier.width(8.dp))
+        if (count > 0) {
+            Text(
+                "$count 个容器 · 运行中 ${WineSessionLauncher.activeSessions.size}",
+                fontSize = 11.sp,
+                color = themeSec(),
+                modifier = Modifier
+                    .clip(RoundedCornerShape(9.dp))
+                    .background(themeCard())
+                    .padding(horizontal = 8.dp, vertical = 2.dp)
+            )
+        }
+        Spacer(Modifier.weight(1f))
+        TextButton(onClick = onDoctor) { Text("体检") }
+        Button(
+            onClick = onCreate,
+            enabled = rootfsReady,
+            colors = ButtonDefaults.buttonColors(containerColor = themeAccent())
+        ) { Text("+ 新建") }
+    }
+}
+
+/** rootfs 缺失提示（宽窄屏共用）。 */
+@Composable
+private fun RootfsMissingHint() {
+    Card(
+        colors = CardDefaults.cardColors(containerColor = themeCard()),
+        shape = RoundedCornerShape(8.dp)
+    ) {
+        Column(Modifier.padding(12.dp)) {
+            Text("未检测到 bionic rootfs", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.error)
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "未检测到 bionic rootfs。若本 APK 内置了 rootfs 资产（assets/anwind/rootfs-*.tzst），" +
+                    "启动时会自动解压到 /data/data/com.anwind/files/rootfs（请稍候重进）；" +
+                    "也可在终端用 anwind-tarxz 导入 build-bionic-rootfs.yml 构建的 rootfs 包（内含 anwind-container CLI）。",
+                fontSize = 12.sp, color = themeSec()
+            )
+        }
+    }
+}
+
+/**
+ * 左侧容器列表（wineguanli.py 同款条目：📦 名称 [分辨率] 🍷版本，运行中 ●、默认 ★）。
+ */
+@Composable
+private fun LeftContainerList(
+    containers: List<ContainerData>,
+    selectedName: String?,
+    running: (String) -> Boolean,
+    isDefault: (String) -> Boolean,
+    onSelect: (String) -> Unit
+) {
+    val theme = LocalWinTheme.current
+    LazyColumn(
+        Modifier.fillMaxHeight(),
+        verticalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        items(containers, key = { it.name }) { c ->
+            val sel = c.name == selectedName
+            val isRun = running(c.name)
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(
+                        if (sel) theme.accentColor.copy(alpha = 0.18f)
+                        else theme.cardBackgroundColor
+                    )
+                    .border(
+                        0.5.dp,
+                        if (sel) theme.accentColor else theme.windowBorderColor.copy(alpha = 0.5f),
+                        RoundedCornerShape(8.dp)
+                    )
+                    .clickable { onSelect(c.name) }
+                    .padding(horizontal = 10.dp, vertical = 8.dp)
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "📦 ${c.name}${if (isDefault(c.name)) " ★" else ""}",
+                        fontSize = 13.sp,
+                        fontWeight = if (sel) FontWeight.Bold else FontWeight.Medium,
+                        color = LocalWinTheme.current.windowTitleBarTextColor,
+                        maxLines = 1
+                    )
+                    Spacer(Modifier.weight(1f))
+                    if (isRun) {
+                        Text("●", color = Color(0xFF4CAF50), fontSize = 11.sp)
+                    }
+                }
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    buildString {
+                        append("[")
+                        append(if (c.screen == "native") "跟随窗口" else c.screen)
+                        append("]")
+                        if (c.wine.isNotBlank()) append(" 🍷${c.wine.removePrefix("wine-")}")
+                        append(" ${WindowsVersions.fromId(c.winver).label}")
+                    },
+                    fontSize = 10.sp,
+                    color = themeSec(),
+                    maxLines = 1
+                )
+            }
+        }
+        if (containers.isEmpty()) {
+            item {
+                Text(
+                    "暂无容器。点击上方\"新建\"创建第一个 Wine 容器。",
+                    fontSize = 12.sp, color = themeSec(),
+                    modifier = Modifier.padding(vertical = 20.dp)
+                )
+            }
+        }
+    }
+}
+
+/** wineguanli.py 高级启动开关的展示名。 */
+private val FLAG_LABELS: Map<String, String> = mapOf(
+    ContainerFlags.UNITY to "Unity 单线程渲染",
+    ContainerFlags.OPENGL to "OpenGL 驱动",
+    ContainerFlags.F5TASK to "F5 任务管理器",
+    ContainerFlags.IB to "启动 IB 输入",
+    ContainerFlags.DEBUG to "强制 DX11 启动",
+    ContainerFlags.INDEPENDENT to "独立窗口模式",
+    ContainerFlags.CLOSESERVICE to "关闭 service 服务"
+)
+
+/**
+ * 右侧配置面板（wineguanli.py 信息架构：操作工具栏 + 5 选项卡）。
+ * 编辑工作副本，保存时整体落盘（ContainerManager.update）。
+ */
+@Composable
+private fun ContainerConfigPanel(
+    container: ContainerData,
+    onSaved: () -> Unit,
+    onRun: () -> Unit,
+    onStop: () -> Unit,
+    onWineBoot: () -> Unit,
+    onClone: () -> Unit,
+    onRemove: () -> Unit,
+    onShowLog: () -> Unit,
+    onPrefixLog: () -> Unit,
+    onWineCfg: () -> Unit,
+    onRegEdit: () -> Unit,
+    onSetDefault: () -> Unit
+) {
+    val context = LocalContext.current
+    val cs = rememberCoroutineScope()
+    val theme = LocalWinTheme.current
+
+    // 工作副本（切换容器时随 key 重建；保存后由外部 refresh 传回新对象）
+    var edit by remember(container.name) { mutableStateOf(container) }
+    var tab by remember(container.name) { mutableStateOf(0) }
+    var wines by remember { mutableStateOf<List<WineInstall>>(emptyList()) }
+    var saveErr by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(Unit) {
+        kotlinx.coroutines.withContext(Dispatchers.IO) { wines = ContainerManager.listWines() }
+    }
+
+    val dirty = edit != container
+    val running = WineSessionLauncher.activeSessions.containsKey(container.name)
+
+    Column(
+        Modifier
+            .weight(1f)
+            .fillMaxHeight()
+    ) {
+        // ---------------- 面板头：容器名 + 状态 + 保存 ----------------
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                "📦 ${container.name}",
+                fontSize = 16.sp,
+                fontWeight = FontWeight.Bold,
+                color = LocalWinTheme.current.windowTitleBarTextColor
+            )
+            Spacer(Modifier.width(8.dp))
+            if (running) {
+                Text(
+                    "● 运行中",
+                    fontSize = 10.sp, color = Color(0xFF4CAF50),
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(themeCard())
+                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                )
+            }
+            if (ContainerManager.isDefault(container.name)) {
+                Text(" ★默认", fontSize = 10.sp, color = themeSec())
+            }
+            Spacer(Modifier.weight(1f))
+            if (dirty) {
+                Text("未保存更改", fontSize = 10.sp, color = MaterialTheme.colorScheme.error)
+                Spacer(Modifier.width(6.dp))
+            }
+            Button(
+                onClick = {
+                    cs.launch(Dispatchers.IO) {
+                        val err = ContainerManager.update(edit)
+                        withContext(Dispatchers.Main) {
+                            if (err == null) {
+                                saveErr = null
+                                android.widget.Toast.makeText(context, "配置已保存", android.widget.Toast.LENGTH_SHORT).show()
+                                onSaved()
+                            } else {
+                                saveErr = err
+                            }
+                        }
+                    }
+                },
+                enabled = dirty,
+                colors = ButtonDefaults.buttonColors(containerColor = themeAccent())
+            ) { Text("保存") }
+        }
+        if (saveErr != null) {
+            Text(saveErr ?: "", color = MaterialTheme.colorScheme.error, fontSize = 11.sp)
+        }
+
+        // ---------------- 操作工具栏（wineguanli.py 工具栏同位） ----------------
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            PanelAction("▶ 运行", primary = true, onClick = onRun)
+            if (running) PanelAction("■ 停止", onClick = onStop)
+            PanelAction("⟳ wineboot", onClick = onWineBoot)
+            PanelAction("🧰 winecfg", onClick = onWineCfg)
+            PanelAction("📝 regedit", onClick = onRegEdit)
+            PanelAction("📋 会话日志", onClick = onShowLog)
+            PanelAction("🧱 前缀日志", onClick = onPrefixLog)
+            PanelAction("⧉ 克隆", onClick = onClone)
+            PanelAction("★ 设为默认", onClick = onSetDefault)
+            PanelAction("🗑 删除", danger = true, onClick = onRemove)
+        }
+
+        Spacer(Modifier.height(8.dp))
+
+        // ---------------- 选项卡 ----------------
+        TabRow(
+            selectedTabIndex = tab,
+            containerColor = themeCard(),
+            contentColor = LocalWinTheme.current.windowTitleBarTextColor
+        ) {
+            listOf("基本信息", "CPU 核心", "函数库", "图形与 Wine", "高级").forEachIndexed { i, label ->
+                Tab(
+                    selected = tab == i,
+                    onClick = { tab = i },
+                    text = { Text(label, fontSize = 12.sp, maxLines = 1) }
+                )
+            }
+        }
+
+        Column(
+            Modifier
+                .weight(1f)
+                .verticalScroll(rememberScrollState())
+                .padding(top = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            when (tab) {
+                // ================= 0 基本信息 =================
+                0 -> {
+                    WinSectionCard("基本配置") {
+                        WineSlotSelector(wines, edit.wine) { edit = edit.copy(wine = it) }
+                        WinField("虚拟分辨率", "非\"跟随窗口\"时自动切固定分辨率") {
+                            WinOptionPills(
+                                options = ContainerData.SCREEN_CHOICES.map { it to resolutionLabel(it) },
+                                selected = edit.screen,
+                                onSelect = { v ->
+                                    edit = edit.copy(screen = v)
+                                    if (v != "native" && edit.dmode == DisplayMode.OFF) {
+                                        edit = edit.copy(dmode = DisplayMode.D)
+                                    }
+                                }
+                            )
+                        }
+                        WinField("容器语言", "与终端会话语言隔离") {
+                            WinOptionPills(
+                                options = ContainerLangs.CHOICES.zip(ContainerLangs.DISPLAY),
+                                selected = edit.lang,
+                                onSelect = { edit = edit.copy(lang = it) }
+                            )
+                        }
+                        WinField("帧数限制", "DXVK_FRAME_RATE（wineguanli.py 同款）") {
+                            WinOptionPills(
+                                options = ContainerData.FRAME_CHOICES.map {
+                                    it to if (it == "0") "默认(不限)" else it
+                                },
+                                selected = edit.frame,
+                                onSelect = { edit = edit.copy(frame = it) }
+                            )
+                        }
+                    }
+                    WinSectionCard("高级启动选项", subtitle = "wineguanli.py 勾选组") {
+                        WinCheckChipFlow(
+                            items = ContainerFlags.ALL.map { it to (FLAG_LABELS[it] ?: it) },
+                            checked = { it in edit.flagSet },
+                            onToggle = { flag, on ->
+                                val s = edit.flagSet.toMutableSet()
+                                if (on) s.add(flag) else s.remove(flag)
+                                edit = edit.copy(flags = ContainerFlags.serialize(s))
+                            }
+                        )
+                        Text(
+                            "Unity 单线程渲染 → BOX64_UNITYPLAYER=1；其余开关写入 container.conf（flags=），" +
+                                "供自带 /opt 生态脚本消费",
+                            fontSize = 10.sp, color = themeSec()
+                        )
+                    }
+                }
+                // ================= 1 CPU 核心 =================
+                1 -> {
+                    val total = Runtime.getRuntime().availableProcessors()
+                    val primary = WineEnvironment.parseCoreSpec(edit.cores)
+                        .filter { it in 0 until total }.toSortedSet()
+                    val secondary = (0 until total).filter { it !in primary }
+                    WinSectionCard("CPU 核心分配（勾选为主核心）") {
+                        WinCheckChipFlow(
+                            items = (0 until total).map { it.toString() to "核心$it" },
+                            checked = { it.toIntOrNull() in primary },
+                            onToggle = { name, on ->
+                                val idx = name.toIntOrNull() ?: return@WinCheckChipFlow
+                                val s = primary.toMutableSet()
+                                if (on) s.add(idx) else s.remove(idx)
+                                edit = edit.copy(cores = WineEnvironment.formatCoreSpec(s.sorted()))
+                            }
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            "主核心: ${WineEnvironment.formatCoreSpec(primary.toList()).ifEmpty { "无" }}　" +
+                                "副核心: ${WineEnvironment.formatCoreSpec(secondary).ifEmpty { "无" }}",
+                            fontSize = 11.sp,
+                            color = LocalWinTheme.current.windowTitleBarTextColor,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(6.dp))
+                                .background(themeBg())
+                                .padding(8.dp)
+                        )
+                        Text(
+                            "勾选的核心分配给 Wine/Windows 应用；未勾选留给系统与后台。写入 container.conf " +
+                                "（cores=）并以 PRIMARY_CORES/SECONDARY_CORES 环境变量注入启动链（wineguanli.py " +
+                                "/opt/conf/cores.conf 同款语义，供 /opt 生态脚本与调度器消费）。",
+                            fontSize = 10.sp, color = themeSec()
+                        )
+                    }
+                }
+                // ================= 2 函数库 =================
+                2 -> {
+                    WinSectionCard("函数库设置", subtitle = "写入容器前缀注册表") {
+                        WinField("DirectSound (dsound)", "音频播放 DLL 加载序（user.reg）") {
+                            WinOptionPills(
+                                options = listOf("builtin,native", "native,builtin"),
+                                selected = edit.dsound,
+                                onSelect = { edit = edit.copy(dsound = it) }
+                            )
+                        }
+                        WinField("DirectShow (quartz)", "多媒体播放 DLL 加载序（user.reg）") {
+                            WinOptionPills(
+                                options = listOf("builtin,native", "native,builtin"),
+                                selected = edit.dshow,
+                                onSelect = { edit = edit.copy(dshow = it) }
+                            )
+                        }
+                        val dpi = edit.dpi.toIntOrNull() ?: 96
+                        WinField("DPI 屏幕缩放", "LogPixels（user.reg）") {
+                            Text(
+                                "${dpi} (${dpi * 100 / 96}%)",
+                                fontSize = 13.sp, fontWeight = FontWeight.Bold,
+                                color = themeAccent()
+                            )
+                            Slider(
+                                value = dpi.toFloat(),
+                                onValueChange = {
+                                    edit = edit.copy(dpi = it.toInt().coerceIn(60, 240).toString())
+                                },
+                                valueRange = 60f..240f,
+                                steps = 8
+                            )
+                            WinOptionPills(
+                                options = ContainerData.DPI_CHOICES.map { it.toString() to "${it} (${it * 100 / 96}%)" },
+                                selected = edit.dpi,
+                                onSelect = { edit = edit.copy(dpi = it) }
+                            )
+                        }
+                        WinField("Windows 版本", "CurrentVersion/ProductName/CurrentBuild（system.reg）") {
+                            WinOptionPills(
+                                options = WindowsVersions.ALL.map { it.id to it.label },
+                                selected = edit.winver,
+                                onSelect = { edit = edit.copy(winver = it) }
+                            )
+                        }
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Button(
+                                onClick = {
+                                    cs.launch(Dispatchers.IO) {
+                                        val target = edit
+                                        val err = com.anwind.apps.containers.launcher.WineLibrary.applyNow(target)
+                                        withContext(Dispatchers.Main) {
+                                            android.widget.Toast.makeText(
+                                                context,
+                                                err ?: "函数库设置已应用到注册表",
+                                                android.widget.Toast.LENGTH_LONG
+                                            ).show()
+                                        }
+                                    }
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF28A745))
+                            ) { Text("💾 立即应用设置") }
+                            Spacer(Modifier.width(8.dp))
+                            Text("先保存再应用；未构建前缀时由启动链自动补", fontSize = 10.sp, color = themeSec())
+                        }
+                    }
+                }
+                // ================= 3 图形与 Wine =================
+                3 -> {
+                    WinSectionCard("运行环境", subtitle = "CPU 翻译后端") {
+                        WinField("CPU 翻译后端", edit.backend.desc) {
+                            WinOptionPills(
+                                options = ContainerBackend.entries.map { it.id to it.label },
+                                selected = edit.backend.id,
+                                onSelect = { edit = edit.copy(backend = ContainerBackend.fromId(it)) }
+                            )
+                        }
+                        if (edit.backend == ContainerBackend.BOX64) {
+                            WinField("Box64 动态重编译预设", edit.preset.desc) {
+                                WinOptionPills(
+                                    options = Box64Preset.entries.map { it.id to it.label },
+                                    selected = edit.preset.id,
+                                    onSelect = { edit = edit.copy(preset = Box64Preset.fromId(it)) }
+                                )
+                            }
+                        }
+                        WinField("显示模式", edit.dmode.desc) {
+                            WinOptionPills(
+                                options = DisplayMode.entries.map { it.id to it.label },
+                                selected = edit.dmode.id,
+                                onSelect = { edit = edit.copy(dmode = DisplayMode.fromId(it)) }
+                            )
+                        }
+                        WinField("Mesa 渲染器", "Adreno 设备推荐 Freedreno 或 Zink") {
+                            WinOptionPills(
+                                options = GalliumDriver.entries.map { it.id to it.label },
+                                selected = edit.gallium,
+                                onSelect = { edit = edit.copy(gallium = it) }
+                            )
+                        }
+                        WinField("DXVK 图形加速", "前缀构建时自动解压 APK 内置资产到 C:\\windows") {
+                            WinOptionPills(
+                                options = listOf(
+                                    ContainerData.DXVK_AUTO to "开启",
+                                    ContainerData.DXVK_OFF to "关闭"
+                                ),
+                                selected = if (edit.dxvk == ContainerData.DXVK_OFF) ContainerData.DXVK_OFF else ContainerData.DXVK_AUTO,
+                                onSelect = { edit = edit.copy(dxvk = it) }
+                            )
+                        }
+                        WinField("音频", edit.audio.desc) {
+                            WinOptionPills(
+                                options = ContainerAudio.entries.map { it.id to it.label },
+                                selected = edit.audio.id,
+                                onSelect = { edit = edit.copy(audio = ContainerAudio.fromId(it)) }
+                            )
+                        }
+                    }
+                    WinSectionCard("驱动版本槽位", subtitle = "对接 /opt 生态（tar 包名）") {
+                        OutlinedTextField(
+                            value = edit.turnip,
+                            onValueChange = { edit = edit.copy(turnip = it) },
+                            label = { Text("Turnip 驱动（/opt/tz 包名，可空）") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        OutlinedTextField(
+                            value = edit.zink,
+                            onValueChange = { edit = edit.copy(zink = it) },
+                            label = { Text("Zink 驱动（/opt/zink 包名，可空）") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        OutlinedTextField(
+                            value = edit.wined3d,
+                            onValueChange = { edit = edit.copy(wined3d = it) },
+                            label = { Text("WineD3D（/opt/vkord3d 包名，可空）") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Text(
+                            "wineguanli.py 同款槽位：填 /opt 下 tar 包名（如 dxvk-2.3.1），由你自带的解压脚本" +
+                                "消费（AnWind 原生链的 DXVK 注入走 APK assets/dxvk，与本槽位互不冲突）。",
+                            fontSize = 10.sp, color = themeSec()
+                        )
+                    }
+                }
+                // ================= 4 高级 =================
+                4 -> {
+                    WinSectionCard("环境变量") {
+                        OutlinedTextField(
+                            value = edit.env,
+                            onValueChange = { edit = edit.copy(env = it) },
+                            label = { Text("附加环境变量（K=V 空格分隔，可覆盖一切）") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        OutlinedTextField(
+                            value = edit.mangohud,
+                            onValueChange = { edit = edit.copy(mangohud = it) },
+                            label = { Text("MangoHud 配置（fps,cpu_stats,gpu_stats...；空=关）") },
+                            placeholder = { Text("fps,frametime,cpu_stats,gpu_stats,font_size=24") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Text(
+                            "非空时注入 MANGOHUD=1 + MANGOHUD_CONFIG（rootfs 内置 MangoHud 时生效）；" +
+                                "DXVK 帧率限制用基本信息页的\"帧数限制\"",
+                            fontSize = 10.sp, color = themeSec()
+                        )
+                    }
+                    WinSectionCard("容器信息") {
+                        WinInfoBadge("架构/后端", edit.backend.label)
+                        WinInfoBadge("Windows 版本", WindowsVersions.fromId(edit.winver).label)
+                        WinInfoBadge("DPI", "${edit.dpi} (${(edit.dpi.toIntOrNull() ?: 96) * 100 / 96}%)")
+                        WinInfoBadge("创建时间", edit.created.ifEmpty { "未知" })
+                        WinInfoBadge("前缀路径", edit.prefixPath)
+                    }
+                }
+            }
+            Spacer(Modifier.height(12.dp))
+        }
+    }
+}
+
+/** 面板操作按钮（工具栏紧凑款）。 */
+@Composable
+private fun PanelAction(
+    label: String,
+    primary: Boolean = false,
+    danger: Boolean = false,
+    onClick: () -> Unit
+) {
+    val theme = LocalWinTheme.current
+    Text(
+        label,
+        fontSize = 11.sp,
+        color = when {
+            primary -> Color.White
+            danger -> MaterialTheme.colorScheme.error
+            else -> LocalWinTheme.current.windowTitleBarTextColor
+        },
+        modifier = Modifier
+            .clip(RoundedCornerShape(6.dp))
+            .background(
+                when {
+                    primary -> theme.accentColor
+                    else -> theme.cardBackgroundColor
+                }
+            )
+            .border(0.5.dp, theme.windowBorderColor.copy(alpha = 0.5f), RoundedCornerShape(6.dp))
+            .clickable { onClick() }
+            .padding(horizontal = 10.dp, vertical = 6.dp)
+    )
+}
+
+/** 可勾选药丸流（核心选择 / 启动开关）。 */
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+@Composable
+private fun WinCheckChipFlow(
+    items: List<Pair<String, String>>,
+    checked: (String) -> Boolean,
+    onToggle: (String, Boolean) -> Unit
+) {
+    val theme = LocalWinTheme.current
+    androidx.compose.foundation.layout.FlowRow(
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        items.forEach { (value, label) ->
+            val on = checked(value)
+            Row(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(if (on) theme.accentColor.copy(alpha = 0.2f) else theme.cardBackgroundColor)
+                    .border(
+                        0.5.dp,
+                        if (on) theme.accentColor else theme.windowBorderColor.copy(alpha = 0.5f),
+                        RoundedCornerShape(14.dp)
+                    )
+                    .clickable { onToggle(value, !on) }
+                    .padding(horizontal = 10.dp, vertical = 5.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    if (on) "✓ " else "",
+                    fontSize = 11.sp,
+                    color = theme.accentColor
+                )
+                Text(
+                    label,
+                    fontSize = 11.sp,
+                    color = if (on) theme.accentColor else LocalWinTheme.current.windowTitleBarTextColor
+                )
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 新建容器（v3.2.13 UI 重做；v3.2.15 补帧率限制/语言）
 // ---------------------------------------------------------------------------
 
 @Composable
@@ -700,6 +1407,8 @@ private fun CreateContainerDialog(onDismiss: () -> Unit, onCreated: () -> Unit) 
     var lang by remember { mutableStateOf(ContainerLangs.DEFAULT) }
     var audio by remember { mutableStateOf(ContainerAudio.PULSE) }
     var env by remember { mutableStateOf("") }
+    // v3.2.15（wineguanli.py 重制）：新建对话框补帧率限制
+    var frame by remember { mutableStateOf(ContainerData.FRAME_DEFAULT) }
     var wines by remember { mutableStateOf<List<WineInstall>>(emptyList()) }
     var dxvkAssetDesc by remember { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
@@ -832,6 +1541,18 @@ private fun CreateContainerDialog(onDismiss: () -> Unit, onCreated: () -> Unit) 
                             )
                         }
                     }
+                    Column(Modifier.weight(1f)) {
+                        // v3.2.15（wineguanli.py 重制）：新建即选帧率限制
+                        WinField("帧数限制", "DXVK_FRAME_RATE") {
+                            WinOptionPills(
+                                options = ContainerData.FRAME_CHOICES.map {
+                                    it to if (it == "0") "默认(不限)" else it
+                                },
+                                selected = frame,
+                                onSelect = { frame = it }
+                            )
+                        }
+                    }
                 }
                 WinField("音频", audio.desc) {
                     WinOptionPills(
@@ -873,7 +1594,8 @@ private fun CreateContainerDialog(onDismiss: () -> Unit, onCreated: () -> Unit) 
                         name = name.trim(), backend = backend,
                         preset = preset, screen = screen, dmode = dmode,
                         gallium = gallium, wine = wine, dxvk = dxvk,
-                        lang = lang, audio = audio, env = env.trim()
+                        lang = lang, audio = audio, env = env.trim(),
+                        frame = frame
                     )
                 )
                 if (err == null) onCreated() else error = err

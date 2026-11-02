@@ -163,8 +163,8 @@ jobs:
       #      验证 ELF 加载器 + wrapper 生成 + 执行引擎整条链路可用。
       # 该测试不覆盖 Android 特有面（NDK/bionic），但能把"源码级/生成级
       # 的根本性破坏"（上游坏提交、wrapper 生成逻辑变更等）挡在 CI ——
-      # 配方 install() 里的三道 ANDROID 专项冒烟（wrapper shmget/符号表/
-      # NOLOADADDR）与之互补。
+      # 配方 install() 里的三道 ANDROID 专项冒烟（v3.2.15 修正：shm
+      # 包装编译单元在链/DYNAREC 符号/NOLOADADDR）与之互补。
       - name: 源码级冒烟测试（宿主 x86_64 构建并实跑）
         shell: bash
         run: |

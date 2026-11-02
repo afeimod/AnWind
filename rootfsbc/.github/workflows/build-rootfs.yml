@@ -1,0 +1,168 @@
+name: Rootfs Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      arch:
+        description: "目标架构"
+        type: choice
+        options:
+          - all
+          - aarch64
+          - x86_64
+        default: all
+      packages:
+        description: "要构建的包: all 或空格分隔的包名"
+        type: string
+        default: all
+      mode:
+        description: "构建模式"
+        type: choice
+        options:
+          - build
+          - rebuild
+          - rebuild-deps
+        default: build
+      export_rootfs:
+        description: "导出 full + lite 两套 rootfs 并发布 (packages=all 时生效)"
+        type: boolean
+        default: true
+      tag:
+        description: "Release tag (留空则使用 build-<run_number>)"
+        type: string
+        default: ""
+      prerelease:
+        description: "作为预发布 (prerelease) 发布"
+        type: boolean
+        default: false
+
+# 直接在当前 job 里发布 Release，需要写权限
+permissions:
+  contents: write
+
+# 同一分支同时只跑一个构建: ccache 缓存键按 run_id 递增, 并发运行会互相覆盖
+concurrency:
+  group: rootfs-build-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  TZ: UTC
+  # 单个架构的 ccache 上限, 防止 ndk + ccache 撑爆仓库 10G 缓存配额
+  CCACHE_MAXSIZE: 3G
+  CCACHE_COMPRESS: "true"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    # host-deps.sh 的 arch 分支直接调用 pacman, 必须以 root 运行;
+    # 同时避免在 ubuntu runner 上 apt upgrade 弄坏预装工具链
+    container:
+      image: archlinux:base-devel
+
+    steps:
+      - name: 检出源码
+        uses: actions/checkout@v6
+
+      - name: 安装主机依赖
+        run: bash host-deps.sh
+
+      # NDK 缓存键 = 会写进 ndk/.ndk_patches_state 的全部输入;
+      # 任一变化都会让脚本重下 NDK 并重打补丁, 缓存也就没有复用价值
+      - name: 恢复 NDK 缓存
+        id: ndk-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ndk
+          key: ndk-${{ hashFiles('default.conf', 'custom.conf', 'patch-rules.conf', 'ndk_patches/**/*.patch') }}
+
+      - name: 恢复 ccache
+        uses: actions/cache/restore@v6
+        with:
+          path: bionic_ccache
+          key: ccache-${{ runner.os }}-${{ inputs.arch }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            ccache-${{ runner.os }}-${{ inputs.arch }}-
+            ccache-${{ runner.os }}-
+
+      - name: 构建
+        env:
+          INPUT_ARCH: ${{ inputs.arch }}
+          INPUT_PACKAGES: ${{ inputs.packages }}
+          INPUT_MODE: ${{ inputs.mode }}
+        run: |
+          set -euo pipefail
+          case "${INPUT_ARCH}" in
+            all | aarch64 | x86_64) ;;
+            *) echo "不支持的目标架构 => ${INPUT_ARCH}" && exit 1 ;;
+          esac
+          case "${INPUT_MODE}" in
+            build | rebuild | rebuild-deps) ;;
+            *) echo "不支持的构建模式 => ${INPUT_MODE}" && exit 1 ;;
+          esac
+          [[ -z "${INPUT_PACKAGES}" ]] && { echo "packages 不能为空" && exit 1; }
+          # 动作类选项在解析完整个命令行后才执行, 参数顺序任意
+          ./build-rootfs-arch.sh --arch "${INPUT_ARCH}" "--${INPUT_MODE}" "${INPUT_PACKAGES}"
+
+      - name: 保存 NDK 缓存
+        if: always() && !cancelled() && steps.ndk-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ndk
+          key: ndk-${{ hashFiles('default.conf', 'custom.conf', 'patch-rules.conf', 'ndk_patches/**/*.patch') }}
+
+      # 构建失败也保存: 已命中的头文件/目标文件仍可加速下一次重试
+      - name: 保存 ccache
+        if: always() && !cancelled()
+        uses: actions/cache/save@v6
+        with:
+          path: bionic_ccache
+          key: ccache-${{ runner.os }}-${{ inputs.arch }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: 打包 pkgs
+        if: success()
+        env:
+          INPUT_ARCH: ${{ inputs.arch }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          archs=()
+          [[ "${INPUT_ARCH}" == "all" ]] && archs=(aarch64 x86_64) || archs=("${INPUT_ARCH}")
+          for _arch in "${archs[@]}"; do
+            shopt -s nullglob
+            files=(pkgs/*-"${_arch}".tar)
+            shopt -u nullglob
+            [[ ${#files[@]} -gt 0 ]] || { echo "未找到 ${_arch} 的软件包" && exit 1; }
+            tar -I 'zstd -T0' -cf "dist/pkgs-${_arch}.tar.zst" "${files[@]}"
+          done
+
+      - name: 导出 rootfs (full + lite)
+        if: success() && inputs.export_rootfs && inputs.packages == 'all'
+        env:
+          INPUT_ARCH: ${{ inputs.arch }}
+        run: |
+          set -euo pipefail
+          archs=()
+          [[ "${INPUT_ARCH}" == "all" ]] && archs=(aarch64 x86_64) || archs=("${INPUT_ARCH}")
+          for _arch in "${archs[@]}"; do
+            for _variant in full lite; do
+              args=(--export "dist/rootfs-${_variant}-${_arch}" --arch "${_arch}")
+              [[ "${_variant}" == "lite" ]] && args+=(--lite)
+              ./make-rootfs.sh "${args[@]}"
+              # 产物保留软链接与权限, 不能直接以目录形式发布, 因此先压成 tar.zst
+              tar -C dist -I 'zstd -T0' -cf "dist/rootfs-${_arch}-${_variant}.tar.zst" "rootfs-${_variant}-${_arch}"
+              rm -rf "dist/rootfs-${_variant}-${_arch}"
+            done
+          done
+
+      - name: 发布 Release
+        if: success()
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ inputs.tag || format('build-{0}', github.run_number) }}
+          target_commitish: ${{ github.sha }}
+          files: dist/*.tar.zst
+          fail_on_unmatched_files: true
+          overwrite_files: true
+          prerelease: ${{ inputs.prerelease }}
+          generate_release_notes: true

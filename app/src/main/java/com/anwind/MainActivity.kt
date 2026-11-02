@@ -66,7 +66,8 @@ class MainActivity : ComponentActivity() {
             // v2.16：UI_SCALE_BASE = 0.6，100% 档位现在以旧版 60% 的效果渲染，
             // 整体桌面更紧凑；设置里仍显示 100%，各档位等比映射
             val uiScale by settingsStore.uiScale.collectAsState(initial = 1f)
-            val orientation by settingsStore.displayOrientation.collectAsState(initial = "auto")
+            // v3.2.15：初始值与 SettingsStore 默认一致（桌面默认横屏）
+            val orientation by settingsStore.displayOrientation.collectAsState(initial = "landscape")
             // 刘海屏占用开关（个性化设置）
             val useCutout by settingsStore.useCutout.collectAsState(initial = true)
 

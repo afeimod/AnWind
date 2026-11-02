@@ -1,0 +1,19 @@
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -85,10 +85,12 @@
+ endif()
+ 
+ if(UNIX)
+-    list(APPEND PLATFORM_LIBS pthread)
+-    find_library(LIBRT rt)
+-    if(LIBRT)
+-        list(APPEND PLATFORM_LIBS rt)
++    if(NOT ANDROID)
++        list(APPEND PLATFORM_LIBS pthread)
++        find_library(LIBRT rt)
++        if(LIBRT)
++            list(APPEND PLATFORM_LIBS rt)
++        endif()
+     endif()
+     mark_as_advanced(LIBRT)
+     find_library(LIBDL dl)

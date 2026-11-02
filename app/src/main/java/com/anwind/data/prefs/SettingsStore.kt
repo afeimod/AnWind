@@ -196,7 +196,8 @@ class SettingsStore(private val context: Context) {
         .map { it[Keys.DEFAULT_BROWSER_HOME] ?: "https://www.bing.com" }
     val uiScale: Flow<Float> = context.appPrefs.data.map { it[Keys.UI_SCALE] ?: 1.0f }
     val displayOrientation: Flow<String> = context.appPrefs.data
-        .map { it[Keys.DISPLAY_ORIENTATION] ?: "auto" }
+        // v3.2.15（用户需求 4）：桌面默认横屏（此前默认 auto 跟随系统）
+        .map { it[Keys.DISPLAY_ORIENTATION] ?: "landscape" }
     val browserUaMode: Flow<String> = context.appPrefs.data
         .map { it[Keys.BROWSER_UA_MODE] ?: "desktop" }
 
