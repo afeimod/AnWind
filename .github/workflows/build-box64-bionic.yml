@@ -175,10 +175,10 @@ jobs:
           echo "=== 冒烟[取源]: git clone ${BOX64_REF}（独立树，不与 aarch64 构建树互相污染 wrapper） ==="
           git clone --depth 1 --branch "${BOX64_REF}" https://github.com/ptitSeb/box64.git "${SMOKE_SRC}"
 
-          echo "=== 冒烟[宿主构建]: cmake 原生 x86_64（-DARM_DYNAREC=ON，上游 CI 同款 CI=ON 走提交版 wrapper） ==="
+          echo "=== 冒烟[宿主构建]: cmake 原生 x86_64（-DARM_DYNAREC=OFF：ARM dynarec 生成的是 aarch64 汇编，x86_64 汇编器必炸（mrs ctr_el0/dc cvau/ic ivau/isb sy 均为 aarch64 专属指令），只有 aarch64 宿主才可开；冒烟只验源码级编译链接与实跑链路，CI=ON 走提交版 wrapper） ==="
           SMOKEDIR="${SMOKE_SRC}/build"
           cmake -S "${SMOKE_SRC}" -B "${SMOKEDIR}" \
-            -DCMAKE_BUILD_TYPE=Release -DARM_DYNAREC=ON -DCI=ON \
+            -DCMAKE_BUILD_TYPE=Release -DARM_DYNAREC=OFF -DCI=ON \
             > /dev/null
           cmake --build "${SMOKEDIR}" -j"$(nproc)" > /dev/null
           SMOKE_BIN="${SMOKEDIR}/box64"

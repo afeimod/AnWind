@@ -157,6 +157,7 @@ fun ContainerListContent(scope: WindowContentScope) {
                 if (sel != null) {
                     ContainerConfigPanel(
                         container = sel,
+                        modifier = Modifier.weight(1f),
                         onSaved = { refresh() },
                         onRun = { showRunFor = sel },
                         onStop = {
@@ -917,6 +918,11 @@ private val FLAG_LABELS: Map<String, String> = mapOf(
 @Composable
 private fun ContainerConfigPanel(
     container: ContainerData,
+    // v3.2.16 修复：Modifier.weight 是 RowScope/ColumnScope 的成员扩展，
+    // 组件函数体内不可直接调用（否则解析到 foundation 内部的
+    // RowColumnParentData.weight 属性，报 invoke 错误）。改由调用方
+    // （宽屏 Row 内）通过本参数传入 Modifier.weight(1f)。
+    modifier: Modifier = Modifier,
     onSaved: () -> Unit,
     onRun: () -> Unit,
     onStop: () -> Unit,
@@ -947,8 +953,7 @@ private fun ContainerConfigPanel(
     val running = WineSessionLauncher.activeSessions.containsKey(container.name)
 
     Column(
-        Modifier
-            .weight(1f)
+        modifier
             .fillMaxHeight()
     ) {
         // ---------------- 面板头：容器名 + 状态 + 保存 ----------------
@@ -1136,14 +1141,21 @@ private fun ContainerConfigPanel(
                     WinSectionCard("函数库设置", subtitle = "写入容器前缀注册表") {
                         WinField("DirectSound (dsound)", "音频播放 DLL 加载序（user.reg）") {
                             WinOptionPills(
-                                options = listOf("builtin,native", "native,builtin"),
+                                // v3.2.16 修复：WinOptionPills.options 要求 List<Pair<value,label>>
+                                options = listOf(
+                                    "builtin,native" to "内置优先 (builtin,native)",
+                                    "native,builtin" to "原生优先 (native,builtin)"
+                                ),
                                 selected = edit.dsound,
                                 onSelect = { edit = edit.copy(dsound = it) }
                             )
                         }
                         WinField("DirectShow (quartz)", "多媒体播放 DLL 加载序（user.reg）") {
                             WinOptionPills(
-                                options = listOf("builtin,native", "native,builtin"),
+                                options = listOf(
+                                    "builtin,native" to "内置优先 (builtin,native)",
+                                    "native,builtin" to "原生优先 (native,builtin)"
+                                ),
                                 selected = edit.dshow,
                                 onSelect = { edit = edit.copy(dshow = it) }
                             )

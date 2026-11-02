@@ -397,7 +397,9 @@ object WineEnvironment {
                 end = sorted[i]
             } else {
                 parts.add(if (start != end) "$start-$end" else "$start")
-                start = end = sorted[i]
+                // v3.2.16 修复：Kotlin 赋值不是表达式，链式赋值 start = end = x 非法，拆开
+                end = sorted[i]
+                start = sorted[i]
             }
         }
         parts.add(if (start != end) "$start-$end" else "$start")

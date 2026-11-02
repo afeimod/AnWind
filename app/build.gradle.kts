@@ -191,8 +191,25 @@ android {
         // TrackpadRouter 之前）+ TrackpadController/TrackpadRouter（触控板
         // 模式指针处与手指轻点处）按窗口几何直判置前；WindowChrome/
         // WinDialogFrame onGloballyPositioned 上报几何；focus 加诊断日志。
-        versionCode = 77
-        versionName = "2.38.14"
+        versionCode = 78
+        versionName = "2.38.15"
+        // v2.38.15（源码包 v3.2.16）：编译错误修复轮 —— v3.2.15 的 Kotlin
+        // 源有 5 处编译不过（compileReleaseKotlin FAILED，用户 CI 实报）：
+        //   ①ContainerScreens.kt:951 weight 非 scope 调用 → ContainerConfigPanel
+        //     增加 modifier 参数，由宽屏 Row 调用处传入 Modifier.weight(1f)；
+        //   ②ContainerScreens.kt:1139/1146 WinOptionPills.options 传 List<String>
+        //     而签名要求 List<Pair<value,label>> → dsound/dshow 加载序改 Pair；
+        //   ③WineEnvironment.kt:400 Kotlin 赋值不是表达式，start = end = x 链式
+        //     赋值非法 → 拆为两条语句；
+        //   ④MusicPlayerApp.kt:137 musicSettings 声明在使用之后（Unresolved）→
+        //     设置中心块上移到搜索状态之前；
+        //   ⑤MusicPlayerApp.kt:413/416 Color.luminance() 缺
+        //     androidx.compose.ui.graphics.luminance import → 补齐。
+        // ⑥box64 冒烟测试：x86_64 宿主上错开 -DARM_DYNAREC=ON，dynarec_native.c
+        //   生成 aarch64 汇编（mrs ctr_el0/dc cvau/ic ivau/isb sy）被 x86_64
+        //   汇编器拒绝（CI 实报 Assembler messages: no such instruction）→
+        //   冒烟构建改 -DARM_DYNAREC=OFF（ARM dynarec 仅 aarch64 宿主可编，
+        //   冒烟只验源码级编译/链接/实跑链路，aarch64 正式构建不受影响）。
         // v2.38.14（源码包 v3.2.15）：六诉求轮。
         // ①box64 bionic 构建：v3.2.14 的符号校验（产物应含 shmget/shmat/
         //   shmctl）是错误假设 —— 上游 v0.4.4 源码实证：wrappedandroidshmem

@@ -58,6 +58,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -127,6 +128,14 @@ private fun MusicContent(scope: WindowContentScope) {
     var page by remember { mutableStateOf(Page.SEARCH) }
     var showLyrics by remember { mutableStateOf(false) }
 
+    // ===== 播放器设置中心（v2.18；v3.2.15 上移到搜索状态之前：searchSource
+    // 初始化引用 musicSettings，声明必须先于使用，否则 Unresolved reference） =====
+    var musicSettings by remember { mutableStateOf(engine.store.loadMusicSettings()) }
+    fun updateSettings(s: MusicSettings) {
+        musicSettings = s
+        engine.store.saveMusicSettings(s)
+    }
+
     // ===== 搜索状态（页面间切换保留） =====
     var query by remember { mutableStateOf("") }
     var searchResults by remember { mutableStateOf<List<SongInfo>>(emptyList()) }
@@ -144,13 +153,6 @@ private fun MusicContent(scope: WindowContentScope) {
     fun refreshLibrary() {
         favorites = engine.store.loadFavorites()
         recent = engine.store.loadRecent()
-    }
-
-    // ===== 播放器设置中心（v2.18） =====
-    var musicSettings by remember { mutableStateOf(engine.store.loadMusicSettings()) }
-    fun updateSettings(s: MusicSettings) {
-        musicSettings = s
-        engine.store.saveMusicSettings(s)
     }
 
     // ===== v2.21.3 桌面歌词锁定开关（状态存 desklyric.json，与位置同文件） =====
