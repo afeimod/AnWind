@@ -28,6 +28,17 @@
 # x86_64 flavor 本配方不构建（--enable-archs=arm64ec,aarch64,i386），
 # signal_x86_64.c 无需实现即可链接。
 # 
+# 【v3.2.11 修正】CI proton_10.0 实测（日志 wine-build-log-arm64ec (7).zip）
+# 唯一阵亡点：wow64/process.c:1095 "call to undeclared function
+# 'RtlWow64SuspendThread'" —— 本补丁改了 process.c 调用点、ntdll.spec 导出
+# 与 signal_arm64{,ec}.c 定义，却漏了【声明】：wow64 是独立 PE dll，
+# wine-9.x/10 树无任何公共头声明该函数（wine-11.16 vanilla 起在
+# include/wow64.h 补了，hangover-11.16 同）→ 隐式声明被 clang 判错。
+# 修法：process.c hunk 内就位 extern（同一 hunk 原子生效；对已自带声明的
+# wine-11/hangover 树因调用点 hunk 本就不命中而天然互斥）。
+# 其余 signal_arm64{,ec}.c 双锚点 hunk 各命中其一（fuzz 吸收 proton 树
+# 注释风格漂移，CI 实证定义已落进树）——非失败即成功，无需动。
+# 
 # 【验证】proton_10.0 树全套 hunk 命中；wine-9.7 树 9.x 锚点命中 + 10 形态
 # hunk 落 .rej（预期）；wine-11.16 vanilla / hangover-11.16 全不命中。
 --- a/dlls/ntdll/loader.c
@@ -415,8 +426,15 @@
  @ stub Wow64ValidateUserCallTargetFilter
 --- a/dlls/wow64/process.c
 +++ b/dlls/wow64/process.c
-@@ -1089,13 +1089,13 @@
+@@ -1089,13 +1089,20 @@
   */
++/* anwind 0011 (v3.2.11)：声明兜底 —— ntdll.spec 本补丁新增导出，aarch64
++ * 实现在 ntdll/signal_arm64.c、EC 桩在 ntdll/signal_arm64ec.c；wow64 为
++ * 独立 PE dll 且 wine-9.x/10 树无公共头声明该函数，就地补 extern 防
++ * "call to undeclared function 'RtlWow64SuspendThread'"（CI proton_10.0
++ * 实测 wow64/process.c:1095 阵亡点）。 */
++extern NTSTATUS WINAPI RtlWow64SuspendThread( HANDLE thread, ULONG *count );
++
  NTSTATUS WINAPI wow64_NtSuspendThread( UINT *args )
  {
      HANDLE handle = get_handle( &args );

@@ -137,6 +137,210 @@ object WineRegistry {
         }
     }
 
+    // ------------------------------------------------------------------
+    // v3.2.11（用户问题 3）：wine 内建窗口现代化外观
+    // ------------------------------------------------------------------
+
+    /** 现代化外观已应用的标记文件（容器前缀内；失败不落标记，下次自动重试）。 */
+    private fun modernUiMarker(prefix: File) = File(prefix, ".anwind-modern-ui")
+
+    /**
+     * wine 创建的所有窗口现代化（一次成型，幂等标记）。
+     *
+     * 作用域：wine 自绘窗口/对话框/菜单 —— wineboot 进度框、winecfg、
+     * regedit、notepad、explorer 虚拟桌面、文件公共对话框、消息框，以及
+     * 老式 Win32 程序的控件。（游戏/现代应用自绘皮肤不在此列。）
+     *
+     * 五件套（对齐现代 Windows 观感）：
+     *  1) **ClearType 字体平滑** —— wine 默认 FontSmoothing=0，锯齿文本
+     *     观感停留在 Win95；置 FontSmoothing=2 + Type=2（RGB 子像素）
+     *     + Gamma=1000，文本立变现代；
+     *  2) **拖动显示窗口内容** —— wine 默认 DragFullWindows=0，拖动只画
+     *     一片虚线外框，非常 DOS；置 1；
+     *  3) **视觉样式主题** —— 激活 wine 9.x+/10 自带的 light.msstyles
+     *     扁平现代主题（ThemeActive=1）；旧前缀无 light 时回退
+     *     aero.msstyles（Win7 风）；两者皆无则跳过主题键（尊重树形态）；
+     *  4) **现代配色** —— 选区/热跟踪用 Windows 10/11 强调蓝
+     *     （0 120 215 / 0 102 204），桌面兜底色柔和深蓝灰；
+     *  5) **渐变壁纸** —— 程序化生成 24bit BMP（深空蓝→湖蓝渐变 + 右上
+     *     辉光）写入 drive_c/anwind/，注册到 Control Panel\Desktop。
+     *     explorer 虚拟桌面（dmode=v / 前缀构建）经 wine 自带壁纸管线
+     *     绘制（BMP 为 wine 唯一保真格式）；渲染不出时桌面显示第 4 项
+     *     兜底色，无副作用。
+     *
+     * 单次 wine regedit /s 导入全部键（一个 wine 进程完成，不逐键起进程）。
+     * @return true 表示已就位（含标记命中）。
+     */
+    fun ensureModernLook(
+        resolved: WineRuntime.Resolved,
+        container: ContainerData,
+        env: Map<String, String>,
+        log: (String) -> Unit = {}
+    ): Boolean {
+        val prefix = File(container.prefixPath)
+        if (!File(prefix, "system.reg").isFile) return true   // 前缀未建：留给 wineboot 后的下次启动
+        if (modernUiMarker(prefix).isFile) return true
+        log("应用 wine 窗口现代化外观（ClearType / 拖动内容 / light 主题 / 现代配色 / 壁纸）……")
+        return try {
+            val anwindDir = File(prefix, "drive_c/anwind")
+            anwindDir.mkdirs()
+
+            // ---- 第 5 件：程序化渐变壁纸（24bit BMP） ----
+            val wallpaperWin = if (generateModernWallpaper(File(anwindDir, "wallpaper.bmp"))) {
+                "C:\\\\anwind\\\\wallpaper.bmp"
+            } else ""
+
+            // ---- 第 3 件：主题文件探测（light 优先，aero 兜底；大小写不敏感——
+            //      Linux 文件系统区分大小写，个别 wine 包目录形态与 wine.inf 不一致）----
+            val theme = findModernTheme(prefix)
+            // ---- 汇总 .reg（REGEDIT4 / ASCII，无编码坑） ----
+            val reg = buildString {
+                appendLine("REGEDIT4")
+                appendLine()
+                appendLine("[HKEY_CURRENT_USER\\Control Panel\\Desktop]")
+                appendLine("\"FontSmoothing\"=\"2\"")
+                appendLine("\"FontSmoothingType\"=dword:00000002")
+                appendLine("\"FontSmoothingGamma\"=dword:000003e8")
+                appendLine("\"FontSmoothingOrientation\"=dword:00000001")
+                appendLine("\"DragFullWindows\"=\"1\"")
+                if (wallpaperWin.isNotEmpty()) {
+                    appendLine("\"Wallpaper\"=\"$wallpaperWin\"")
+                    appendLine("\"WallpaperStyle\"=\"2\"")
+                    appendLine("\"TileWallpaper\"=\"0\"")
+                }
+                appendLine()
+                appendLine("[HKEY_CURRENT_USER\\Control Panel\\Colors]")
+                appendLine("\"Background\"=\"47 54 68\"")
+                appendLine("\"Highlight\"=\"0 120 215\"")
+                appendLine("\"HotTrackingColor\"=\"0 102 204\"")
+                appendLine()
+                if (theme != null) {
+                    appendLine("[HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\ThemeManager]")
+                    appendLine("\"ThemeActive\"=\"1\"")
+                    appendLine("\"DllName\"=\"${theme.second.replace("\\", "\\\\")}\"")
+                    appendLine("\"ColorName\"=\"${theme.third}\"")
+                    appendLine("\"SizeName\"=\"NormalSize\"")
+                    appendLine()
+                }
+            }
+            val regFile = File(anwindDir, "modern-ui.reg")
+            regFile.writeText(reg)
+
+            val cmd = NativeShellExecutor.create()
+                .setCommand(*WineRuntime.wineCommand(resolved).toTypedArray(),
+                            "regedit", "/s", "C:\\anwind\\modern-ui.reg")
+                .putEnv(env)
+                .putEnv("WINEPREFIX", container.prefixPath)
+                .setWorkingDir(WineEnvironment.HOME_DIR)
+                .exec()
+            // 超时即告失败（不阻塞启动链；不落标记 → 下次启动自动重试）
+            val finished = runCatching { cmd.waitFor(120, TimeUnit.SECONDS) }.getOrDefault(false)
+            val code = if (finished) runCatching { cmd.waitFor() }.getOrDefault(-1) else -1
+            if (finished && code == 0) {
+                runCatching { modernUiMarker(prefix).writeText(buildString {
+                    appendLine("applied=1")
+                    appendLine("wallpaper=${wallpaperWin.isNotEmpty()}")
+                    appendLine("theme=${theme?.first ?: "none"}")
+                }) }
+                log("wine 窗口现代化外观已生效（主题=${theme?.first ?: "未启用（前缀无内置主题文件）"}，壁纸=${if (wallpaperWin.isNotEmpty()) "已安装" else "生成失败跳过"}）")
+                true
+            } else {
+                log("警告: 现代化外观导入未确认成功（退出码=$code；下次启动自动重试）")
+                false
+            }
+        } catch (e: Exception) {
+            log("警告: 现代化外观应用异常：${e.message}（下次启动自动重试）")
+            false
+        }
+    }
+
+    /**
+     * 探测前缀内可用的现代视觉主题（大小写不敏感；Linux 文件系统区分大小写，
+     * 注册表 DllName 必须与实际目录/文件名逐字一致才能被 uxtheme 打开）。
+     * light（wine 9.x+/10 扁平现代主题）优先，aero（Win7 风）兑底。
+     * @return (label, Windows 路径, ColorName)；无可用主题返回 null。
+     */
+    private fun findModernTheme(prefix: File): Triple<String, String, String>? {
+        return runCatching {
+            val windows = File(prefix, "drive_c/windows")
+            if (!windows.isDirectory) return@runCatching null
+            val res = windows.listFiles()?.orEmpty()
+                .firstOrNull { it.isDirectory && it.name.equals("resources", true) }
+            val themes = (res ?: windows).listFiles()?.orEmpty()
+                .firstOrNull { it.isDirectory && it.name.equals("themes", true) }
+                ?: return@runCatching null
+            for ((label, color) in listOf("light" to "Blue", "aero" to "NormalColor")) {
+                val dir = themes.listFiles()?.orEmpty()
+                    .firstOrNull { it.isDirectory && it.name.equals(label, true) } ?: continue
+                val f = dir.listFiles()?.orEmpty()
+                    .firstOrNull { it.isFile && it.name.equals("$label.msstyles", true) } ?: continue
+                // 从 msstyles 文件回溯到 windows 目录，用实际名拼 Windows 路径
+                // （保真大小写，避免注册表值指向不存在的路径）
+                val parts = ArrayDeque<String>()
+                var node: File? = f
+                while (node != null && node != windows) {
+                    parts.addFirst(node.name)
+                    node = node.parentFile
+                }
+                if (parts.isEmpty()) continue
+                return@runCatching Triple(label, "C:\\windows\\" + parts.joinToString("\\"), color)
+            }
+            null
+        }.getOrNull()
+    }
+
+    /**
+     * 生成现代化渐变壁纸（24bit BMP，1600×900，bottom-up，BI_RGB）。
+     * 深空蓝（16,26,44）→ 湖蓝（38,74,110）垂直渐变，右上角叠加青蓝辉光，
+     * 底部一条微光地平线 —— 无外部依赖、纯像素数学，写入前缀一次。
+     * @return true 写入成功。
+     */
+    private fun generateModernWallpaper(out: File): Boolean {
+        return try {
+            val w = 1600
+            val h = 900
+            val rowBytes = w * 3
+            val pad = (4 - (rowBytes % 4)) % 4
+            val imageSize = (rowBytes + pad) * h
+            val bos = java.io.ByteArrayOutputStream(54 + imageSize)
+            fun le32(v: Int) { bos.write(v and 0xff); bos.write((v shr 8) and 0xff); bos.write((v shr 16) and 0xff); bos.write((v shr 24) and 0xff) }
+            fun le16(v: Int) { bos.write(v and 0xff); bos.write((v shr 8) and 0xff) }
+            // BITMAPFILEHEADER
+            bos.write('B'.code); bos.write('M'.code)
+            le32(54 + imageSize); le32(0); le32(54)
+            // BITMAPINFOHEADER
+            le32(40); le32(w); le32(h); le16(1); le16(24); le32(0)
+            le32(imageSize); le32(2835); le32(2835); le32(0); le32(0)
+            // 像素（BMP 自底向上）
+            val glowX = w * 0.76f; val glowY = h * 0.24f; val glowR = h * 0.92f
+            fun cap(v: Float) = v.coerceIn(0f, 255f).toInt()
+            for (y in h - 1 downTo 0) {
+                val ty = y.toFloat() / (h - 1)
+                for (x in 0 until w) {
+                    var r = 16f + (38f - 16f) * ty
+                    var g = 26f + (74f - 26f) * ty
+                    var b = 44f + (110f - 44f) * ty
+                    // 右上辉光
+                    val dx = x - glowX; val dy = y - glowY
+                    val dist = Math.sqrt((dx * dx + dy * dy).toDouble()).toFloat()
+                    if (dist < glowR) {
+                        val f = (1f - dist / glowR); val glow = f * f * f
+                        r += glow * 26f; g += glow * 64f; b += glow * 92f
+                    }
+                    // 底部地平线微光
+                    val hz = ty * ty * 14f
+                    r += hz * 0.3f; g += hz * 0.6f; b += hz
+                    bos.write(cap(b)); bos.write(cap(g)); bos.write(cap(r))   // BGR
+                }
+                repeat(pad) { bos.write(0) }
+            }
+            out.writeBytes(bos.toByteArray())
+            true
+        } catch (e: Exception) {
+            false
+        }
+    }
+
     /**
      * 首次运行自动初始化前缀（run_wine 的 wineboot -i 分支；v3.1.4 修正）：
      * 前缀无 system.reg 时同步执行 wineboot -i。

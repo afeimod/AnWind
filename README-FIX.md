@@ -1,5 +1,101 @@
 # AnWind Bionic 修复包 v2（2026-09-19）
 
+> **v3.2.11（2026-11-02）**：三诉求修复轮 —— 容器误删根治 + wine 9.7/proton 10 arm64ec 构建双修复 + wine 窗口现代化
+>
+> ## 问题 1：点三个点删除一个容器，结果所有容器都被删了
+>
+> **根因**：全仓唯一能"一次删光"的向量是 `name` 为空串时
+> `File(CONTAINERS_ROOT, "")` 解析为**容器根本身**——`deleteRecursively()`
+> 连根删光全部容器。空名容器由 `ContainerData.fromConf` 旧逻辑
+> `kv["name"] ?: 目录名` 产生（`name=` 键**存在但值为空**时 `?:` 不兜底，
+> 旧版写入中断/手工编辑/历史版本遗留均可触发）；同名缺陷也在 CLI
+> `cmd_remove`（空名时 `[ -d "$CONT_ROOT/" ]` 判真 → `rm -rf` 删光）。
+> 附带发现：重名容器（conf name= 与目录名不一致）会直接崩 LazyColumn
+> 的 key 去重断言。
+>
+> **修复（三层防御，双端一致）**：
+> 1. `ContainerData.fromConf` 改为**目录名优先**（容器身份 = 目录名，
+>    conf 内 `name=` 仅为冗余字段；`update()` 下次保存自动归一）——
+>    从源头消除空名/重名容器；
+> 2. `ContainerManager.remove` 拒空名/含 `/`、`\`/`.`/`..`，并校验解析后
+>    目录必须是容器根的**直接子目录**（canonical 路径双保险，杜绝符号
+>    链接逃逸）；
+> 3. CLI `cmd_remove` 同款 case 防御（`""`/`.`/`..`/非法字符/含 `/` 全拒）
+>    + `rm -rf --`。
+>
+> ## 问题 2：官方 wine 9.7 与 proton 10 的 arm64ec 构建仍失败
+>
+> 两份 CI 日志（wine-build-log-arm64ec (6)/(7).zip）各只有一个阵亡点：
+>
+> 1. **official-9.7**：`dlls/rpcrt4/arm64ec-windows/ndr_stubless.o` ——
+>    `call_server_func` 的 x64 AT&T 内联汇编（pushq/movq/.seh_pushreg）在
+>    EC 编译趟误激活。wine-9.7 的 ndr_stubless.c 已被上游重构：四处入口
+>    （NdrClientCall2/3/AsyncClientCall/Ndr64AsyncClientCall）自带
+>    `__arm64ec__` naked 分支，0007（9.2 锚点）5 hunk 全失配属预期良性；
+>    唯 call_server_func 四分支（i386/x86_64/arm/aarch64）无 EC 排除——
+>    llvm-mingw arm64ec 同时预定义 `__x86_64__` 与 `__aarch64__` → x64
+>    汇编喂进 ARM64 代码生成器即炸。
+>    **修复**：新增 `0007d-fix-arm64ec-x64-asm-wine97-ndr.patch` ——
+>    `#elif defined __x86_64__` → `#elif defined __x86_64__ && !defined
+>    __arm64ec__`（0007 对 wine-9.2 的同款手法），EC 趽落 aarch64 分支
+>    （4 个入参全在 x0-x3，两约定映射一致）。锚点为 9.7 四参签名（含
+>    `const NDR_PROC_HEADER_EXTS *ext`），与 0007（9.2 三参）、wine-10+
+>    （asm 已迁 thunks.c + `#pragma makedep arm64ec_x64`）天然互斥，
+>    双向应用顺序（byte/en_US collation）均本地实测通过。
+> 2. **proton_10.0**：`dlls/wow64/process.c:1095` "call to undeclared
+>    function 'RtlWow64SuspendThread'" —— v3.2.10 的 0011 补丁改了
+>    process.c 调用点、ntdll.spec 导出与 signal_arm64{,ec}.c 定义，却漏了
+>    **声明**（wow64 是独立 PE dll，wine-9.x/10 树无任何公共头声明该函数；
+>    wine-11.16 vanilla 起才有 include/wow64.h）。signal 双锚点 hunk 经
+>    本地模拟确认"各命中其一"（fuzz 吸收 proton 树注释风格漂移，定义已
+>    落树），非失败即成功。
+>    **修复**：0011 的 process.c hunk 内就位
+>    `extern NTSTATUS WINAPI RtlWow64SuspendThread(HANDLE, ULONG*);` ——
+>    同一 hunk 原子生效；official-9.7 同样受益（其 process.c 也命中该
+>    hunk，修复 ndr 后必炸同点）；wine-11/hangover-11.16 因调用点 hunk
+>    本就不命中而天然互斥。
+>
+> **补丁工程加固**：本轮发现编辑工具会把补丁文件里的 TAB 上下文误转
+> 空格、丢 diff 标记空格，导致 fuzz 余量超限/静默失配——0007d/0011 全部
+> 经字节级脚本编辑 + `git diff` 逐行核对（TAB 行、hunk 计数头
+> `@@ -1089,13 +1089,20 @@`）+ 本地三树模拟（wine-9.7 双向顺序 /
+> proton_10.0 分段 / wine-11 空壳互斥）验证后才入库。
+>
+> ## 问题 3：美化 wine 创建的所有窗口
+>
+> **方案**：`WineRegistry.ensureModernLook`（启动链 EmulateModeset 后接入，
+> 单次 `wine regedit /s` 导入 + 前缀内 `.anwind-modern-ui` 幂等标记，
+> 失败下次自动重试、不阻断启动）。五件套：
+>
+> 1. **ClearType 字体平滑**（wine 默认全关，文本锯齿感停留在 Win95）：
+>    FontSmoothing=2 / Type=2（RGB 子像素）/ Gamma=1000 / Orientation=1；
+> 2. **拖动显示窗口内容**（默认 DragFullWindows=0，拖动只画虚线外框）；
+> 3. **light.msstyles 扁平现代主题**（wine 9.x+/10 前缀自带，wine.inf 默认
+>    即激活；本修复顺带归一用户手动调回经典/老前缀缺失的场景；探测大小写
+>    不敏感，aero 兑底，两者皆无则跳过主题键）；
+> 4. **现代配色**：选区高亮/热跟踪用 Windows 10/11 强调蓝（0 120 215 /
+>    0 102 204），桌面兜底色柔和深蓝灰（47 54 68）；
+> 5. **程序化渐变壁纸**：1600×900 24bit BMP（深空蓝→湖蓝垂直渐变 + 右上
+>    辉光 + 底部地平线微光，纯像素数学无外部依赖；视觉评审无色带无瑕疵），
+>    写入 `drive_c/anwind/wallpaper.bmp` 并注册 Wallpaper/WallpaperStyle=2。
+>    explorer 虚拟桌面（dmode=v / 前缀构建）经 wine 自带壁纸管线绘制
+>    （BMP 为 wine 唯一保真格式）；渲染不出时仅显示第 4 项底色，无副作用。
+>
+> 作用域说明：以上作用于 **wine 自绘窗口**（wineboot 进度框、winecfg、
+> regedit、notepad、explorer 桌面、文件公共对话框、消息框与老式 Win32
+> 程序的控件）；游戏/现代应用的自绘皮肤不在此列（那些由应用自己渲染）。
+>
+> ## 验证建议
+>
+> 1. App 2.38.10：新建 → 删除单个容器，其余容器完好；终端
+>    `anwind-container remove` 空名/`..` 被拒；
+> 2. CI official-9.7 arm64ec：ndr_stubless 编译通过（0007d 生效后无
+>    "invalid operand pushq" 连片报错）；proton_10.0：wow64/process.c
+>    编译通过（0011 声明就位）；
+> 3. 前缀构建完成后第二次启动任意 wine 程序（winecfg 最直观）：文本
+>    变 ClearType、按钮/对话框走 light 主题、选区变强调蓝、虚拟桌面
+>    显示渐变壁纸。
+
 > **v3.3.1（2026-11-01）**：proton arm64ec 前缀构建"无任何输出挂死"根治
 >
 > ## 根因（2026-11-01 设备会话日志 + proton_10.0 源码逐行核实）

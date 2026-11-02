@@ -191,12 +191,18 @@ cmd_clone() {
 
 cmd_remove() {
     local name="$1"
+    # v3.2.11（用户问题 1）：rm -rf 前的路径防御 —— 空名时 "$CONT_ROOT/" 即容器
+    # 根本身（-d 判真），rm -rf 会把所有容器连根删光；"."/".."/含分隔符同理。
+    # App 端 ContainerManager.remove 已同款加固，双端一致。
+    case "$name" in ""|"."|".."|*[!A-Za-z0-9._-]*|*/*)
+        die "拒绝删除：容器名非法（\"$name\"）" ;;
+    esac
     [ -d "$CONT_ROOT/$name" ] || die "容器不存在: $name"
     printf '确认删除容器 "%s"（含全部数据）? [y/N] ' "$name"
     local _a; read -r _a
     case "$_a" in y|Y|yes)
         "$AW_WINE" --container "$name" wineserver -k >/dev/null 2>&1 || true
-        rm -rf "$CONT_ROOT/$name"
+        rm -rf -- "$CONT_ROOT/$name"
         msg "已删除: $name"
         [ "$(conf_read "$CONF_GLOBAL" default_container "")" = "$name" ] \
             && sed -i '/^default_container=/d' "$CONF_GLOBAL" 2>/dev/null

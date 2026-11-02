@@ -506,6 +506,11 @@ object RootfsLauncher {
                     // 另一诱因）
                     WineRegistry.ensureDosdevices(container) { sink.stamp(it) }
                     WineRegistry.ensureEmulateModeset(resolved, container, env) { sink.stamp(it) }
+                    // v3.2.11（用户问题 3）：wine 创建的窗口现代化 —— ClearType
+                    // 字体平滑 / 拖动显示窗口内容 / light 视觉主题 / Windows 10/11
+                    // 强调色配色 / 程序化渐变壁纸。单次 regedit 导入 + 前缀内幂等
+                    // 标记；游戏自绘皮肤不受影响，失败不阻断启动（下次自动重试）。
+                    WineRegistry.ensureModernLook(resolved, container, env) { sink.stamp(it) }
                 } finally {
                     _prefixBuildFlow.value = null
                 }

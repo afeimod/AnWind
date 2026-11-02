@@ -191,8 +191,37 @@ android {
         // TrackpadRouter 之前）+ TrackpadController/TrackpadRouter（触控板
         // 模式指针处与手指轻点处）按窗口几何直判置前；WindowChrome/
         // WinDialogFrame onGloballyPositioned 上报几何；focus 加诊断日志。
-        versionCode = 72
-        versionName = "2.38.9"
+        versionCode = 73
+        versionName = "2.38.10"
+        // v2.38.10（源码包 v3.2.11）：三诉求修复轮。
+        // ①容器误删根治（用户实测“点三个点删一个容器把所有容器删了”）：
+        //   唯一能一次删光的向量是 name 为空时 File(CONTAINERS_ROOT, "")
+        //   解析为容器根本身 → deleteRecursively() 连根删光。三层防御：
+        //   ContainerData.fromConf 改为目录名优先（身份=目录，conf 内 name= 仅为
+        //   冗余字段，空值/漂移不再产生空名/重名容器，重名还曾崩 LazyColumn
+        //   key 断言）；ContainerManager.remove 拒空名/分隔符/点路径并校验
+        //   目标必须是容器根的直接子目录（canonical 双保险）；CLI
+        //   cmd_remove 同款加固（旧版 rm -rf "$CONT_ROOT/" 同样能删光）。
+        // ②wine 构建双修复（CI 日志 wine-build-log-arm64ec (6)/(7).zip）：
+        //   official-9.7 唯一阵亡点 rpcrt4/arm64ec-windows/ndr_stubless.o
+        //   （call_server_func 的 x64 内联汇在 EC 趟误激活，9.7 树该函数
+        //   四分支无 EC 排除；其余四处入口 9.7 已自带 __arm64ec__ 分支）
+        //   → 新增 0007d 补丁（锚点为 9.7 四参签名，与 0007（9.2 三参）/
+        //   wine-10+（迁 thunks.c）天然互斥，双向应用顺序均验证）；
+        //   proton_10.0 唯一阵亡点 wow64/process.c:1095
+        //   “call to undeclared function 'RtlWow64SuspendThread'”（0011 改了
+        //   调用点/spec 导出/signal 定义却漏了声明，wow64 是独立 PE dll 且
+        //   wine-9.x/10 无公共头声明）→ 0011 process.c hunk 内就位 extern，
+        //   proton-10 与 official-9.7 同修，wine-11/hangover 树因 hunk 不命中
+        //   天然互斥。字节级校验补丁（TAB 上下文/hunk 计数）防编辑工具污染。
+        // ③wine 窗口现代化（WineRegistry.ensureModernLook，启动链 EmulateModeset
+        //   后接入，单次 regedit 导入 + 前缀内幂等标记）：ClearType 字体平滑
+        //   （wine 默认全关，文本锯齿）；拖动显示窗口内容（默认只画虚线框）；
+        //   light.msstyles 扁平现代主题（大小写不敏感探测，aero 兑底，无则
+        //   跳过）；Windows 10/11 强调色选区/热跟踪；程序化生成 1600×900
+        //   深空蓝→湖蓝渐变+右上辉光 BMP 壁纸（纯像素数学无外部依赖，
+        //   视觉评审无色带无瑕疵）。作用域：wine 自绘窗口（wineboot/winecfg/
+        //   regedit/公共对话框/老 Win32 控件）；游戏自绘皮肤不受影响。
         // v2.38.7（源码包 v3.2.5）：box64 glibc 形态切换 + aarch64 glibc
         // 运行库补齐 —— x86_64 形态 wine 前缀构建秒退(139)的根治。
         // [根因]（用户诊断 + 构建链核对）：bionic 形态 box64（-DANDROID=1，

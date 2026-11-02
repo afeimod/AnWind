@@ -269,8 +269,16 @@ data class ContainerData(
                 if (eq <= 0) return@forEach
                 kv[line.substring(0, eq)] = line.substring(eq + 1)
             }
+            // v3.2.11（用户问题 1）：容器身份以【目录名】为准，conf 内 name= 仅是
+            // 便于人工查看的冗余字段。旧逻辑 kv["name"] ?: 目录名 在 name= 为空值
+            // 或与目录不一致时会产生空名/重名容器：空名容器在删除时
+            // File(CONTAINERS_ROOT, "") 解析为容器根本身 → deleteRecursively()
+            // 连根删光全部容器（用户实测“点三个点删一个容器结果所有容器都没了”）；
+            // 重名容器则直接崩 LazyColumn 的 key 去重断言。目录名永远非空且唯一，
+            // 从根上消除两类事故（update() 下次保存时会把 conf 内 name= 归一）。
+            val dirName = confFile.parentFile?.name.orEmpty()
             return ContainerData(
-                name = kv["name"] ?: confFile.parentFile?.name ?: "",
+                name = dirName.ifBlank { kv["name"].orEmpty() },
                 backend = ContainerBackend.fromId(kv["backend"]),
                 preset = Box64Preset.fromId(kv["preset"]),
                 screen = kv["screen"] ?: DEFAULT_SCREEN,

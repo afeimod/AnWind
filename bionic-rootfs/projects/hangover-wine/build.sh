@@ -343,6 +343,24 @@ pre_setup() {
     return 1
   fi
 
+  # v3.2.11：0007d ndr_stubless call_server_func EC 排除校验（CI
+  # official-9.7 v3.2.10 实证阵亡点：arm64ec-windows/ndr_stubless.o 的
+  # pushq/movq/.seh_pushreg 连片报错）。9.7 树该函数四分支（i386/x86_64/
+  # arm/aarch64）无 EC 排除；wine-9.2 同为裸 `#elif defined __x86_64__`
+  # （0007 hunk 2 修，同受本检验保护）。wine-10+/hangover 树 asm 已迁
+  # thunks.c（本文件仅 extern 声明，__ASM_GLOBAL_FUNC( call_server_func
+  # 无匹配）→ 自然跳过。判据：asm 形态存在 && 无括号守卫仍是裸 x86_64
+  #（0007d 生效后变为 `&& !defined __arm64ec__`，$ 锚点不再命中）。
+  if [[ "${args}" == *"--enable-archs=arm64ec,"* ]] \
+     && [[ -f dlls/rpcrt4/ndr_stubless.c ]] \
+     && grep -q '__ASM_GLOBAL_FUNC( call_server_func' dlls/rpcrt4/ndr_stubless.c 2>/dev/null \
+     && grep -q '#elif defined __x86_64__$' dlls/rpcrt4/ndr_stubless.c 2>/dev/null; then
+    echo "::error::0007d-fix-arm64ec-x64-asm-wine97-ndr 补丁未生效（call_server_func 的 x64 分支仍无 arm64ec 排除）！"
+    echo "   arm64ec 编译趟必炸于 dlls/rpcrt4/arm64ec-windows/ndr_stubless.o（x64 汇编误激活）"
+    echo "   请核查源码树形态与补丁锚点：projects/hangover-wine/0007d-fix-arm64ec-x64-asm-wine97-ndr.patch"
+    return 1
+  fi
+
   # v3.2.10：0010 HODLL 生效校验（设备实证 wine-proton10 arm64ec 根因）。
   # vanilla wow64/syscall.c get_cpu_dll_name 按注册表 HKLM\Wow64\x86 选 CPU
   # dll，wine.inf 默认写入 xtajit.dll —— Linux 不存在 → 32 位 wow64 进程

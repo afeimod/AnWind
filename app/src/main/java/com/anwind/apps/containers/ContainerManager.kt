@@ -100,9 +100,26 @@ object ContainerManager {
         }
     }
 
-    /** 删除容器（整目录递归删除）。@return null 成功；否则错误信息。 */
+    /**
+     * 删除容器（整目录递归删除）。@return null 成功；否则错误信息。
+     *
+     * v3.2.11（用户问题 1）：删除路径双重防御。历史缺陷链：conf 的 name=
+     * 若为空值 → 空名容器 → File(CONTAINERS_ROOT, "") 解析为容器根本身 →
+     * deleteRecursively() 把全部容器连根删光。fromConf 已改为目录名优先
+     * 消除空名源头；这里再拒一切非法名并校验目标必须是容器根的
+     * **直接子目录**（canonical 路径双保险，含 "."/".."/分隔符/符号链接逃逸）。
+     */
     fun remove(name: String): String? {
+        if (name.isBlank() || name.contains('/') || name.contains('\\') ||
+            name == "." || name == "..")
+            return "拒绝删除：容器名非法（\"$name\"）"
         val dir = File(CONTAINERS_ROOT, name)
+        val rootCanonical = runCatching { File(CONTAINERS_ROOT).canonicalPath }
+            .getOrDefault("")
+        val dirCanonical = runCatching { dir.canonicalPath }.getOrDefault("")
+        if (dirCanonical.isBlank() || dirCanonical == rootCanonical ||
+            File(dirCanonical).parentFile?.canonicalPath != rootCanonical)
+            return "拒绝删除：\"$name\" 不是容器根下的直接子目录（路径越界防御）"
         if (!dir.isDirectory) return "容器不存在：$name"
         return try {
             // 先尝试终止容器内 wine 进程，避免文件占用
