@@ -179,11 +179,13 @@ jobs:
           # 构建同源。此前本步漏打：vanilla v0.4.4 的 x64syscall.c 无
           # case 29/30/31/67，静态冒烟必 SMOKE_FAIL_SHM，aarch64 构建
           # 成功也永远发不出 Release（冒烟树与交付树不同源，测了个寂寞）。
-          # 补丁在非 ANDROID 宿主构建下只激活 x64syscall.c 的
-          # #if defined(__linux__) 转发分支与 private 头的 GO 原分支
-          # （ANDROID 段均编译为空），因此打补丁后本步才真正成为补丁的
-          # "宿主侧回归测试"（原注释声明的意图）。沙箱已实测：补丁干净
-          # 应用于 vanilla v0.4.4，静态冒烟 ANWIND_SMOKE_OK。
+          # 补丁在非 ANDROID 宿主构建下激活 x64syscall.c 的
+          # #if defined(__linux__) 转发分支、elfparser 的 DT_ANDROID_RELR
+          # 别名（非 ANDROID 也生效 —— 正是冒烟[ANDROID RELR] 的被测面）
+          # 与 private 头的 GO 原分支（ANDROID 段均编译为空），因此打补丁
+          # 后本步才真正成为补丁的 "宿主侧回归测试"（原注释声明的意图）。
+          # 沙箱已实测：补丁干净应用于 vanilla v0.4.4，静态冒烟
+          # ANWIND_SMOKE_OK、ANDROID RELR 冒烟 ANWIND_RELR_OK。
           echo "=== 冒烟[打补丁]: 应用 0001-anwind-android-shmem-native.patch ==="
           SMOKE_PATCH="${GITHUB_WORKSPACE}/bionic-rootfs/projects/box64/0001-anwind-android-shmem-native.patch"
           [[ -f "${SMOKE_PATCH}" ]] \
@@ -243,6 +245,75 @@ jobs:
           echo "${SMOKE_STATIC_OUT}" | grep -q "ANWIND_SMOKE_OK" \
             || { echo "::error::box64 静态 x86_64 程序 shm syscall 失败 —— 0001 补丁的 x64syscall.c 转发未生效，禁止放行"; exit 1; }
 
+          # v3.2.20：ANDROID RELR 打包重定位回归测试（wineboot SIGSEGV 根因）。
+          # NDK r29 lld 默认给 bionic 链接的 .so 发 Android 标签的 RELR 打包
+          # 重定位（DT_ANDROID_RELR=0x6fffe000/RELRSZ=0x6fffe001/RELRENT=
+          # 0x6fffe003，编码同标准 RELR 仅标签号不同），box64 v0.4.4 原生
+          # 只认标准 DT_RELR 系列 → 打包的 R_X86_64_RELATIVE 全部静默跳过
+          # → bionic wine x86_64-unix/ntdll.so 的 .data 自指针（virtual.c
+          # static struct list reserved_areas = LIST_INIT(reserved_areas)）
+          # 保持链期裸地址，wineboot 一进 mmap_add_reserved_area 即 SIGSEGV
+          # （设备日志：ntdll.so+0x770a8，R15=0x928d8 裸值 vs RAX=0x3f000928d8
+          # 正确重定位值，访问 0x928e8 段错误 —— 与本测试同机制同断言面）。
+          # 0001 补丁的 elfparser 修复（DT_ANDROID_RELR* 标签别名）必须让
+          # 此类 .so 正确重定位。无需 lld：gcc 生成标准 RELR .so 后用
+          # python 把动态标签翻成 Android 风味，经 box64 实跑断言。
+          echo "=== 冒烟[ANDROID RELR]: 打包重定位（wine ntdll wineboot 同机制） ==="
+          cat > "${TESTDIR}/relrtest.c" <<'EOF'
+          struct list { struct list *next, *prev; };
+          static struct list head = { &head, &head };
+          static struct list head2 = { &head2, &head2 };
+          int relr_ok(void) {
+              return head.next == &head && head.prev == &head
+                  && head2.next == &head2 && head2.prev == &head2;
+          }
+          EOF
+          cat > "${TESTDIR}/relrdrv.c" <<'EOF'
+          #include <dlfcn.h>
+          #include <stdio.h>
+          int main(void) {
+              void *h = dlopen("./librelr_android.so", RTLD_NOW);
+              if (!h) { printf("RELR_DLOPEN_FAIL: %s\n", dlerror()); return 1; }
+              int (*fn)(void) = (int(*)(void))dlsym(h, "relr_ok");
+              if (!fn) { printf("RELR_DLSYM_FAIL\n"); return 2; }
+              if (fn()) { printf("ANWIND_RELR_OK\n"); return 0; }
+              printf("RELR_FAIL_UNRELOCATED\n");
+              return 3;
+          }
+          EOF
+          gcc -shared -fPIC -O2 -Wl,-z,pack-relative-relocs \
+            -o "${TESTDIR}/librelr.so" "${TESTDIR}/relrtest.c" \
+            || { echo "::error::RELR 测试库编译失败（runner binutils < 2.38 无 -z pack-relative-relocs？）"; exit 1; }
+          python3 - "${TESTDIR}" <<'PYEOF'
+          import struct, sys, os
+          d = sys.argv[1]
+          src, dst = os.path.join(d, "librelr.so"), os.path.join(d, "librelr_android.so")
+          f = bytearray(open(src, "rb").read())
+          e_shoff, = struct.unpack_from("<Q", f, 0x28)
+          e_shentsize, e_shnum, e_shstrndx = struct.unpack_from("<HHH", f, 0x3a)
+          shs = [struct.unpack_from("<IIQQQQ", f, e_shoff + i*e_shentsize) for i in range(e_shnum)]
+          _,_,_,shstroff,shstrsize = shs[e_shstrndx]
+          def sname(n):
+              e = f.index(b"\0", shstroff+n); return f[shstroff+n:e].decode()
+          dyn = next((s for s in shs if sname(s[0]) == ".dynamic"), None)
+          assert dyn, "no .dynamic section"
+          dyn_off, dyn_sz = dyn[4], dyn[5]
+          flips = {0x24:0x6fffe000, 0x23:0x6fffe001, 0x25:0x6fffe003}
+          n = 0
+          for i in range(dyn_sz//16):
+              tag, = struct.unpack_from("<q", f, dyn_off+i*16)
+              if tag in flips:
+                  struct.pack_into("<q", f, dyn_off+i*16, flips[tag]); n += 1
+          assert n == 3, f"expected 3 standard RELR tags, flipped {n} (binutils did not emit RELR?)"
+          open(dst, "wb").write(f)
+          print(f"relr: flipped {n} dynamic tags to DT_ANDROID_RELR flavor")
+          PYEOF
+          (cd "${TESTDIR}" && gcc -O2 -o relrdrv relrdrv.c -ldl)
+          RELR_OUT="$(cd "${TESTDIR}" && "${SMOKE_BIN}" ./relrdrv 2>&1 || true)"
+          echo "${RELR_OUT}"
+          echo "${RELR_OUT}" | grep -q "ANWIND_RELR_OK" \
+            || { echo "::error::box64 未应用 ANDROID RELR 打包重定位 —— 0001 补丁的 elfparser 修复未生效，禁止放行（bionic wine ntdll wineboot SIGSEGV 同根因）"; exit 1; }
+
           # v3.2.18：补丁文件本体必须在源码树里（冒烟用独立 clone，此步
           # 校验交付源码未丢失补丁 —— 与配方 install() 的符号校验互补）。
           echo "=== 冒烟[补丁在源]: 交付树含 0001-anwind-android-shmem-native.patch ==="
@@ -250,8 +321,10 @@ jobs:
             || { echo "::error::交付源码树缺失 0001-anwind-android-shmem-native.patch —— aarch64 产物将缺内建 shm"; exit 1; }
           grep -q "android_shmem.c" "${GITHUB_WORKSPACE}/bionic-rootfs/projects/box64/0001-anwind-android-shmem-native.patch" \
             || { echo "::error::0001 补丁内容异常（不含 android_shmem.c 源）"; exit 1; }
+          grep -q "6fffe000" "${GITHUB_WORKSPACE}/bionic-rootfs/projects/box64/0001-anwind-android-shmem-native.patch" \
+            || { echo "::error::0001 补丁内容异常（不含 DT_ANDROID_RELR/elfparser 修复 —— wineboot SIGSEGV 会复发）"; exit 1; }
 
-          echo "=== 冒烟通过：同源构建物可加载 ELF、可执行、SysV shm 动态/静态路径均可用 ==="
+          echo "=== 冒烟通过：同源构建物可加载 ELF、可执行、SysV shm 动态/静态路径与 ANDROID RELR 打包重定位均可用 ==="
 
       # ============ 6. 产物校验 ============
       # 硬校验 box64 完整文件集（deps 保证三个包 tar 都已产出）：

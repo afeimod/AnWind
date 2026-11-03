@@ -273,6 +273,11 @@ fun ContainerListContent(scope: WindowContentScope) {
     ) {
         val scale = (maxWidth.value / 1024f).coerceIn(0.6f, 1f)
         val minW = 1024.dp * scale
+        // v3.2.20 修复：maxWidth 在 Column/CompositionLocalProvider 嵌套 lambda
+        // 里不能经隐式接收者解析（CI 实报 337:39 "'val maxWidth: Dp' can't be
+        // called in this context by implicit receiver"）—— 在 BoxWithConstraints
+        // 作用域内捕获为局部 val，嵌套 lambda 按闭包捕获继续可用。
+        val availW = maxWidth
 
         CompositionLocalProvider(LocalGuanliScale provides scale) {
             Column(Modifier.fillMaxSize()) {
@@ -334,7 +339,7 @@ fun ContainerListContent(scope: WindowContentScope) {
                             }
                         },
                         minWidth = minW,
-                        needHScroll = maxWidth < minW,
+                        needHScroll = availW < minW,
                         onCreate = { showCreate = true }
                     )
                 } else {
@@ -597,6 +602,7 @@ private fun GuanliContainerPage(
                 )
                 Spacer(Modifier.height(gdp(8.dp)))
                 LeftContainerListBox(
+                    modifier = Modifier.weight(1f),
                     containers = containers,
                     selectedName = sel?.name,
                     running = running,
@@ -701,12 +707,16 @@ private fun LeftContainerListBox(
     onRename: (ContainerData) -> Unit,
     onRemove: (ContainerData) -> Unit,
     onShortcut: (ContainerData) -> Unit,
-    onSwitchLang: (ContainerData, String) -> Unit
+    onSwitchLang: (ContainerData, String) -> Unit,
+    // v3.2.20 修复：weight() 只在 Row/Column 内容作用域内可用（CI 实报 709:14
+    // "Expression 'weight' cannot be invoked as a function"），本函数体没有
+    // ColumnScope 接收者 —— 占满剩余高度的 weight 交由调用点（在 Column 内）
+    // 经 modifier 注入，本函数只负责默认不占权重。
+    modifier: Modifier = Modifier
 ) {
     var menuFor by remember { mutableStateOf<ContainerData?>(null) }
     LazyColumn(
-        Modifier
-            .weight(1f)
+        modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(gdp(8.dp)))
             .border(gdp(0.5.dp), themeSec().copy(alpha = 0.3f), RoundedCornerShape(gdp(8.dp))),
@@ -2984,11 +2994,16 @@ private fun GGroup(
 @Composable
 private fun GField(
     label: String,
+    // v3.2.20 修复：2906/2930 两处调用为三参形态 GField(标签, 说明) { … }，
+    // 原二参签名报 "Too many arguments" + "String 但 () -> Unit" ——
+    // 补可选 note 参数（Qt 表单的 field 说明小字），旧二参调用不受影响。
+    note: String? = null,
     content: @Composable () -> Unit
 ) {
     Column {
         Text(label, fontSize = gsp(12.sp), fontWeight = FontWeight.Medium, color = themeFg())
-        Spacer(Modifier.height(gdp(4.dp)))
+        if (note != null) GNote(note)
+        else Spacer(Modifier.height(gdp(4.dp)))
         content()
     }
 }
@@ -3160,13 +3175,18 @@ private fun GDropdownMenu(
     onDismiss: () -> Unit,
     content: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit
 ) {
+    // v3.2.20 修复：material3 1.2.1（compose-bom 2024.06.00）的 DropdownMenu
+    // 尚无 containerColor 参数（CI 实报 "Cannot find a parameter with this
+    // name: containerColor"）—— 菜单底色改为包一层同色 Column 实现，
+    // 菜单尺寸本就包裹内容（IntrinsicSize.Min），视觉等效。
     DropdownMenu(
         expanded = expanded,
         onDismissRequest = onDismiss,
-        containerColor = themeCard(),
         modifier = Modifier.width(IntrinsicSize.Min)
     ) {
-        content()
+        Column(Modifier.background(themeCard(), RoundedCornerShape(gdp(4.dp)))) {
+            content()
+        }
     }
 }
 

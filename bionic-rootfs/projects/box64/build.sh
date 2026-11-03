@@ -64,6 +64,24 @@ license="MIT"
 #     switch 补 case 29/30/31/67，ANDROID 下转发内建实现、glibc 宿主
 #     直用 libc —— 静态程序也修好）。glibc 形态构建不受影响（文件在
 #     非 ANDROID 下编译为空、private 头走 GO 原分支）。
+#   - v3.2.20 补丁新增（wineboot SIGSEGV 根因修复，全形态生效）：
+#     NDK r29 lld 默认给 bionic 链接的 .so 发 Android 标签 RELR 打包
+#     重定位（DT_ANDROID_RELR=0x6fffe000/RELRSZ/RELRENT，编码同标准
+#     RELR 仅标签号不同），box64 v0.4.4 的 elfparser 只认标准 DT_RELR
+#     系列 → 打包的 R_X86_64_RELATIVE 全部静默跳过 → bionic wine
+#     x86_64-unix/ntdll.so 的 .data 自指针（virtual.c 的
+#     reserved_areas = LIST_INIT(reserved_areas)）保持链期裸地址，
+#     wineboot 一进 mmap_add_reserved_area 即 SIGSEGV（设备日志
+#     ntdll.so+0x770a8 读 0x928e8，R15=0x928d8 裸值 vs RAX=
+#     0x3f000928d8 正确重定位值 —— 用 bionic-wine-official-9.2-x86_64
+#     发布包的 ntdll.so 逐字节核实：.rela.dyn 仅 7 项，其余全在
+#     .relr.dyn/SHT_ANDROID_RELR 的 14 个打包项里）。补丁给
+#     elfparser.c/elfparser32.c 的 DT_RELR/RELRSZ/RELRENT case 加
+#     0x6fffe000/0x6fffe001/0x6fffe003 别名；沙箱实测旧 box64 加载
+#     该 ntdll.so 无 "Applying N Relocation(s) without Addend" 行
+#     （重定位被跳过），打补丁后 14 项全应用。宿主冒烟新增
+#     [ANDROID RELR] 回归（gcc 标准标签 + python 翻 Android 标签，
+#     经 box64 实跑断言 —— 见 build-box64-bionic.yml）。
 #   - 链接 bionic 系统库 c / m / dl，无外部运行时依赖
 #   - Release 优化限制为 -O1（上游对 Android dynarec 稳定性的
 #     选择，CMakeLists "limit the optimization level" hack，

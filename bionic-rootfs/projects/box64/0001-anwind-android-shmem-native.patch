@@ -1,6 +1,48 @@
+From: AnWind <anwind@example.invalid>
+Subject: [PATCH] AnWind box64 bionic: built-in SysV shm + Android RELR relocation support
+
+Two AnWind additions on top of upstream box64 v0.4.4:
+
+1. Native SysV shm for bionic hosts (v3.2.18):
+   - src/libtools/android_shmem.c: memfd-backed shmget/shmat/shmctl/shmdt
+     (+ my_* aliases), /dev/ashmem fallback. Compiled in only for ANDROID.
+   - wrappedlibc_private.h: shm* GO -> GOM on ANDROID, bridging x86_64
+     dynamic binaries (wine) to the built-in implementation.
+   - x64syscall.c: forward raw syscalls 29/30/31/67 (static binaries) to
+     libc (host) or the built-in emulation (ANDROID).
+   - CMakeLists.txt: compile android_shmem.c for ANDROID builds.
+
+2. Android RELR packed-relocation support (v3.2.20) - the wineboot SIGSEGV fix:
+   - elfparser.c / elfparser32.c: recognize DT_ANDROID_RELR (0x6fffe000) /
+     DT_ANDROID_RELRSZ (0x6fffe001) / DT_ANDROID_RELRENT (0x6fffe003).
+     NDK r29 lld emits these by default for bionic-linked .so (same standard
+     RELR encoding, Android tag numbers). Without this, ALL packed
+     R_X86_64_RELATIVE relocations are silently skipped: the bionic wine
+     x86_64-unix/ntdll.so then keeps raw link-time self-pointers in .data
+     (virtual.c: static struct list reserved_areas = LIST_INIT(reserved_areas))
+     and dies with SIGSEGV in mmap_add_reserved_area (LIST_FOR_EACH reads
+     area->base at [unrelocated_ptr + 0x10]) on the very first wineboot -
+     device log: ntdll.so+0x770a8, R15=0x00000000000928d8 (raw),
+     RAX=0x0000003f000928d8 (correct relocated), access to 0x928e8.
+   - CMakeLists.txt: gate -Wno-pointer-type-mismatch (gcc-only) to GNU cc so
+     clang builds stop printing "unrecognized command-line option" noise.
+---
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 9eb7f3c..990c9c2 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
-@@ -488,6 +488,13 @@
+@@ -321,7 +321,9 @@ endif()
+ if(NOGIT)
+     add_definitions(-DNOGIT)
+ endif()
+-if(CI)
++if(CI AND CMAKE_C_COMPILER_ID MATCHES "GNU")
++    # AnWind: -Wno-pointer-type-mismatch is gcc-only; clang (NDK / CI host
++    # smoke) prints "unrecognized command-line option" noise - gate to GNU cc.
+     add_definitions(-Wno-pointer-type-mismatch)
+ endif()
+ 
+@@ -488,6 +490,13 @@ set(ELFLOADER_SRC
      "${BOX64_ROOT}/src/tools/pe_tools.c"
      "${BOX64_ROOT}/src/wrapped/generated/wrapper.c"
  )
@@ -14,6 +56,57 @@
  if(NOT STATICBUILD)
      list(APPEND ELFLOADER_SRC
          "${BOX64_ROOT}/src/mallochook.c"
+diff --git a/src/elfs/elfparser.c b/src/elfs/elfparser.c
+index 37a2d37..8152388 100644
+--- a/src/elfs/elfparser.c
++++ b/src/elfs/elfparser.c
+@@ -288,12 +288,24 @@ elfheader_t* ParseElfHeader64(FILE* f, const char* name, int exec)
+                 h->relaent = val;
+                 break;
+             case DT_RELR:
++            case 0x6fffe000:
++                // AnWind: DT_ANDROID_RELR - Android/bionic flavored RELR packed
++                // relocations. NDK r29 lld emits these by default
++                // (--use-android-relr-tags) for bionic-linked .so: the SAME
++                // standard RELR encoding (address entries + bitmaps), only the
++                // dynamic tag numbers differ. Without this alias, all packed
++                // R_X86_64_RELATIVE relocs are silently skipped and any
++                // statically self-referencing .data symbol (wine virtual.c
++                // reserved_areas = LIST_INIT(reserved_areas) etc.) keeps its
++                // raw link-time address -> SIGSEGV on first dereference.
+                 h->relr = ptr;
+                 break;
+             case DT_RELRSZ:
++            case 0x6fffe001:  // DT_ANDROID_RELRSZ (see DT_ANDROID_RELR above)
+                 h->relrsz = val;
+                 break;
+             case DT_RELRENT:
++            case 0x6fffe003:  // DT_ANDROID_RELRENT (see DT_ANDROID_RELR above)
+                 h->relrent = val;
+                 break;
+             case DT_PLTGOT:
+diff --git a/src/elfs/elfparser32.c b/src/elfs/elfparser32.c
+index 3a3f66c..eff9f9a 100755
+--- a/src/elfs/elfparser32.c
++++ b/src/elfs/elfparser32.c
+@@ -213,12 +213,15 @@ elfheader_t* ParseElfHeader32(FILE* f, const char* name, int exec)
+                     h->relaent = val;
+                     break;
+                 case DT_RELR:
++                case 0x6fffe000:  // DT_ANDROID_RELR (AnWind: bionic RELR tags, same encoding)
+                     h->relr = ptr;
+                     break;
+                 case DT_RELRSZ:
++                case 0x6fffe001:  // DT_ANDROID_RELRSZ
+                     h->relrsz = val;
+                     break;
+                 case DT_RELRENT:
++                case 0x6fffe003:  // DT_ANDROID_RELRENT
+                     h->relrent = val;
+                     break;
+                 case DT_PLTGOT:
+diff --git a/src/emu/x64syscall.c b/src/emu/x64syscall.c
+index 3dfb57e..44afe8a 100644
 --- a/src/emu/x64syscall.c
 +++ b/src/emu/x64syscall.c
 @@ -23,6 +23,17 @@
@@ -34,7 +127,7 @@
  #include "x64_signals.h"
  #include "os.h"
  #include "debug.h"
-@@ -1052,6 +1063,36 @@
+@@ -1052,6 +1063,36 @@ void EXPORT x64Syscall_linux(x64emu_t *emu)
              S_RAX = -ENOSYS;
              #endif
              break;
@@ -71,6 +164,9 @@
          default:
              printf_log(LOG_INFO, "Warning: Unsupported Syscall 0x%02Xh (%d)\n", s, s);
              S_RAX = -ENOSYS;
+diff --git a/src/libtools/android_shmem.c b/src/libtools/android_shmem.c
+new file mode 100644
+index 0000000..16cc040
 --- /dev/null
 +++ b/src/libtools/android_shmem.c
 @@ -0,0 +1,370 @@
@@ -444,9 +540,11 @@
 +int my_shmdt(const void* shmaddr) { return shmdt(shmaddr); }
 +
 +#endif /* ANDROID */
+diff --git a/src/wrapped/wrappedlibc_private.h b/src/wrapped/wrappedlibc_private.h
+index c147d76..adc7025 100644
 --- a/src/wrapped/wrappedlibc_private.h
 +++ b/src/wrapped/wrappedlibc_private.h
-@@ -1860,10 +1860,19 @@
+@@ -1860,10 +1860,19 @@ GOW(sgetsgent_r, iFpppLp)
  #endif
  GO(sgetspent, pFp)
  GOW(sgetspent_r, iFpppLp)

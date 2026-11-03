@@ -1,5 +1,37 @@
 # AnWind Bionic 修复包 v2（2026-09-19）
 
+> **v3.2.20（2026-11-03）**：CI 实报双故障修复轮（用户反馈：①APK 构建 `ContainerScreens.kt` 8 处编译错误；②box64 运行"还是老样子"—— wineboot 启动即 SIGSEGV，wine 会话日志 `wine-9.2-20261103-095002-606.log`）。
+>
+> ## 修复 1：ContainerScreens.kt 编译错误（APK 构建失败）
+>
+> **根因**：v3.2.19 修掉 GuanliSupport.kt 的未闭合注释后，Kotlin 解析终于通过，类型检查暴露出 ContainerScreens.kt 里 8 处语义错误（上一轮解析失败时整轮编译在语法阶段就被中止，这些错误根本没被报出来）。
+>
+> **逐条修复**（沙箱搭 Android SDK 34 + Gradle 8.7 + AGP 8.5.2 + Kotlin 1.9.25 + compose-bom 2024.06.00 全量实编验证，`:app:compileReleaseKotlin` 与 `assembleRelease` 均 BUILD SUCCESSFUL，产物 app-release.apk 97MB）：
+>
+> | CI 报错 | 修复 |
+> |---|---|
+> | 337:39 `'val maxWidth: Dp' can't be called in this context by implicit receiver` | `maxWidth` 在 BoxWithConstraints 作用域内捕获为局部 `val availW`，嵌套 lambda 按闭包捕获使用（第 274 行同源引用不受影响） |
+> | 709:14 `'weight' cannot be invoked as a function` | `weight()` 只在 Row/Column 内容作用域可用：LeftContainerListBox 增加 `modifier: Modifier = Modifier` 参数，LazyColumn 改用注入的 modifier，`Modifier.weight(1f)` 移到调用点（Column 内）注入 |
+> | 2896/2920 GField "Too many arguments" + "String 但 () -> Unit" + 2897/2921 "@Composable invocations" 级联 | GField 增加可选 `note: String? = null` 参数（Qt 表单说明小字），三参调用形态 `GField(标签, 说明) { … }` 合法化，24 处旧二参调用不受影响 |
+> | 3166:9 `Cannot find a parameter with this name: containerColor` | material3 1.2.1 的 DropdownMenu 尚无 `containerColor` 参数（1.3 才加）；改为内容层包一层 `Column(Modifier.background(themeCard()))`，视觉等效 |
+>
+> ## 修复 2：wineboot 启动即 SIGSEGV（"box64 运行还是老样子"的真正根因）
+>
+> **设备日志特征**：`x86pc=ntdll.so+0x770a8`，`x64opcode=49 8B 4F 10 4C 39 E1 77`（`mov rcx,[r15+0x10]; cmp rcx,r12; ja`），访问 `0x928e8` 段错误；寄存器 `R15=0x00000000000928d8`（链期裸地址）而 `RAX=0x0000003f000928d8`（正确重定位值）。
+>
+> **根因（用 bionic-wine-official-9.2-x86_64 发布包的 ntdll.so 逐字节核实）**：崩溃点是 wine 9.2 virtual.c 的 `mmap_add_reserved_area(0x10000, 0x8000)`（box64 WINE prereserve 的第一段）里 `LIST_FOR_EACH(&reserved_areas)` 读 `area->base` —— `reserved_areas` 是 `static struct list = LIST_INIT(reserved_areas)`（.data 自指针）。**NDK r29 lld 默认给 bionic 链接的 .so 发 Android 标签的 RELR 打包重定位**（`DT_ANDROID_RELR=0x6fffe000` / `RELRSZ=0x6fffe001` / `RELRENT=0x6fffe003`，编码与标准 RELR 完全相同、仅动态标签号不同），该 ntdll.so 的 `.rela.dyn` 只剩 7 项，几百个 R_X86_64_RELATIVE 全打包进 `.relr.dyn`（SHT_ANDROID_RELR，14 个打包项）。**box64 v0.4.4 的 elfparser 只认标准 `DT_RELR/DT_RELRSZ/DT_RELRENT`，Android 标签被当未知标签忽略 → 打包的相对重定位全部静默跳过** → `reserved_areas.next` 保持裸值 `0x928d8` → `LIST_ENTRY` 把它当 `struct reserved_area*` → 读 `[0x928d8+0x10]` 即 `0x928e8` 段错误。wine 全部 x86_64-unix/*.so（avicap32 到 opengl32 逐个 readelf 核实）都是同款标签，只是 ntdll 最先死。`wine --version` 能过是因为它只依赖 JUMP_SLOT/GLOB_DAT（未打包）与原生 wrapped 库符号，不碰自指针。
+>
+> **修复**：0001 补丁给 `src/elfs/elfparser.c` 与 `elfparser32.c` 的 `DT_RELR/DT_RELRSZ/DT_RELRENT` case 各加 `0x6fffe000/0x6fffe001/0x6fffe003` 别名（Android RELR 与标准 RELR 编码一致，别名即可）。**用户设备上现有的 wine9.2 无需重装**，重刷 box64 即可生效。
+>
+> **验证（三层）**：
+> ① 最小复现：gcc 构造 `static struct list = {&self,&self}` 的 .so（`-Wl,-z,pack-relative-relocs` 生成标准 DT_RELR），python 把三个动态标签翻成 Android 风味 —— 旧 box64 实跑 `RELR_FAIL_UNRELOCATED`（bug 本地复现），打补丁后 `RELR_OK`，标准标签回归不变；
+> ② 真实二进制：同一加载器驱动 dlopen 用户在用的 bionic ntdll.so —— 旧 box64 日志无 "Applying N Relocation(s) without Addend" 行（重定位被跳过实锤），打补丁后 `Applying 14 Relocation(s) without Addend` 全量应用（PLT/GLOB_DAT 原有 7+196 项不变）；
+> ③ CI 回归：`build-box64-bionic.yml` 冒烟新增 `[ANDROID RELR]` 用例（无需 lld：gcc 标签 + python 翻转 + box64 实跑断言 `ANWIND_RELR_OK`），"补丁在源"校验同步加 `6fffe000` 内容检查，缺失即禁止放行。
+>
+> ## 附带清理：`cc1: note: unrecognized command-line option '-Wno-pointer-type-mismatch'`
+>
+> box64 上游 CMakeLists.txt 在 `CI=ON` 时无条件加 gcc 专属的 `-Wno-pointer-type-mismatch`，clang（宿主冒烟构建）打印 note 噪音。0001 补丁将条件收窄为 `CI AND CMAKE_C_COMPILER_ID MATCHES "GNU"`，gcc 行为零变化，clang 噪音消失。
+
 > **v3.2.19（2026-11-03）**：CI 实报双故障修复轮（用户反馈：①APK 构建 `GuanliSupport.kt:484:1 Unclosed comment`；②box64 冒烟 `SMOKE_FAIL_SHM`，即时构建成功也发不出 Release）。
 >
 > ## 修复 1：GuanliSupport.kt 未闭合注释（APK 构建失败）
