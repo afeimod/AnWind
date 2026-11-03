@@ -25,10 +25,27 @@ val ruffleAssetWhitelist = setOf(
 )
 val filteredAssetsDir = layout.buildDirectory.dir("filteredAssets")
 val filterRuffleAssets = tasks.register<Sync>("filterRuffleAssets") {
-    description = "同步 src/main/assets 到过滤目录，ruffle/ 只保留白名单文件"
+    description = "同步 src/main/assets 到过滤目录，ruffle/ 只保留白名单文件；*.tar.gz 改名 .tgz 规避 aapt2 剥层"
     into(filteredAssetsDir)
     from("src/main/assets") {
         exclude("ruffle/*")
+        // ============================================================
+        // v3.2.22：aapt2 对以 ".gz" 结尾资产的构建期优化（AOSP
+        // Package.cpp 行为）：剥掉 gzip 层把 deflate 流直接作为 zip
+        // 压缩条目，资产名同步去掉 ".gz" 后缀 —— 实证（用户 APK +
+        // StackOverflow 22796903/4666098 + capacitor#5844）：
+        //   assets/dxvk/dxvk-2.3.1.tar.gz → APK 里变成
+        //   assets/dxvk/dxvk-2.3.1.tar（读出来已是解压的 22MB tar 流）
+        //   assets/termux/x11-xkb.tar.gz → 同样中招（fix9.10 的
+        //   ②级资产回退在正式包里实际打不开，一直是静默断链）
+        // v3.2.15 的"aapt2 实验证明其不改名"结论有误（直测没走
+        // link -A 全管线），App 侧 .tar 兼容只是绕过而非根治。
+        // 规避：同步期把 *.tar.gz 统一改名为等价格式 *.tgz ——
+        // aapt2 只剥 ".gz" 后缀，".tgz" 原名原字节保留；noCompress
+        // 已含 "tgz"（原字节存储，无二次压缩浪费）。App 侧扫描器
+        // （dxvkAssetType）本就识别 .tgz→GZIP，双端零改动。
+        // ============================================================
+        rename("(.+)\\.tar\\.gz$", "$1.tgz")
     }
     from("src/main/assets/ruffle") {
         into("ruffle")
@@ -201,8 +218,33 @@ android {
         // 必 ENOSYS —— 冒烟树补打补丁（与 aarch64 交付构建同源；沙箱实跑
         // 动态/静态双冒烟 ANWIND_SMOKE_OK 验证），glibc 形态 build-box64.yml
         // 同步应用（静态程序 shm 转发同样受益）。
-        versionCode = 81
-        versionName = "2.38.18"
+        versionCode = 82
+        versionName = "2.38.19"
+        // v2.38.19（源码包 v3.2.22）：四诉求修复轮 ——
+        // ①box64 bionic 冒烟测试修复：RELR 冒烟的 python 段 Elf64_Shdr
+        //   6 元组解包写了 5 个目标（CI 实炸 ValueError: too many values to
+        //   unpack (expected 5)，RELR 冒烟从未真正跑起来）—— 修正为
+        //   _,_,_,_,shstroff,shstrsize；构建日志里 3 次 "tar: .: Cannot
+        //   utime" 噪声同源治理（make_pkg 解包 -C / 加 -m + 归档校验容错）。
+        //   注：构建本体与产物一直是好的（[OK] 全部完成），报错在构建后
+        //   的源码级冒烟步骤。
+        // ②assets/*.tar.gz 被 aapt2 剥层修复：aapt 对以 .gz 结尾的资产会
+        //   剥掉 gzip 层并改名（dxvk-2.3.1.tar.gz 进 APK 变成解压后的
+        //   dxvk-2.3.1.tar；x11-xkb.tar.gz 同中招，回退链路一直是静默断链）
+        //   —— 打包同步任务统一改名 .tgz（aapt2 原名原字节保留，扫描器
+        //   本就识别 .tgz），x11-xkb 引用跟随更新。
+        // ③创建新容器弹窗收紧：GComboBox 增 width 参数（架构选择两项下拉
+        //   不再 fillMaxWidth 拉满整行——"大得离谱"根因），弹窗 520→430dp、
+        //   内边距/行距收紧，架构选择去重组框改轻量 GField 行；Wine 安装
+        //   面同款修复。
+        // ④云音乐双修复（AnWindMusic 回移）：背景显示不正常 —— 侧栏/底栏
+        //   v2.38.18 旧实现固定 72%/80% 白雾未接明暗自适应（暗色背景被白雾
+        //   盖死），Sidebar/PlayerBar/NavItem 全部接入 LocalAdaptiveScheme
+        //   （sch.glass 玻璃底 + 自适应文字/轨道/光晕，滑块 16→32dp）；
+        //   搜索下载的音乐不自动入本地库 —— MusicStore 增 downloaded.json
+        //   持久化 + queryLocalSongs 合并已下载音频 + 下载完成后
+        //   addDownloadedPath/backfillDownloadedPath/MediaScanner 扫描/
+        //   scanLocal 自动重扫四连，无需手动扫描即入「本地音乐」页。
         // v2.38.17（源码包 v3.2.18）：box64 内建 SysV shm（bionic 双断链
         // 补齐：wrappedlibc GO→GOM 桥接 + x64syscall case 29/30/31/67
         // 转发 + android_shmem.c memfd 实现）+ 容器管理按 wineguanli.py

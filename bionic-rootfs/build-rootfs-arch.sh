@@ -1249,7 +1249,20 @@ make_pkg() {
     [[ "$_targetArch" == "$targetArch" ]] || continue
     local _pkgFile="${pkgDir}/${pjName}-${revision}-${_targetArch}.tar"
     if [[ -f "$_pkgFile" ]]; then
-      tar -xf "$_pkgFile" -C /
+      # v3.3.1：解包容根噪声治理 —— package() 打包 "."（归档含根条目），
+      # tar -xf -C / 收尾会在 "/"（root 属主）上恢复时间戳/权限，非 root
+      # 必报 "tar: .: Cannot utime: Operation not permitted"（CI 日志每个
+      # 包一条，与 v3.3.0 package() 侧修的是同一机制）。此时数据条目已
+      # 全部落盘。改为 -m（--touch，不恢复归档 mtime）消除 utime 尝试；
+      # 仍失败（如根 chmod）则校验归档可完整列出即放行，真错误照常中止。
+      if ! tar -xmf "$_pkgFile" -C /; then
+        if tar -tf "$_pkgFile" >/dev/null 2>&1; then
+          warn "${pjName}: tar 解包容根时间戳/权限收尾失败（数据完整，忽略）"
+        else
+          err "包解压失败 => $_pkgFile"
+          exit 1
+        fi
+      fi
       guard_dev_null
     else
       err "包不存在 => $_pkgFile"

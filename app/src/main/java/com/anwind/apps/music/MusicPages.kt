@@ -710,17 +710,79 @@ private val AUDIO_EXTENSIONS = setOf("mp3", "flac", "wav", "m4a", "ogg", "aac", 
  * - [MusicSettings.SCAN_ALL]：MediaStore 全库扫描（is_music != 0，时长 > 30s）
  * - [MusicSettings.SCAN_DIRS]：仅遍历用户指定的目录（File 递归，
  *   依赖“所有文件访问”权限，避免把铃声/语音等无关音频扫进曲库）
+ * - [downloadedPaths]：App 内下载完成的音频文件（v2.25 修复：搜索下载的音乐
+ *   自动加入本地音乐库）——无论 MediaStore 是否已异步索引、扫描模式为何，
+ *   下载的歌曲都会合并进结果，立即出现在「本地音乐」页
  */
 fun queryLocalSongs(
     context: Context,
     scanMode: Int = MusicSettings.SCAN_ALL,
-    scanDirs: List<String> = emptyList()
+    scanDirs: List<String> = emptyList(),
+    downloadedPaths: List<String> = emptyList()
 ): List<SongInfo> {
-    return if (scanMode == MusicSettings.SCAN_DIRS && scanDirs.isNotEmpty()) {
+    val base = if (scanMode == MusicSettings.SCAN_DIRS && scanDirs.isNotEmpty()) {
         scanSpecifiedDirs(scanDirs)
     } else {
         scanMediaStore(context)
     }
+    return mergeDownloadedSongs(base, downloadedPaths)
+}
+
+/**
+ * 扫描结果合并 App 记录的已下载音频（v2.25）：
+ * - 跳过已删除/非音频文件；按绝对路径去重（MediaStore/目录扫描已覆盖的不重复加）
+ * - 下载的歌曲排在最前（最新下载在前），其余保持原扫描顺序
+ */
+private fun mergeDownloadedSongs(base: List<SongInfo>, downloadedPaths: List<String>): List<SongInfo> {
+    if (downloadedPaths.isEmpty()) return base
+    val knownPaths = base.mapNotNull { it.localPath }.toHashSet()
+    val extra = mutableListOf<SongInfo>()
+    for (path in downloadedPaths.asReversed()) {
+        val f = File(path)
+        if (!f.isFile) continue
+        if (f.extension.lowercase() !in AUDIO_EXTENSIONS) continue
+        if (!knownPaths.add(path)) continue
+        extra.add(localSongFromFile(f))
+    }
+    if (extra.isEmpty()) return base
+    return extra + base
+}
+
+/**
+ * 由音频文件构造本地歌曲（优先读音频内真实标签：标题/歌手/专辑/时长，
+ * 读取失败回退按文件名推断 "歌手 - 标题"；[mmr] 可传共享实例复用）。
+ */
+private fun localSongFromFile(f: File, mmr: MediaMetadataRetriever? = null): SongInfo {
+    val path = f.absolutePath
+    val meta = runCatching {
+        val own = mmr ?: MediaMetadataRetriever()
+        try {
+            own.setDataSource(path)
+            Triple(
+                own.extractMetadata(MediaMetadataRetriever.METADATA_KEY_TITLE),
+                own.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ARTIST),
+                own.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ALBUM)
+            ) to own.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
+        } finally {
+            if (mmr == null) runCatching { own.release() }
+        }
+    }.getOrNull()
+    val fromName = parseNamesFromFileName(f.nameWithoutExtension)
+    val title = meta?.first?.first?.takeIf { !it.isNullOrBlank() } ?: fromName.first
+    val artist = meta?.first?.second?.takeIf { !it.isNullOrBlank() } ?: fromName.second
+    val album = meta?.first?.third?.takeIf { !it.isNullOrBlank() } ?: f.parentFile?.name ?: "未知专辑"
+    val duration = meta?.second?.toLongOrNull() ?: 0L
+    return SongInfo(
+        id = "file_$path",
+        name = title,
+        artist = artist,
+        album = album,
+        durationMs = duration,
+        picUrl = "",
+        source = SongInfo.SOURCE_LOCAL,
+        localUri = Uri.fromFile(f).toString(),
+        localPath = path
+    )
 }
 
 /** MediaStore 全库扫描（读真实标签：标题/歌手/专辑/时长 + 绝对路径供内嵌封面提取） */
@@ -792,33 +854,7 @@ private fun scanSpecifiedDirs(dirs: List<String>): List<SongInfo> {
                     .forEach { f ->
                         val path = f.absolutePath
                         if (seen.add(path)) {
-                            // 优先读音频内真实标签；失败回退文件名解析
-                            val meta = runCatching {
-                                mmr.setDataSource(path)
-                                Triple(
-                                    mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_TITLE),
-                                    mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ARTIST),
-                                    mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ALBUM)
-                                ) to mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
-                            }.getOrNull()
-                            val fromName = parseNamesFromFileName(f.nameWithoutExtension)
-                            val title = meta?.first?.first?.takeIf { !it.isNullOrBlank() } ?: fromName.first
-                            val artist = meta?.first?.second?.takeIf { !it.isNullOrBlank() } ?: fromName.second
-                            val album = meta?.first?.third?.takeIf { !it.isNullOrBlank() } ?: dir.name
-                            val duration = meta?.second?.toLongOrNull() ?: 0L
-                            out.add(
-                                SongInfo(
-                                    id = "file_$path",
-                                    name = title,
-                                    artist = artist,
-                                    album = album,
-                                    durationMs = duration,
-                                    picUrl = "",
-                                    source = SongInfo.SOURCE_LOCAL,
-                                    localUri = Uri.fromFile(f).toString(),
-                                    localPath = path
-                                )
-                            )
+                            out.add(localSongFromFile(f, mmr))
                         }
                     }
             }

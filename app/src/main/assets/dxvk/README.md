@@ -5,7 +5,11 @@
 ## 放置约定
 
 - 文件名：`dxvk-<版本>.tar.gz`（如 `dxvk-2.3.1.tar.gz`）
-- 兼容后缀：`.tar.gz` / `.tgz` / `.tzst` / `.tar.zst`
+- 源码里放 `.tar.gz` 即可：**打包期 gradle 同步任务会统一改名为 `.tgz`**
+  进 APK（v3.2.22）—— aapt2 会把以 `.gz` 结尾的资产剥掉压缩层并改名
+  （`.tar.gz` 进 APK 会变成被解压的 `.tar`），`.tgz` 是等价格式且
+  aapt2 原名原字节保留，App 侧两种后缀都能识别。
+- 兼容后缀：`.tar.gz` / `.tgz` / `.tzst` / `.tar.zst` / `.tar.xz` / `.tar`
 - 旧契约 `assets/anwind/dxvk-*.tzst` 仍然有效（两处并存时全部按序应用）
 
 ## 支持的包内布局（自动探测）

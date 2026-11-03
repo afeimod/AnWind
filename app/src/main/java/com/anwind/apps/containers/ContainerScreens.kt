@@ -1844,9 +1844,9 @@ private fun WineInstallTab(onRefresh: () -> Unit) {
     }
 
     GGroup("选择安装架构") {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            GComboBox(options = listOf("x86_64", "arm64ec"), selected = arch, onSelect = { arch = it })
-            Spacer(Modifier.width(gdp(8.dp)))
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(gdp(8.dp))) {
+            // v3.2.22：紧凑定宽下拉（选项仅两项，fillMaxWidth 会把同行提示挤没）
+            GComboBox(options = listOf("x86_64", "arm64ec"), selected = arch, onSelect = { arch = it }, width = 150.dp)
             Text("(arm64ec 装到 wine-<名> 槽位)", fontSize = gsp(10.sp), color = GuanliColors.info)
         }
     }
@@ -2722,15 +2722,17 @@ private fun NewContainerDialog(
     WinDialog(
         title = "创建新容器",
         onDismiss = onDismiss,
-        width = 520.dp * GuanliUiK
+        // v3.2.22：总尺寸收紧（用户反馈“总大小也要降低点”）——
+        // 520→430dp（×K 后 344dp），内边距 14/10→12/8、行距 8→6
+        width = 430.dp * GuanliUiK
     ) {
         GuanliDialogScale(dlgScale) {
         Column(
             Modifier
                 .fillMaxWidth()
-                .padding(horizontal = gdp(14.dp), vertical = gdp(10.dp))
+                .padding(horizontal = gdp(12.dp), vertical = gdp(8.dp))
                 .verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(gdp(8.dp))
+            verticalArrangement = Arrangement.spacedBy(gdp(6.dp))
         ) {
             GField("容器名称:") {
                 OutlinedTextField(
@@ -2743,9 +2745,12 @@ private fun NewContainerDialog(
                 )
                 if (error != null) Text(error ?: "", color = GuanliColors.red, fontSize = gsp(11.sp))
             }
-            GGroup("架构选择") {
+            // v3.2.22：架构选择去重组框（GGroup 边框+上下 24dp 内衬是弹窗
+            // “大得离谱”的次要来源），改 GField 轻量行 + 紧凑定宽下拉
+            // （150dp 容得下 arm64ec + 箭头；原 fillMaxWidth 在 Row 里抢占整行）
+            GField("架构:") {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(gdp(8.dp))) {
-                    GComboBox(options = listOf("x86_64", "arm64ec"), selected = arch, onSelect = { arch = it })
+                    GComboBox(options = listOf("x86_64", "arm64ec"), selected = arch, onSelect = { arch = it }, width = 150.dp)
                     Text("(arm64ec使用fexwine)", fontSize = gsp(10.sp), color = GuanliColors.info)
                 }
             }
@@ -3216,13 +3221,18 @@ private fun GRadioRow(
 /**
  * QComboBox 等价物：显示框 + 下拉菜单。
  * @param customLabel 选中值不在选项里时显示的自定义文本（可编辑下拉的当前值）
+ * @param width 紧凑宽度（v3.2.22：不传 = 占满整行，表单字段用；
+ * 传入则按 gdp(width) 定宽 —— 选项少的短下拉（架构选择 x86_64/arm64ec
+ * 两项）在 Row 里与提示文字并排时用，避免 fillMaxWidth 把同行
+ * 后续元素挤没、下拉框拉得比弹窗还宽（用户实测“大得离谱”））
  */
 @Composable
 private fun GComboBox(
     options: List<String>,
     selected: String,
     onSelect: (String) -> Unit,
-    customLabel: String? = null
+    customLabel: String? = null,
+    width: Dp? = null
 ) {
     var open by remember { mutableStateOf(false) }
     val display = customLabel
@@ -3230,7 +3240,7 @@ private fun GComboBox(
     Box {
         Row(
             Modifier
-                .fillMaxWidth()
+                .then(if (width != null) Modifier.width(gdp(width)) else Modifier.fillMaxWidth())
                 .clip(RoundedCornerShape(gdp(4.dp)))
                 .background(themeCard())
                 .border(gdp(1.dp), GuanliColors.accent, RoundedCornerShape(gdp(4.dp)))

@@ -856,8 +856,13 @@ object TermuxBootstrapInstaller {
             return
         }
         // ② 旧独立资产（兼容旧包/旧管线仍可用的场景）
+        // v3.2.22：资产名改 .tgz —— aapt2 打包会剥掉 ".gz" 结尾资产的
+        // gzip 层并改名（x11-xkb.tar.gz 在正式 APK 里实际叫 x11-xkb.tar
+        // 且内容已解压，本回退此前一直是静默 FileNotFoundException）；
+        // gradle 同步任务已统一把 *.tar.gz 改名 *.tgz 进 APK（原字节），
+        // 这里跟随引用打包后的名字，存量 .tar.gz 名字不再存在。
         try {
-            copyAssetScript(context, "termux/x11-xkb.tar.gz", dest, executable = false)
+            copyAssetScript(context, "termux/x11-xkb.tgz", dest, executable = false)
         } catch (e: Exception) {
             // 绝不阻断 bootstrap 安装：终端可用性 > X11 桌面
             android.util.Log.w(

@@ -60,6 +60,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -170,7 +171,11 @@ private fun MusicContent(scope: WindowContentScope) {
     fun scanLocal() {
         scanning = true
         uiScope.launch(kotlinx.coroutines.Dispatchers.IO) {
-            val found = queryLocalSongs(context, musicSettings.scanMode, musicSettings.scanDirs)
+            // v2.25：合并 App 记录的已下载音频 —— 下载完成的歌无需手动扫描即入本地曲库
+            val found = queryLocalSongs(
+                context, musicSettings.scanMode, musicSettings.scanDirs,
+                engine.store.loadDownloadedPaths()
+            )
             localSongs = found
             scanning = false
         }
@@ -288,7 +293,20 @@ private fun MusicContent(scope: WindowContentScope) {
                 }
             }
             toast("下载完成：${file.name}")
+            // 4) v2.25 修复：下载完成自动加入本地音乐库
+            //    a) 持久化已下载文件路径（本地曲库扫描时合并，不依赖 MediaStore 异步索引）
+            runCatching { engine.store.addDownloadedPath(file.absolutePath) }
+            //    b) 回填 downloadedPath：我喜欢/最近播放中同曲下次播放优先用本地文件
+            runCatching { engine.store.backfillDownloadedPath(song.key, file.absolutePath) }
+            //    c) 通知系统媒体库立即索引（其他播放器也能看到）
+            runCatching {
+                android.media.MediaScannerConnection.scanFile(
+                    context, arrayOf(file.absolutePath), arrayOf("audio/mpeg"), null
+                )
+            }
             refreshLibrary()
+            //    d) 自动重扫本地曲库，新下载的歌曲立即出现在「本地音乐」页
+            scanLocal()
         }
     }
 
@@ -450,12 +468,12 @@ private fun MusicContent(scope: WindowContentScope) {
                 .fillMaxSize()
                 .then(homeBgModifier)
         ) {
-        Box(Modifier.weight(1f)) {
-            Row(Modifier.fillMaxSize()) {
-                Sidebar(page = page, onPageChange = { page = it }, customBg = homeCustomBg)
-                Box(Modifier.weight(1f)) {
-                    when (page) {
-                        Page.SEARCH -> SearchPage(
+            Box(Modifier.weight(1f)) {
+                Row(Modifier.fillMaxSize()) {
+                    Sidebar(page = page, onPageChange = { page = it })
+                    Box(Modifier.weight(1f)) {
+                        when (page) {
+                            Page.SEARCH -> SearchPage(
                             query = query,
                             onQueryChange = { query = it },
                             searchSource = searchSource,
@@ -648,7 +666,6 @@ private fun MusicContent(scope: WindowContentScope) {
             PlayerBar(
                 engine = engine,
                 isFav = engine.currentSong?.let { favKeys.contains(it.key) } ?: false,
-                customBg = homeCustomBg,
                 onToggleFav = {
                     engine.currentSong?.let { song ->
                         engine.store.toggleFavorite(song)
@@ -671,15 +688,19 @@ private fun MusicContent(scope: WindowContentScope) {
 @Composable
 private fun Sidebar(
     page: Page,
-    onPageChange: (Page) -> Unit,
-    customBg: Boolean
+    onPageChange: (Page) -> Unit
 ) {
+    // v3.2.22（AnWindMusic 回移）：侧栏接入明暗自适应配色 —— v2.19 旧实现
+    // 固定 72% 白雾，暗色背景/视频背景下背景被白雾盖得看不清（用户实报
+    // “背景设置总是显示不正常”根因）；参考项目 TopBar/BottomNav 同款方案：
+    // sch.glass 玻璃底（亮背景 35% 白 / 暗背景 45% 黑）+ sch.textPrimary
+    // 自适应文字 + 光晕，背景全局透出且任意壁纸下文字清晰可读
+    val sch = LocalAdaptiveScheme.current
     Column(
         Modifier
             .width(170.dp)
             .fillMaxSize()
-            // v2.19：自定义主页背景时侧栏半透明白，让背景全局透出（含菜单区）
-            .background(if (customBg) Color.White.copy(alpha = 0.72f) else Mc.sidebarBg)
+            .background(if (sch.isCustom) sch.glass else Mc.sidebarBg)
             .padding(vertical = 14.dp, horizontal = 10.dp)
     ) {
         // Logo
@@ -703,7 +724,8 @@ private fun Sidebar(
                 text = "AnWind 云音乐",
                 fontSize = 14.sp,
                 fontWeight = FontWeight.Bold,
-                color = Mc.textPrimary,
+                color = sch.textPrimary,
+                style = TextStyle(shadow = sch.shadow),
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
@@ -727,17 +749,19 @@ private fun Sidebar(
             text = "音源：酷我 / 网易云 / QQ / LRCLIB\nAnWind v2.19",
             fontSize = 10.sp,
             lineHeight = 15.sp,
-            color = Mc.textTertiary
+            color = sch.textTertiary
         )
     }
 }
 
 @Composable
 private fun NavSectionLabel(text: String) {
+    // v3.2.22：随自适应方案取色（自定义背景时带光晕）
+    val sch = LocalAdaptiveScheme.current
     Text(
         text = text,
         fontSize = 10.sp,
-        color = Mc.textTertiary,
+        color = sch.textTertiary,
         modifier = Modifier.padding(start = 10.dp, bottom = 6.dp)
     )
 }
@@ -749,6 +773,8 @@ private fun NavItem(
     selected: Boolean,
     onClick: () -> Unit
 ) {
+    // v3.2.22：随自适应方案取色（未选文字/图标自适应 + 光晕；选中态保持品牌红）
+    val sch = LocalAdaptiveScheme.current
     Row(
         Modifier
             .fillMaxWidth()
@@ -762,15 +788,16 @@ private fun NavItem(
         Icon(
             icon,
             contentDescription = null,
-            tint = if (selected) Mc.red else Mc.textSecondary,
+            tint = if (selected) Mc.red else sch.textSecondary,
             modifier = Modifier.size(16.dp)
         )
         Spacer(Modifier.width(10.dp))
         Text(
             text = text,
             fontSize = 13.sp,
-            color = if (selected) Mc.red else Mc.textPrimary,
-            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal
+            color = if (selected) Mc.red else sch.textPrimary,
+            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+            style = TextStyle(shadow = sch.shadow)
         )
     }
 }
@@ -781,20 +808,21 @@ private fun NavItem(
 private fun PlayerBar(
     engine: MusicEngine,
     isFav: Boolean,
-    customBg: Boolean,
     onToggleFav: () -> Unit,
     lyricsOpen: Boolean,
     onToggleLyrics: () -> Unit
 ) {
     val song = engine.currentSong
+    // v3.2.22（AnWindMusic 回移）：播放条接入明暗自适应 —— 旧实现固定 80%
+    // 白雾（参考项目 PlayerBarMobile 同款 sch.glass + 自适应文字/轨道/光晕）
+    val sch = LocalAdaptiveScheme.current
     var userSeeking by remember { mutableStateOf(false) }
     var seekPos by remember { mutableStateOf(0f) }
 
     Column(
         Modifier
             .fillMaxWidth()
-            // v2.19：自定义主页背景时底栏半透明白，让背景全局透出（含控制区）
-            .background(if (customBg) Color.White.copy(alpha = 0.80f) else Color.White)
+            .background(if (sch.isCustom) sch.glass else Color.White)
             .padding(top = 6.dp)
     ) {
         // 进度条（细线，红色）
@@ -807,7 +835,8 @@ private fun PlayerBar(
             Text(
                 text = fmtTime(if (userSeeking) seekPos.toLong() else engine.positionMs),
                 fontSize = 10.sp,
-                color = Mc.textTertiary
+                color = sch.textTertiary,
+                style = TextStyle(shadow = sch.shadow)
             )
             Slider(
                 value = if (userSeeking) seekPos else {
@@ -825,17 +854,20 @@ private fun PlayerBar(
                 colors = SliderDefaults.colors(
                     thumbColor = Mc.red,
                     activeTrackColor = Mc.red,
-                    inactiveTrackColor = Color(0xFFE5E5E8)
+                    inactiveTrackColor = sch.track
                 ),
+                // v3.2.22（AnWindMusic 同步）：M3 滑块(thumb) 20dp，height(16.dp)
+                // 会把滑块压扁成椭圆；提到 32dp 滑块圆润、触摸目标达标
                 modifier = Modifier
                     .weight(1f)
-                    .height(16.dp)
+                    .height(32.dp)
                     .padding(horizontal = 6.dp)
             )
             Text(
                 text = fmtTime(engine.durationMs),
                 fontSize = 10.sp,
-                color = Mc.textTertiary
+                color = sch.textTertiary,
+                style = TextStyle(shadow = sch.shadow)
             )
         }
 
@@ -866,14 +898,16 @@ private fun PlayerBar(
                     text = song?.name ?: "未在播放",
                     fontSize = 13.sp,
                     fontWeight = FontWeight.Medium,
-                    color = Mc.textPrimary,
+                    color = sch.textPrimary,
+                    style = TextStyle(shadow = sch.shadow),
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
                 Text(
                     text = song?.let { "${it.artist} · ${it.album.ifBlank { "未知专辑" }}" } ?: "云音乐，发现好音乐",
                     fontSize = 10.sp,
-                    color = Mc.textTertiary,
+                    color = sch.textTertiary,
+                    style = TextStyle(shadow = sch.shadow),
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
@@ -883,7 +917,7 @@ private fun PlayerBar(
             Icon(
                 imageVector = if (isFav) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder,
                 contentDescription = "喜欢",
-                tint = if (isFav) Mc.red else Mc.textSecondary,
+                tint = if (isFav) Mc.red else sch.textSecondary,
                 modifier = Modifier
                     .size(18.dp)
                     .clickable(onClick = onToggleFav)
@@ -894,7 +928,7 @@ private fun PlayerBar(
             Icon(
                 Icons.Filled.SkipPrevious,
                 contentDescription = "上一首",
-                tint = Mc.textPrimary,
+                tint = sch.textPrimary,
                 modifier = Modifier
                     .size(22.dp)
                     .clickable { engine.prev() }
@@ -927,7 +961,7 @@ private fun PlayerBar(
             Icon(
                 Icons.Filled.SkipNext,
                 contentDescription = "下一首",
-                tint = Mc.textPrimary,
+                tint = sch.textPrimary,
                 modifier = Modifier
                     .size(22.dp)
                     .clickable { engine.next() }
@@ -946,7 +980,8 @@ private fun PlayerBar(
                     text = "词",
                     fontSize = 13.sp,
                     fontWeight = FontWeight.Bold,
-                    color = if (lyricsOpen) Color.White else Mc.textSecondary
+                    color = if (lyricsOpen) Color.White else sch.textSecondary,
+                    style = if (!lyricsOpen) TextStyle(shadow = sch.shadow) else TextStyle()
                 )
             }
             Spacer(Modifier.width(12.dp))
@@ -959,7 +994,7 @@ private fun PlayerBar(
                     else -> Icons.Filled.Repeat
                 },
                 contentDescription = "播放模式",
-                tint = Mc.textSecondary,
+                tint = sch.textSecondary,
                 modifier = Modifier
                     .size(17.dp)
                     .clickable { engine.cycleMode() }
@@ -970,7 +1005,7 @@ private fun PlayerBar(
             Icon(
                 Icons.AutoMirrored.Filled.VolumeUp,
                 contentDescription = "音量",
-                tint = Mc.textSecondary,
+                tint = sch.textSecondary,
                 modifier = Modifier.size(16.dp)
             )
             Slider(
@@ -978,13 +1013,13 @@ private fun PlayerBar(
                 valueRange = 0f..1f,
                 onValueChange = { engine.volume = it },
                 colors = SliderDefaults.colors(
-                    thumbColor = Mc.textSecondary,
-                    activeTrackColor = Mc.textSecondary,
-                    inactiveTrackColor = Color(0xFFE5E5E8)
+                    thumbColor = sch.textSecondary,
+                    activeTrackColor = sch.textSecondary,
+                    inactiveTrackColor = sch.track
                 ),
                 modifier = Modifier
                     .width(76.dp)
-                    .height(16.dp)
+                    .height(32.dp)
             )
         }
     }

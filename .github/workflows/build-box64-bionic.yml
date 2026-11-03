@@ -292,7 +292,12 @@ jobs:
           e_shoff, = struct.unpack_from("<Q", f, 0x28)
           e_shentsize, e_shnum, e_shstrndx = struct.unpack_from("<HHH", f, 0x3a)
           shs = [struct.unpack_from("<IIQQQQ", f, e_shoff + i*e_shentsize) for i in range(e_shnum)]
-          _,_,_,shstroff,shstrsize = shs[e_shstrndx]
+          # v3.2.22 修复：Elf64_Shdr 前 6 字段 = name/type/flags/addr/offset/size，
+          # 6 元组必须解包进 6 个目标 —— v3.2.20 写成 3 个 _（5 目标），
+          # CI 实炸 "ValueError: too many values to unpack (expected 5)"，
+          # RELR 冒烟从未真正跑起来（沙箱漏测：注释声称的 ANWIND_RELR_OK
+          # 实测不可复现）。shstroff=sh_offset（下标 4）、shstrsize=sh_size（下标 5）。
+          _,_,_,_,shstroff,shstrsize = shs[e_shstrndx]
           def sname(n):
               e = f.index(b"\0", shstroff+n); return f[shstroff+n:e].decode()
           dyn = next((s for s in shs if sname(s[0]) == ".dynamic"), None)

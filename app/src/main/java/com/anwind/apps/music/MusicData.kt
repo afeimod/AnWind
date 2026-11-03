@@ -397,6 +397,55 @@ class MusicStore(private val context: Context) {
         }
     }
 
+    // ---------- 已下载歌曲（v2.25：下载完成自动加入本地音乐库） ----------
+
+    private val downloadedFile: File by lazy { File(dir, "downloaded.json") }
+
+    /** 已下载到本地的音频文件绝对路径列表（追加序，最新在后） */
+    fun loadDownloadedPaths(): List<String> {
+        if (!downloadedFile.isFile) return emptyList()
+        return runCatching {
+            val arr = JSONArray(downloadedFile.readText())
+            (0 until arr.length()).mapNotNull { i ->
+                arr.optString(i, "").takeIf { it.isNotEmpty() }
+            }
+        }.getOrDefault(emptyList())
+    }
+
+    /** 下载成功后记录文件路径（去重），本地曲库扫描时合并，不依赖 MediaStore 异步索引 */
+    fun addDownloadedPath(path: String) {
+        synchronized(lock) {
+            val list = loadDownloadedPaths().toMutableList()
+            if (list.none { it == path }) list.add(path)
+            runCatching {
+                val arr = JSONArray()
+                for (p in list) arr.put(p)
+                downloadedFile.writeText(arr.toString())
+            }
+        }
+    }
+
+    /**
+     * 下载完成后回填 [SongInfo].downloadedPath（字段本意，此前未落地）：
+     * 我喜欢 / 最近播放中同 key 的在线歌下次播放时优先用本地文件。
+     */
+    fun backfillDownloadedPath(songKey: String, path: String) {
+        synchronized(lock) {
+            for (file in listOf(favoritesFile, recentFile)) {
+                val list = loadSongs(file)
+                var changed = false
+                for (i in list.indices) {
+                    val s = list[i]
+                    if (s.key == songKey && s.downloadedPath != path) {
+                        list[i] = s.copy(downloadedPath = path)
+                        changed = true
+                    }
+                }
+                if (changed) saveSongs(file, list)
+            }
+        }
+    }
+
     // ---------- 最近播放 ----------
 
     fun loadRecent(): MutableList<SongInfo> = loadSongs(recentFile)
