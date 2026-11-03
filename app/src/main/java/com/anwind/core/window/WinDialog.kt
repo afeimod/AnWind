@@ -29,6 +29,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
@@ -51,6 +52,7 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
@@ -397,6 +399,9 @@ private fun DialogControlButton(
 /**
  * 通用确认弹窗（原 AlertDialog 确认样式的直接替换）：
  * 标题 + 消息 + 右下 [确认]/[取消] 按钮组。danger=true 时确认按钮红色。
+ *
+ * @param uiScale v3.2.21：内容收紧系数（容器管理等面反馈“弹窗框框太大”），
+ *  1f = 原样（其他调用方默认）；<1 时宽度与内容密度同步收缩。
  */
 @Composable
 fun WinConfirmDialog(
@@ -405,14 +410,18 @@ fun WinConfirmDialog(
     confirmText: String = "确定",
     dismissText: String? = "取消",
     danger: Boolean = false,
+    uiScale: Float = 1f,
     onConfirm: () -> Unit,
     onDismiss: () -> Unit
 ) {
+    val base = LocalDensity.current
+    val dens = if (uiScale != 1f) Density(base.density * uiScale, base.fontScale) else base
     WinDialog(
         title = title,
         onDismiss = onDismiss,
-        width = 400.dp
+        width = 400.dp * uiScale
     ) {
+        CompositionLocalProvider(LocalDensity provides dens) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -447,6 +456,7 @@ fun WinConfirmDialog(
                     }
                 ) { Text(confirmText) }
             }
+        }
         }
     }
 }

@@ -20,8 +20,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
@@ -91,6 +93,39 @@ fun gdp(d: Dp): Dp = (d.value * LocalGuanliScale.current).dp
 /** sp × 缩放。 */
 @Composable
 fun gsp(s: TextUnit): TextUnit = (s.value * LocalGuanliScale.current).sp
+
+/**
+ * v3.2.21 全局收紧系数：用户反馈“整体 UI 太大，内部字体以及框框都太大，
+ * 很不舒服，甚至一些窗口的框框非常大”（图二创建新容器弹窗）——
+ * Guanli 面所有内容（含 Material 组件与弹窗）统一缩至 80%。
+ *
+ * 实现分工（不叠加）：
+ *  - gdp/gsp 自定义控件：LocalGuanliScale 原有适配不变，主窗根部的
+ *    LocalDensity 覆盖（density × K）把 dp/sp→px 换算收紧 20%；
+ *  - Material 组件（OutlinedTextField/Button/TabRow/Checkbox 等，不走
+ *    gdp/gsp）：同一 LocalDensity 覆盖同步收紧 20%；
+ *  - 弹窗（WinDialog 内容在弹窗层组合，继承不到本窗密度/缩放）：
+ *    调用点 width × K + 内容包 [GuanliDialogScale]（v3.2.20 之前弹窗层
+ *    拿到的是 scale=1 + 原始密度，所以图二弹窗比主窗还大一圈 ——
+ *    56dp 的 Material 输入框 + 未缩放字号双重叠加）。
+ * 只调这一个常量即可继续微调整面尺寸。
+ */
+const val GuanliUiK = 0.8f
+
+/**
+ * 弹窗内容收紧：弹窗内容在 WinDialogHost 子树组合（另一棵组合树），
+ * 组合局部变量按树位置解析，继承不到容器窗口的 LocalDensity/LocalGuanliScale
+ * —— 在弹窗内容根部自建同幅缩放。
+ * @param winScale 调用方窗口的 LocalGuanliScale（使弹窗字号与主窗一致）
+ */
+@Composable
+fun GuanliDialogScale(winScale: Float, content: @Composable () -> Unit) {
+    val base = LocalDensity.current
+    CompositionLocalProvider(
+        LocalDensity provides Density(base.density * GuanliUiK, base.fontScale),
+        LocalGuanliScale provides winScale
+    ) { content() }
+}
 
 /** wineguanli.py Qt 样式表的配色（QToolBar/QGroupBox/QPushButton 原色）。 */
 private object GuanliColors {
@@ -266,12 +301,25 @@ fun ContainerListContent(scope: WindowContentScope) {
     }
 
     // ---------- 全宽度适配（见文件头说明） ----------
+    // v3.2.21 全局收紧（用户反馈“整体 UI 太大，内部字体以及框框都太大”）：
+    // ① 主窗：根级 LocalDensity 覆盖（density × GuanliUiK）——gdp/gsp 自定义
+    //    控件与 Material 组件（不走 gdp/gsp）同步缩小 20%，不叠加
+    //    （dp/sp 数值不变，仅 dp/sp→px 换算收紧）；
+    // ② 弹窗：WinDialog 内容在弹窗层组合，继承不到这里的密度/缩放 ——
+    //    winScale 状态提升 + 根级 LocalGuanliScale 提供给弹窗体，
+    //    各弹窗内容包 GuanliDialogScale + width×K（见各弹窗定义）。
+    var winScale by remember { mutableStateOf(1f) }
+    val baseDens = LocalDensity.current
+    CompositionLocalProvider(LocalGuanliScale provides winScale) {
     BoxWithConstraints(
         Modifier
             .fillMaxSize()
             .background(themeBg())
     ) {
         val scale = (maxWidth.value / 1024f).coerceIn(0.6f, 1f)
+        // 组合期回写：本 Box 在弹窗调用之前组合（同函数代码顺序），
+        // 弹窗体经根级 provider 读到当前窗口的适配缩放
+        winScale = scale
         val minW = 1024.dp * scale
         // v3.2.20 修复：maxWidth 在 Column/CompositionLocalProvider 嵌套 lambda
         // 里不能经隐式接收者解析（CI 实报 337:39 "'val maxWidth: Dp' can't be
@@ -279,7 +327,10 @@ fun ContainerListContent(scope: WindowContentScope) {
         // 作用域内捕获为局部 val，嵌套 lambda 按闭包捕获继续可用。
         val availW = maxWidth
 
-        CompositionLocalProvider(LocalGuanliScale provides scale) {
+        CompositionLocalProvider(
+            LocalGuanliScale provides scale,
+            LocalDensity provides Density(baseDens.density * GuanliUiK, baseDens.fontScale)
+        ) {
             Column(Modifier.fillMaxSize()) {
                 // ---------------- 工具栏（wineguanli.py QToolBar 同款） ----------------
                 GuanliToolbar(
@@ -439,6 +490,7 @@ fun ContainerListContent(scope: WindowContentScope) {
             message = "确定删除容器 \"${c.name}\"？其 WINEPREFIX 与已安装程序将一并删除，不可恢复。",
             confirmText = "删除",
             danger = true,
+            uiScale = GuanliUiK,
             onConfirm = {
                 confirmRemove = null
                 cs.launch(Dispatchers.IO) {
@@ -466,6 +518,7 @@ fun ContainerListContent(scope: WindowContentScope) {
             onDismiss = { prefixLogFor = null }
         )
     }
+    } // 根级 LocalGuanliScale provider（v3.2.21：弹窗体读 winScale 用）
 }
 
 /** 多选对话框请求（延迟打开，选中结果回投）。 */
@@ -2018,11 +2071,15 @@ private fun MoreSettingsDialog(
         )
     }
 
+    // 弹窗内容在弹窗层组合，LocalGuanliScale 按树位置解析为默认 1f ——
+    // 必须在窗口树位置（本函数体）先捕获，闭包带进弹窗层
+    val dlgScale = LocalGuanliScale.current
     WinDialog(
         title = "更多设置 · ${container.name}",
         onDismiss = onDismiss,
-        width = 620.dp
+        width = 620.dp * GuanliUiK
     ) {
+        GuanliDialogScale(dlgScale) {
         Column(Modifier.fillMaxWidth()) {
             ScrollableTabRow(
                 selectedTabIndex = tab,
@@ -2185,6 +2242,7 @@ private fun MoreSettingsDialog(
                 ) { Text("保存设置") }
             }
         }
+            }
     }
 }
 
@@ -2491,11 +2549,15 @@ private fun MangoHudConfigDialog(
     var position by remember { mutableStateOf(mPos) }
     var alpha by remember { mutableStateOf(mAlpha) }
 
+    // 弹窗内容在弹窗层组合，LocalGuanliScale 按树位置解析为默认 1f ——
+    // 必须在窗口树位置（本函数体）先捕获，闭包带进弹窗层
+    val dlgScale = LocalGuanliScale.current
     WinDialog(
         title = "配置 MANGOHUD · ${container.name}",
         onDismiss = onDismiss,
-        width = 520.dp
+        width = 520.dp * GuanliUiK
     ) {
+        GuanliDialogScale(dlgScale) {
         Column(
             Modifier
                 .fillMaxWidth()
@@ -2585,6 +2647,7 @@ private fun MangoHudConfigDialog(
                 colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF4CAF50))
             ) { Text("保存") }
         }
+            }
     }
 }
 
@@ -2601,11 +2664,15 @@ private fun MultiSelectDialog(
     onOk: (List<String>) -> Unit
 ) {
     var selected by remember { mutableStateOf(initial.toSet()) }
+    // 弹窗内容在弹窗层组合，LocalGuanliScale 按树位置解析为默认 1f ——
+    // 必须在窗口树位置（本函数体）先捕获，闭包带进弹窗层
+    val dlgScale = LocalGuanliScale.current
     WinDialog(
         title = title,
         onDismiss = onDismiss,
-        width = 420.dp
+        width = 420.dp * GuanliUiK
     ) {
+        GuanliDialogScale(dlgScale) {
         Column(
             Modifier
                 .fillMaxWidth()
@@ -2627,6 +2694,7 @@ private fun MultiSelectDialog(
             Spacer(Modifier.width(gdp(8.dp)))
             Button(onClick = { onOk(selected.toList()) }) { Text("确定") }
         }
+            }
     }
 }
 
@@ -2648,11 +2716,15 @@ private fun NewContainerDialog(
     var frame by remember { mutableStateOf("默认(不限制)") }
     var error by remember { mutableStateOf<String?>(null) }
 
+    // 弹窗内容在弹窗层组合，LocalGuanliScale 按树位置解析为默认 1f ——
+    // 必须在窗口树位置（本函数体）先捕获，闭包带进弹窗层
+    val dlgScale = LocalGuanliScale.current
     WinDialog(
         title = "创建新容器",
         onDismiss = onDismiss,
-        width = 520.dp
+        width = 520.dp * GuanliUiK
     ) {
+        GuanliDialogScale(dlgScale) {
         Column(
             Modifier
                 .fillMaxWidth()
@@ -2737,6 +2809,7 @@ private fun NewContainerDialog(
                 colors = ButtonDefaults.buttonColors(containerColor = GuanliColors.accent)
             ) { Text("确定") }
         }
+            }
     }
 }
 
@@ -2752,11 +2825,15 @@ private fun RenameContainerDialog(
 ) {
     var name by remember { mutableStateOf(container.name) }
     var error by remember { mutableStateOf<String?>(null) }
+    // 弹窗内容在弹窗层组合，LocalGuanliScale 按树位置解析为默认 1f ——
+    // 必须在窗口树位置（本函数体）先捕获，闭包带进弹窗层
+    val dlgScale = LocalGuanliScale.current
     WinDialog(
         title = "重命名容器 · ${container.name}",
         onDismiss = onDismiss,
-        width = 440.dp
+        width = 440.dp * GuanliUiK
     ) {
+        GuanliDialogScale(dlgScale) {
         Column(
             Modifier
                 .fillMaxWidth()
@@ -2786,6 +2863,7 @@ private fun RenameContainerDialog(
                 if (n == container.name) { onDismiss() } else onRenamed(container.name, n)
             }) { Text("重命名") }
         }
+            }
     }
 }
 
@@ -2803,11 +2881,15 @@ private fun ShortcutDialog(
     var exe by remember { mutableStateOf(container.exe) }
     var msg by remember { mutableStateOf<String?>(null) }
 
+    // 弹窗内容在弹窗层组合，LocalGuanliScale 按树位置解析为默认 1f ——
+    // 必须在窗口树位置（本函数体）先捕获，闭包带进弹窗层
+    val dlgScale = LocalGuanliScale.current
     WinDialog(
         title = "创建桌面快捷方式",
         onDismiss = onDismiss,
-        width = 480.dp
+        width = 480.dp * GuanliUiK
     ) {
+        GuanliDialogScale(dlgScale) {
         Column(
             Modifier
                 .fillMaxWidth()
@@ -2859,6 +2941,7 @@ private fun ShortcutDialog(
                 colors = ButtonDefaults.buttonColors(containerColor = GuanliColors.accent)
             ) { Text("创建") }
         }
+            }
     }
 }
 
@@ -2891,11 +2974,15 @@ private fun RunContainerDialog(
         onDispose { unregister() }
     }
 
+    // 弹窗内容在弹窗层组合，LocalGuanliScale 按树位置解析为默认 1f ——
+    // 必须在窗口树位置（本函数体）先捕获，闭包带进弹窗层
+    val dlgScale = LocalGuanliScale.current
     WinDialog(
         title = "运行 · ${container.name}",
         onDismiss = onDismiss,
-        width = 560.dp
+        width = 560.dp * GuanliUiK
     ) {
+        GuanliDialogScale(dlgScale) {
         Column(
             Modifier
                 .fillMaxWidth()
@@ -2955,6 +3042,7 @@ private fun RunContainerDialog(
                 colors = ButtonDefaults.buttonColors(containerColor = GuanliColors.green)
             ) { Text("运行") }
         }
+            }
     }
 }
 
@@ -3246,11 +3334,15 @@ private fun DoctorDialog(onDismiss: () -> Unit) {
     }
     val loaded = checks
 
+    // 弹窗内容在弹窗层组合，LocalGuanliScale 按树位置解析为默认 1f ——
+    // 必须在窗口树位置（本函数体）先捕获，闭包带进弹窗层
+    val dlgScale = LocalGuanliScale.current
     WinDialog(
         title = "AnWind Wine 容器体检",
         onDismiss = onDismiss,
-        width = 560.dp
+        width = 560.dp * GuanliUiK
     ) {
+        GuanliDialogScale(dlgScale) {
         if (loaded == null) {
             Column(
                 Modifier
@@ -3298,6 +3390,7 @@ private fun DoctorDialog(onDismiss: () -> Unit) {
         ) {
             Button(onClick = onDismiss) { Text("好的") }
         }
+            }
     }
 }
 
@@ -3307,11 +3400,15 @@ private fun DoctorDialog(onDismiss: () -> Unit) {
 
 @Composable
 private fun LogDialog(title: String, log: String, onDismiss: () -> Unit) {
+    // 弹窗内容在弹窗层组合，LocalGuanliScale 按树位置解析为默认 1f ——
+    // 必须在窗口树位置（本函数体）先捕获，闭包带进弹窗层
+    val dlgScale = LocalGuanliScale.current
     WinDialog(
         title = title,
         onDismiss = onDismiss,
-        width = 620.dp
+        width = 620.dp * GuanliUiK
     ) {
+        GuanliDialogScale(dlgScale) {
         Column(
             Modifier
                 .fillMaxWidth()
@@ -3334,6 +3431,7 @@ private fun LogDialog(title: String, log: String, onDismiss: () -> Unit) {
         ) {
             Button(onClick = onDismiss) { Text("关闭") }
         }
+            }
     }
 }
 
@@ -3354,11 +3452,15 @@ private fun PrefixBuildLogDialog(
             kotlinx.coroutines.delay(400)
         }
     }
+    // 弹窗内容在弹窗层组合，LocalGuanliScale 按树位置解析为默认 1f ——
+    // 必须在窗口树位置（本函数体）先捕获，闭包带进弹窗层
+    val dlgScale = LocalGuanliScale.current
     WinDialog(
         title = "构建 Wine 前缀 · $containerName" + if (running) "（进行中…）" else "（已结束）",
         onDismiss = onDismiss,
-        width = 620.dp
+        width = 620.dp * GuanliUiK
     ) {
+        GuanliDialogScale(dlgScale) {
         Column(
             Modifier
                 .fillMaxWidth()
@@ -3381,5 +3483,6 @@ private fun PrefixBuildLogDialog(
         ) {
             Button(onClick = onDismiss) { Text("关闭") }
         }
+            }
     }
 }

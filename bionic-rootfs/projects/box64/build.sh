@@ -244,6 +244,18 @@ install() {
   #     shmget/shmat/shmctl/shmdt（memfd 后端实现，非包装壳），符号表
   #     直查由此【恢复为合法校验】——缺符号 = 补丁没打上/没编进，
   #     正是本轮要挡住的事故面。
+  #   v3.2.21 补上真正缺的最后一环（用户 CI 日志“shm 符号未进动态导出表”
+  #     警告的根因）：上游 CMakeLists 全局 -fvisibility=hidden ——
+  #     HIDDEN 符号永不进 .dynsym（link.txt 里明明有 --export-dynamic：
+  #     隐藏全局被降级为局部符号，nm 显示小写 t，符号表直查照样绿 =>
+  #     v3.2.18~v3.2.20 的冒烟[1/2] 一直是假阳性）；且 my_* 别名无任何
+  #     静态引用，被 NDK lld 默认 --gc-sections 整段回收。运行时桥接
+  #     dlsym(dlopen(NULL), "my_shmget")（library.c getSymbolInSymbolMaps）
+  #     双杀全断。修复：八符号强制默认可见性（visibility("default")，
+  #     同上游 EXPORT 宏手法 my_XShmCreateImage），默认可见 +
+  #     --export-dynamic => 进 .dynsym 且成 GC 根，一石二鸟。
+  #     .dynsym 校验由此从【警告】升级为【硬错误】—— v3.2.20 曾以警告
+  #     带病发布，今后缺导出直接失败。
   # 校验组（全部在构建树产物上查，strip 不影响）
   #   a) shm 四符号（v3.2.18 内建实现的真实导出）
   #   b) DYNAREC 核心真符号：getDB / FreeDynablock（dynablock.c 真函数
@@ -261,7 +273,10 @@ install() {
     fi
   done
   if ! nm -D "${_src}/build/box64" 2>/dev/null | grep -qwE "shmget|my_shmget"; then
-    echo "警告: shm 符号未进动态导出表（.dynsym），wrapped-libc 桥接将找不到 my_*（strip 前 .dynsym 应含 shmget）"
+    echo "错误: shm 符号未进动态导出表（.dynsym），wrapped-libc 桥接将找不到 my_*"
+    echo "  （v3.2.21 根因：上游 -fvisibility=hidden 隐藏符号永不入 .dynsym，且 my_* 无"
+    echo "   静态引用会被 --gc-sections 回收 —— 查 0001 补丁 ANW_EXPORT 可见性修复是否在链）"
+    _sym_ok=0
   fi
   local _shmem_ok=1
   if [[ ! -f "${_src}/build/CMakeFiles/mainobj.dir/src/wrapped/wrappedandroidshmem.c.o" ]]; then
@@ -273,7 +288,7 @@ install() {
     _shmem_ok=0
   fi
   [[ "${_sym_ok}" == "1" && "${_shmem_ok}" == "1" ]] \
-    && echo "冒烟[1/2]: 内建 SysV shm（v3.2.18 真实导出 shmget/shmat/shmctl/shmdt + my_* 桥接）+ DYNAREC 核心（getDB/FreeDynablock）✓" \
+    && echo "冒烟[1/2]: 内建 SysV shm（v3.2.21 默认可见性导出：shmget/shmat/shmctl/shmdt + my_* 均已入 .dynsym）+ DYNAREC 核心（getDB/FreeDynablock）✓" \
     || return 1
   if grep -q "image-base\|no-pie" "${_src}/build/CMakeFiles/box64.dir/link.txt" 2>/dev/null; then
     echo "错误: 链接命令残留 --image-base/-no-pie（NOLOADADDR 未生效）"

@@ -1,9 +1,9 @@
 From: AnWind <anwind@example.invalid>
 Subject: [PATCH] AnWind box64 bionic: built-in SysV shm + Android RELR relocation support
 
-Two AnWind additions on top of upstream box64 v0.4.4:
+Three AnWind additions on top of upstream box64 v0.4.4:
 
-1. Native SysV shm for bionic hosts (v3.2.18):
+1. Native SysV shm for bionic hosts (v3.2.18, completed in v3.2.21):
    - src/libtools/android_shmem.c: memfd-backed shmget/shmat/shmctl/shmdt
      (+ my_* aliases), /dev/ashmem fallback. Compiled in only for ANDROID.
    - wrappedlibc_private.h: shm* GO -> GOM on ANDROID, bridging x86_64
@@ -26,6 +26,30 @@ Two AnWind additions on top of upstream box64 v0.4.4:
      RAX=0x0000003f000928d8 (correct relocated), access to 0x928e8.
    - CMakeLists.txt: gate -Wno-pointer-type-mismatch (gcc-only) to GNU cc so
      clang builds stop printing "unrecognized command-line option" noise.
+
+3. .dynsym export fix (v3.2.21) - the missing piece that kept the CI
+   "shm 符号未进动态导出表" warning alive and broke the wine shm bridge:
+   upstream compiles everything with -fvisibility=hidden
+   (CMakeLists: add_definitions(-std=gnu11 -funwind-tables
+   -fvisibility=hidden)).  A hidden symbol NEVER enters .dynsym - even
+   though the box64 link line already carries --export-dynamic (upstream
+   set_target_properties(box64 PROPERTIES ENABLE_EXPORTS ON) generates it
+   via CMake's CMAKE_EXE_EXPORTS_C_FLAG): hidden globals are demoted to
+   LOCAL in the output .symtab (llvm-nm prints lowercase 't'), so
+   library.c getSymbolInSymbolMaps' runtime bridge
+   dlsym(dlopen(NULL), "my_shmget") could never find them ("Warning,
+   function my_shmget not found" on every wine shm call).  On top of that
+   the my_* aliases have no static references at all, so --gc-sections
+   (in the NDK lld default flag set) discarded their sections entirely.
+   Fix: all eight entry points are now declared with
+   __attribute__((visibility("default"))) - the same mechanism upstream
+   uses for its EXPORT-ed my_* wrappers (e.g. my_XShmCreateImage).
+   Default-visibility globals are put into .dynsym by --export-dynamic
+   AND become garbage-collection roots, so both failure modes are closed.
+   Verified on the real NDK r29 aarch64 build:
+   nm -D build/box64 => T shmget/shmat/shmctl/shmdt/my_shmget/my_shmat/
+   my_shmctl/my_shmdt, and x64Syscall_linux's cases 29/30/31/67 call the
+   built-in implementation directly (disassembly-checked).
 ---
 diff --git a/CMakeLists.txt b/CMakeLists.txt
 index 9eb7f3c..990c9c2 100644
@@ -166,10 +190,10 @@ index 3dfb57e..44afe8a 100644
              S_RAX = -ENOSYS;
 diff --git a/src/libtools/android_shmem.c b/src/libtools/android_shmem.c
 new file mode 100644
-index 0000000..16cc040
+index 0000000..224ba21
 --- /dev/null
 +++ b/src/libtools/android_shmem.c
-@@ -0,0 +1,370 @@
+@@ -0,0 +1,401 @@
 +/*****************************************************************************
 + * AnWind addition: native SysV shared-memory for bionic (ANDROID) builds.
 + *
@@ -209,6 +233,23 @@ index 0000000..16cc040
 + * This file compiles EMPTY unless ANDROID is defined: on glibc builds the
 + * native libc already provides everything, and the syscall forwarding calls
 + * straight into it.
++ *
++ * v3.2.21 EXPORT FIX (the missing piece of v3.2.18/3.2.20):
++ *   box64 compiles EVERYTHING with -fvisibility=hidden (upstream CMakeLists
++ *   "add_definitions(-std=gnu11 -funwind-tables -fvisibility=hidden)").  A
++ *   hidden symbol NEVER enters .dynsym, even though the link line carries
++ *   --export-dynamic (upstream set_target_properties(box64 ENABLE_EXPORTS ON)
++ *   does generate it): hidden globals get demoted to LOCAL in the output
++ *   .symtab (llvm-nm shows lowercase 't') and the wrapped-libc GOM bridge
++ *   (dlsym(dlopen(NULL), "my_shmget") - see library.c getSymbolInSymbolMaps)
++ *   can NOT find them -> "Warning, function my_shmget not found" and every
++ *   x86_64 shm call from wine fails.  On top of that, my_* aliases have no
++ *   static references at all, so --gc-sections (NDK lld default flags)
++ *   DISCARDED their sections entirely.  Fix: force default visibility on all
++ *   eight entry points (the same trick upstream uses via the EXPORT macro,
++ *   e.g. my_XShmCreateImage).  Default-visibility globals are exported to
++ *   .dynsym by --export-dynamic AND become gc-roots, so both problems are
++ *   solved at once.
 + *****************************************************************************/
 +
 +#ifdef ANDROID
@@ -225,6 +266,18 @@ index 0000000..16cc040
 +#include <sys/syscall.h>
 +#include <sys/types.h>
 +#include <unistd.h>
++
++/* Force default visibility: box64 builds with -fvisibility=hidden globally;
++ * without this the shm entry points stay out of .dynsym (see header note) and
++ * both the runtime dlsym bridge and the CI .dynsym smoke check fail. */
++#if defined(__has_attribute)
++#  if __has_attribute(visibility)
++#    define ANW_EXPORT __attribute__((visibility("default")))
++#  endif
++#endif
++#ifndef ANW_EXPORT
++#  define ANW_EXPORT /* nothing */
++#endif
 +
 +/* ---- SysV IPC definitions (bionic ships no usable <sys/ipc.h>/<sys/shm.h>) ---- */
 +#ifndef IPC_PRIVATE
@@ -352,7 +405,7 @@ index 0000000..16cc040
 +    return 0;
 +}
 +
-+int shmget(key_t key, size_t size, int shmflg) {
++ANW_EXPORT int shmget(key_t key, size_t size, int shmflg) {
 +    if (size == 0) {
 +        errno = EINVAL;
 +        return -1;
@@ -413,7 +466,7 @@ index 0000000..16cc040
 +    return -1;
 +}
 +
-+void* shmat(int shmid, const void* shmaddr, int shmflg) {
++ANW_EXPORT void* shmat(int shmid, const void* shmaddr, int shmflg) {
 +    pthread_mutex_lock(&g_anw_lock);
 +    if (shmid < 0 || shmid >= ANW_SHM_MAX || !g_anw_seg[shmid].used) {
 +        pthread_mutex_unlock(&g_anw_lock);
@@ -457,7 +510,7 @@ index 0000000..16cc040
 +    return p;
 +}
 +
-+int shmctl(int shmid, int cmd, void* buf) {
++ANW_EXPORT int shmctl(int shmid, int cmd, void* buf) {
 +    pthread_mutex_lock(&g_anw_lock);
 +    if (shmid < 0 || shmid >= ANW_SHM_MAX || !g_anw_seg[shmid].used) {
 +        pthread_mutex_unlock(&g_anw_lock);
@@ -506,7 +559,7 @@ index 0000000..16cc040
 +    }
 +}
 +
-+int shmdt(const void* shmaddr) {
++ANW_EXPORT int shmdt(const void* shmaddr) {
 +    pthread_mutex_lock(&g_anw_lock);
 +    int slot = -1;
 +    for (int i = 0; i < ANW_SHM_MAP_MAX; i++) {
@@ -533,11 +586,13 @@ index 0000000..16cc040
 +}
 +
 +/* my_* aliases: the wrapped-libc bridge (GOM entries in
-+ * wrappedlibc_private.h) resolves "my_<name>" inside box64 itself. */
-+int my_shmget(key_t key, size_t size, int shmflg) { return shmget(key, size, shmflg); }
-+void* my_shmat(int shmid, const void* shmaddr, int shmflg) { return shmat(shmid, shmaddr, shmflg); }
-+int my_shmctl(int shmid, int cmd, void* buf) { return shmctl(shmid, cmd, buf); }
-+int my_shmdt(const void* shmaddr) { return shmdt(shmaddr); }
++ * wrappedlibc_private.h) resolves "my_<name>" inside box64 itself via
++ * dlsym(dlopen(NULL), ...) - that is why they MUST be default-visibility
++ * .dynsym exports, and why they must not be gc-sections fodder. */
++ANW_EXPORT int my_shmget(key_t key, size_t size, int shmflg) { return shmget(key, size, shmflg); }
++ANW_EXPORT void* my_shmat(int shmid, const void* shmaddr, int shmflg) { return shmat(shmid, shmaddr, shmflg); }
++ANW_EXPORT int my_shmctl(int shmid, int cmd, void* buf) { return shmctl(shmid, cmd, buf); }
++ANW_EXPORT int my_shmdt(const void* shmaddr) { return shmdt(shmaddr); }
 +
 +#endif /* ANDROID */
 diff --git a/src/wrapped/wrappedlibc_private.h b/src/wrapped/wrappedlibc_private.h
