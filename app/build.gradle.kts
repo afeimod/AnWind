@@ -191,8 +191,22 @@ android {
         // TrackpadRouter 之前）+ TrackpadController/TrackpadRouter（触控板
         // 模式指针处与手指轻点处）按窗口几何直判置前；WindowChrome/
         // WinDialogFrame onGloballyPositioned 上报几何；focus 加诊断日志。
-        versionCode = 80
-        versionName = "2.38.17"
+        // v2.38.18（源码包 v3.2.19）：CI 实报双故障修复 —— ①APK 构建炸在
+        // GuanliSupport.kt:484:1 Unclosed comment：v3.2.18 新增文件 KDoc 里
+        // "/opt/conf/*.conf" 的 "/*" 序列在 Kotlin 块注释里开嵌套层（Kotlin
+        // 块注释支持嵌套），外层 /** 到 EOF 未闭合 → 改写为无 "/*" 序列的
+        // 措辞；全项目 107 个 .kt 经注释嵌套扫描 + 括号平衡双校验零问题。
+        // ②box64 冒烟 SMOKE_FAIL_SHM（构建成功也发不出 Release）：workflow
+        // 冒烟步骤 clone vanilla v0.4.4 后漏打 0001 补丁，静态 x86_64 冒烟
+        // 必 ENOSYS —— 冒烟树补打补丁（与 aarch64 交付构建同源；沙箱实跑
+        // 动态/静态双冒烟 ANWIND_SMOKE_OK 验证），glibc 形态 build-box64.yml
+        // 同步应用（静态程序 shm 转发同样受益）。
+        versionCode = 81
+        versionName = "2.38.18"
+        // v2.38.17（源码包 v3.2.18）：box64 内建 SysV shm（bionic 双断链
+        // 补齐：wrappedlibc GO→GOM 桥接 + x64syscall case 29/30/31/67
+        // 转发 + android_shmem.c memfd 实现）+ 容器管理按 wineguanli.py
+        // 完全重制（全宽度缩放 + 横向滑动，GuanliSupport.kt 新增）。
         // v2.38.16（源码包 v3.2.17）：bionic x86_64 wine 前缀构建修复 ——
         // box64 打通后 wineboot -i 于 ntdll 早期初始化 SIGSEGV（退出码 139）。
         // 根因：PERFORMANCE 预设注入 BOX64_DYNAREC_SAFEFLAGS=0，上游 box64

@@ -1,5 +1,29 @@
 # AnWind Bionic 修复包 v2（2026-09-19）
 
+> **v3.2.19（2026-11-03）**：CI 实报双故障修复轮（用户反馈：①APK 构建 `GuanliSupport.kt:484:1 Unclosed comment`；②box64 冒烟 `SMOKE_FAIL_SHM`，即时构建成功也发不出 Release）。
+>
+> ## 修复 1：GuanliSupport.kt 未闭合注释（APK 构建失败）
+>
+> **根因**：v3.2.18 新增的 GuanliSupport.kt 第 16 行 KDoc 注释里写了 `/opt/conf/*.conf` —— `conf/` 与 `*.conf` 相邻构成 `/*` 序列。**Kotlin 块注释支持嵌套**，`/**`（第 14 行）内出现 `/*`（第 16 行）会再开一层注释，第 35 行的 `*/` 只闭合了内层，外层 `/**` 吞掉文件剩余全部内容直到 EOF → `GuanliSupport.kt:484:1 Unclosed comment`。
+>
+> **修复**：第 16 行改写为无 `/*` 序列的措辞（`/opt/conf/*.conf` → `/opt/conf 目录下的 .conf 文件`），语义不变。
+>
+> **验证（防同批文件再炸）**：全项目 107 个 .kt 过两道自研扫描 —— ①注释嵌套扫描（块注释深度配平 + 注释内 `/*` 检出，对修复前文件可复现报错、修复后归零）；②括号/字符串配平扫描（模式栈词法器：code/str/tpl 三态、`${` 压栈标记、块注释任意模式内消费）—— 修复后全仓库零问题。另对 GuanliSupport 的全部对外引用（DY_PRESETS/WineOps/AppDefaults/MangoHud/Shortcuts 等 22 个符号）逐项对照定义与签名（NativeShellExecutor.setCommand/putEnv/setWorkingDir、WineEnvironment.HOME_DIR: File、WineRuntime.wineCommand: List&lt;String&gt; 等均匹配）。
+>
+> ## 修复 2：box64 冒烟 SMOKE_FAIL_SHM（构建成功也发不出 Release）
+>
+> **根因（不是构建问题，是冒烟步骤自身漏打补丁）**：`build-box64-bionic.yml` 步骤 5.7「源码级冒烟」`git clone` 一份全新的 vanilla box64 v0.4.4 后**直接构建实跑，从未应用 0001-anwind-android-shmem-native.patch**。冒烟注释写着"补丁后必须通过"，实现却漏了 `patch` 这一步 —— vanilla v0.4.4 的 x64syscall.c 本来就没有 case 29/30/31/67，静态链接 x86_64 冒烟程序必然 `shmget: ENOSYS` → `SMOKE_FAIL_SHM` → 步骤 exit 1 → Release 永远发不出去（aarch64 交付构建本身成功，install() 符号校验全过；冒烟树与交付树不同源，测了个寂寞）。
+>
+> **修复**：冒烟树在 cmake 之前补打 0001 补丁（`patch -p1 --dry-run` 预检 + 应用），与 aarch64 交付构建同源。补丁在非 ANDROID 宿主构建下只激活 x64syscall.c 的 `#if defined(__linux__)` 转发分支与 private 头 GO 原分支（ANDROID 段均编译为空）—— 打补丁后本步才真正成为补丁的"宿主侧回归测试"（原注释声明的意图）。
+>
+> **沙箱端到端实测（x86_64 宿主，与冒烟步骤同参数 -DCMAKE_BUILD_TYPE=Release -DARM_DYNAREC=OFF -DCI=ON）**：①`patch -p1 --dry-run` 对 vanilla v0.4.4 四文件全部干净应用；②补丁树宿主构建成功；③动态冒烟（wrapped-libc 层）`ANWIND_SMOKE_OK 16963`；④**静态冒烟（syscall 层，CI 失败点）`ANWIND_SMOKE_OK 16963`** —— 0001 补丁的 x64syscall.c 转发实证生效。
+>
+> **顺手加固**：`build-box64.yml`（glibc 形态独立工作流）裸 clone 同样不打补丁 —— 静态 x86_64 程序在 glibc box64 下同样吃 ENOSYS。同步应用 0001 补丁（glibc 侧只激活 `#if defined(__linux__)` 转发，ANDROID 段编译为空，行为安全）；上游 hunk 漂移时 `--dry-run` 预检直接失败（早暴露优于静默丢补丁）。
+>
+> **附注**：CI 日志里 `cc1: note: unrecognized command-line option '-Wno-pointer-type-mismatch'` 来自 box64 上游 CMakeLists.txt:325 自带的 gcc 专用参数，NDK clang 仅打印 note（仅在有其它诊断时出现，非致命）—— 与构建失败无关，无需处理。
+>
+> APK 版本 v2.38.17→v2.38.18（versionCode 80→81）
+>
 > **v3.2.18（2026-11-03）**：两诉求轮 —— ①box64「缺的东西」补齐（用户 CI 日志 box64log2 实锤：`错误: box64 符号表缺 shmget/shmat/shmctl → install() 中止`，与 SAFEFLAGS 无关，v3.2.17 诊断结论修正）②容器管理界面按 wineguanli.py **完全重制**（用户反馈 v3.2.17 的"重制"有 700dp 宽度门槛，手机上根本看不到新界面；wineguanli.py 本身可以实现所有宽度，本轮去掉门槛：等比缩放 + 横向滑动）。
 >
 > ## 修复 1：box64 内建 SysV shm（补齐用户点破的"缺东西"）

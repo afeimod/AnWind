@@ -175,6 +175,24 @@ jobs:
           echo "=== 冒烟[取源]: git clone ${BOX64_REF}（独立树，不与 aarch64 构建树互相污染 wrapper） ==="
           git clone --depth 1 --branch "${BOX64_REF}" https://github.com/ptitSeb/box64.git "${SMOKE_SRC}"
 
+          # v3.2.19 修复：冒烟树必须先打 0001 补丁再构建 —— 与 aarch64 交付
+          # 构建同源。此前本步漏打：vanilla v0.4.4 的 x64syscall.c 无
+          # case 29/30/31/67，静态冒烟必 SMOKE_FAIL_SHM，aarch64 构建
+          # 成功也永远发不出 Release（冒烟树与交付树不同源，测了个寂寞）。
+          # 补丁在非 ANDROID 宿主构建下只激活 x64syscall.c 的
+          # #if defined(__linux__) 转发分支与 private 头的 GO 原分支
+          # （ANDROID 段均编译为空），因此打补丁后本步才真正成为补丁的
+          # "宿主侧回归测试"（原注释声明的意图）。沙箱已实测：补丁干净
+          # 应用于 vanilla v0.4.4，静态冒烟 ANWIND_SMOKE_OK。
+          echo "=== 冒烟[打补丁]: 应用 0001-anwind-android-shmem-native.patch ==="
+          SMOKE_PATCH="${GITHUB_WORKSPACE}/bionic-rootfs/projects/box64/0001-anwind-android-shmem-native.patch"
+          [[ -f "${SMOKE_PATCH}" ]] \
+            || { echo "::error::交付树缺失 0001 补丁（前置检查失败）"; exit 1; }
+          patch -d "${SMOKE_SRC}" -p1 --dry-run < "${SMOKE_PATCH}" \
+            || { echo "::error::0001 补丁无法应用于上游 ${BOX64_REF}（hunk 漂移，先在交付树更新补丁再触发构建）"; exit 1; }
+          patch -d "${SMOKE_SRC}" -p1 -N --no-backup-if-mismatch < "${SMOKE_PATCH}"
+          echo "  [OK] 冒烟树已打 0001 补丁（shm syscall 转发与交付构建同源在链）"
+
           echo "=== 冒烟[宿主构建]: cmake 原生 x86_64（-DARM_DYNAREC=OFF：ARM dynarec 生成的是 aarch64 汇编，x86_64 汇编器必炸（mrs ctr_el0/dc cvau/ic ivau/isb sy 均为 aarch64 专属指令），只有 aarch64 宿主才可开；冒烟只验源码级编译链接与实跑链路，CI=ON 走提交版 wrapper） ==="
           SMOKEDIR="${SMOKE_SRC}/build"
           cmake -S "${SMOKE_SRC}" -B "${SMOKEDIR}" \

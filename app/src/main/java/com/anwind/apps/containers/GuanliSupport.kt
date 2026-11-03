@@ -13,7 +13,7 @@ import java.util.concurrent.TimeUnit
 
 /**
  * v3.2.18（wineguanli.py 完全重制）：wineguanli.py 的"高级设置"数据与
- * 操作层移植（Qt 桌面端是全局 /opt/conf/*.conf 文件，AnWind 原生链路
+ * 操作层移植（Qt 桌面端是全局 /opt/conf 目录下的 .conf 文件，AnWind 原生链路
  * 对应物是容器级 container.conf + rootfs /opt 生态目录）。
  *
  * 移植对应关系（逐条对应 wineguanli.py 类/方法）：
