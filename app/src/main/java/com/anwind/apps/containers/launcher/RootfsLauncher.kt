@@ -392,6 +392,16 @@ object RootfsLauncher {
                 // 目录进 BOX64_LD_LIBRARY_PATH（缺它 box64 加载 wine unix .so
                 // 直接 "Symbol ... not found"）
                 WineEnvironment.applyBox64Env(env, container, resolved.wineDir)
+                // v3.2.17（设备实报：wineboot -i 于 ntdll 早期 SIGSEGV 139）：
+                // 前缀构建会话强制 SAFEFLAGS=2 —— 上游 USAGE.md 语义 2 =
+                // "All CALL/RET will need flags. All edge cases are also
+                // handled"。wineboot 是容器可用性的关键一次性路径（挂了整个
+                // 容器不可用），且构建期分钟级、性能不敏感，取最稳档
+                // （与 COMPATIBILITY 预设同值）；preset 其余项照常叠加。
+                // 用户容器 env= 的 applyExtraEnv 仍在链路最后，可覆盖本值。
+                if (isPrefixCmd) {
+                    env["BOX64_DYNAREC_SAFEFLAGS"] = "2"
+                }
                 // v3.2.0：闭包缺失诊断（设备实测 proton10-x86_64 旧包仍报
                 // "Symbol shm_open not found"）—— 旧包没有 x86_64-bionic 目录，
                 // 环境变量救不了缺文件，把“请重装 v3.1.4+ 构建的 wine 包”

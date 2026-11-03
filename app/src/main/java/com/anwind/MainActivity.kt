@@ -159,6 +159,24 @@ class MainActivity : ComponentActivity() {
                     // 文件管理器/自定义壁纸/视频壁纸都依赖真实存储访问；
                     // 首启弹一次说明对话框，拒绝后不再骚扰（可在系统设置里随时补授）
                     val scope = rememberCoroutineScope()
+
+                    // ===== v3.2.18 桌面快捷方式入口（容器管理器"创建快捷方式"） =====
+                    // ShortcutManager 固定的"运行容器"快捷方式带 anwind_run_container
+                    // 启动本 Activity；此处打开容器管理窗口并透传容器名，
+                    // 窗口内 launchArgs.autorun 驱动选中 + 自动运行（见 ContainerScreens）
+                    val shortcutRunContainer = intent?.getStringExtra(
+                        com.anwind.apps.containers.GuanliSupport.Shortcuts.EXTRA_RUN_CONTAINER
+                    )
+                    LaunchedEffect(shortcutRunContainer) {
+                        if (!shortcutRunContainer.isNullOrBlank()) {
+                            com.anwind.core.window.WindowManager.get().open(
+                                appId = "wine-containers",
+                                title = "Wine 容器",
+                                launchMode = com.anwind.core.window.LaunchMode.FLOATING,
+                                launchArgs = mapOf("autorun" to shortcutRunContainer)
+                            )
+                        }
+                    }
                     val storageAsked by settingsStore.storagePermAsked.collectAsState(initial = false)
                     var storageGranted by remember {
                         mutableStateOf(StorageAccess.hasAccess(this@MainActivity))

@@ -1,0 +1,468 @@
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -488,6 +488,13 @@
+     "${BOX64_ROOT}/src/tools/pe_tools.c"
+     "${BOX64_ROOT}/src/wrapped/generated/wrapper.c"
+ )
++if(ANDROID)
++    # AnWind: native SysV shm emulation (bionic has no shm*, and Android
++    # kernels often lack CONFIG_SYSVIPC) - see src/libtools/android_shmem.c
++    list(APPEND ELFLOADER_SRC
++        "${BOX64_ROOT}/src/libtools/android_shmem.c"
++        )
++endif()
+ if(NOT STATICBUILD)
+     list(APPEND ELFLOADER_SRC
+         "${BOX64_ROOT}/src/mallochook.c"
+--- a/src/emu/x64syscall.c
++++ b/src/emu/x64syscall.c
+@@ -23,6 +23,17 @@
+ #include <poll.h>
+ #include <sys/epoll.h>
+ 
++#ifdef ANDROID
++// AnWind: bionic has no <sys/shm.h> implementations - these are the
++// compiled-in emulated ones (src/libtools/android_shmem.c)
++int shmget(key_t, size_t, int);
++void* shmat(int, const void*, int);
++int shmctl(int, int, void*);
++int shmdt(const void*);
++#else
++#include <sys/ipc.h>
++#include <sys/shm.h>
++#endif
+ #include "x64_signals.h"
+ #include "os.h"
+ #include "debug.h"
+@@ -1052,6 +1063,36 @@
+             S_RAX = -ENOSYS;
+             #endif
+             break;
++        #if defined(__linux__)
++        // AnWind: SysV shm syscalls were unsupported (ENOSYS) - forward them
++        // to the libc implementation (on ANDROID that is the emulation
++        // compiled into box64: src/libtools/android_shmem.c).  Reproduced with
++        // a static x86_64 binary: "shmget: Function not implemented".
++        case 29:   // sys_shmget
++            S_RAX = shmget((key_t)R_RDI, (size_t)R_RSI, (int)R_RDX);
++            if(S_RAX==-1)
++                S_RAX = -errno;
++            break;
++        case 30:   // sys_shmat
++            {
++                void* ret = shmat((int)R_EDI, (void*)R_RSI, (int)R_EDX);
++                if(ret==(void*)-1)
++                    R_RAX = (uintptr_t)-errno;
++                else
++                    R_RAX = (uintptr_t)ret;
++            }
++            break;
++        case 31:   // sys_shmctl
++            S_RAX = shmctl((int)R_EDI, (int)R_ESI, (void*)R_RDX);
++            if(S_RAX==-1)
++                S_RAX = -errno;
++            break;
++        case 67:   // sys_shmdt
++            S_RAX = shmdt((void*)R_RDI);
++            if(S_RAX==-1)
++                S_RAX = -errno;
++            break;
++        #endif
+         default:
+             printf_log(LOG_INFO, "Warning: Unsupported Syscall 0x%02Xh (%d)\n", s, s);
+             S_RAX = -ENOSYS;
+--- /dev/null
++++ b/src/libtools/android_shmem.c
+@@ -0,0 +1,370 @@
++/*****************************************************************************
++ * AnWind addition: native SysV shared-memory for bionic (ANDROID) builds.
++ *
++ * Why this file exists (verified against box64 v0.4.4 upstream, 2026-11):
++ *   - box64 wraps libc: an x86_64 program's shmget/shmat/shmctl/shmdt calls
++ *     are bridged (wrappedlibc_private.h GO(...)) to dlsym() on the HOST
++ *     libc.  On a glibc host that resolves to the real glibc implementation
++ *     (which is why the x86_64 CI smoke passes), but on Android the host
++ *     libc is bionic - and bionic has NO SysV shm symbols at all, so every
++ *     shm lookup fails with "function not found" (exactly the missing
++ *     pieces the user's CI log was pointing at).
++ *   - box64's own syscall layer (x64Syscall_linux) has no cases for
++ *     __NR_shmget(29)/__NR_shmat(30)/__NR_shmctl(31)/__NR_shmdt(67):
++ *     a statically linked x86_64 binary gets ENOSYS on every shm syscall,
++ *     even on a glibc host ("shmget: Function not implemented" reproduced
++ *     upstream v0.4.4).
++ *   - Android kernels usually ship without CONFIG_SYSVIPC, so simply
++ *     forwarding the syscall to the kernel would not help either.
++ *
++ * What this file provides:
++ *   1. A real, self-contained SysV shm implementation (memfd_create backed,
++ *      with a /dev/ashmem fallback for kernels that block memfd), exported
++ *      as plain shmget/shmat/shmctl/shmdt symbols from the box64 binary:
++ *        - bionic-side code that references shm* resolves against box64
++ *          itself (bionic has no definition to shadow);
++ *        - the wrapped-libc bridge finds them through the my_* aliases
++ *          (see the GOM() switch in wrappedlibc_private.h) so dynamically
++ *          linked x86_64 programs (wine!) get working shm;
++ *        - the x64syscall.c patch forwards raw syscalls 29/30/31/67 here
++ *          on ANDROID (static binaries), and to the native libc
++ *          implementation elsewhere.
++ *   2. POSIX-enough semantics for the wine/X11 (MIT-SHM) usage pattern:
++ *      IPC_PRIVATE/IPC_CREAT/IPC_EXCL, key lookup, SHM_RDONLY/SHM_RND,
++ *      attach/detach reference counting and deferred IPC_RMID destruction
++ *      after the last detach.
++ *
++ * This file compiles EMPTY unless ANDROID is defined: on glibc builds the
++ * native libc already provides everything, and the syscall forwarding calls
++ * straight into it.
++ *****************************************************************************/
++
++#ifdef ANDROID
++
++#define _GNU_SOURCE
++#include <errno.h>
++#include <fcntl.h>
++#include <pthread.h>
++#include <stdint.h>
++#include <stdlib.h>
++#include <string.h>
++#include <sys/ioctl.h>
++#include <sys/mman.h>
++#include <sys/syscall.h>
++#include <sys/types.h>
++#include <unistd.h>
++
++/* ---- SysV IPC definitions (bionic ships no usable <sys/ipc.h>/<sys/shm.h>) ---- */
++#ifndef IPC_PRIVATE
++#define IPC_PRIVATE ((key_t)0)
++#endif
++#ifndef IPC_CREAT
++#define IPC_CREAT 00001000
++#endif
++#ifndef IPC_EXCL
++#define IPC_EXCL 00002000
++#endif
++#ifndef IPC_RMID
++#define IPC_RMID 0
++#endif
++#ifndef IPC_SET
++#define IPC_SET 1
++#endif
++#ifndef IPC_STAT
++#define IPC_STAT 2
++#endif
++#ifndef IPC_INFO
++#define IPC_INFO 3
++#endif
++#ifndef SHM_RDONLY
++#define SHM_RDONLY 010000
++#endif
++#ifndef SHM_RND
++#define SHM_RND 020000
++#endif
++#ifndef SHM_REMAP
++#define SHM_REMAP 040000
++#endif
++#ifndef IPC_64
++#define IPC_64 0x0100
++#endif
++
++/* x86_64 ABI SHMLBA is one page; callers under emulation follow the x86_64
++ * convention, so the emulation rounds to 4096 too. */
++#define ANW_SHM_LBA 4096UL
++
++/* Capacity: wine/X11 churns through segments (one per MIT-SHM pixmap), so
++ * keep the tables generous; ids are indices into g_anw_seg. */
++#define ANW_SHM_MAX 1024
++#define ANW_SHM_MAP_MAX 4096
++
++typedef struct {
++    int used;
++    int marked_rmid;
++    int fd;
++    key_t key;
++    size_t size;
++    int nattch;
++    pid_t cpid;
++    pid_t lpid;
++} anw_shm_seg_t;
++
++typedef struct {
++    void* addr;
++    size_t size;
++    int seg;
++} anw_shm_map_t;
++
++static anw_shm_seg_t g_anw_seg[ANW_SHM_MAX];
++static anw_shm_map_t g_anw_map[ANW_SHM_MAP_MAX];
++static int g_anw_next = 0;
++static pthread_mutex_t g_anw_lock = PTHREAD_MUTEX_INITIALIZER;
++
++/* LP64 shmid_ds layout used for IPC_STAT.  Field order matches the
++ * glibc aarch64/x86_64 structures for the members wine/libX11 actually
++ * read (key, size, cpid, lpid, nattch); exotic members are zeroed. */
++typedef struct {
++    key_t key;                 /*   0 */
++    unsigned int uid;          /*   4 */
++    unsigned int gid;          /*   8 */
++    unsigned int cuid;         /*  12 */
++    unsigned int cgid;         /*  16 */
++    unsigned short pad1;       /*  20 */
++    unsigned int mode;         /*  24 */
++    unsigned short seq;        /*  28 */
++    unsigned short pad2;       /*  30 */
++    unsigned long unused1;     /*  32 */
++    unsigned long unused2;     /*  40 */
++    size_t segsz;              /*  48 */
++    unsigned long atime;       /*  56 */
++    unsigned long dtime;       /*  64 */
++    unsigned long ctime;       /*  72 */
++    int cpid;                  /*  80 */
++    int lpid;                  /*  84 */
++    unsigned long nattch;      /*  88 */
++    unsigned long reserved[2]; /*  96 */
++} anw_shmid_ds_t;              /* 112 bytes */
++
++static size_t anw_shm_page(size_t n) {
++    const size_t ps = 4096;
++    return (n + ps - 1) & ~(ps - 1);
++}
++
++/* Create the backing storage: memfd first, /dev/ashmem as a fallback. */
++static int anw_shm_new_fd(size_t size) {
++    int fd = (int)syscall(__NR_memfd_create, "anwind-shm", 1 /* MFD_CLOEXEC */);
++    if (fd >= 0) {
++        if (ftruncate(fd, (off_t)size) == 0)
++            return fd;
++        close(fd);
++        return -1;
++    }
++    /* Legacy path: ashmem device (Android kernels without memfd). */
++    fd = open("/dev/ashmem", O_RDWR | O_CLOEXEC);
++    if (fd >= 0) {
++        /* ASHMEM_SET_NAME = _IOW(0x74, 1, char[256]), ASHMEM_SET_SIZE = _IOW(0x74, 3, size_t) */
++        (void)ioctl(fd, 0x41007401u, "anwind-shm");
++        if (ioctl(fd, 0x40087403u, size) == 0)
++            return fd;
++        close(fd);
++    }
++    return -1;
++}
++
++static int anw_shm_destroy_slot(anw_shm_seg_t* s) {
++    if (s->fd >= 0)
++        close(s->fd);
++    s->used = 0;
++    s->marked_rmid = 0;
++    s->fd = -1;
++    return 0;
++}
++
++int shmget(key_t key, size_t size, int shmflg) {
++    if (size == 0) {
++        errno = EINVAL;
++        return -1;
++    }
++    size = anw_shm_page(size);
++
++    pthread_mutex_lock(&g_anw_lock);
++    if (key != IPC_PRIVATE) {
++        for (int i = 0; i < ANW_SHM_MAX; i++) {
++            anw_shm_seg_t* s = &g_anw_seg[i];
++            if (!s->used || s->marked_rmid || s->key != key)
++                continue;
++            if ((shmflg & (IPC_CREAT | IPC_EXCL)) == (IPC_CREAT | IPC_EXCL)) {
++                pthread_mutex_unlock(&g_anw_lock);
++                errno = EEXIST;
++                return -1;
++            }
++            if (s->size < size) {
++                pthread_mutex_unlock(&g_anw_lock);
++                errno = EINVAL;
++                return -1;
++            }
++            pthread_mutex_unlock(&g_anw_lock);
++            return i;
++        }
++        if (!(shmflg & IPC_CREAT)) {
++            pthread_mutex_unlock(&g_anw_lock);
++            errno = ENOENT;
++            return -1;
++        }
++    }
++
++    int fd = anw_shm_new_fd(size);
++    if (fd < 0) {
++        pthread_mutex_unlock(&g_anw_lock);
++        errno = ENOMEM;
++        return -1;
++    }
++    for (int n = 0; n < ANW_SHM_MAX; n++) {
++        int i = (g_anw_next + n) % ANW_SHM_MAX;
++        if (g_anw_seg[i].used)
++            continue;
++        g_anw_next = (i + 1) % ANW_SHM_MAX;
++        g_anw_seg[i].used = 1;
++        g_anw_seg[i].marked_rmid = 0;
++        g_anw_seg[i].fd = fd;
++        g_anw_seg[i].key = key;
++        g_anw_seg[i].size = size;
++        g_anw_seg[i].nattch = 0;
++        g_anw_seg[i].cpid = getpid();
++        g_anw_seg[i].lpid = getpid();
++        pthread_mutex_unlock(&g_anw_lock);
++        return i;
++    }
++    close(fd);
++    pthread_mutex_unlock(&g_anw_lock);
++    errno = ENOSPC;
++    return -1;
++}
++
++void* shmat(int shmid, const void* shmaddr, int shmflg) {
++    pthread_mutex_lock(&g_anw_lock);
++    if (shmid < 0 || shmid >= ANW_SHM_MAX || !g_anw_seg[shmid].used) {
++        pthread_mutex_unlock(&g_anw_lock);
++        errno = EINVAL;
++        return (void*)-1;
++    }
++    anw_shm_seg_t* s = &g_anw_seg[shmid];
++    int prot = (shmflg & SHM_RDONLY) ? PROT_READ : (PROT_READ | PROT_WRITE);
++    void* want = (void*)(uintptr_t)shmaddr;
++    if (want) {
++        if (shmflg & SHM_RND)
++            want = (void*)(((uintptr_t)want) & ~(ANW_SHM_LBA - 1));
++        /* SHM_REMAP and a plain fixed address both mean "replace whatever is
++         * there" for our consumers (wine/libX11 always pass NULL anyway). */
++    }
++    void* p = mmap(want, s->size, prot, MAP_SHARED | (want ? MAP_FIXED : 0), s->fd, 0);
++    if (p == MAP_FAILED) {
++        pthread_mutex_unlock(&g_anw_lock);
++        return (void*)-1;
++    }
++    /* Record the mapping for shmdt (munmap needs the length). */
++    int slot = -1;
++    for (int i = 0; i < ANW_SHM_MAP_MAX; i++) {
++        if (!g_anw_map[i].addr || g_anw_map[i].addr == p) {
++            slot = i;
++            break;
++        }
++    }
++    if (slot < 0) {
++        munmap(p, s->size);
++        pthread_mutex_unlock(&g_anw_lock);
++        errno = ENOMEM;
++        return (void*)-1;
++    }
++    g_anw_map[slot].addr = p;
++    g_anw_map[slot].size = s->size;
++    g_anw_map[slot].seg = shmid;
++    s->nattch++;
++    s->lpid = getpid();
++    pthread_mutex_unlock(&g_anw_lock);
++    return p;
++}
++
++int shmctl(int shmid, int cmd, void* buf) {
++    pthread_mutex_lock(&g_anw_lock);
++    if (shmid < 0 || shmid >= ANW_SHM_MAX || !g_anw_seg[shmid].used) {
++        pthread_mutex_unlock(&g_anw_lock);
++        errno = EINVAL;
++        return -1;
++    }
++    anw_shm_seg_t* s = &g_anw_seg[shmid];
++    switch (cmd & ~IPC_64) {
++        case IPC_RMID:
++            /* POSIX: destroy once the last detach happens. */
++            if (s->nattch <= 0)
++                anw_shm_destroy_slot(s);
++            else
++                s->marked_rmid = 1;
++            pthread_mutex_unlock(&g_anw_lock);
++            return 0;
++        case IPC_STAT: {
++            if (!buf) {
++                pthread_mutex_unlock(&g_anw_lock);
++                errno = EFAULT;
++                return -1;
++            }
++            memset(buf, 0, sizeof(anw_shmid_ds_t));
++            anw_shmid_ds_t* ds = (anw_shmid_ds_t*)buf;
++            ds->key = s->key;
++            ds->uid = getuid();
++            ds->gid = getgid();
++            ds->cuid = getuid();
++            ds->cgid = getgid();
++            ds->mode = 0600;
++            ds->segsz = s->size;
++            ds->cpid = s->cpid;
++            ds->lpid = s->lpid;
++            ds->nattch = (unsigned long)s->nattch;
++            pthread_mutex_unlock(&g_anw_lock);
++            return 0;
++        }
++        case IPC_SET:
++            /* Permission updates are not enforced by this emulation. */
++            pthread_mutex_unlock(&g_anw_lock);
++            return 0;
++        default:
++            pthread_mutex_unlock(&g_anw_lock);
++            errno = EINVAL;
++            return -1;
++    }
++}
++
++int shmdt(const void* shmaddr) {
++    pthread_mutex_lock(&g_anw_lock);
++    int slot = -1;
++    for (int i = 0; i < ANW_SHM_MAP_MAX; i++) {
++        if (g_anw_map[i].addr == shmaddr) {
++            slot = i;
++            break;
++        }
++    }
++    if (slot < 0) {
++        pthread_mutex_unlock(&g_anw_lock);
++        errno = EINVAL;
++        return -1;
++    }
++    anw_shm_seg_t* s = &g_anw_seg[g_anw_map[slot].seg];
++    munmap(g_anw_map[slot].addr, g_anw_map[slot].size);
++    g_anw_map[slot].addr = NULL;
++    g_anw_map[slot].size = 0;
++    g_anw_map[slot].seg = -1;
++    s->nattch--;
++    if (s->marked_rmid && s->nattch <= 0)
++        anw_shm_destroy_slot(s);
++    pthread_mutex_unlock(&g_anw_lock);
++    return 0;
++}
++
++/* my_* aliases: the wrapped-libc bridge (GOM entries in
++ * wrappedlibc_private.h) resolves "my_<name>" inside box64 itself. */
++int my_shmget(key_t key, size_t size, int shmflg) { return shmget(key, size, shmflg); }
++void* my_shmat(int shmid, const void* shmaddr, int shmflg) { return shmat(shmid, shmaddr, shmflg); }
++int my_shmctl(int shmid, int cmd, void* buf) { return shmctl(shmid, cmd, buf); }
++int my_shmdt(const void* shmaddr) { return shmdt(shmaddr); }
++
++#endif /* ANDROID */
+--- a/src/wrapped/wrappedlibc_private.h
++++ b/src/wrapped/wrappedlibc_private.h
+@@ -1860,10 +1860,19 @@
+ #endif
+ GO(sgetspent, pFp)
+ GOW(sgetspent_r, iFpppLp)
++#ifdef ANDROID
++// AnWind: bionic libc has no SysV shm symbols - bridge to the native
++// emulation compiled into box64 (my_* in src/libtools/android_shmem.c)
++GOM(shmat, pFipi)
++GOM(shmctl, iFiip)
++GOM(shmdt, iFp)
++GOM(shmget, iFiLi)
++#else
+ GO(shmat, pFipi)
+ GO(shmctl, iFiip)
+ GO(shmdt, iFp)
+ GO(shmget, iFiLi)
++#endif
+ GOW(shutdown, iFii)
+ GOWM(__sigaction, iFEipp)
+ GOWM(sigaction, iFEipp)

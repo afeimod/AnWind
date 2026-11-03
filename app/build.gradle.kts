@@ -191,8 +191,23 @@ android {
         // TrackpadRouter 之前）+ TrackpadController/TrackpadRouter（触控板
         // 模式指针处与手指轻点处）按窗口几何直判置前；WindowChrome/
         // WinDialogFrame onGloballyPositioned 上报几何；focus 加诊断日志。
-        versionCode = 78
-        versionName = "2.38.15"
+        versionCode = 80
+        versionName = "2.38.17"
+        // v2.38.16（源码包 v3.2.17）：bionic x86_64 wine 前缀构建修复 ——
+        // box64 打通后 wineboot -i 于 ntdll 早期初始化 SIGSEGV（退出码 139）。
+        // 根因：PERFORMANCE 预设注入 BOX64_DYNAREC_SAFEFLAGS=0，上游 box64
+        //   USAGE.md 语义 0 = "Treat CALL/RET as if it never needs any flags"
+        //   —— wine 加载器/nttdll 大量依赖 CALL/RET 后条件分支，flags 不保存
+        //   → jcc 拿陈旧标志走错分支 → 寄存器装入未重定位裸值 → 访问 0x928e8
+        //   类未映射小地址（崩溃现场 RAX=0x3f000928d8 与 R15=0x928d8 低 32 位
+        //   一致 = 高位丢失，flags 错乱典型后遗症）。修复：
+        //   ① PERFORMANCE 预设 SAFEFLAGS 0→1（上游默认值，Winlator wine 组合
+        //      实证底线：BIGBLOCK=1/FASTNAN=1/FASTROUND=1/SAFEFLAGS=1/
+        //      STRONGMEM=0）；
+        //   ② wineboot 前缀构建会话强制 SAFEFLAGS=2（"All CALL/RET will need
+        //      flags. All edge cases are also handled"）—— 关键一次性路径取
+        //      最稳档，构建期分钟级性能不敏感；用户容器 env=（applyExtraEnv
+        //      链路最后）仍可覆盖。
         // v2.38.15（源码包 v3.2.16）：编译错误修复轮 —— v3.2.15 的 Kotlin
         // 源有 5 处编译不过（compileReleaseKotlin FAILED，用户 CI 实报）：
         //   ①ContainerScreens.kt:951 weight 非 scope 调用 → ContainerConfigPanel

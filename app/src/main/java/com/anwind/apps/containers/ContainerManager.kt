@@ -180,6 +180,30 @@ object ContainerManager {
         return update(d)
     }
 
+    /**
+     * v3.2.18（wineguanli.py rename_container）：重命名容器 = 目录改名 +
+     * conf 内 name= 归一。运行中的容器先停止。
+     * @return null 成功；否则错误信息。
+     */
+    fun rename(old: String, new: String): String? {
+        validateName(new)?.let { return it }
+        if (old == new) return null
+        val oldDir = File(CONTAINERS_ROOT, old)
+        if (!oldDir.isDirectory) return "容器不存在：$old"
+        val newDir = File(CONTAINERS_ROOT, new)
+        if (newDir.exists()) return "同名容器已存在：$new"
+        return try {
+            WineSessionLauncher.stopContainerQuietly(old)
+            if (!oldDir.renameTo(newDir)) return "重命名失败（IO 错误）"
+            val conf = File(newDir, "container.conf")
+            ContainerData.fromConf(conf)?.let { conf.writeText(it.copy(name = new).toConfText()) }
+            if (defaultName() == old) setDefault(new)
+            null
+        } catch (e: Exception) {
+            "重命名失败：${e.message}"
+        }
+    }
+
     // ------------------------------------------------------------------
     // Wine 多版本枚举（v2.26：/usr/opt/wine* 槽位，App 端选择器数据源）
     // ------------------------------------------------------------------

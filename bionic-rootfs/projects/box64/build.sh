@@ -43,10 +43,27 @@ license="MIT"
 # 【上游 ANDROID 模式】（CMakeLists.txt option(ANDROID)）：
 #   - add_definitions(-DANDROID)；BAD_SIGNAL 自动 ON（上游对
 #     Android 信号栈差异的规避 —— wine ntdll unix 侧依赖）
-#   - 内建 wrappedandroidshmem.c：v0.4.4 实为标准 wrappedlib 壳
-#     （对 libandroid-shmem.so 的纯 GO 型运行时 dlsym 映射，仅服务
-#     显式 dlopen 该库的程序；glibc 链接的 wine 的 shm 走 emulated
-#     syscall，不经此包装）—— rootfs 无需 libandroid-shmem
+#   - wrappedandroidshmem.c：标准 wrappedlib 壳（对 libandroid-shmem.so
+#     的纯 GO 型运行时 dlsym 映射，仅服务显式 dlopen 该库的程序）
+#     —— rootfs 无需 libandroid-shmem
+#   - v3.2.18 补丁 0001-anwind-android-shmem-native.patch【补齐缺的东西】：
+#     上游 v0.4.4/main 实证（本仓沙箱全量复现）：box64 对 x86_64 程序的
+#     shm 链路在 Android 上【两条都是断的】：
+#       a) 动态程序：wrappedlibc 的 GO(shmget 等) 桥接 dlsym 宿主 libc ——
+#          glibc 宿主能解析（x86_64 CI 冒烟通过的原因），bionic 宿主
+#          根本没有 shm 符号 → "function not found"（用户 CI 日志
+#          "符号表缺 shmget" 指的就是这个缺口）；
+#       b) 静态程序：x64Syscall_linux 的 switch 无 case 29/30/31/67
+#          → ENOSYS（沙箱实测 vanilla v0.4.4 跑静态 shm 冒烟：
+#          "shmget: Function not implemented"）；
+#       c) Android 内核普遍无 CONFIG_SYSVIPC，直接转发内核也不通。
+#     补丁三处联动：src/libtools/android_shmem.c（memfd_create 后端的
+#     内建 SysV shm 实现，含 /dev/ashmem 兼容回退；导出 shmget/shmat/
+#     shmctl/shmdt + my_* 别名）+ wrappedlibc_private.h（shm 四符号在
+#     ANDROID 下 GO→GOM，桥接到 my_* 内建实现）+ x64syscall.c（主
+#     switch 补 case 29/30/31/67，ANDROID 下转发内建实现、glibc 宿主
+#     直用 libc —— 静态程序也修好）。glibc 形态构建不受影响（文件在
+#     非 ANDROID 下编译为空、private 头走 GO 原分支）。
 #   - 链接 bionic 系统库 c / m / dl，无外部运行时依赖
 #   - Release 优化限制为 -O1（上游对 Android dynarec 稳定性的
 #     选择，CMakeLists "limit the optimization level" hack，
@@ -109,18 +126,12 @@ deps="glibc-aarch64 glibc-x86_64"
 doNotUseNinja=1
 
 pre_setup() {
-  # ---- v3.2.14 · wrapper 生成确定性（注释勘误 + 操作保留） ----
-  # 【勘误 v3.2.13 的错误论断】当时声称"预生成 functions_list.txt 无
-  # ANDROID 特性位，漏再生成 = shm 系列符号解析错乱"——上游实证（v0.4.4
-  # 与最新 main 全量实测）推翻：shmget/shmat 等 shm 包装是 wrappedandroidshmem.c
-  # 的【编译期 GO 宏绑定】（wrappedandroidshmem_private.h + wrappedlib_init.h
-  # 机制），与 rebuild_wrappers.py 的生成物【无关】；functions_list.txt
-  # 只是该脚本的"变更缓存对比文件"（仅含 E 型/GOM 型符号 + 结构元数据，
-  # 纯 GO 型符号从不进入），grep 它找 shmget 必然空 —— v3.2.13 的
-  # 冒烟校验 a) 因此误报（构建产物本身正常）。
-  # 删除预生成清单的操作本身仍保留：强制 add_custom_command 必跑，
-  # generated/wrapper.c 按本机 python 确定性再生成（无 mtime 竞态），
-  # 对正确性无害且把 wrapper 生成变成确定行为。
+  # ---- wrapper 生成确定性（注释勘误 + 操作保留） ----
+  # functions_list.txt 只是 rebuild_wrappers.py 的变更缓存对比文件；
+  # 删除它强制 add_custom_command 必跑，wrapper 按本机 python 确定性
+  # 再生成（无 mtime 竞态）。注意：本框架 cmake 不传 -DCI=ON，生成
+  # 规则（if(NOT CI)）存在，删除后可重建；CI=ON 的独立冒烟构建
+  # 使用提交版生成物，不受此操作影响。
   if [[ -f "${srcDir}/${pjName}/src/wrapped/generated/functions_list.txt" ]]; then
     echo "box64: 删除预生成的 wrapper 清单，强制确定性再生成"
     rm -f "${srcDir}/${pjName}/src/wrapped/generated/functions_list.txt"
@@ -201,37 +212,39 @@ install() {
     return 1
   fi
 
-  # ---- 6.5 v3.2.15 · 冒烟校验修正（ANDROID shm 包装在链 + DYNAREC + NOLOADADDR） ----
-  # 【v3.2.15 勘误 v3.2.14 的错误校验】v3.2.14 曾要求产物符号表含
-  # shmget/shmat/shmctl —— 上游源码实证（v0.4.4）+ 本轮 CI 日志推翻：
-  #   1) wrappedandroidshmem.c 只是标准 wrappedlib 壳（16 行），符号
-  #      映射全在其 private 头里且均为【纯 GO 型】（GO(shmget, iFiLi)…）；
-  #   2) wrappedlib_init.h 的非 STATICBUILD 分支 GO(N,W) 展开为
-  #      {#N, W, 0} —— 只登记名字字符串与签名，函数指针为 0，不取 &N；
-  #   3) 因此动态构建（默认；STATICBUILD 上游标注 "not working"）的
-  #      box64 二进制内【从不存在】shmget/shmat/shmctl 符号 —— 运行时
-  #      才经 dlsym 从 libandroid-shmem.so 解析（该路径仅服务显式
-  #      dlopen 该库的程序；glibc 链接的 wine 的 shm 走 emulated
-  #      syscall，不经此包装，rootfs 无需 libandroid-shmem）；
-  #   4) CI 日志实锤：wrappedandroidshmem.c.o 100% 编译进链，而
-  #      nm/readelf 均无 shmget —— 旧校验必挂，产物本身正常。
-  # 正确的静态证据（v3.2.15 改为）：
-  #   a) ANDROID shm 包装编译单元在链：mainobj 的 wrappedandroidshmem.c.o
-  #      存在 + 产物含 "libandroid-shmem.so" 字符串（androidshmemName
-  #      字面量 + library_list.h 注册，均在 .rodata，strip 不受影响）；
+  # ---- 6.5 v3.2.18 · 冒烟校验（内建 shm 实现 + DYNAREC + NOLOADADDR） ----
+  # 【历史教训链，勿再绕回弯路】
+  #   v3.2.13 校验 functions_list.txt 含 shmget → 误报（纯 GO 型符号
+  #     不进该缓存文件）；
+  #   v3.2.14 校验符号表含 shmget/shmat/shmctl → 误报（动态构建的
+  #     GO 型包装符号从不进 box64 符号表，上游 v0.4.4 与 main 实证）；
+  #   v3.2.15 改查 getDB/FreeDynablock + 编译单元 + 注册字符串 → 校验
+  #     本身正确，但用户点破的“缺东西”是真命题：shm 链路在 bionic 上
+  #     两条全断（见头部【v3.2.18 补丁】段），符号表里没有 shm 符号
+  #     只是症状；
+  #   v3.2.18 用补丁把缺口真正补上：ANDROID 构建导出【真实的】
+  #     shmget/shmat/shmctl/shmdt（memfd 后端实现，非包装壳），符号表
+  #     直查由此【恢复为合法校验】——缺符号 = 补丁没打上/没编进，
+  #     正是本轮要挡住的事故面。
+  # 校验组（全部在构建树产物上查，strip 不影响）
+  #   a) shm 四符号（v3.2.18 内建实现的真实导出）
   #   b) DYNAREC 核心真符号：getDB / FreeDynablock（dynablock.c 真函数
-  #      的导出符号；v0.4.4 与最新 main 均稳定存在，不使用版本敏感
-  #      符号，避免跨 ref 误报）；
-  #   c) NOLOADADDR 落地：链接命令不得残留 --image-base / -no-pie
-  #      （v3.2.13 加 -DNOLOADADDR=ON 的配套自检，防上游 CMake 行为漂移）。
+  #      的导出符号；v0.4.4 与最新 main 均稳定存在）
+  #   c) wrappedandroidshmem.c 编译单元在链 + libandroid-shmem.so
+  #      注册字符串（.rodata，strip 不受影响）
+  #   d) NOLOADADDR 落地：链接命令不得残留 --image-base / -no-pie
+  #      （v3.2.13 加 -DNOLOADADDR=ON 的配套自检，防上游 CMake 行为漂移）
   local _sym_ok=1
-  for _sym in getDB FreeDynablock; do
+  for _sym in shmget shmat shmctl shmdt getDB FreeDynablock; do
     if ! nm "${_src}/build/box64" 2>/dev/null | grep -qw "${_sym}" \
        && ! readelf -Ws "${_src}/build/box64" 2>/dev/null | grep -qw "${_sym}"; then
-      echo "错误: box64 符号表缺 ${_sym}（DYNAREC 核心未链接）"
+      echo "错误: box64 符号表缺 ${_sym}（v3.2.18 内建 shm 实现 / DYNAREC 核心未链接 —— 0001 补丁没生效？）"
       _sym_ok=0
     fi
   done
+  if ! nm -D "${_src}/build/box64" 2>/dev/null | grep -qwE "shmget|my_shmget"; then
+    echo "警告: shm 符号未进动态导出表（.dynsym），wrapped-libc 桥接将找不到 my_*（strip 前 .dynsym 应含 shmget）"
+  fi
   local _shmem_ok=1
   if [[ ! -f "${_src}/build/CMakeFiles/mainobj.dir/src/wrapped/wrappedandroidshmem.c.o" ]]; then
     echo "错误: wrappedandroidshmem.c 编译单元不在链（-DANDROID=ON 未生效？）"
@@ -242,7 +255,7 @@ install() {
     _shmem_ok=0
   fi
   [[ "${_sym_ok}" == "1" && "${_shmem_ok}" == "1" ]] \
-    && echo "冒烟[1/2]: ANDROID shm 包装在链（wrappedandroidshmem.c.o + libandroid-shmem.so 注册）+ DYNAREC 核心（getDB/FreeDynablock）✓" \
+    && echo "冒烟[1/2]: 内建 SysV shm（v3.2.18 真实导出 shmget/shmat/shmctl/shmdt + my_* 桥接）+ DYNAREC 核心（getDB/FreeDynablock）✓" \
     || return 1
   if grep -q "image-base\|no-pie" "${_src}/build/CMakeFiles/box64.dir/link.txt" 2>/dev/null; then
     echo "错误: 链接命令残留 --image-base/-no-pie（NOLOADADDR 未生效）"

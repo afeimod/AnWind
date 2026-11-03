@@ -19,6 +19,8 @@ import java.io.File
  *   dshow（DLL 加载序）/ dpi（LogPixels）/ winver（Windows 版本）/
  *   mangohud（MANGOHUD_CONFIG）/ flags（高级启动开关 csv）/
  *   turnip / zink / wined3d（驱动版本槽位，对接 /opt 生态）
+ * v3.2.18（wineguanli.py 完全重制）新增键：
+ *   exe（默认运行的程序路径，wineguanli custom_exe_path 等价物）
  *
  * 显示方案（重要）：本方案为 X11 —— X 服务为 AnWind 内置 termux-x11/
  * libXlorie，unix socket 位于 App 侧 $PREFIX/tmp/.X11-unix/Xn（默认 :1）。
@@ -231,8 +233,11 @@ object ContainerFlags {
     const val INDEPENDENT = "independent"
     const val CLOSESERVICE = "closeservice"
 
+    /** v3.2.18：FEX 模式（wineguanli.py 高级启动选项；arm64ec 形态下切 fexcore 后端）。 */
+    const val FEXMODE = "fexmode"
+
     /** 全部合法开关（UI 勾选组展示顺序）。 */
-    val ALL = listOf(UNITY, OPENGL, F5TASK, IB, DEBUG, INDEPENDENT, CLOSESERVICE)
+    val ALL = listOf(UNITY, OPENGL, F5TASK, IB, DEBUG, INDEPENDENT, CLOSESERVICE, FEXMODE)
 
     fun parse(csv: String?): Set<String> =
         csv?.split(',', ';').orEmpty()
@@ -310,7 +315,9 @@ data class ContainerData(
     /** Zink 驱动版本槽位（对接 /opt/zink）。 */
     val zink: String = "",
     /** WineD3D 版本槽位（对接 /opt/vkord3d）。 */
-    val wined3d: String = ""
+    val wined3d: String = "",
+    /** v3.2.18：默认运行的程序（wineguanli.py custom_exe_path；空 = 运行时再选）。 */
+    val exe: String = ""
 ) {
     /** WINEPREFIX 绝对路径（容器目录内 prefix/）。 */
     val prefixPath: String get() = "${ContainerManager.CONTAINERS_ROOT}/$name/prefix"
@@ -354,7 +361,8 @@ data class ContainerData(
         "flags" to flags,
         "turnip" to turnip,
         "zink" to zink,
-        "wined3d" to wined3d
+        "wined3d" to wined3d,
+        "exe" to exe
     )
 
     /** 序列化为 container.conf 文本（# 头注释 + key=value）。 */
@@ -433,7 +441,8 @@ data class ContainerData(
                 flags = kv["flags"] ?: "",
                 turnip = kv["turnip"] ?: "",
                 zink = kv["zink"] ?: "",
-                wined3d = kv["wined3d"] ?: ""
+                wined3d = kv["wined3d"] ?: "",
+                exe = kv["exe"] ?: ""
             )
         }
     }

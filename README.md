@@ -61,12 +61,13 @@ app/src/main/assets/anwind/
 
 | 文件 | 职责 |
 |---|---|
-| `ContainerApp.kt` | 桌面应用注册（"Wine 容器"，emoji:📦 图标，pinnedToDesktop 桌面快捷方式 + 任务栏固定） |
-| `ContainerModels.kt` | 容器数据模型 + container.conf 编解码（后端/预设/分辨率/渲染器枚举） |
-| `ContainerManager.kt` | 容器 CRUD / 默认容器 / 本地体检（与 CLI 共享同一存储） |
+| `ContainerApp.kt` | 桌面应用注册（"Wine 容器"，emoji:📦 图标，pinnedToDesktop 桌面快捷方式 + 任务栏固定；默认 1060×680 对齐 wineguanli 主窗） |
+| `ContainerModels.kt` | 容器数据模型 + container.conf 编解码（后端/预设/分辨率/渲染器枚举/wineguanli 键集） |
+| `ContainerManager.kt` | 容器 CRUD / 重命名 / 默认容器 / 本地体检（与 CLI 共享同一存储） |
 | `WineSessionLauncher.kt` | 纯门面（v3.0）：API 与 v2.x 兼容，全部转发 RootfsLauncher 原生启动链 |
 | `launcher/`（10 文件） | v3.0 原生启动链：RootfsLauncher 编排 + NativeShellExecutor 直接 exec（详见 docs/NATIVE-LAUNCHER.md） |
-| `ContainerScreens.kt` | Compose 管理界面：列表/新建/编辑/克隆/删除/运行/winecfg/wineboot/regedit/停止/日志/体检 |
+| `ContainerScreens.kt` | **v3.2.18 wineguanli.py 完全重制**：工具栏 + 左右分栏 + 五选项卡 + 高级设置页（DY/Box/Wine安装/MANGOHUD）+ 更多设置对话框（CPU/函数库/环境变量/高级功能/Direct3D/AnWind原生）+ 对话框族；全宽度自适应（等比缩放 + 窄屏横向滑动） |
+| `GuanliSupport.kt` | wineguanli 数据层移植：DY 三预设 / env K=V 编解码 / /opt tar 扫描与解压 / Wine 安装删除 / AppDefaults 注册表 / MANGOHUD 串 / Android 快捷方式 |
 
 关键设计：
 

@@ -1,5 +1,41 @@
 # AnWind Bionic 修复包 v2（2026-09-19）
 
+> **v3.2.18（2026-11-03）**：两诉求轮 —— ①box64「缺的东西」补齐（用户 CI 日志 box64log2 实锤：`错误: box64 符号表缺 shmget/shmat/shmctl → install() 中止`，与 SAFEFLAGS 无关，v3.2.17 诊断结论修正）②容器管理界面按 wineguanli.py **完全重制**（用户反馈 v3.2.17 的"重制"有 700dp 宽度门槛，手机上根本看不到新界面；wineguanli.py 本身可以实现所有宽度，本轮去掉门槛：等比缩放 + 横向滑动）。
+>
+> ## 修复 1：box64 内建 SysV shm（补齐用户点破的"缺东西"）
+>
+> **证据链（上游 v0.4.4 与 main 全量沙箱复现，非推断）**：
+> 1. box64 对 x86_64 程序是 **wrap libc** 模型（wrappedlibc_private.h: `GO(shmget, iFiLi)` 等四符号）：程序的 shm 调用桥接到宿主 libc 的 dlsym。glibc 宿主能解析（x86_64 CI 冒烟通过的原因）；**bionic 宿主根本没有 shm 符号** → "function not found" —— 用户日志"符号表缺 shmget"指向的正是这个缺口；
+> 2. box64 的 syscall 层（x64Syscall_linux）**没有 case 29/30/31/67**：静态链接 x86_64 程序的 shmget 一律 ENOSYS（沙箱实测 vanilla v0.4.4：`shmget: Function not implemented`）；
+> 3. Android 内核普遍无 CONFIG_SYSVIPC，直接转发内核也不通；
+> 4. wrappedandroidshmem.c 只是 dlopen libandroid-shmem.so 的壳（rootfs 里也没有该库），帮不了 glibc 链接的 x86_64 wine。
+>
+> **修复（`bionic-rootfs/projects/box64/0001-anwind-android-shmem-native.patch`，4 文件）**：
+> - 新增 `src/libtools/android_shmem.c`：memfd_create 后端的完整 SysV shm 实现（/dev/ashmem 回退；IPC_PRIVATE/key 查找/SHM_RDONLY/SHM_RND/引用计数/IPC_RMID 最后脱离后销毁），导出 `shmget/shmat/shmctl/shmdt`（真实符号，进符号表与 .dynsym）+ `my_*` 别名；非 ANDROID 构建编译为空；
+> - `wrappedlibc_private.h`：shm 四符号在 ANDROID 下 GO→GOM（桥接到 my_* 内建实现，动态链接 x86_64 程序的 shm 恢复可用）；
+> - `x64syscall.c`：主 switch 补 case 29/30/31/67（ANDROID 转发内建实现，glibc 宿主直用 libc —— 静态程序也修好，glibc 形态构建同样受益）；
+> - 单元测试（沙箱实跑）：模拟逻辑 8 组断言全过（双 attach 共享可见/nattch/延迟 RMID/EEXIST/ENOENT/尺寸校验/错误路径/200 轮建销压测）；补丁树 x86_64 宿主构建后动态+静态 shm 冒烟均 ANWIND_SMOKE_OK（vanilla 树静态项复现失败）；
+> - `build.sh` install() 校验恢复**合法的**符号直查：shmget/shmat/shmctl/shmdt/getDB/FreeDynablock（缺符号 = 补丁没生效，正是本轮要挡住的事故面）；workflow 冒烟加静态链接变体（syscall 转发回归测试）+ 交付树补丁存在性校验。
+> - **v3.2.17 SAFEFLAGS 结论修正**：v3.2.17 把 wineboot SIGSEGV 归因 SAFEFLAGS=0 并给出"env= 加 BOX64_DYNAREC_SAFEFLAGS=2 自救"—— 用户实测无效并指出真正缺的是 shm 链路。本轮以日志证据为准修正：**根因是 shm 两条链路全断**（上链 ①②）。SAFEFLAGS 调整（PERFORMANCE 预设 0→1、wineboot 会话强制 2）作为无害加固保留，不再声称是根因。
+>
+> ## 修复 2：容器管理界面 wineguanli.py 完全重制（全宽度）
+>
+> **v3.2.15-17 的问题**：重制面板挂在 `maxWidth >= 700.dp` 门槛后 —— 手机（~411dp）永远走旧卡片列表，用户看到的"UI 没变"完全成立；且五选项卡内容与 wineguanli.py 结构不对齐（无架构/分辨率/语言下拉、无 EXE 文件组、图形驱动是手填槽位而非 /opt 扫描、高级设置页整个缺失）。
+>
+> **v3.2.18 重制（ContainerScreens.kt 全量重写 + GuanliSupport.kt 新增）**：
+> - **全宽度**：缩放系数 = 窗口宽/1024（wineguanli setMinimumSize(1024,600) 的等比适配），夹 0.6..1.0；内容最小宽 1024×scale，放得下恰好铺满、放不下横向滑动 + 底部提示条；全部组件经 LocalGuanliScale（gdp/gsp）等比缩小 —— 横屏平板 1:1、横屏手机 ~0.8、竖屏手机 0.6+滑动；
+> - **主窗口**：QToolBar 同款工具栏（☰ 菜单：容器管理/高级设置/体检/退出 + 标题 + ➕创建容器 + 📄快捷方式）；左列 280dp（📦 已创建的容器 + 列表[点击选中/长按菜单：运行/安装前缀/设置/切换语言/删除/重命名/快捷方式] + 新建/删除/重命名 + 创建快捷方式）；右列五选项卡 + 底部 ▶️运行/🔧安装前缀/💾保存配置；
+> - **五选项卡**（与 wineguanli.py 逐组对齐）：📋基本设置（容器名称/架构/Wine版本/分辨率[8档+自定义]/语言/帧数限制/窗口模式独立窗口/EXE文件[文件选择器回填]/高级启动选项七勾选[fexmode 新增]）；🎮图形驱动（Turnip/Zink/DXVK/WineD3D 四下拉，/opt/tz、/opt/zink、/opt/dxvk1、/opt/vkord3d 自动扫描 tar 包，默认/不使用/包名三态，运行前自动解压）；🖥️CPU核心（真实核心网格+主副核心信息+说明）；📚函数库（dsound/dshow/DPI 滑块五预设/Windows 版本/说明/立即应用）；🔧更多配置（说明+打开更多设置+当前配置状态+刷新）；
+> - **高级设置页**（wineguanli 高级视图）：⚡DY配置（兼容/性能/平衡三预设 9 变量逐字移植 + 变量列表增删 + 应用 → 容器 env=）；📦Box配置（/opt/box、/opt/box86 扫描 + box64 -v 探活 + 应用）；🍷Wine安装（本地/URL 安装到 /usr/opt 槽位 + 列表/⭐设默认/🗑️删除）；📊MANGOHUD配置；
+> - **更多设置对话框**（wineguanli 650×950 五选项卡 + AnWind 扩展页）：CPU核心/函数库/环境变量（MESA版本/GLSL版本/VKD3D特性下拉 + MESA扩展/DXVK HUD/TU_DEBUG 多选对话框 + MANGOHUD 开关）/高级功能（CNC DDraw 应用/清除）/Direct3D（强制 D3D9/D3D11 + 目标 EXE）/🧩AnWind 原生（完整后端集/Box64 预设/渲染器/DXVK 注入/音频 —— 不丢任何既有能力）；
+> - **对话框族**：新建容器（wineguanli 逐字段 + 创建后询问装前缀）/MANGOHUD 配置（八指标+横屏+字体10-36+四角位置+透明度+无显示模式 → 串解析回填）/多选/重命名（ContainerManager.rename 新增：目录改名+name=归一+默认容器指针跟随）/快捷方式（ShortcutManager 固定到启动器，MainActivity extra 驱动打开窗口并自动运行）/运行 exe（保留文件选择回填）；
+> - **container.conf 新键**：`exe=`（wineguanli custom_exe_path 等价物，默认运行程序；快捷方式与 ▶️运行 共用）；flags 新增 fexmode；turnip/zink/wined3d 语义升级为 /opt 扫描槽位（空=默认/off=不使用/包名）。
+> - **窗口与桌面**：容器窗口默认 1060×680（对齐 wineguanli 主窗）；MainActivity 处理 `anwind_run_container` extra。
+>
+> APK 版本 v2.38.16→v2.38.17（versionCode 79→80）
+>
+> **v3.2.17（2026-11-03）**：bionic x86_64 wine 前缀构建修复 —— v3.2.16 后 box64 终于打通（wine --version 冒烟通过），wineboot -i 推进到 ntdll 早期初始化即 SIGSEGV（退出码 139）。根因不是 wine/box64 构建物，而是**运行时环境注入**：PERFORMANCE 预设注入 `BOX64_DYNAREC_SAFEFLAGS=0`。上游 box64 USAGE.md 语义：0 = "Treat CALL/RET as if it never needs any flags" —— wine 加载器与 ntdll 初始化大量依赖 CALL/RET 之后的条件分支，flags 不保存 → jcc 拿陈旧标志走错分支 → 寄存器装入未重定位的裸值 → 访问未映射小地址。崩溃现场完全吻合：`mov rcx,[r15+0x10]` 处 RAX=0x3f000928d8（带加载基址的 ntdll 内正确地址）与 R15=0x928d8（裸 vaddr）**低 32 位完全一致 = 错误分支后 64 位寄存器高位丢失**，访问 0x928e8（R15+0x10）必炸；而 `wine --version` 快速路径恰好不触碰深层 flags 敏感代码所以冒烟能过。修复：①PERFORMANCE 预设 SAFEFLAGS 0→1（上游默认值，也是 Winlator wine 组合 BIGBLOCK=1/FASTNAN=1/FASTROUND=1/SAFEFLAGS=1/STRONGMEM=0 的实证底线，其余激进项保留）；②wineboot 前缀构建会话在 applyBox64Env 后强制 SAFEFLAGS=2（"All CALL/RET will need flags. All edge cases are also handled"，与 COMPATIBILITY 同档）—— 前缀构建是容器可用性的关键一次性路径，构建期分钟级性能不敏感，取最稳档；用户容器 env=（applyExtraEnv 链路最后叠加）仍可覆盖。APK 版本 v2.38.15→v2.38.16（versionCode 78→79）【v3.2.18 勘误：SAFEFLAGS 归因已被用户实测否定，真正根因是 shm 链路缺失（见 v3.2.18 修复 1）；SAFEFLAGS 调整作为无害加固保留】
+>
 > **v3.2.16（2026-11-03）**：编译错误修复轮 —— v3.2.15 交付源在用户 CI 实报 `compileReleaseKotlin FAILED`（5 处）+ box64 冒烟测试宿主构建炸，全部修复：①`ContainerScreens.kt:951` `Modifier.weight` 是 RowScope/ColumnScope 成员扩展，组件函数体内直调解析到 foundation 内部 `RowColumnParentData.weight` 属性（报 "Expression 'weight' cannot be invoked"）→ ContainerConfigPanel 增 `modifier: Modifier = Modifier` 参数，宽屏 Row 调用处传 `Modifier.weight(1f)`；②`ContainerScreens.kt:1139/1146` WinOptionPills.options 传 `List<String>` 而签名为 `List<Pair<value,label>>` → dsound/dshow DLL 加载序选项改 Pair；③`WineEnvironment.kt:400` Kotlin 赋值不是表达式，`start = end = sorted[i]` 链式赋值非法（formatCoreSpec 连续段折叠）→ 拆两条语句；④`MusicPlayerApp.kt:137` `musicSettings` 声明于首次使用（searchSource 初始化）之后 → 播放器设置中心块上移到搜索状态之前；⑤`MusicPlayerApp.kt:413/416` `Color.luminance()` 缺 `import androidx.compose.ui.graphics.luminance` → 补齐（背景明暗自适应的纯色/渐变分支）；⑥box64 冒烟（build-box64-bionic.yml）x86_64 宿主错开 `-DARM_DYNAREC=ON`，dynarec_native.c 生成 aarch64 汇编（`mrs ctr_el0` / `dc cvau` / `ic ivau` / `isb sy`）被 x86_64 汇编器拒收（CI 实报 Assembler messages: no such instruction）→ 冒烟构建改 `-DARM_DYNAREC=OFF`（ARM dynarec 仅 aarch64 宿主可编；冒烟只验源码级编译/链接/实跑链路，aarch64 正式构建含 ARM_DYNAREC 不受影响）。全项目 137 个 .kt 经结构校验（括号/注释/字符串配平）零问题；APK 版本 v2.38.14→v2.38.15（versionCode 77→78）
 >
 > **v3.2.15（2026-11-02）**：六诉求轮 —— ①box64 bionic 构建修复（v3.2.14 符号校验假设错误：纯 GO 型符号非 STATICBUILD 下不进符号表；改为编译单元在链 + libandroid-shmem.so 注册字符串双证据）②启动动画去倍速原速播放 ③assets tar.gz/tar.xz 被 .tar 化的运行时兼容（aapt2 实验证明其不改名，扫描器补 .tar.xz/纯 .tar 识别 + TarCompressorUtils PLAIN 类型）④容器管理按 wineguanli.py 重制（左右分栏 + 五选项卡 + container.conf 十二新键 + 函数库注册表落地，/opt 清单见 docs/WINEGUANLI-OPT-FOLDERS.md）⑤云音乐 AnWindMusic 回移（双音源/本地元数据/黑胶歌词/背景视频/明暗自适应）⑥X11 方向跟随桌面 + 桌面默认横屏

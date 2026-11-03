@@ -212,7 +212,28 @@ jobs:
           echo "${SMOKE_OUT}"
           echo "${SMOKE_OUT}" | grep -q "ANWIND_SMOKE_OK" \
             || { echo "::error::box64 执行 x86_64 测试程序失败（含 SysV shm 路径）—— 源码级损坏，禁止放行"; exit 1; }
-          echo "=== 冒烟通过：同源构建物可加载 ELF、可执行、SysV shm 路径可用 ==="
+
+          # v3.2.18：静态链接变体 —— 走 box64 的 syscall 层（case 29/30/31/67
+          # 转发，0001-anwind-android-shmem-native.patch 的宿主侧回归测试）。
+          # vanilla v0.4.4 实测此路径 ENOSYS（"shmget: Function not
+          # implemented"），补丁后必须通过。
+          echo "=== 冒烟[静态实跑]: 静态链接 x86_64 测试程序（syscall 层 shm 转发） ==="
+          gcc -O2 -static -o "${TESTDIR}/smoke_static" "${TESTDIR}/smoke.c" \
+            || { echo "::error::静态冒烟程序编译失败（runner 缺 glibc-static？）"; exit 1; }
+          SMOKE_STATIC_OUT="$("${SMOKE_BIN}" "${TESTDIR}/smoke_static" 2>&1 || true)"
+          echo "${SMOKE_STATIC_OUT}"
+          echo "${SMOKE_STATIC_OUT}" | grep -q "ANWIND_SMOKE_OK" \
+            || { echo "::error::box64 静态 x86_64 程序 shm syscall 失败 —— 0001 补丁的 x64syscall.c 转发未生效，禁止放行"; exit 1; }
+
+          # v3.2.18：补丁文件本体必须在源码树里（冒烟用独立 clone，此步
+          # 校验交付源码未丢失补丁 —— 与配方 install() 的符号校验互补）。
+          echo "=== 冒烟[补丁在源]: 交付树含 0001-anwind-android-shmem-native.patch ==="
+          [[ -f "${GITHUB_WORKSPACE}/bionic-rootfs/projects/box64/0001-anwind-android-shmem-native.patch" ]] \
+            || { echo "::error::交付源码树缺失 0001-anwind-android-shmem-native.patch —— aarch64 产物将缺内建 shm"; exit 1; }
+          grep -q "android_shmem.c" "${GITHUB_WORKSPACE}/bionic-rootfs/projects/box64/0001-anwind-android-shmem-native.patch" \
+            || { echo "::error::0001 补丁内容异常（不含 android_shmem.c 源）"; exit 1; }
+
+          echo "=== 冒烟通过：同源构建物可加载 ELF、可执行、SysV shm 动态/静态路径均可用 ==="
 
       # ============ 6. 产物校验 ============
       # 硬校验 box64 完整文件集（deps 保证三个包 tar 都已产出）：

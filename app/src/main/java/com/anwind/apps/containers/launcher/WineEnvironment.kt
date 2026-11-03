@@ -229,7 +229,19 @@ object WineEnvironment {
             }
             Box64Preset.PERFORMANCE -> {
                 env["BOX64_DYNAREC_BIGBLOCK"] = "1"
-                env["BOX64_DYNAREC_SAFEFLAGS"] = "0"
+                // v3.2.17（设备实报：wine9.2 x86_64 形态 wineboot -i 于 ntdll
+                // 早期初始化 SIGSEGV，退出码 139）：SAFEFLAGS 由 0 改 1。
+                // 上游 box64 USAGE.md（SAFEFLAGS 条目）：0 = "Treat CALL/RET
+                // as if it never needs any flags" —— wine 加载器与 ntdll 初始化
+                // 大量依赖 CALL/RET 之后的条件分支，flags 不保存 = jcc 拿到
+                // 陈旧标志走错分支 → 寄存器装入未重定位的裸值 → 访问 0x928e8
+                // 类未映射小地址段错误（崩溃现场实证：RAX=0x3f000928d8 带加载
+                // 基址的正确地址 与 R15=0x928d8 裸 vaddr 低 32 位完全一致 =
+                // 错误分支后 64 位寄存器高位丢失，典型 flags 错乱后遗症）。
+                // 1 是上游默认值，也是 Winlator wine 组合（BIGBLOCK=1/FASTNAN=1/
+                // FASTROUND=1/SAFEFLAGS=1/STRONGMEM=0）的实证底线；wineboot
+                // 前缀构建会话另由 RootfsLauncher 叠加最稳的 2。
+                env["BOX64_DYNAREC_SAFEFLAGS"] = "1"
                 env["BOX64_DYNAREC_FASTNAN"] = "1"
                 env["BOX64_DYNAREC_FASTROUND"] = "1"
                 env["BOX64_DYNAREC_X87DOUBLE"] = "0"
