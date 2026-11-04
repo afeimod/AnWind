@@ -139,11 +139,9 @@ object WineRuntime {
                 // 取第一个（listWines 同源逻辑：目录名 wine 开头且含
                 // bin/wine）—— rootfs/usr/opt 里装了什么就真正用什么，
                 // 不再"只认死名 /usr/opt/wine，装了 wine-9.7 也说没装"。
-                // v3.2.25：opt/conf/wine_path.conf 的 WINE_PATH 优先于槽位
-                // 扫描 —— 用户安装的 WinFusion 风格 wine 包自带目录声明
-                // （chroot 视角 /opt/... → 设备路径换算），无声明/路径无
-                // bin/wine 时回落槽位扫描。
-                ?: WineEnvironment.optConfWineDir()
+                // v3.2.26（用户要求）：剔除 wine_path.conf 的 WINE_PATH
+                // 解析 —— wine 目录一律由 AnWind 槽位体系（容器 wine= /
+                // default_wine / 槽位扫描）管理，不读安装包内声明。
                 ?: ContainerManager.listWines().firstOrNull()?.let { File(it.dir) }
         }
         val globalDir = if (global.startsWith("/")) File(global)

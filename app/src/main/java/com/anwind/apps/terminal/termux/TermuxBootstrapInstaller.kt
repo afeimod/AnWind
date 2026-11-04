@@ -703,7 +703,7 @@ object TermuxBootstrapInstaller {
         // (3) deb 重打包器 + glibc 一键脚本 + 源体检工具
         // 迁移场景同时清理旧版 debfix 的盖章缓存（v2 已修复盖章污染，
         // 清掉历史盖章让缓存中的 deb 重新走一遍完整处理，幂等无害）
-        File(prefix, "var/lib/anwind/debfix").deleteRecursively()
+        com.anwind.util.SafeFileOps.deleteTree(File(prefix, "var/lib/anwind/debfix"))
         File(prefix, "var/lib/anwind/debfix").mkdirs()
         copyAssetScript(
             context, "termux/scripts/anwind-debfix",

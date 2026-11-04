@@ -212,7 +212,7 @@ object WineLocaleSupport {
                 }
                 log("已安装 CJK 字体到 rootfs: ${rootfsCopy.absolutePath}（fontconfig 扫描路径内）")
                 runCatching {
-                    File(ContainerManager.ROOTFS_ROOT, "var/cache/fontconfig").deleteRecursively()
+                    com.anwind.util.SafeFileOps.deleteTree(File(ContainerManager.ROOTFS_ROOT, "var/cache/fontconfig"))
                 }
             }
         }.onFailure { log("警告: CJK 字体安装到 rootfs 失败（${it.message}）—— X11 侧中文可能仍为方块") }
@@ -338,7 +338,7 @@ object WineLocaleSupport {
                         fonts.none { it.name == f.name }) f.delete()
                 }
                 runCatching {
-                    File(ContainerManager.ROOTFS_ROOT, "var/cache/fontconfig").deleteRecursively()
+                    com.anwind.util.SafeFileOps.deleteTree(File(ContainerManager.ROOTFS_ROOT, "var/cache/fontconfig"))
                 }
                 marker.writeText(fp)
                 log("已导入用户字体 ×${fonts.size} → rootfs fontconfig（$USER_FONT_DIR → ${rootfsFontsDir.absolutePath}）")

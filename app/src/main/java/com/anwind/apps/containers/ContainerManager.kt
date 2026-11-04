@@ -108,6 +108,13 @@ object ContainerManager {
      * deleteRecursively() 把全部容器连根删光。fromConf 已改为目录名优先
      * 消除空名源头；这里再拒一切非法名并校验目标必须是容器根的
      * **直接子目录**（canonical 路径双保险，含 "."/".."/分隔符/符号链接逃逸）。
+     *
+     * v3.2.26（数据丢失事故根治）：改用 SafeFileOps.deleteTree ——
+     * Kotlin 1.9.25 的 deleteRecursively 会穿透符号链接删除目标内容
+     * （本机实证复现），而 v3.2.24 起前缀 dosdevices 里有 d:→Download、
+     * e:→exagear、z:→/ 三个指向 rootfs 之外的链接，删容器即穿越链接
+     * 删用户数据（用户实测 Download/exagear 被删光）。deleteTree 不带
+     * FOLLOW_LINKS，符号链接只删本身不删目标。
      */
     fun remove(name: String): String? {
         if (name.isBlank() || name.contains('/') || name.contains('\\') ||
@@ -124,7 +131,8 @@ object ContainerManager {
         return try {
             // 先尝试终止容器内 wine 进程，避免文件占用
             WineSessionLauncher.stopContainerQuietly(name)
-            dir.deleteRecursively()
+            if (!com.anwind.util.SafeFileOps.deleteTree(dir))
+                return "删除未完成（部分文件被占用/权限不足，可重试）"
             if (defaultName() == name) setDefault("")
             null
         } catch (e: Exception) {
@@ -134,6 +142,10 @@ object ContainerManager {
 
     /**
      * 克隆容器（整目录复制 + 改写 conf 内 name=）。
+     *
+     * v3.2.26：改用 SafeFileOps.copyTree —— copyRecursively 同样会穿透
+     * 符号链接把 dosdevices d:/e:/z: 指向的外部目录（Download/exagear/…）
+     * 整个深拷进新容器；copyTree 遇链接重建同指向链接，不穿越。
      * @return null 成功；否则错误信息。
      */
     fun clone(src: String, dst: String): String? {
@@ -142,7 +154,8 @@ object ContainerManager {
         if (!srcDir.isDirectory) return "源容器不存在：$src"
         return try {
             val dstDir = File(CONTAINERS_ROOT, dst)
-            srcDir.copyRecursively(dstDir, overwrite = true)
+            if (!com.anwind.util.SafeFileOps.copyTree(srcDir, dstDir))
+                return "克隆未完成（部分文件复制失败，可删除后重试）"
             val conf = File(dstDir, "container.conf")
             ContainerData.fromConf(conf)?.let { conf.writeText(it.copy(name = dst).toConfText()) }
             null

@@ -226,14 +226,14 @@ object GuanliSupport {
                 val ok = p.waitFor(300, TimeUnit.SECONDS)
                 val out = runCatching { p.inputStream.readBytes().decodeToString() }.getOrDefault("")
                 if (!ok) {
-                    p.destroyForcibly(); dest.deleteRecursively()
+                    p.destroyForcibly(); com.anwind.util.SafeFileOps.deleteTree(dest)
                     return "解压超时（300s），已回滚"
                 }
                 if (p.exitValue() != 0) {
-                    dest.deleteRecursively()
+                    com.anwind.util.SafeFileOps.deleteTree(dest)
                     "安装失败（tar 退出码 ${p.exitValue()}：${out.take(200)}）—— 请确认包是 wine 目录树（bin/wine 在顶层）"
                 } else if (!File(dest, "bin/wine").isFile && !File(dest, "bin/wine64").isFile) {
-                    dest.deleteRecursively()
+                    com.anwind.util.SafeFileOps.deleteTree(dest)
                     "包布局不对：解压后未见 bin/wine（应选 wine 目录树的 tar）"
                 } else {
                     File(dest, ".anwind-wine-info").writeText(
@@ -246,7 +246,7 @@ object GuanliSupport {
                     null
                 }
             } catch (e: Exception) {
-                dest.deleteRecursively()
+                com.anwind.util.SafeFileOps.deleteTree(dest)
                 "安装异常：${e.message}"
             }
         }
@@ -290,7 +290,9 @@ object GuanliSupport {
             if (dir.parentFile?.canonicalPath != File(ContainerManager.WINE_OPT_DIR).canonicalPath)
                 return "拒绝删除：路径越界"
             return try {
-                dir.deleteRecursively(); null
+                if (!com.anwind.util.SafeFileOps.deleteTree(dir))
+                    return "删除未完成（部分文件被占用，可重试）"
+                null
             } catch (e: Exception) {
                 "删除失败：${e.message}"
             }

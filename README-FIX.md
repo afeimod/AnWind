@@ -1,5 +1,47 @@
 # AnWind Bionic 修复包 v2（2026-09-19）
 
+> **v3.2.26（2026-11-04，源码包对应 App v2.38.23 / versionCode 86）**：数据丢失事故根治 + /opt 生态路径修正轮（用户 v3.2.25 实测反馈）。
+>
+> ## ① 【严重】删除容器把 Download / exagear 整目录内容删光 —— 根因与根治
+>
+> **用户实测**：删除容器"直接把内存删了，download 和 exagear 全都被删"。
+>
+> **根因**（本机 kotlin-stdlib 1.9.25 实证复现）：Kotlin 的 `File.deleteRecursively()` / `copyRecursively()`（FileTreeWalk）会**穿透符号链接递归操作目标目录内容**。v3.2.24 起容器前缀的 `dosdevices/` 里有三个指向 rootfs 之外的符号链接：`d:→/storage/emulated/0/Download`、`e:→/storage/emulated/0/exagear`、`z:→/` —— 删容器时 walk 穿过 d:/e: 把用户存储里的文件全部删除（z:→/ 因系统目录只读/权限未造成更大扩散，但同等危险）。
+>
+> **修复**（新增 `com/anwind/util/SafeFileOps.kt`）：
+> - `deleteTree()`：NIO `Files.walkFileTree` **不带 FOLLOW_LINKS** —— 符号链接按"文件"处理、只删链接本身绝不删目标，目录后序删除；
+> - `copyTree()`：同语义复制 —— 遇符号链接在目标位置**重建同指向链接**（dosdevices 盘符链接原样保留），普通文件正常复制；
+> - 替换工程内**全部**危险调用点：`ContainerManager.remove`（删容器）/ `clone`（克隆容器，旧版会把 Download 深拷进新容器）、`GuanliSupport.WineOps`（wine 槽位安装回滚 ×4 + 删除槽位）、`WineServerUtils`（wineserver 运行区）、`RootfsLauncher`（noexec 游戏导入暂存区）、`AnWindTzstAssets`（DXVK 解压暂存 ×2）、`TermuxBootstrapInstaller`（debfix 缓存）、`WineLocaleSupport`（fontconfig 缓存 ×2）、`WineRegistry`（/opt/prefix 开始菜单复制）。
+>
+> ## ② /opt 生态路径修正 + 全程大声日志（用户："会不会路径搞错了，包括 opt/locale.conf 都没有执行，应该是 /data/data/com.anwind/files/rootfs/opt"）
+>
+> **修复**（`WineEnvironment` + `WineRegistry` + `anwind-wine` v2.14 三端同源）：
+> - **探测候选**：`rootfs/opt`（用户指定主路径）→ **wine 槽位目录**（WinFusion 风格包把 conf/prefix 与 bin/ 平级打进 wine 目录树、经 App「wine 版本管理」`--strip-components=1` 解包后落在槽位内的布局）→ `rootfs/usr/opt`（旧布局兜底）；判定条件放宽到 conf/、locale.conf、prefix/、dxvk1/ 任一存在；
+> - **wine_path.conf 按用户要求剔除**：wine 目录一律由 AnWind 槽位体系管理（容器 wine= / default_wine / 槽位扫描），conf 解析跳过该文件（双端）；
+> - **全程大声日志**：`opt 生态: 未检测到（探测: rootfs/opt ✗；wine槽位 wine-proton10-x86 ✗；rootfs/usr/opt ✗）` 这样的逐候选明细直接进会话日志/前缀构建窗口 —— 路径对不对、读了哪里、应用了哪些键（`opt locale.conf → LC_ALL=…`、`opt 生态: 已应用 N 项（BOX64_…=…）`）一目了然，不再黑盒。
+>
+> ## ③ 前缀构建"wineboot -i 结束后什么都不显示"修复
+>
+> **用户诉求**：构建前缀时 wineboot -i 结束后，后续的解压以及注册表全部没有显示（参考 sh 不是这样的）。
+>
+> **修复**：
+> - `bootstrapOptPrefix` 全部早退分支从**静默 return** 改为大声日志：前缀未就绪（system.reg 缺失 → wineboot 未成功 + 附存储空间提示）/ 未检测到 /opt 生态（附逐候选探测明细 + 期望位置）/ 有生态但无 prefix/ 目录；
+> - 构建前新增**存储空间预警**（RootfsLauncher）：可用空间 < 512MB 时提前大声警告 —— 用户实测"可用 0MB"仍继续构建，wineboot 需写入上千文件，磁盘满是"wineboot 静默失败 → 后续步骤全部无声跳过"的设备侧根因；
+> - bash 侧 `bootstrap_opt_prefix` 同款大声化。
+>
+> ## ④ DllOverrides 注册表修正（用户："apk 的 DllOverrides 注册表注册就是错误的，乱七八糟的"）
+>
+> **根因**：v3.2.14 的 147 项"native 优先"组合拳是无条件写入 —— 前缀里**实际不存在**对应 native DLL 时（directx 运行时未解压、DXVK 未注入），wine 按 native 优先找不到就回落 builtin，而 d3dx9_*/d3dcompiler_* 等组件回落路径不可靠 → D3DX 加载失败 → DX9 示例"Could not load required media"。且安装包自带的 user.reg（随包调好的 DllOverrides）会被内置表**覆盖**。
+>
+> **修复**（`WineRegistry.ensureDllOverrides`）：
+> - **安装包优先**：`/opt/prefix` 的 user.reg 已导入（`.anwind-opt-prefix` 标记存在）→ 内置表整体跳过，以安装包配置为准；
+> - **按需过滤**：无安装包时，"native,builtin" 键仅在前缀 system32/syswow64 **确实存在**该 DLL 时写入（builtin,native 恒安全保留），其余跳过 —— 杜绝"强制 native 但 DLL 不存在"；
+> - **顺序修正**：APK 内置 DXVK 注入移到 DllOverrides 之前（过滤依赖 DLL 已落盘，顺序颠倒会把 DXVK 键全部过滤掉）。
+>
+> ## ⑤ 顺带
+>
+> - anwind-wine v2.14：`load_opt_confs` 支持传入 wine 槽位候选、探测结果 `info()` 可见（终端 stdout + 会话日志双通道）；`apply_opt_locale` 同步 info 化。
+
 > **v3.2.25（2026-11-04，源码包对应 App v2.38.22 / versionCode 85）**：arm64ec 构建根治 + /opt 生态接入轮。
 >
 > ## ① bionic wine 9.7 arm64ec 构建失败（rpcrt4 EC 符号链接阵亡）根治

@@ -520,7 +520,7 @@ object AnWindTzstAssets {
         val prefix = windows.parentFile?.parentFile ?: return false
         val stage = File(prefix, "anwindmeta/.dxvk-stage")
         try {
-            stage.deleteRecursively()
+            com.anwind.util.SafeFileOps.deleteTree(stage)
             stage.mkdirs()
             val extracted = TarCompressorUtils.extract(
                 asset.type, context, asset.path, stage
@@ -535,7 +535,7 @@ object AnWindTzstAssets {
             android.util.Log.e(TAG, "DXVK 解压异常: ${asset.name}: ${t.message}")
             return false
         } finally {
-            stage.deleteRecursively()
+            com.anwind.util.SafeFileOps.deleteTree(stage)
         }
     }
 

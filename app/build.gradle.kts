@@ -231,8 +231,35 @@ android {
         // 必 ENOSYS —— 冒烟树补打补丁（与 aarch64 交付构建同源；沙箱实跑
         // 动态/静态双冒烟 ANWIND_SMOKE_OK 验证），glibc 形态 build-box64.yml
         // 同步应用（静态程序 shm 转发同样受益）。
-        versionCode = 85
-        versionName = "2.38.22"
+        versionCode = 86
+        versionName = "2.38.23"
+        // v2.38.23（源码包 v3.2.26）：数据丢失事故根治 + /opt 生态修正 ——
+        // ①【严重】删除容器误删用户数据修复：Kotlin 1.9.25 的
+        //   deleteRecursively 会穿透符号链接删目标内容（本机实证），
+        //   v3.2.24 起前缀 dosdevices 的 d:→Download、e:→exagear、
+        //   z:→/ 链接使删容器=删用户存储。新增 SafeFileOps（NIO 不带
+        //   FOLLOW_LINKS 的删除/复制），替换工程内全部 deleteRecursively/
+        //   copyRecursively 调用点（容器删除/克隆、wine 槽位安装回滚/
+        //   删除、wineserver 运行区、noexec 导入暂存、DXVK 暂存、
+        //   fontconfig 缓存、rootfs 迁移）。
+        // ②/opt 生态路径修正（用户："应该是 /data/data/com.anwind/
+        //   files/rootfs/opt"）：探测候选 rootfs/opt → wine 槽位目录
+        //   （WinFusion 包 conf/prefix 与 bin/ 平级落槽位的布局）→
+        //   rootfs/usr/opt；探测/应用结果全程大声日志（会话日志可见
+        //   "读了哪里、用了哪些"）。
+        // ③wine_path.conf 按用户要求剔除：wine 目录一律由 AnWind 槽位
+        //   体系管理（容器 wine= / default_wine / 槽位扫描），其余
+        //   conf（env/cores/path/dynarec_*）+ locale.conf 照读。
+        // ④前缀构建"wineboot 后无声"修复：bootstrapOptPrefix 全部
+        //   早退分支（前缀未就绪 / 未检测到 /opt / 无 prefix/）改为
+        //   大声日志；构建前增加存储空间预警（用户实测 0MB 仍构建，
+        //   wineboot 失败后全部后续步骤静默跳过）。
+        // ⑤DllOverrides 修正（用户："注册表注册就是错误的，乱七八
+        //   八糟的"）：安装包 user.reg 已导入时内置表跳过（包配置优先）；
+        //   否则按前缀内实际存在的 native DLL 过滤（DXVK/directx 落盘
+        //   后才保留 native 优先键），杜绝"强制 native 但 DLL 不存在
+        //   → d3dx9 加载失败 → Could not load required media"。
+        // ⑥DXVK 注入移到 DllOverrides 之前（过滤依赖 DLL 已落盘）。
         // v2.38.21（源码包 v3.2.24）：五诉求修复轮 ——
         // ①APK 打包 tar.gz 强制解压防御：*.tar.gz→*.tgz / *.tar.xz→
         //   *.txz 打包期改名（单后缀不在强制解压逻辑匹配名单）；运行时

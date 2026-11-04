@@ -371,7 +371,7 @@ object RootfsLauncher {
             }
             log("检测到 exe 位于 noexec 存储（$srcDir）—— wine 无法映射可执行段（PROT_EXEC），正在导入内部执行区：")
             log("→ $stageDir（约 ${needBytes / 1024 / 1024}MB；首次导入需要一些时间，此后指纹命中即秒启）")
-            if (stageDir.exists()) stageDir.deleteRecursively()
+            if (stageDir.exists()) com.anwind.util.SafeFileOps.deleteTree(stageDir)
             stageDir.mkdirs()
             var copied = 0
             var copiedBytes = 0L
@@ -566,7 +566,7 @@ object RootfsLauncher {
             //     （LC_ALL/LANG，wine 按 LC_ALL 决定 ANSI 代码页）+
             //     cores.conf（PRIMARY_CORES，容器 cores 未配置时生效）。
             //     容器 env=（applyExtraEnv，链路最后）仍可覆盖一切。
-            WineEnvironment.applyOptConfEnv(env, container)
+            WineEnvironment.applyOptConfEnv(env, container, resolved.wineDir) { sink.stamp(it) }
 
             // v3.2.10（用户问题：syswow64 无法生成）：恢复 wineboot 会话的
             // HODLL64/HODLL 注入，撤销 v3.1.6 的移除。
@@ -647,6 +647,18 @@ object RootfsLauncher {
             if (isPrefixSession) _prefixBuildFlow.value = key
             if (!isHostToolCommand) {
                 try {
+                    // v3.2.26（用户实测“可用 0MB”仍继续构建）：前缀构建前
+                    // 存储空间预警 —— wineboot 要写入上千个文件，/opt/prefix
+                    // 资产解压还要更多；空间不足时 wineboot 静默失败，后续
+                    // 解压/注册表步骤全部无声跳过（正是“wineboot 结束后
+                    // 什么都不显示”的设备侧根因之一）。提前大声警告。
+                    runCatching {
+                        val freeMb = File(container.prefixPath).usableSpace / 1024 / 1024
+                        if (freeMb < 512) {
+                            sink.stamp("警告: 内部存储空间仅剩 ${freeMb}MB —— 前缀构建（wineboot 写入上千文件）与 /opt/prefix 资产解压很可能因磁盘满而失败")
+                            sink.stamp("→ 建议：先清理内部存储（如旧容器/游戏暂存区 rootfs/home/.anwind/games），空间充足后重建容器")
+                        }
+                    }
                     // v3.2.1：把配置分辨率传给前缀构建 —— wineboot 的 explorer
                     // 虚拟桌面与握手分辨率一致（无分辨率时维持旧“当前屏幕”语义）
                     WineRegistry.initializePrefixIfNeeded(
@@ -681,16 +693,12 @@ object RootfsLauncher {
                     // 强调色配色 / 程序化渐变壁纸。单次 regedit 导入 + 前缀内幂等
                     // 标记；游戏自绘皮肤不受影响，失败不阻断启动（下次自动重试）。
                     WineRegistry.ensureModernLook(resolved, container, env) { sink.stamp(it) }
-                    // v3.2.14（用户问题 3）：构建前缀时注入 DllOverrides 注册表
-                    // （DXVK/DirectX 组件组合拳，147 项；幂等，失败不阻断）。
-                    runCatching {
-                        WineRegistry.ensureDllOverrides(resolved, container, env) { sink.stamp(it) }
-                    }.onFailure {
-                        sink.stamp("警告: DllOverrides 注入异常: ${it.message}（下次启动自动重试）")
-                    }
                     // v3.2.14（用户问题 3）：构建前缀时自动打入 APK 内置 DXVK
                     // （assets/dxvk/dxvk-<ver>.tar.gz → C:\windows 的 system32/
                     // syswow64，容器 dxvk=off 时跳过；幂等指纹，失败不阻断）。
+                    // v3.2.26：移到 DllOverrides **之前** —— DllOverrides 现在
+                    // 按前缀内实际存在的 native DLL 过滤，DXVK 落盘后 d3d9/
+                    // dxgi 等键才会被保留（顺序颠倒会把 DXVK 键全部过滤掉）。
                     runCatching {
                         com.anwind.apps.terminal.termux.AnWindTzstAssets.applyDxvkToContainer(
                             context,
@@ -699,6 +707,15 @@ object RootfsLauncher {
                         ) { sink.stamp(it) }
                     }.onFailure {
                         sink.stamp("警告: DXVK 注入异常: ${it.message}（下次启动自动重试）")
+                    }
+                    // v3.2.14（用户问题 3）：构建前缀时注入 DllOverrides 注册表
+                    // （DXVK/DirectX 组件；v3.2.26 修正：安装包 user.reg 已
+                    // 导入时跳过内置表，否则按前缀内实际存在的 native DLL
+                    // 过滤后写入；幂等，失败不阻断）。
+                    runCatching {
+                        WineRegistry.ensureDllOverrides(resolved, container, env) { sink.stamp(it) }
+                    }.onFailure {
+                        sink.stamp("警告: DllOverrides 注入异常: ${it.message}（下次启动自动重试）")
                     }
                     // v3.2.15（wineguanli.py 重制）：函数库设置注册表落地
                     // （dsound/quartz DLL 加载序 + LogPixels DPI + Windows 版本

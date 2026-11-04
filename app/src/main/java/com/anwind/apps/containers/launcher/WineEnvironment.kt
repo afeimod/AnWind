@@ -452,44 +452,85 @@ object WineEnvironment {
     }
 
     // ------------------------------------------------------------------
-    // 5) /opt 生态配置（v3.2.25，对齐 startwine.sh / startfex.sh 参考链路）
+    // 5) /opt 生态配置（v3.2.25 引入，v3.2.26 修正路径探测 + 去掉 wine_path.conf）
     // ------------------------------------------------------------------
 
     /**
-     * /opt 生态根目录：用户安装的 WinFusion 风格 wine 发行包把配置与
-     * 预置资产放在 rootfs/opt/（opt/conf 下的 .conf、opt/locale.conf、
-     * opt/prefix/、opt/dxvk1/）；AnWind 自有槽位的等价物在 usr/opt/。
-     * 两处按序探测，取第一个有实质内容（conf 目录 / locale.conf /
-     * prefix 目录任一存在）者；无则 null（全部 /opt 功能自动旁路）。
+     * /opt 生态根目录探测（v3.2.26 修正：wine 槽位目录也纳入候选）。
+     *
+     * 候选顺序（用户指定主路径优先）：
+     *  1. rootfs/opt —— 用户明确的路径（/data/data/com.anwind/files/rootfs/opt）
+     *  2. wine 槽位目录（resolved.wineDir，如 rootfs/usr/opt/wine-proton10-x86）
+     *     —— WinFusion 风格包安装时把 conf/prefix/locale.conf 一并打进
+     *     wine 目录树的场景（App 的 wine 版本管理以 --strip-components=1
+     *     解包，包内与 bin/ 平级的 conf/、prefix/ 就落在这里）
+     *  3. rootfs/usr/opt —— 旧版布局兑底
+     *
+     * 判定条件：conf 目录 / locale.conf / prefix 目录 / dxvk1 目录任一
+     * 存在。无则 null（全部 /opt 功能自动旁路）。
+     *
+     * @param wineDir 当前 wine 槽位目录（无解析结果时可传 null）
      */
-    fun optRoot(): File? = listOf(File("$RFS_ROOT/opt"), File("$RFS_USR/opt"))
-        .firstOrNull { root ->
-            File(root, "conf").isDirectory ||
+    fun optRoot(wineDir: File? = null): File? =
+        listOfNotNull(File("$RFS_ROOT/opt"), wineDir, File("$RFS_USR/opt"))
+            .firstOrNull { root ->
+                File(root, "conf").isDirectory ||
+                    File(root, "locale.conf").isFile ||
+                    File(root, "prefix").isDirectory ||
+                    File(root, "dxvk1").isDirectory
+            }
+
+    /**
+     * /opt 生态探测结果描述（会话日志可见，回答“路径对不对”一目了然）。
+     * 返回形如 "rootfs/opt ✓（conf 5 项, prefix ✓, locale.conf ✓）" 的
+     * 逐候选明细，供启动链写进会话日志。
+     */
+    fun optProbeReport(wineDir: File? = null): String {
+        val candidates = listOfNotNull(
+            "rootfs/opt" to File("$RFS_ROOT/opt"),
+            wineDir?.let { "wine槽位 ${it.name}" to it },
+            "rootfs/usr/opt" to File("$RFS_USR/opt")
+        )
+        return candidates.joinToString("；") { (label, root) ->
+            val has = File(root, "conf").isDirectory ||
                 File(root, "locale.conf").isFile ||
-                File(root, "prefix").isDirectory
+                File(root, "prefix").isDirectory ||
+                File(root, "dxvk1").isDirectory
+            if (has) {
+                val bits = mutableListOf<String>()
+                File(root, "conf").takeIf { it.isDirectory }?.let {
+                    bits.add("conf ${it.listFiles { f -> f.name.endsWith(".conf") }?.size ?: 0} 项")
+                }
+                File(root, "prefix").takeIf { it.isDirectory }?.let { bits.add("prefix ✓") }
+                File(root, "locale.conf").takeIf { it.isFile }?.let { bits.add("locale.conf ✓") }
+                File(root, "dxvk1").takeIf { it.isDirectory }?.let { bits.add("dxvk1 ✓") }
+                "$label ✓（${bits.joinToString(", ")}）"
+            } else "$label ✗"
         }
+    }
 
     /**
      * 解析 opt/conf 内全部 .conf 的 KEY=VALUE（与 anwind-wine 脚本
      * load_opt_confs 同源语义）：
-     *  - 固定顺序（startfex.sh 同款）：wine_path / env / cores / path /
-     *    dynarec_fixmpeg / dynarec_active；
-     *  - 其余 *.conf（dynarec_* 等）按名兜底；
+     *  - 固定顺序（startfex.sh 同款，v3.2.26 按用户要求**剔除 wine_path.conf**
+     *    —— wine 目录由 AnWind 槽位体系管理，不读包内声明）：env / cores /
+     *    path / dynarec_fixmpeg / dynarec_active；
+     *  - 其余 *.conf（dynarec_* 等）按名兜底（wine_path.conf 同样跳过）；
      *  - 仅提取 `KEY=VALUE` / `export KEY=VALUE` 行（去注释/引号），
      *    不执行 —— 配置文件无法注入任意代码，也碰不到容器隔离变量。
      *
      * @return 键值映射；无 /opt/conf 时为空 map。
      */
-    fun readOptConfs(): Map<String, String> {
-        val confDir = optRoot()?.let { File(it, "conf") } ?: return emptyMap()
+    fun readOptConfs(wineDir: File? = null): Map<String, String> {
+        val confDir = optRoot(wineDir)?.let { File(it, "conf") } ?: return emptyMap()
         if (!confDir.isDirectory) return emptyMap()
         val fixed = listOf(
-            "wine_path.conf", "env.conf", "cores.conf", "path.conf",
+            "env.conf", "cores.conf", "path.conf",
             "dynarec_fixmpeg.conf", "dynarec_active.conf"
         )
         val files = LinkedHashMap<String, File>()
         fixed.forEach { name -> File(confDir, name).takeIf { it.isFile }?.let { files[name] = it } }
-        confDir.listFiles { f -> f.isFile && f.name.endsWith(".conf") }
+        confDir.listFiles { f -> f.isFile && f.name.endsWith(".conf") && f.name != "wine_path.conf" }
             ?.sortedBy { it.name }
             ?.forEach { files.putIfAbsent(it.name, it) }
         val out = LinkedHashMap<String, String>()
@@ -519,8 +560,8 @@ object WineEnvironment {
      *
      * @return 合法 locale 字符串；无文件/内容非法为 null。
      */
-    fun readOptLocale(): String? {
-        val f = optRoot()?.let { File(it, "locale.conf") } ?: return null
+    fun readOptLocale(wineDir: File? = null): String? {
+        val f = optRoot(wineDir)?.let { File(it, "locale.conf") } ?: return null
         if (!f.isFile) return null
         val raw = runCatching { f.readLines().firstOrNull() }.getOrNull() ?: return null
         val value = raw.trim().trim('"', '\'')
@@ -534,6 +575,11 @@ object WineEnvironment {
     /**
      * 应用 /opt 生态环境（conf 白名单 + locale.conf）。
      *
+     * v3.2.26：新增 wineDir/log 参数 —— 探测候选加入 wine 槽位目录
+     * （WinFusion 风格包把 conf/prefix 打进 wine 目录树的场景），
+     * 每一步决策写进会话日志（探测结果、locale 生效/跳过原因、
+     * 逐项 conf 应用），用户在日志里直接看到"读了哪里、用了哪些"。
+     *
      * 调用位置：applyWineCompatEnv 之后、applyExtraEnv 之前 ——
      *  * conf 的 WINEESYNC/WINEFSYNC/BOX64_* 覆盖 AnWind 安全默认/预设
      *    （用户安装的调优包优先于内置默认）；
@@ -544,48 +590,67 @@ object WineEnvironment {
      *  * cores.conf 的 PRIMARY_CORES 仅在容器 cores 未配置时生效
      *    （applyTuningEnv 在其后，容器配置始终优先）。
      */
-    fun applyOptConfEnv(env: MutableMap<String, String>, container: ContainerData) {
-        val conf = readOptConfs()
+    fun applyOptConfEnv(
+        env: MutableMap<String, String>,
+        container: ContainerData,
+        wineDir: File? = null,
+        log: (String) -> Unit = {}
+    ) {
+        val root = optRoot(wineDir)
+        if (root == null) {
+            log("opt 生态: 未检测到（探测: ${optProbeReport(wineDir)}）—— conf/locale.conf 全部旁路")
+            return
+        }
+        val conf = readOptConfs(wineDir)
         // locale.conf（优先于基础 LANG；容器 env= 仍可在链路最后覆盖）
-        readOptLocale()?.let { lc ->
-            if (!container.env.contains("LC_ALL=") && !container.env.contains("LANG=")) {
+        val lc = readOptLocale(wineDir)
+        when {
+            lc == null ->
+                log("opt 生态: $root（无 locale.conf 或内容非法，语言维持容器配置）")
+            container.env.contains("LC_ALL=") || container.env.contains("LANG=") ->
+                log("opt locale.conf=$lc 被容器 env= 显式配置覆盖，不生效")
+            else -> {
                 env["LC_ALL"] = lc
                 env["LANG"] = lc
+                log("opt locale.conf → LC_ALL=$lc（wine 按 LC_ALL 决定 ANSI 代码页）")
             }
         }
-        if (conf.isEmpty()) return
+        if (conf.isEmpty()) {
+            if (File(root, "conf").isDirectory)
+                log("opt 生态: $root/conf 内无可解析的 KEY=VALUE 配置")
+            return
+        }
         val userEnv = container.env
+        val applied = mutableListOf<String>()
         conf.forEach { (k, v) ->
             when {
                 k.startsWith("BOX64_") ||
                     k == "WINEESYNC" || k == "WINEFSYNC" || k == "WINEDEBUG" ||
                     k == "WINEDLLOVERRIDES" || k.startsWith("WINEHIDE") -> {
                     // 容器 env= 已显式设置的键跳过（最高优先）
-                    if (!userEnv.contains("$k=")) env[k] = v
+                    if (userEnv.contains("$k=")) {
+                        log("opt conf: $k 被容器 env= 显式配置覆盖，保留容器值")
+                    } else {
+                        env[k] = v
+                        applied.add("$k=$v")
+                    }
                 }
                 k == "PRIMARY_CORES" && !env.containsKey("PRIMARY_CORES") -> {
                     env["PRIMARY_CORES"] = v
-                    conf["SECONDARY_CORES"]?.let { env.putIfAbsent("SECONDARY_CORES", it) }
+                    applied.add("PRIMARY_CORES=$v")
+                    conf["SECONDARY_CORES"]?.let {
+                        env.putIfAbsent("SECONDARY_CORES", it)
+                        applied.add("SECONDARY_CORES=$it")
+                    }
                 }
             }
         }
-    }
-
-    /**
-     * v3.2.25：opt/conf/wine_path.conf 的 WINE_PATH（chroot 视角路径）
-     * → 设备路径 wine 目录候选。无声明 / 路径无 bin/wine 时 null。
-     */
-    fun optConfWineDir(): File? {
-        val conf = readOptConfs()
-        val declared = conf["WINE_PATH"] ?: conf["WINEPATH"] ?: return null
-        val dir = when {
-            declared.startsWith("/data/data/com.anwind/") -> File(declared)
-            declared.startsWith("/opt/") -> File("$RFS_ROOT$declared")
-            declared.startsWith("/usr/opt/") -> File("$RFS_USR${declared.removePrefix("/usr")}")
-            declared.startsWith("/") -> File(declared)
-            else -> return null
+        // wine_path.conf 已按用户要求剔除：wine 目录由 AnWind 槽位体系管理
+        if (applied.isEmpty()) {
+            log("opt 生态: conf ${conf.size} 项均不在应用白名单（BOX64_*/WINEESYNC/WINEFSYNC/WINEDEBUG/WINEDLLOVERRIDES/cores 之外不透传）")
+        } else {
+            log("opt 生态: 已应用 ${applied.size} 项（${applied.joinToString(", ").take(300)}）")
         }
-        return dir.takeIf { File(it, "bin/wine").isFile }
     }
 
     /**

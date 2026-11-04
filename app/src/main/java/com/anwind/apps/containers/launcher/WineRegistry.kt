@@ -311,9 +311,46 @@ object WineRegistry {
         log: (String) -> Unit = {}
     ): Boolean {
         val prefix = File(container.prefixPath)
-        if (!File(prefix, "system.reg").isFile) return true   // 前缀未建：留给 wineboot 后的下次启动
+        if (!File(prefix, "system.reg").isFile) {
+            log("跳过 DllOverrides 注入：前缀未就绪（system.reg 缺失 —— wineboot 未成功）")
+            return true   // 前缀未建：留给 wineboot 后的下次启动
+        }
         if (dllOverridesMarker(prefix).isFile) return true
-        log("注入 Direct3D/DXVK DLL 覆盖注册表（HKCU\\Software\\Wine\\DllOverrides，147 项）……")
+        // v3.2.26（用户问题："apk 的 DllOverrides 注册表注册就是错误的，
+        // 乱七八糟的"）：安装包自带 user.reg 已导入时，DllOverrides 以
+        // **安装包配置为准**，内置表不再覆盖（参考链路语义：WinFusion
+        // 的 user.reg 是随包调好的，App 的 147 项组合拳只在无 /opt 生态
+        // 时兜底）。
+        if (optPrefixMarker(prefix).isFile) {
+            log("DllOverrides: 检测到 /opt/prefix 安装包 user.reg 已导入，内置覆盖表跳过（以安装包配置为准）")
+            return true
+        }
+        // v3.2.26：内置表按前缀内**实际存在**的 native DLL 过滤 ——
+        // "native,builtin" 仅在该 DLL 确实已落进 system32/syswow64 时
+        // 写入（DXVK 注入 / directx 运行时解压之后才轮到本函数），
+        // 否则该键跳过、让 wine 按默认序加载。修复旧版"强制 native
+        // 优先但前缀里根本没有该 DLL"导致的 D3DX/媒体加载失败
+        // （native 缺失时 wine 回落 builtin，而 d3dx9_* 等组件无
+        // builtin 实现 → 加载直接失败 → "Could not load required media"）。
+        val system32 = File(prefix, "drive_c/windows/system32")
+        val syswow64 = File(prefix, "drive_c/windows/syswow64")
+        fun nativeExists(name: String): Boolean =
+            File(system32, "$name.dll").isFile || File(syswow64, "$name.dll").isFile
+        val entries = DLL_OVERRIDE_ENTRIES.mapNotNull { (name, value) ->
+            when {
+                value == "builtin,native" -> name to value              // builtin 优先恒安全
+                nativeExists(name) -> name to value                     // native 存在才强制 native 优先
+                else -> null                                             // native 缺失：跳过
+            }
+        }
+        val dropped = DLL_OVERRIDE_ENTRIES.size - entries.size
+        if (entries.isEmpty()) {
+            log("DllOverrides: 前缀内无任何 native DirectX/DXVK DLL（既无 DXVK 注入也无 directx 运行时），内置覆盖表整体跳过（wine 默认加载序即为最优）")
+            runCatching { dllOverridesMarker(prefix).writeText("applied=1\nentries=0\nreason=no-native-dlls") }
+            return true
+        }
+        log("注入 Direct3D/DXVK DLL 覆盖注册表（HKCU\\Software\\Wine\\DllOverrides，${entries.size} 项" +
+            (if (dropped > 0) "，另 $dropped 项因前缀内无对应 native DLL 跳过" else "") + "）……")
         return try {
             val anwindDir = File(prefix, "drive_c/anwind")
             anwindDir.mkdirs()
@@ -321,7 +358,7 @@ object WineRegistry {
                 appendLine("REGEDIT4")
                 appendLine()
                 appendLine("[HKEY_CURRENT_USER\\Software\\Wine\\DllOverrides]")
-                for ((name, value) in DLL_OVERRIDE_ENTRIES) {
+                for ((name, value) in entries) {
                     appendLine("\"$name\"=\"$value\"")
                 }
             }
@@ -338,8 +375,8 @@ object WineRegistry {
             val finished = runCatching { cmd.waitFor(120, TimeUnit.SECONDS) }.getOrDefault(false)
             val code = if (finished) runCatching { cmd.waitFor() }.getOrDefault(-1) else -1
             if (finished && code == 0) {
-                runCatching { dllOverridesMarker(prefix).writeText("applied=1\nentries=${DLL_OVERRIDE_ENTRIES.size}") }
-                log("DllOverrides 已写入（${DLL_OVERRIDE_ENTRIES.size} 项，DXVK native 优先组合）")
+                runCatching { dllOverridesMarker(prefix).writeText("applied=1\nentries=${entries.size}") }
+                log("DllOverrides 已写入（${entries.size} 项，仅含前缀内实际存在的 native DLL）")
                 true
             } else {
                 log("警告: DllOverrides 导入未确认成功（退出码=$code；下次启动自动重试）")
@@ -931,6 +968,12 @@ object WineRegistry {
      *  - 与终端侧 anwind-wine bootstrap_opt_prefix 同源双保险 —— 两端
      *    各自幂等，先到先应用（标记互认）。
      *
+     * v3.2.26（用户问题："wineboot -i 结束后后续的解压以及注册表全都没
+     * 有显示"）：全部早退分支改为**大声日志** —— 前缀未就绪 / 未检测到
+     * /opt 生态 / 已注入，每一步都在前缀构建窗口可见；探测候选加入 wine
+     * 槽位目录（rootfs/opt → 槽位 → rootfs/usr/opt），包内 conf/prefix
+     * 与 bin/ 平级落进槽位的布局也能命中。
+     *
      * @return true 表示无需注入（无 /opt/prefix / 已注入 / 前缀未就绪）。
      */
     fun bootstrapOptPrefix(
@@ -940,11 +983,29 @@ object WineRegistry {
         log: (String) -> Unit = {}
     ): Boolean {
         val prefix = File(container.prefixPath)
-        if (!File(prefix, "system.reg").isFile) return true   // 前缀未就绪（下次启动重试）
-        if (optPrefixMarker(prefix).isFile) return true
-        val root = WineEnvironment.optRoot() ?: return true
+        if (!File(prefix, "system.reg").isFile) {
+            // 大声：这一步就是"wineboot 之后什么都不显示"的隐形早退之一
+            log("跳过 /opt/prefix 预置资产注入：前缀未就绪（system.reg 缺失 —— wineboot 未成功）")
+            val freeMb = runCatching { prefix.usableSpace / 1024 / 1024 }.getOrDefault(-1L)
+            if (freeMb in 0..64) {
+                log("→ 疑似根因：内部存储空间仅剩 ${freeMb}MB（wineboot 需写入上千个文件），请先清理空间再重建容器")
+            }
+            return true
+        }
+        if (optPrefixMarker(prefix).isFile) return true   // 已注入（幂等静默）
+        val root = WineEnvironment.optRoot(resolved.wineDir)
+        if (root == null) {
+            // 大声：探测了哪些路径、各有没有内容，一目了然（用户核对路径用）
+            log("跳过 /opt/prefix 预置资产注入：未检测到 /opt 生态")
+            log("→ 探测明细: ${WineEnvironment.optProbeReport(resolved.wineDir)}")
+            log("→ 期望位置: /data/data/com.anwind/files/rootfs/opt/{conf,locale.conf,prefix,dxvk1} 或 wine 槽位目录内同名布局")
+            return true
+        }
         val pd = File(root, "prefix")
-        if (!pd.isDirectory) return true
+        if (!pd.isDirectory) {
+            log("跳过 /opt/prefix 预置资产注入：$root 有 /opt 生态但无 prefix/ 目录（仅应用 conf/locale.conf）")
+            return true
+        }
 
         log("检测到 /opt/prefix 预置资产（${pd.absolutePath}），开始注入……")
         val driveC = File(prefix, "drive_c")
@@ -960,7 +1021,11 @@ object WineRegistry {
             val menu = File(driveC, "ProgramData/Microsoft/Windows/Start Menu")
             runCatching {
                 menu.mkdirs()
-                startDir.copyRecursively(menu, overwrite = true)
+                startDir.let { src ->
+                    com.anwind.util.SafeFileOps.copyTree(src, menu).also {
+                        if (!it) log("警告: 开始菜单复制未完成（部分文件失败）")
+                    }
+                }
                 log("开始菜单快捷方式 → ${menu.absolutePath}")
             }.onFailure { log("警告: 开始菜单复制失败: ${it.message}") }
         }

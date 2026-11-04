@@ -280,7 +280,7 @@ object WineServerUtils {
         } else {
             log("检测到陈旧 wineserver socket（无存活进程）—— 清理 ${serverRoot.absolutePath}")
         }
-        runCatching { serverRoot.deleteRecursively() }
+        runCatching { com.anwind.util.SafeFileOps.deleteTree(serverRoot) }
         if (stale.isNotEmpty()) {
             log("已硬清理残留 wineserver ×${stale.size} 并移除 ${serverRoot.absolutePath}（新 server 启动时自行重建）")
         }
