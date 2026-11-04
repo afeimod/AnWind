@@ -50,11 +50,17 @@ object WineEnvironment {
         env["XDG_CACHE_HOME"] = "$RFS_ROOT/home/.cache"
         env["XDG_DATA_HOME"] = "$RFS_ROOT/home/.local/share"
 
-        // --- 语言 → 容器自己的（§3；只设 LANG 不设 LC_ALL：bionic 无
-        //     locale 数据，LC_ALL 会触发 bash setlocale 噪音；wine 按 LANG
-        //     识别界面语言已足够） ---
+        // --- 语言 → 容器自己的（§3）---
+        // v3.2.28（用户问题："wine 语言总是英文"）：LANG 与 LC_ALL 同时
+        // 设置 —— startwine.sh 参考链路 `export LC_ALL="$(cat /opt/locale.conf)"`
+        // 即 LC_ALL 语义（wine 按 LC_ALL 决定界面语言与 ANSI 代码页）。
+        // App 原生启动链直接 exec 宿主二进制、无 bash 参与，bionic 无
+        // locale 数据也不会有 setlocale 噪音；终端会话的 LANG（en_US）
+        // 属 TermuxEnvironment，互不影响。/opt/locale.conf 存在时由
+        // applyOptConfEnv 以安装包声明值覆盖两者。
         val lang = container.lang.trim().ifEmpty { "zh_CN.UTF-8" }
         env["LANG"] = lang
+        env["LC_ALL"] = lang
 
         // --- 动态库搜索路径 → 仅 rootfs（§4；不追加继承值，防外部 lib
         //     污染 Mesa/ARM 驱动符号解析） ---
@@ -464,7 +470,12 @@ object WineEnvironment {
      *     —— WinFusion 风格包安装时把 conf/prefix/locale.conf 一并打进
      *     wine 目录树的场景（App 的 wine 版本管理以 --strip-components=1
      *     解包，包内与 bin/ 平级的 conf/、prefix/ 就落在这里）
-     *  3. rootfs/usr/opt —— 旧版布局兑底
+     *  3. rootfs/opt/opt —— v3.2.28：生态包根是 opt/ 时用户解到了
+     *     rootfs/opt 下，多套一层（原始解包动作不改用户文件，按套层读）
+     *  4. 槽位内 opt/ 子目录 —— v3.2.28：包根是 opt/ 的生态包经
+     *     --strip-components=1 装进槽位后，conf/prefix/locale.conf 落在
+     *     槽位 opt/ 子目录（与 bin/ 平级的是 wine9.2-x64/ 这类 wine 树）
+     *  5. rootfs/usr/opt —— 旧版布局兑底
      *
      * 判定条件：conf 目录 / locale.conf / prefix 目录 / dxvk1 目录任一
      * 存在。无则 null（全部 /opt 功能自动旁路）。
@@ -472,31 +483,40 @@ object WineEnvironment {
      * @param wineDir 当前 wine 槽位目录（无解析结果时可传 null）
      */
     fun optRoot(wineDir: File? = null): File? =
-        listOfNotNull(File("$RFS_ROOT/opt"), wineDir, File("$RFS_USR/opt"))
-            .firstOrNull { root ->
-                File(root, "conf").isDirectory ||
-                    File(root, "locale.conf").isFile ||
-                    File(root, "prefix").isDirectory ||
-                    File(root, "dxvk1").isDirectory
-            }
+        listOfNotNull(
+            File("$RFS_ROOT/opt"),
+            wineDir,
+            wineDir?.let { File(it, "opt") },
+            File("$RFS_ROOT/opt/opt"),
+            File("$RFS_USR/opt")
+        ).firstOrNull { optHasMarkers(it) }
+
+    /** /opt 生态标记物（任一存在即认定该候选是生态根）。 */
+    private fun optHasMarkers(root: File): Boolean =
+        File(root, "conf").isDirectory ||
+            File(root, "locale.conf").isFile ||
+            File(root, "prefix").isDirectory ||
+            File(root, "dxvk1").isDirectory
 
     /**
      * /opt 生态探测结果描述（会话日志可见，回答“路径对不对”一目了然）。
      * 返回形如 "rootfs/opt ✓（conf 5 项, prefix ✓, locale.conf ✓）" 的
      * 逐候选明细，供启动链写进会话日志。
+     *
+     * v3.2.28：候选目录**存在但没有标记物**时，列出目录内实际内容
+     * （≤8 项，目录带 / 后缀）—— 用户把生态包整包/压缩包放错层时，
+     * 日志直接显示“里面到底有什么”，不再只有一个无解释的 ✗。
      */
     fun optProbeReport(wineDir: File? = null): String {
         val candidates = listOfNotNull(
             "rootfs/opt" to File("$RFS_ROOT/opt"),
             wineDir?.let { "wine槽位 ${it.name}" to it },
+            "rootfs/opt/opt" to File("$RFS_ROOT/opt/opt"),
+            wineDir?.let { "wine槽位/${it.name}/opt" to File(it, "opt") },
             "rootfs/usr/opt" to File("$RFS_USR/opt")
         )
         return candidates.joinToString("；") { (label, root) ->
-            val has = File(root, "conf").isDirectory ||
-                File(root, "locale.conf").isFile ||
-                File(root, "prefix").isDirectory ||
-                File(root, "dxvk1").isDirectory
-            if (has) {
+            if (optHasMarkers(root)) {
                 val bits = mutableListOf<String>()
                 File(root, "conf").takeIf { it.isDirectory }?.let {
                     bits.add("conf ${it.listFiles { f -> f.name.endsWith(".conf") }?.size ?: 0} 项")
@@ -505,7 +525,15 @@ object WineEnvironment {
                 File(root, "locale.conf").takeIf { it.isFile }?.let { bits.add("locale.conf ✓") }
                 File(root, "dxvk1").takeIf { it.isDirectory }?.let { bits.add("dxvk1 ✓") }
                 "$label ✓（${bits.joinToString(", ")}）"
-            } else "$label ✗"
+            } else if (root.isDirectory) {
+                val listing = root.listFiles()
+                    ?.sortedBy { it.name }
+                    ?.take(8)
+                    ?.joinToString(" ") { f -> if (f.isDirectory) "${f.name}/" else f.name }
+                    .orEmpty()
+                if (listing.isEmpty()) "$label ✗（目录存在但为空）"
+                else "$label ✗（无 conf/locale.conf/prefix/dxvk1 —— 实际内容: $listing）"
+            } else "$label ✗（目录不存在）"
         }
     }
 

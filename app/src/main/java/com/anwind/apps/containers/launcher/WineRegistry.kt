@@ -163,6 +163,19 @@ object WineRegistry {
                     }
                 }
             }
+
+            // v3.2.28（startwine.sh 同款）：x: 盘 → 前缀内 drive_x
+            // （mkdir -p $WINEPREFIX/drive_x; ln -sf …dosdevices/x: ——
+            // 安装包脚本/快捷方式按 x: 引用前缀内资源时可达）。
+            runCatching {
+                val driveX = File(prefix, "drive_x")
+                if (!driveX.isDirectory) driveX.mkdirs()
+                val link = File(dd, "x:")
+                if (!link.exists()) {
+                    android.system.Os.symlink(driveX.absolutePath, link.absolutePath)
+                    log("已补 dosdevices x: → $driveX（startwine.sh 同款）")
+                }
+            }.onFailure { log("警告: x: 盘补建失败（${it.message}）") }
         }
     }
 
@@ -322,14 +335,30 @@ object WineRegistry {
         val prefix = File(container.prefixPath)
         if (!File(prefix, "system.reg").isFile) return   // 前缀未建：无需清洗
         if (dllOverridesPurgedMarker(prefix).isFile) return
+        // v3.2.28：残留判定升级 —— 旧版只认注入标记/残留 reg 文件，用户
+        // 手动清过标记（或旧版写注册表成功但落标记失败）的前缀会漏网。
+        // 这里补上 user.reg 的 DllOverrides 段内容扫描（UTF-16LE/UTF-8
+        // 双编码），凡命中任一内置键名即视为有残留。注意：/opt/prefix
+        // 安装包注册表本身就可能含这些键（安装包的 DLL 加载序配置）——
+        // 包内已声明时不算 APK 残留（否则误报且白跑一轮删+重导）。
         val legacyReg = File(prefix, "drive_c/anwind/dlloverrides.reg")
-        val wasInjected = dllOverridesMarker(prefix).isFile || legacyReg.isFile
+        val pkgUserReg = WineEnvironment.optRoot(resolved.wineDir)?.let { File(it, "prefix/user.reg") }
+        val pkgDeclaresOverrides = pkgUserReg?.isFile == true &&
+            regFileHasLegacyDllOverrides(pkgUserReg)
+        val wasInjected = dllOverridesMarker(prefix).isFile || legacyReg.isFile ||
+            (!pkgDeclaresOverrides && regFileHasLegacyDllOverrides(File(prefix, "user.reg")))
         if (!wasInjected) {
+            // v3.2.28：注册表无残留也要迁移 container.conf 里 APK 写入的
+            // dxoverrides=（旧版 DXVK 注入回写的，经 WINEDLLOVERRIDES
+            // 环境变量每次启动强制 DLL 加载序 —— 同属"APK 自带的
+            // DllOverrides"，用户要求一并移除）。
+            migrateApkBundledDxOverrides(container, log)
             runCatching { dllOverridesPurgedMarker(prefix).createNewFile() }
             return
         }
         log("检测到旧版（≤v3.2.26）内置 DllOverrides 残留 —— 按用户要求清除，前缀注册表完全以 /opt/prefix 安装包为准")
-        // ① 删除内置表键值（wine regedit 的 "name"=- 值删除语法）
+        // ① 删除内置表键值（wine regedit 的 "name"=- 值删除语法；
+        //    v3.2.28 补 "*name" 通配形态 —— 旧表/安装包可能以通配写入）
         runCatching {
             val anwindDir = File(prefix, "drive_c/anwind")
             anwindDir.mkdirs()
@@ -340,6 +369,7 @@ object WineRegistry {
                 appendLine("[HKEY_CURRENT_USER\\Software\\Wine\\DllOverrides]")
                 for (name in LEGACY_DLL_OVERRIDE_NAMES) {
                     appendLine("\"$name\"=-")
+                    appendLine("\"*$name\"=-")
                 }
             })
             val cmd = NativeShellExecutor.create()
@@ -352,7 +382,7 @@ object WineRegistry {
             val finished = runCatching { cmd.waitFor(120, TimeUnit.SECONDS) }.getOrDefault(false)
             val code = if (finished) runCatching { cmd.waitFor() }.getOrDefault(-1) else -1
             if (finished && code == 0) {
-                log("已删除内置 DllOverrides 的 ${LEGACY_DLL_OVERRIDE_NAMES.size} 个键值（DLL 加载序恢复默认）")
+                log("已删除内置 DllOverrides 的 ${LEGACY_DLL_OVERRIDE_NAMES.size} 组键值（含 * 通配形态，DLL 加载序恢复默认）")
             } else {
                 log("警告: DllOverrides 清洗退出码=$code（继续重导 /opt/prefix 注册表）")
             }
@@ -379,11 +409,61 @@ object WineRegistry {
         } else {
             log("（无 /opt/prefix 安装包 —— 仅删除内置键，不重导注册表）")
         }
-        // ③ 清残留 + 幂等标记
+        // ③ 清残留 + 幂等标记（v3.2.28：清洗产生的 purge.reg 一并删）
         runCatching { legacyReg.delete() }
+        runCatching { File(prefix, "drive_c/anwind/dlloverrides-purge.reg").delete() }
         runCatching { dllOverridesMarker(prefix).delete() }
+        // v3.2.28：container.conf 的 APK 内置 dxoverrides= 一并迁移移除
+        migrateApkBundledDxOverrides(container, log)
         runCatching { dllOverridesPurgedMarker(prefix).createNewFile() }
         log("旧版 DllOverrides 清洗完成 —— 今后前缀注册表完全由 /opt/prefix 安装包决定，App 不再写任何 DllOverrides")
+    }
+
+    /**
+     * v3.2.28：扫描 .reg 文件的 [Software\\Wine\\DllOverrides] 段，判断
+     * 是否含任一内置表键名（wine 原生 .reg 为 UTF-16LE 带 BOM，兼容
+     * UTF-8 纯文本形态）。命中即说明旧版注入残留仍在（或该注册表
+     * 自身就配置了这些键）。
+     */
+    private fun regFileHasLegacyDllOverrides(f: File): Boolean = runCatching {
+        if (!f.isFile) return false
+        val bytes = f.readBytes()
+        val text = if (bytes.size >= 2 && bytes[0] == 0xFF.toByte() && bytes[1] == 0xFE.toByte()) {
+            String(bytes, Charsets.UTF_16LE)
+        } else {
+            String(bytes, Charsets.UTF_8)
+        }
+        val sectionStart = text.indexOf("[Software\\\\Wine\\\\DllOverrides]")
+        if (sectionStart < 0) return@runCatching false
+        val sectionEnd = text.indexOf("[Software", sectionStart + 1).let { if (it < 0) text.length else it }
+        val section = text.substring(sectionStart, sectionEnd)
+        LEGACY_DLL_OVERRIDE_NAMES.any { name ->
+            section.contains("\"$name\"=") || section.contains("\"*$name\"=")
+        }
+    }.getOrDefault(false)
+
+    /**
+     * v3.2.28：container.conf 迁移 —— 删除旧版 DXVK 注入回写的
+     * `dxoverrides=d3d8,d3d9,d3d10core,d3d11,dxgi=native,builtin`
+     * （精确匹配 APK 写入值；用户自定义的 dxoverrides 不动）。
+     * 该值经 applyExtraEnv 变成 WINEDLLOVERRIDES 环境变量，每次启动
+     * 强制 DLL 加载序，优先吃前缀内安装包带来的 native DLL —— 部分
+     * 程序 media 错误的直接诱因之一。
+     */
+    private fun migrateApkBundledDxOverrides(container: ContainerData, log: (String) -> Unit) {
+        runCatching {
+            val contDir = File(container.prefixPath).parentFile ?: return
+            val conf = File(contDir, "container.conf")
+            if (!conf.isFile) return
+            val old = conf.readText()
+            val cleaned = old.replace(
+                Regex("(?m)^dxoverrides=d3d8,d3d9,d3d10core,d3d11,dxgi=native,builtin\\s*$\\n?")
+            ) { match -> if (match.value.endsWith("\n\n")) "\n" else "" }
+            if (cleaned != old) {
+                conf.writeText(cleaned)
+                log("已移除 APK 内置 dxoverrides 注入（WINEDLLOVERRIDES=d3d8,d3d9,…=native,builtin）—— DLL 加载序以 /opt/prefix 注册表为准")
+            }
+        }
     }
 
     /** v3.2.14 ~ v3.2.26 内置表写过的全部键名（仅用于旧前缀清洗，勿再新增）。 */
@@ -881,6 +961,9 @@ object WineRegistry {
             return true
         }
         if (optPrefixMarker(prefix).isFile) return true   // 已注入（幂等静默）
+        // v3.2.28：注入前先跑 /opt 生态自愈（rootfs/opt 顶层生态 tar 包
+        // 自动解包 + 套层/槽位 opt/ 候选）—— 生态包没解开时这里是最后一道补救
+        OptEcosystemSupport.ensure(resolved.wineDir, log)
         val root = WineEnvironment.optRoot(resolved.wineDir)
         if (root == null) {
             // 大声：探测了哪些路径、各有没有内容，一目了然（用户核对路径用）
@@ -946,6 +1029,55 @@ object WineRegistry {
 
         // ⑤ fix-fonts 归档 → windows/
         extractOptArchive(pd, "fix-fonts", windows, log)
+
+        // ⑤b v3.2.28（startwine.sh 同款）：安装包自带运行库批处理
+        //     （Physx 9.10 / 7-zip / VC++ 可再发行包 —— /opt/apps/install.bat，
+        //     640x480 虚拟桌面静默跑，完后 wineserver -k 收尾落盘）。
+        //     安装包不存在该文件时零动作；失败只记日志不阻断（与参考
+        //     脚本容错语义一致）。
+        val installBat = File(root, "apps/install.bat")
+        if (installBat.isFile) {
+            log("安装运行库（install.bat：Physx/7-zip/VC++，640x480 虚拟桌面）……")
+            runCatching {
+                val cmd = NativeShellExecutor.create()
+                    .setCommand(*WineRuntime.wineCommand(resolved).toTypedArray(),
+                                "explorer", "/desktop=shell,640x480",
+                                "start", "/unix", "/opt/apps/install.bat")
+                    .putEnv(env)
+                    .putEnv("WINEPREFIX", container.prefixPath)
+                    .setWorkingDir(WineEnvironment.HOME_DIR)
+                    .exec()
+                val finished = runCatching { cmd.waitFor(600, TimeUnit.SECONDS) }.getOrDefault(false)
+                if (!finished) {
+                    runCatching { cmd.stopAndWait(true, 10, TimeUnit.SECONDS) }
+                    log("警告: install.bat 执行超时（600s），已终止（继续其余步骤）")
+                } else {
+                    log("install.bat 执行结束（退出码 ${runCatching { cmd.waitFor() }.getOrDefault(-1)}）")
+                }
+                // 参考脚本同款：运行库装完立即收尾 wineserver，注册表落盘
+                val serverBin = WineRuntime.hostToolBin(resolved, "wineserver")
+                NativeShellExecutor.create()
+                    .setCommand(serverBin.absolutePath, "-k")
+                    .putEnv(env)
+                    .putEnv("WINEPREFIX", container.prefixPath)
+                    .setWorkingDir(WineEnvironment.HOME_DIR)
+                    .exec()
+                    .waitFor(15, TimeUnit.SECONDS)
+            }.onFailure { log("警告: install.bat 执行异常: ${it.message}（继续）") }
+        }
+
+        // ⑤c v3.2.28（参考脚本 wineserver -k 同款）：注册表/字体写完先收尾
+        //     wineserver 落盘，再进 dxvk 解压 —— 顺序对齐 startwine.sh。
+        runCatching {
+            val serverBin = WineRuntime.hostToolBin(resolved, "wineserver")
+            NativeShellExecutor.create()
+                .setCommand(serverBin.absolutePath, "-k")
+                .putEnv(env)
+                .putEnv("WINEPREFIX", container.prefixPath)
+                .setWorkingDir(WineEnvironment.HOME_DIR)
+                .exec()
+                .waitFor(15, TimeUnit.SECONDS)
+        }
 
         // ⑥ dxvk（virgl 启用时跳过 —— 参考脚本同款条件）
         if (!File(root, "virgl/virgl-enabled").exists()) {

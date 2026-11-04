@@ -568,6 +568,10 @@ object RootfsLauncher {
             //     （LC_ALL/LANG，wine 按 LC_ALL 决定 ANSI 代码页）+
             //     GLIBC_BIN 兜底导出。容器 env=（applyExtraEnv，链路最后）
             //     仍可覆盖一切。
+            //     v3.2.28：探测前先跑 /opt 生态自愈（rootfs/opt 顶层生态
+            //     tar 包自动解包 + 套层/槽位 opt/ 候选）—— 修复"生态包放了
+            //     但 conf/locale.conf/前缀解包注册全旁路"的设备侧根因。
+            OptEcosystemSupport.ensure(resolved.wineDir) { sink.stamp(it) }
             WineEnvironment.applyOptConfEnv(env, container, resolved.wineDir) { sink.stamp(it) }
 
             // v3.2.10（用户问题：syswow64 无法生成）：恢复 wineboot 会话的

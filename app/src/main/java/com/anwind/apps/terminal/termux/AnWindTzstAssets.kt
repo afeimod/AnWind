@@ -622,14 +622,13 @@ object AnWindTzstAssets {
                 old.trimEnd() + "\n" + line + "\n"
             }
             if (new != old) conf.writeText(new)
-            // DLL 覆盖（anwind-wine 启动时导出为 WINEDLLOVERRIDES）
-            val ovr = "dxoverrides=d3d8,d3d9,d3d10core,d3d11,dxgi=native,builtin"
-            val newOvr = if (old.contains(Regex("^dxoverrides=.*$", RegexOption.MULTILINE))) {
-                new.replace(Regex("^dxoverrides=.*$", RegexOption.MULTILINE), ovr)
-            } else {
-                new.trimEnd() + "\n" + ovr + "\n"
-            }
-            if (newOvr != new) conf.writeText(newOvr)
+            // v3.2.28（用户问题："apk 自带的 DllOverrides 注册表还没清理
+            // 干净，导致部分软件还是会报 media 错"）：此处不再回写
+            // dxoverrides= —— 旧版这一行经 WINEDLLOVERRIDES 环境变量每次
+            // 启动强制 d3d8/d3d9/d3d10core/d3d11/dxgi=native,builtin，
+            // 属 APK 自带 DLL 加载序注入；DLL 加载序完全以 /opt/prefix
+            // 安装包注册表为准。存量 container.conf 里 APK 写入的那行由
+            // WineRegistry.migrateApkBundledDxOverrides 启动链迁移移除。
         } catch (_: Exception) {
         }
     }
