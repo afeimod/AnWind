@@ -167,7 +167,13 @@ fun X11Surface(scope: WindowContentScope) {
             touchBridge?.onDetached()
             // 桌面手柄 → X11 转发目标一并注销（内部会对仍按着的键补发 UP）
             X11InputHub.get(context).setActiveLorieView(null)
-            X11WindowController.detachView(userClosed = true)
+            // v3.2.23（用户问题 3）：区分最小化与关闭 —— onDispose 在两者都会
+            // 执行，此前一律 detachView(userClosed = true)，把最小化当成用户
+            // 关闭处理（suppressedBinder 抑制自动重连 + State 撤回 Waiting），
+            // 任务栏点回/桌面图标恢复时只能干等。现在最小化走 userClosed=false：
+            // 仅断渲染连接，会话保持"可自动重连"，还原即恢复画面。
+            val minimizedNow = scope.windowState.isMinimized
+            X11WindowController.detachView(userClosed = !minimizedNow)
         }
     }
 

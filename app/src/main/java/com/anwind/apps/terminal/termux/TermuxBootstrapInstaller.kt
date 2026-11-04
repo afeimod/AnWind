@@ -856,18 +856,23 @@ object TermuxBootstrapInstaller {
             return
         }
         // ② 旧独立资产（兼容旧包/旧管线仍可用的场景）
-        // v3.2.22：资产名改 .tgz —— aapt2 打包会剥掉 ".gz" 结尾资产的
-        // gzip 层并改名（x11-xkb.tar.gz 在正式 APK 里实际叫 x11-xkb.tar
-        // 且内容已解压，本回退此前一直是静默 FileNotFoundException）；
-        // gradle 同步任务已统一把 *.tar.gz 改名 *.tgz 进 APK（原字节），
-        // 这里跟随引用打包后的名字，存量 .tar.gz 名字不再存在。
-        try {
-            copyAssetScript(context, "termux/x11-xkb.tgz", dest, executable = false)
-        } catch (e: Exception) {
+        // v3.2.23：撤销 v3.2.22 的 .tgz 单名引用，改双名候选 —— 打包侧
+        // 已恢复原始 .tar.gz 资产名（同版 aapt2 实测原名原字节保留，
+        // v3.2.22 的“aapt2 剥层”是误诊）；.tgz 作为第二候选兜底（用户
+        // 自行用旧管线/三方工具重打包时可能出现），两级都缺失才走 ③。
+        val copied = listOf("termux/x11-xkb.tar.gz", "termux/x11-xkb.tgz").any { candidate ->
+            try {
+                copyAssetScript(context, candidate, dest, executable = false)
+                true
+            } catch (_: Exception) {
+                false
+            }
+        }
+        if (!copied) {
             // 绝不阻断 bootstrap 安装：终端可用性 > X11 桌面
             android.util.Log.w(
                 TAG, "XKB 数据三级来源均缺失（终端不受影响，X11 会话启动时" +
-                        "将由 anwind-x11 给出 pkg install xkeyboard-config 指引）: ${e.message}"
+                        "将由 anwind-x11 给出 pkg install xkeyboard-config 指引）"
             )
         }
     }

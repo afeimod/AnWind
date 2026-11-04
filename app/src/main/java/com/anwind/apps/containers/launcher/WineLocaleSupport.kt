@@ -41,6 +41,17 @@ import java.util.concurrent.TimeUnit
 object WineLocaleSupport {
     private const val TAG = "WineLocaleSupport"
 
+    /**
+     * v3.2.23（用户问题 7）：用户字体投放目录（设备侧）。
+     *
+     * 把自己的中文字体（.ttf/.otf/.ttc）放到 `内部存储/AnWind/fonts/`
+     * （即 /storage/emulated/0/AnWind/fonts/），每次 wine 启动链自动
+     * 导入：rootfs fontconfig 侧（X11/freetype 渲染）+ 容器前缀
+     * drive_c/windows/Fonts（wine GDI 侧，按注册表枚举）。幂等指纹，
+     * 增删字体后下次启动自动同步。
+     */
+    private const val USER_FONT_DIR = "/storage/emulated/0/AnWind/fonts"
+
     /** assets 内的 wine.mo（语言目录名 → asset 文件名）。 */
     private val WINE_MO_ASSETS = mapOf(
         "zh_CN" to "anwind/locale/zh_CN.mo",
@@ -81,6 +92,10 @@ object WineLocaleSupport {
             .onFailure { log("警告: wine 翻译安装失败（${it.message}）—— wine 界面可能保持英文") }
         runCatching { installCjkFont(resolved, container, env, log) }
             .onFailure { log("警告: CJK 字体安装失败（${it.message}）—— 中文可能显示为方块") }
+        // v3.2.23（用户问题 7）：用户自有字体导入（/storage/emulated/0/
+        // AnWind/fonts/ → rootfs fontconfig + 前缀 Fonts 注册表）
+        runCatching { importUserFonts(resolved, container, env, log) }
+            .onFailure { log("警告: 用户字体导入异常（${it.message}）—— 忽略继续") }
     }
 
     // ------------------------------------------------------------------
@@ -173,63 +188,150 @@ object WineLocaleSupport {
         }
         log("已安装 CJK 字体: $src → drive_c/windows/Fonts/$dstName")
 
-        // ---- 注册表：Fonts（按中/日/韩注册对应的家族名）----
-        val regAdds = ArrayList<Array<String>>()
-        fun font(name: String) = regAdds.add(
-            arrayOf("reg", "add", "HKLM\\Software\\Microsoft\\Windows NT\\CurrentVersion\\Fonts",
-                "/v", "$name (TrueType)", "/t", "REG_SZ", "/d", dstName, "/f")
-        )
-        font("SimSun"); font("NSimSun"); font("SimHei"); font("Microsoft YaHei")
-        font("Microsoft YaHei UI"); font("Microsoft JhengHei")     // 繁中
-        if (needJp) { font("MS Gothic"); font("MS PGothic"); font("MS UI Gothic") }
-        if (needKr) { font("Malgun Gothic"); font("Gulim") }
+        // ---- 注册表：单次 regedit /s 导入（v3.2.23 用户问题 6） ----
+        // 此前逐条 wine reg add —— 中/日/韩合计 9~13 次 wine 进程拉起
+        //（每次都要过 server 握手 + reg 客户端初始化，arm64ec 上首建
+        // 前缀白白多花十几秒）。改为与 WineRegistry.ensureDllOverrides
+        // 同一模式：REGEDIT4 文本写入 C:\anwind\，一个 wine 进程导入
+        // 全部键值。
+        val prefixRegDir = File(prefix, "drive_c/anwind")
+        prefixRegDir.mkdirs()
+        val reg = buildString {
+            appendLine("REGEDIT4")
+            appendLine()
+            appendLine("[HKEY_LOCAL_MACHINE\\Software\\Microsoft\\Windows NT\\CurrentVersion\\Fonts]")
+            fun font(name: String) = appendLine("\"$name (TrueType)\"=\"$dstName\"")
+            font("SimSun"); font("NSimSun"); font("SimHei"); font("Microsoft YaHei")
+            font("Microsoft YaHei UI"); font("Microsoft JhengHei")     // 繁中
+            if (needJp) { font("MS Gothic"); font("MS PGothic"); font("MS UI Gothic") }
+            if (needKr) { font("Malgun Gothic"); font("Gulim") }
+            appendLine()
+            appendLine("[HKEY_LOCAL_MACHINE\\Software\\Microsoft\\Windows NT\\CurrentVersion\\FontSubstitutes]")
+            appendLine("\"MS Shell Dlg\"=\"Microsoft YaHei\"")
+            appendLine("\"MS Shell Dlg 2\"=\"Microsoft YaHei\"")
+            appendLine("\"SimSun-ExtB\"=\"SimSun\"")
+        }
+        val regFile = File(prefixRegDir, "cjk-fonts.reg")
+        regFile.writeText(reg)
 
-        // ---- 注册表：FontSubstitutes（默认界面字体 → 中文字形）----
-        fun subst(from: String, to: String) = regAdds.add(
-            arrayOf("reg", "add", "HKLM\\Software\\Microsoft\\Windows NT\\CurrentVersion\\FontSubstitutes",
-                "/v", from, "/t", "REG_SZ", "/d", to, "/f")
-        )
-        subst("MS Shell Dlg", "Microsoft YaHei")
-        subst("MS Shell Dlg 2", "Microsoft YaHei")
-        subst("SimSun-ExtB", "SimSun")
-
-        val ok = runRegBatch(resolved, container, env, regAdds)
+        val ok = runCatching {
+            val cmd = NativeShellExecutor.create()
+                .setCommand(*WineRuntime.wineCommand(resolved).toTypedArray(),
+                    "regedit", "/s", "C:\\anwind\\cjk-fonts.reg")
+                .putEnv(env)
+                .putEnv("WINEPREFIX", container.prefixPath)
+                .setWorkingDir(WineEnvironment.HOME_DIR)
+                .exec()
+            val finished = cmd.waitFor(60, TimeUnit.SECONDS)
+            if (!finished) {
+                runCatching { cmd.stopAndWait(true, 5, TimeUnit.SECONDS) }
+                false
+            } else cmd.waitFor() == 0
+        }.getOrDefault(false)
         if (ok) {
             runCatching { fontMarker(prefix).createNewFile() }
             log("CJK 字体注册完成（SimSun/微软雅黑 等已指向 $dstName；MS Shell Dlg 默认字体替换为微软雅黑）")
         } else {
-            log("警告: CJK 字体注册表写入未全部成功（下次启动自动重试）")
+            log("警告: CJK 字体注册表导入未确认成功（下次启动自动重试）")
             // 不写标记 → 下次启动重试
         }
     }
 
-    /** 逐条执行 wine reg add（任一失败返回 false；单条限时 20 秒）。 */
-    private fun runRegBatch(
+    // ------------------------------------------------------------------
+    // 3) v3.2.23（用户问题 7）：用户自有字体导入
+    // ------------------------------------------------------------------
+
+    /**
+     * 把 /storage/emulated/0/AnWind/fonts/ 下的用户字体（.ttf/.otf/.ttc）
+     * 自动导入双端：
+     *
+     *  1. **rootfs fontconfig 侧**（X11/freetype 渲染）：复制到
+     *     rootfs/usr/share/fonts/anwind-user/（系统级目录，任何 uid/
+     *     配置都能扫到），指纹变更时同步清 fontconfig 缓存目录；
+     *  2. **wine 前缀侧**（GDI 渲染）：复制进 drive_c/windows/Fonts
+     *     并按文件名写注册表（REGEDIT4 单次导入，缺什么补什么）。
+     *
+     * 幂等：rootfs 侧按“文件名:长度”指纹（marker 比对，命中零拷贝）；
+     * 前缀侧按目标文件存在性 + 单次 regedit 覆盖导入。目录不存在/
+     * 为空静默跳过（无字体时回落内置 CJK 方案）。
+     */
+    private fun importUserFonts(
         resolved: WineRuntime.Resolved,
         container: ContainerData,
         env: Map<String, String>,
-        cmds: List<Array<String>>
-    ): Boolean {
-        var allOk = true
-        for (args in cmds) {
-            try {
-                val executor = NativeShellExecutor.create()
-                    .setCommand(*WineRuntime.wineCommand(resolved).toTypedArray(), *args)
-                    .putEnv(env)
-                    .putEnv("WINEPREFIX", container.prefixPath)
-                    .setWorkingDir(WineEnvironment.HOME_DIR)
-                    .exec()
-                val code = runCatching {
-                    if (!executor.waitFor(20, TimeUnit.SECONDS)) {
-                        runCatching { executor.stopAndWait(true, 5, TimeUnit.SECONDS) }
-                        -1
-                    } else executor.waitFor()
-                }.getOrDefault(-1)
-                if (code != 0) allOk = false
-            } catch (_: Exception) {
-                allOk = false
+        log: (String) -> Unit
+    ) {
+        val srcDir = File(USER_FONT_DIR)
+        if (!srcDir.isDirectory) return
+        val fonts = srcDir.listFiles { f ->
+            f.isFile && f.extension.lowercase() in setOf("ttf", "otf", "ttc")
+        }?.sortedBy { it.name } ?: return
+        if (fonts.isEmpty()) return
+
+        // ---- 1) rootfs fontconfig 侧 ----
+        val rootfsFontsDir = File(ContainerManager.ROOTFS_ROOT, "usr/share/fonts/anwind-user")
+        val marker = File(rootfsFontsDir, ".anwind-user-fp")
+        val fp = fonts.joinToString("|") { "${it.name}:${it.length()}" }
+        if (!(marker.isFile && runCatching { marker.readText() }.getOrNull() == fp)) {
+            runCatching {
+                rootfsFontsDir.mkdirs()
+                fonts.forEach { it.copyTo(File(rootfsFontsDir, it.name), overwrite = true) }
+                // 指纹变更：清掉旧字体与 fontconfig 缓存（下次渲染重建）
+                rootfsFontsDir.listFiles()?.forEach { f ->
+                    if (f.isFile && f.name != ".anwind-user-fp" &&
+                        fonts.none { it.name == f.name }) f.delete()
+                }
+                runCatching {
+                    File(ContainerManager.ROOTFS_ROOT, "var/cache/fontconfig").deleteRecursively()
+                }
+                marker.writeText(fp)
+                log("已导入用户字体 ×${fonts.size} → rootfs fontconfig（$USER_FONT_DIR → ${rootfsFontsDir.absolutePath}）")
+            }.onFailure { log("警告: 用户字体导入 rootfs 失败（${it.message}）—— 忽略继续") }
+        }
+
+        // ---- 2) wine 前缀侧（GDI） ----
+        val prefix = File(container.prefixPath)
+        if (!File(prefix, "system.reg").isFile) return   // 前缀未就绪，下次启动补
+        val fontsDir = File(prefix, "drive_c/windows/Fonts")
+        fontsDir.mkdirs()
+        val missing = fonts.filter { !File(fontsDir, it.name).isFile }
+        runCatching {
+            missing.forEach { it.copyTo(File(fontsDir, it.name)) }
+        }.onFailure {
+            log("警告: 用户字体复制进前缀失败（${it.message}）")
+            return
+        }
+        // 注册表：按文件名（去扩展名）注册 —— wine GDI 按注册表枚举字体
+        val regDir = File(prefix, "drive_c/anwind")
+        regDir.mkdirs()
+        val reg = buildString {
+            appendLine("REGEDIT4")
+            appendLine()
+            appendLine("[HKEY_LOCAL_MACHINE\\Software\\Microsoft\\Windows NT\\CurrentVersion\\Fonts]")
+            fonts.forEach { f ->
+                appendLine("\"${f.nameWithoutExtension} (TrueType)\"=\"${f.name}\"")
             }
         }
-        return allOk
+        val regFile = File(regDir, "user-fonts.reg")
+        regFile.writeText(reg)
+        val ok = runCatching {
+            val cmd = NativeShellExecutor.create()
+                .setCommand(*WineRuntime.wineCommand(resolved).toTypedArray(),
+                    "regedit", "/s", "C:\\anwind\\user-fonts.reg")
+                .putEnv(env)
+                .putEnv("WINEPREFIX", container.prefixPath)
+                .setWorkingDir(WineEnvironment.HOME_DIR)
+                .exec()
+            val finished = cmd.waitFor(60, TimeUnit.SECONDS)
+            if (!finished) {
+                runCatching { cmd.stopAndWait(true, 5, TimeUnit.SECONDS) }
+                false
+            } else cmd.waitFor() == 0
+        }.getOrDefault(false)
+        if (ok) {
+            log("用户字体已注册进 wine（×${fonts.size}：${fonts.joinToString(", ") { it.name }}）")
+        } else {
+            log("警告: 用户字体注册表导入未确认成功（下次启动自动重试）")
+        }
     }
 }

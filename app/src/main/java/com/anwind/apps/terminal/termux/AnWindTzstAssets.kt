@@ -129,10 +129,10 @@ object AnWindTzstAssets {
     }
 
     /** DXVK 资产压缩类型探测（tar.gz 优先支持 —— 用户约定格式）。
-     *  v3.2.15：① 补 .tar.xz/.txz → XZ；② 补纯 .tar → PLAIN —— 用户实测
-     *  部分构建管线会把 assets 内 *.tar.gz / *.tar.xz 剥掉压缩层变成 *.tar
-     *  （aapt2 实验证明其本身不改名，但下游处理链可能 gunzip）；纯 .tar
-     *  内容仍是完整 tar 流，照常解压，不再因后缀不识别而跳过注入。 */
+     *  v3.2.15：① 补 .tar.xz/.txz → XZ；② 补纯 .tar → PLAIN。
+     *  v3.2.23：本函数只作“后缀启发”；真实类型在 scanDxvkAssets 里
+     *  由魔数校验（[sniffType]）最终裁定 —— 三方重打包/本地工具链
+     *  可能把 .tar.gz 剥成 .tar 或反向，内容才是唯一可信依据。 */
     private fun dxvkAssetType(name: String): TarCompressorUtils.Type? {
         val lower = name.lowercase()
         return when {
@@ -145,6 +145,55 @@ object AnWindTzstAssets {
     }
 
     /**
+     * v3.2.23：魔数直判资产真实压缩类型（后缀不可信时的最终裁定）。
+     *
+     * 实证背景：与项目同版 aapt2（8.5.2-11315950）link -A / optimize
+     * 全链实测原名原字节保留，但用户本地工具链或云端重打包仍可能把
+     * gzip 层剥掉（名字同步去掉 .gz）——此时按后缀选 GZIP 解压必炸。
+     * 这里只读前 263 字节：
+     *   - gzip: 1F 8B
+     *   - xz:   FD 37 7A 58 5A 00
+     *   - zstd: 28 B5 2F FD
+     *   - 纯 tar: 偏移 257 起 "ustar"（POSIX/GNU tar 均满足）
+     * 读不出来/都不匹配 → null（调用方回退后缀推断）。
+     */
+    private fun sniffType(context: Context, path: String): TarCompressorUtils.Type? {
+        return try {
+            context.assets.open(path).use { ins ->
+                val head = ByteArray(263)
+                var n = 0
+                while (n < head.size) {
+                    val r = ins.read(head, n, head.size - n)
+                    if (r < 0) break
+                    n += r
+                }
+                when {
+                    n >= 2 && head[0] == 0x1f.toByte() && head[1] == 0x8b.toByte() ->
+                        TarCompressorUtils.Type.GZIP
+                    n >= 6 && head[0] == 0xfd.toByte() && head[1] == 0x37.toByte() &&
+                        head[2] == 0x7a.toByte() && head[3] == 0x58.toByte() &&
+                        head[4] == 0x5a.toByte() && head[5] == 0x00.toByte() ->
+                        TarCompressorUtils.Type.XZ
+                    n >= 4 && head[0] == 0x28.toByte() && head[1] == 0xb5.toByte() &&
+                        head[2] == 0x2f.toByte() && head[3] == 0xfd.toByte() ->
+                        TarCompressorUtils.Type.ZSTD
+                    n >= 262 && String(head, 257, 5, Charsets.ISO_8859_1) == "ustar" ->
+                        TarCompressorUtils.Type.PLAIN
+                    else -> null
+                }
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    /** 后缀启发 + 魔数裁定的合成判定：魔数优先，后缀兜底。 */
+    private fun resolveAssetType(context: Context, dir: String, name: String): TarCompressorUtils.Type? {
+        val hinted = dxvkAssetType(name) ?: return null
+        return sniffType(context, "$dir/$name") ?: hinted
+    }
+
+    /**
      * v3.2.14：扫描全部 DXVK 资产（assets/dxvk/ 新约定 + assets/anwind/dxvk-*.tzst
      * 旧契约），按文件名稳定排序。空列表 = 未内置任何 DXVK。
      */
@@ -152,7 +201,8 @@ object AnWindTzstAssets {
         val out = mutableListOf<DxvkAsset>()
         try {
             context.assets.list(DXVK_ASSET_DIR)?.forEach { name ->
-                dxvkAssetType(name)?.let { out.add(DxvkAsset(DXVK_ASSET_DIR, name, it)) }
+                resolveAssetType(context, DXVK_ASSET_DIR, name)
+                    ?.let { out.add(DxvkAsset(DXVK_ASSET_DIR, name, it)) }
             }
         } catch (_: Exception) {
             // 目录不存在（未内置任何资产）：正常路径，不扫日志
@@ -160,9 +210,11 @@ object AnWindTzstAssets {
         try {
             // v3.2.15：旧契约目录 assets/anwind/ 也按后缀自适应识别
             // （此前只认 .tzst；现在 dxvk-*.tar.gz/.tar.xz/.tar 同样可用）
+            // v3.2.23：类型判定改走魔数裁定（resolveAssetType）
             context.assets.list(ASSET_DIR)?.forEach { name ->
                 if (Kind.of(name) == Kind.DXVK) {
-                    dxvkAssetType(name)?.let { out.add(DxvkAsset(ASSET_DIR, name, it)) }
+                    resolveAssetType(context, ASSET_DIR, name)
+                        ?.let { out.add(DxvkAsset(ASSET_DIR, name, it)) }
                 }
             }
         } catch (_: Exception) {

@@ -29,7 +29,13 @@ internal object XkbExtractor {
     private const val BLOCK = 512
 
     /**
-     * 解压 tar.gz 到目标目录。
+     * 解压 xkb 数据包到目标目录（自动识别 gzip / 纯 tar）。
+     *
+     * v3.2.23：魔数自适应 —— 文件名不再可信（三方重打包可能剥掉
+     * gzip 层），入口先读头部：gzip 魔数（1F 8B）→ gzip 解包；
+     * 否则直接按纯 tar 流解析（偏移 257 有 ustar 字样则必为纯
+     * tar；无字样也按纯 tar 容错，坏头会在首块判出并报错，
+     * 不会误写文件）。xkb 数据约定为 tar.gz，xz 场景不存在。
      *
      * @param tarGz   压缩包（如 etc/anwind/x11/xkb.tar.gz）
      * @param destDir 目标目录（自动创建；成员按包内相对路径落盘）
@@ -38,8 +44,25 @@ internal object XkbExtractor {
      */
     fun extract(tarGz: File, destDir: File, log: (String) -> Unit = {}): Boolean {
         return try {
-            GZIPInputStream(tarGz.inputStream().buffered()).use { gz ->
-                extractTar(gz, destDir, log)
+            tarGz.inputStream().buffered().use { raw ->
+                // 不重开流、不依赖 PushbackInputStream 大小限制：先读
+                // 头 6 字节判型，再拼回（mark/reset 缓冲 64KB 足够容下
+                // 判型头部与后续 tar 头块）。
+                raw.mark(64 * 1024)
+                val head = ByteArray(6)
+                var n = 0
+                while (n < head.size) {
+                    val r = raw.read(head, n, head.size - n)
+                    if (r < 0) break
+                    n += r
+                }
+                raw.reset()
+                val input: InputStream = when {
+                    n >= 2 && head[0] == 0x1f.toByte() && head[1] == 0x8b.toByte() ->
+                        GZIPInputStream(raw)
+                    else -> raw   // 纯 tar（或未知压缩）直接按 tar 流解析
+                }
+                extractTar(input, destDir, log)
             }
         } catch (e: Exception) {
             log("XKB 解压失败：${e.message ?: e.javaClass.simpleName}")

@@ -134,6 +134,38 @@ class WindowManager {
         return state.id
     }
 
+    /**
+     * v3.2.23（用户问题 3）：打开或恢复。
+     *
+     * 该应用存在**最小化**窗口时优先恢复（focus 置顶 + 解除最小化），
+     * 否则照常开新窗。此前桌面图标双击 / 开始菜单磁贴一律 wm.open，
+     * 最小化后的窗口永无回魂路径（任务栏四种主题又把它滤掉了），
+     * 只会叠开重复窗口 —— 用户观感即"最小化=关闭"。
+     *
+     * 仅拦截"最小化"态：可见窗口存在时保持旧行为（开新窗，多开语义
+     * 不变）。
+     */
+    fun openOrRestore(
+        appId: String,
+        title: String,
+        launchMode: LaunchMode,
+        launchArgs: Map<String, String> = emptyMap(),
+        initialX: Int = 80 + (_windows.size * 30) % 200,
+        initialY: Int = 80 + (_windows.size * 30) % 150,
+        initialWidth: Int = 720,
+        initialHeight: Int = 520
+    ): String {
+        val minimized = _windows.firstOrNull { it.appId == appId && it.isMinimized }
+        if (minimized != null) {
+            focus(minimized.id)
+            return minimized.id
+        }
+        return open(
+            appId, title, launchMode, launchArgs,
+            initialX, initialY, initialWidth, initialHeight
+        )
+    }
+
     fun close(windowId: String) {
         val idx = _windows.indexOfFirst { it.id == windowId }
         if (idx >= 0) {

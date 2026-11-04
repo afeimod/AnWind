@@ -159,6 +159,10 @@ object TrackpadRouter {
 
         // 直通区（虚拟键盘面板 / 手柄元素 / 工具条 / 设置面板）：真实手指直触
         if (isPassthrough(ev.x, ev.y)) return false
+        // v3.2.23（用户问题 4）：手柄元素/悬浮球本体按命中矩形直通 ——
+        // 此前元素未注册直通区，触控板模式下按手柄键会被当成手势
+        //（指针移动/在指针处合成点击）误击穿到底下窗口
+        if (com.anwind.core.input.gamepad.GamepadController.isOverPadUi(ev.x, ev.y)) return false
 
         if (view == null || view!!.rootView !== view) {
             view = activity.window.decorView

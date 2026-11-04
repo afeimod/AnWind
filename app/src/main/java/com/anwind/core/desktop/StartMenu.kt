@@ -437,7 +437,8 @@ private fun BuiltInTile(
         modifier = Modifier
             .clip(RoundedCornerShape(6.dp))
             .clickable {
-                wm.open(
+                // v3.2.23（用户问题 3）：最小化窗口优先恢复（不再叠开重复窗）
+                wm.openOrRestore(
                     appId = app.id,
                     title = app.displayName,
                     launchMode = app.launchMode,

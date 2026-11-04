@@ -1,5 +1,61 @@
 # AnWind Bionic 修复包 v2（2026-09-19）
 
+> **v3.2.23（2026-11-04，源码包对应 App v2.38.20 / versionCode 83）**：七诉求修复轮。
+>
+> ## ① tar.gz / tar.xz 资产在 APK 内保留原始文件名
+>
+> **用户诉求**：v3.2.22 把 assets 里的 `*.tar.gz` / `*.tar.xz` 同步改名成 `.tgz` / `.txz` —— 打包时应该改回原名才对。
+>
+> **取证复核**（本项目 AGP 8.5.2 完全同版 aapt2 `8.5.2-11315950` 直测）：`aapt2 link -A`、`-0 gz -0 tgz -0 xz -0 zst` noCompress、`aapt2 optimize`（含 `--collapse-resource-names`）全链路 **均不剥 .gz 后缀、不改名、字节级 cmp 一致**。v3.2.22 引用的"AOSP Package.cpp 剥层"是误诊（那是 aapt v1 / 三方重打包场景）。用户 APK 里出现 `.tar` 更可能来自本地工具链或云端重打包 gunzip。
+>
+> **修复**：`app/build.gradle.kts` 的 `filterRuffleAssets` 撤销 `.tgz` 同步改名（`assets/dxvk/dxvk-2.3.1.tar.gz`、`assets/termux/x11-xkb.tar.gz` 在 APK 内恢复原名）。**防御纵深**（不信任后缀，重打包剥层也不坏）：
+> - `AnWindTzstAssets.kt`：新增 `sniffType` 魔数直判（gzip `1F 8B` / xz `FD 37 7A 58 5A 00` / zstd `28 B5 2F FD` / 纯 tar 偏移 257 `ustar`），`resolveAssetType` 魔数优先、后缀兜底；
+> - `XkbExtractor.kt`：xkb 包解压前 mark/reset 读头判型（gzip 或纯 tar 容错）；
+> - `TermuxBootstrapInstaller.kt`：xkb 回退引用改双名候选（`x11-xkb.tar.gz` 优先，`.tgz` 兜底）。
+>
+> ## ② noexec 存储上运行 exe 报 media 加载失败（PROT_EXEC 根治）
+>
+> **用户日志**：`0120:err:virtual:map_file_into_view failed to set PROT_EXEC on file map, noexec filesystem?` + `0120:err:virtual:virtual_map_section mapping 0xe10000 1b000 0 failed`。
+>
+> **根因**：exe 位于 `/storage/emulated/0`（sdcardfs/FUSE，Android 上恒为 noexec 且应用无法 remount）。wine 加载 PE 映像需 `mmap(PROT_EXEC)`，在 noexec 挂载上必败；映像段映射失败进程即退，"Could not load required media" 只是首个表象 —— 有没有音频文件都与它无关。
+>
+> **修复**（`RootfsLauncher.kt` 新增 `stageNoexecExeIfNeeded`）：启动链读 `/proc/self/mounts`（最长前缀挂载点 + `\040` 等转义还原）判定 noexec → exe 所在目录**整体导入**内部执行区 `rootfs/home/.anwind/games/<容器>/<源目录名>`（/data/data 内部 ext4，可 exec；同目录 DLL / `media\` / `data\` 一并可用，CWD 随新路径解析）→ 以内部副本启动。指纹（文件数/总字节/exe mtime）命中零拷贝秒启；空间预检（可用 - 需求 > 64MB 余量）不足则警告并按原路径尝试；导入失败不阻断启动。
+>
+> ## ③ 点最小化变成关闭（任务栏不保留）
+>
+> **根因（三处叠加）**：①任务栏四种主题（Win95/XP/Aero7/Win10）`wm.windows.filter { it.isVisible }` 把最小化窗口滤掉；②桌面图标/开始菜单一律 `wm.open`，最小化窗口永无恢复路径，只会叠开重复窗口；③X11 窗口 `onDispose` 一律 `detachView(userClosed = true)`，最小化被误标"用户关闭"（抑制自动重连）。
+>
+> **修复**：`Taskbar.kt` 窗口列表不再滤 isVisible（最小化窗口恒列任务栏，非激活态渲染，点击即恢复）+ `TASKBAR_PINNED_IDS` 补 `wine-containers`；`WindowManager.kt` 新增 `openOrRestore`（存在最小化窗口优先 focus 恢复，可见窗口保持多开语义），`DesktopIconGrid.kt` / `StartMenu.kt` 改走该入口；`X11Surface.kt` 最小化时 `detachView(userClosed = false)`（会话保持可自动重连，还原即恢复画面）。
+>
+> ## ④ 虚拟手柄重制（悬浮球 + 触摸穿透 + 映射 UI）
+>
+> - **常驻悬浮球**（新文件 `GamepadFloatingBall.kt`）：默认右上角炫彩半透明圆球（径向渐变 + 高光 + 球心指示），单击展开控制菜单（显示/收起手柄、手柄设置、编辑布局、关闭手柄），拖动移位（松手持久化 `gamepad_config` v3 的 `ballX/ballY`），菜单展开时点外部收起。「关闭手柄」连球一起退场（gamepadEnabled=false，设置页/快捷开关可重开）。
+> - **旧迷你工具条（⚙✎✕）移除**：`GamepadOverlay.kt` 删除 `GamepadMiniToolbar` / `MiniToolButton`，控制入口全部收拢到悬浮球。
+> - **触摸穿透修复**：此前按手柄按键会点到底下窗口 —— ①`WindowFocusHook.raiseAt` 与 `TrackpadRouter.onMotionEvent` 按 `GamepadController.isOverPadUi` 直判（元素 ∪ 悬浮球 ∪ 展开菜单区域不置前/不当手势）；②悬浮球本体与展开菜单登记 X11 触摸剥离命中区（`registerToolbarHit` / 新增 `registerMenuHit`）+ 触控板直通区；③手柄元素收起时 `releaseAllKeys` + 清命中矩形（防联键与陈旧矩形）。
+> - **映射界面重制**（`GamepadSettingsWindow.kt` 重写）：单层底栏面板 —— 顶栏一排（预设/添加/编辑模式/完成）+ 元素行列表；点元素行**原地展开**编辑区：按钮元素直接点分组 Tab + 按键网格**点键即完成映射**（当前映射高亮，不再进二级页）；摇杆/十字键方向模式一键切换；尺寸 −/+ 步进（替代滑杆）；去 posX/posY 滑杆（编辑模式直接拖元素定位）与标签配色 chips。
+>
+> ## ⑤ Wine 容器主界面太长太宽
+>
+> `ContainerApp.kt` 默认尺寸 1060×680 → **900×600**。`ContainerScreens.kt` 字号缩放与尺寸缩放分离（新 `LocalGuanliFontScale`，字号基准 900）：默认窗下字号与旧 1060dp 窗**完全一致**（字体保持默认），仅窗口与布局尺寸收紧；窗口拖到比 900 窄时字号才同步缩（窄窗适配保留）。弹窗经 `GuanliDialogScale(winScale, winFontScale)` 同步双系数（9 处弹窗调用点全部更新）。
+>
+> ## ⑥ arm64ec wine 启动 exe 太慢
+>
+> 两个提速点（不改语义）：
+> - **wineserver 暖启动**（`WineServerUtils.kt`）：无运行中会话且非前缀构建时，存活 server 通过真实客户端健康探测（`wine cmd /c exit`，6 秒超时）即**复用**——跳过 `-k`/`-w` 与硬清理，内存注册表缓存、rpcss/explorer 后台服务全保留（arm64ec 冷启动 server + 重读注册表是二次启动明显偏慢的主因）；无残留直接返回（免 -k/-w 进程拉起）；探测超时（冻结/挂死）退回原三段式全量清理（v3.3.1 挂死根治语义不变）。顺带修复"运行 exe 会把同容器正在跑的 X11 桌面会话连根杀掉"。
+> - **注册表批量化**（`WineLocaleSupport.kt`）：CJK 字体注册从逐条 `wine reg add`（9~13 次进程拉起，arm64ec 上白花十几秒）改为 REGEDIT4 文本一次 `wine regedit /s` 导入（与 `WineRegistry.ensureDllOverrides` 同模式）。
+>
+> ## ⑦ rootfs + wine 中文支持（字体放置路径）
+>
+> **用户字体目录：`内部存储/AnWind/fonts/`（即 `/storage/emulated/0/AnWind/fonts/`）**。把自己的中文字体（.ttf/.otf/.ttc）放进去即可，每次 wine 启动链自动导入（`WineLocaleSupport.kt` 新增 `importUserFonts`）：
+> - rootfs fontconfig 侧（X11/freetype 渲染）：复制到 `rootfs/usr/share/fonts/anwind-user/`（`base-config/build.sh` 写 `/etc/fonts/local.conf` 显式扫描该目录 + cachedir 指向 App 可写路径）；
+> - wine 前缀侧（GDI 渲染）：复制进 `drive_c/windows/Fonts` 并按文件名写注册表（REGEDIT4 单次导入）。
+>
+> 幂等指纹（文件名:长度），增删字体后下次启动自动同步；目录不存在/为空静默跳过，无字体时回落内置 CJK 方案（fontconfig 别名 + 注册表 Fonts/FontSubstitutes，SimSun/SimHei/Microsoft YaHei 等）。
+>
+> ## 验证
+>
+> 沙箱搭 Android SDK 34 + Gradle 8.7 + AGP 8.5.2 + Kotlin 1.9.25（与 CI 同栈）全量实编：`:app:compileReleaseKotlin` BUILD SUCCESSFUL。aapt2 打包行为以同版二进制全链实验定论（资产原名原字节保留）。设备侧验证：装新 APK 后检查 ①APK 内 `assets/dxvk/dxvk-2.3.1.tar.gz` 原名；②noexec 路径跑 exe 会话日志出现"正在导入内部执行区"；③最小化后任务栏图标还在、点击恢复；④手柄悬浮球拖动/菜单；⑤容器窗 900×600；⑥二次启动 exe 明显加快且 X11 桌面不被杀；⑦`AnWind/fonts/` 放字体后启动 wine 显示中文。
+
 > **v3.2.20（2026-11-03）**：CI 实报双故障修复轮（用户反馈：①APK 构建 `ContainerScreens.kt` 8 处编译错误；②box64 运行"还是老样子"—— wineboot 启动即 SIGSEGV，wine 会话日志 `wine-9.2-20261103-095002-606.log`）。
 >
 > ## 修复 1：ContainerScreens.kt 编译错误（APK 构建失败）

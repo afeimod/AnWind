@@ -54,7 +54,9 @@ import kotlin.math.sin
  * - 十字键：圆角十字 + 方向箭头，按触点位置判定 8 向（含斜向）
  * - 按钮：径向渐变圆钮（A绿/B红/X蓝/Y黄/其他青），按压缩放 + 辉光环
  * - 编辑模式：元素可拖动重新布局（松手持久化），显示删除角标
- * - 迷你工具条：⚙ 设置 / ✎ 编辑 / ✕ 隐藏
+ * - v3.2.23（用户问题 4）：旧迷你工具条（⚙✎✕）移除，改由常驻悬浮球
+ *   （GamepadFloatingBall，默认右上角炫彩半透明圆球）统一控制：显示/收起
+ *   手柄、手柄设置、编辑布局、关闭手柄；手柄元素可单独收起只留悬浮球
  * - 多点触控：每个元素独立 pointerInput，摇杆+按钮可同时操作
  */
 @Composable
@@ -92,7 +94,20 @@ fun GamepadOverlay() {
         val screenWpx = with(LocalDensity.current) { maxWidth.toPx() }
         val screenHpx = with(LocalDensity.current) { maxHeight.toPx() }
 
-        // ===== 手柄元素 =====
+        // ===== v3.2.23（用户问题 4）：常驻悬浮球（替代旧迷你工具条） =====
+        GamepadFloatingBall(onPersistConfig = { persistConfig() })
+
+        // ===== 手柄元素（v3.2.23：可单独收起 —— 悬浮球菜单；编辑模式强制显示） =====
+        val showElements = GamepadController.visible || GamepadController.editMode
+        if (showElements) {
+        // 元素离场（收起手柄/关闭手柄）时释放按键 + 清命中矩形，
+        // 防联键与陈旧矩形误剥离正常触摸
+        DisposableEffect(Unit) {
+            onDispose {
+                GamepadController.releaseAllKeys()
+                GamepadController.clearElementHits()
+            }
+        }
         GamepadController.elements.forEach { element ->
             key(element.id) {
                 val centerX = screenWpx * element.posX
@@ -137,34 +152,7 @@ fun GamepadOverlay() {
             }
         }
 
-        // ===== 迷你工具条（右上角） =====
-        GamepadMiniToolbar(
-            onSettings = {
-                GamepadController.releaseAllKeys()
-                GamepadController.settingsOpen = true
-            },
-            onToggleEdit = {
-                GamepadController.releaseAllKeys()
-                GamepadController.editMode = !GamepadController.editMode
-                if (!GamepadController.editMode) GamepadController.selectElement(null)
-            },
-            onHide = {
-                GamepadController.releaseAllKeys()
-                GamepadController.editMode = false
-                scope.launch { app.settingsStore.setGamepadEnabled(false) }
-            },
-            modifier = Modifier
-                .align(Alignment.TopEnd)
-                .padding(top = 12.dp, end = 12.dp)
-                // v2.20：工具条登记为触控板直通区（真实手指可直接点 ⚙ ✎ ✕）
-                // v2.25：同时登记为 X11 触摸剥离的手柄侧命中区（⚙✎✕ 落点
-                // 归手柄，否则工具条指针被 X11 触摸桥当成屏幕手势吞掉）
-                .onGloballyPositioned {
-                    val b = it.boundsInWindowCompat()
-                    TrackpadRouter.registerPassthrough("gpToolbar", b)
-                    GamepadController.registerToolbarHit(b.left, b.top, b.right, b.bottom)
-                }
-        )
+        } // if (showElements)
     }
 }
 
@@ -260,65 +248,10 @@ private fun GamepadElementHost(
     }
 }
 
-// ============================================================
-// 迷你工具条
-// ============================================================
-
-@Composable
-private fun GamepadMiniToolbar(
-    onSettings: () -> Unit,
-    onToggleEdit: () -> Unit,
-    onHide: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    val editMode = GamepadController.editMode
-    Row(
-        modifier = modifier
-            .shadow(6.dp, RoundedCornerShape(20.dp))
-            .clip(RoundedCornerShape(20.dp))
-            .background(Color(0xD91E2836))
-            .padding(horizontal = 5.dp, vertical = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(4.dp)
-    ) {
-        MiniToolButton("⚙") { onSettings() }
-        MiniToolButton(
-            label = if (editMode) "✓" else "✎",
-            active = editMode
-        ) { onToggleEdit() }
-        MiniToolButton("✕") { onHide() }
-    }
-}
-
-@Composable
-private fun MiniToolButton(label: String, active: Boolean = false, onClick: () -> Unit) {
-    var pressed by remember { mutableStateOf(false) }
-    Box(
-        modifier = Modifier
-            .size(30.dp)
-            .scale(if (pressed) 0.88f else 1f)
-            .clip(CircleShape)
-            .background(
-                when {
-                    active -> Color(0x662DD4BF)
-                    pressed -> Color(0x332DD4BF)
-                    else -> Color(0x1AFFFFFF)
-                }
-            )
-            .pointerInput(label) {
-                detectTapGestures(
-                    onPress = {
-                        pressed = true
-                        try { awaitRelease() } finally { pressed = false }
-                    },
-                    onTap = { onClick() }
-                )
-            },
-        contentAlignment = Alignment.Center
-    ) {
-        Text(label, color = Color(0xFFE2F5FF), fontSize = 13.sp)
-    }
-}
+// v3.2.23：迷你工具条（⚙✎✕）已移除 —— 控制入口移至常驻悬浮球
+// （GamepadFloatingBall.kt）；原 MiniToolButton/工具条命中登记职责
+// 由悬浮球承接（registerToolbarHit 语义不变，SmartTouchBridge
+// 的 isOverPadUi 判定自动覆盖球与展开菜单）。
 
 // ============================================================
 // 摇杆

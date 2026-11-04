@@ -71,6 +71,11 @@ object WineServerUtils {
     /** 残留进程击杀后等待 SIGKILL 落地的时间（cgroup 冻结态进程由内核解冻处理）。 */
     private const val KILL_SETTLE_MS = 300L
 
+    /** v3.2.23 暖启动健康探测超时：真实 wine 客户端（cmd /c exit）完成握手
+     *  的时限。健康 server 上 cmd 秒级退出；冻结/挂死的 server 会让客户端
+     *  永久阻塞 —— 超时即判不健康，退回全量清理路径。 */
+    private const val HEALTH_PROBE_TIMEOUT_SECONDS = 6L
+
     /**
      * 结束指定容器的 wine 会话并等待退出（注册表随之落盘）。
      *
@@ -94,14 +99,82 @@ object WineServerUtils {
      * 与 [stop] 同一三段式实现，另把每一步决策行回报给调用方（进会话日志
      * / 前缀日志，用户可见）。典型耗时：健康残留 ~2s（-k 收尾）、冻结残留
      * ~12s（-k 超时后硬杀）、无残留 <0.5s。
+     *
+     * v3.2.23（用户问题 6）新增两段快速路径（[warmStart]=true 时）：
+     *  - 无任何存活 server 且无 socket 目录 → 直接返回（免 -k/-w 进程
+     *    拉起，正常冷启动场景零开销）；
+     *  - 有存活 server 且健康探测通过（真实 wine 客户端 `cmd /c exit`
+     *    秒级完成握手）→ **暖启动复用**：跳过 -k/-w 与硬清理，存活
+     *    server 的内存注册表缓存、后台服务（rpcss/explorer 桌面等）
+     *    全部保留 —— arm64ec 上冷启动 server + 重读注册表是 exe 二次
+     *    启动明显慢于 x86_64 的主要来源；顺带修复“运行 exe 会把同容器
+     *    正在跑的 X11 桌面会话连根杀掉”。探测超时（冻结/挂死）则退回
+     *    原三段式全量清理 —— v3.3.1 的挂死根治语义不变。
+     *
+     * @param warmStart 仅在“无运行中会话且非前缀构建”时由调用方开启
+     *        （避免改变 runExe 替换旧会话 / wineboot 冷启动语义）。
      */
     fun ensureCleanBeforeStart(
         resolved: WineRuntime.Resolved?,
         container: ContainerData,
         env: Map<String, String>,
-        log: (String) -> Unit = {}
+        log: (String) -> Unit = {},
+        warmStart: Boolean = false
     ) {
+        if (warmStart) {
+            val prefix = container.prefixPath
+            val live = findStaleWineServers(prefix)
+            val serverRoot = File(prefix, ".wineserver")
+            if (live.isEmpty() && !serverRoot.isDirectory) {
+                log("wineserver 快速路径：无残留进程/目录，跳过 -k/-w")
+                return
+            }
+            if (live.isNotEmpty()) {
+                if (probeServerHealth(resolved, container, env)) {
+                    log("暖启动：wineserver 存活且健康（pid=${live.first().pid}）→ 复用，跳过清理（注册表缓存/后台进程保留）")
+                    return
+                }
+                log("wineserver 存活但健康探测超时（疑似冻结/挂死）→ 转全量清理")
+            }
+        }
         stopInternal(resolved, container, env, log)
+    }
+
+    /**
+     * 真实客户端握手探测：拉起 `wine cmd /c exit`（后台启动，不建会话）
+     * 在 [HEALTH_PROBE_TIMEOUT_SECONDS] 内完成即认为 server 健康。
+     *
+     * 为什么不用进程状态启发式（R/S 判定）：冻结在 accept/recvmsg 上的
+     * server 在 /proc 里同样呈现 S 态，无法区分；只有让真实客户端走一遍
+     * socket 握手才能实锤。探测客户端本身无害（cmd 即退，无副作用），
+     * 探测超时则强停并判不健康。
+     */
+    private fun probeServerHealth(
+        resolved: WineRuntime.Resolved?,
+        container: ContainerData,
+        env: Map<String, String>
+    ): Boolean {
+        val active = resolved ?: return false
+        return try {
+            val command = NativeShellExecutor.create()
+                .putEnv(env)
+                .putEnv("WINEPREFIX", container.prefixPath)
+                .putEnv("WINEDEBUG", "-all")
+            command.setCommand(
+                *WineRuntime.wineCommand(active).toTypedArray(),
+                "cmd", "/c", "exit"
+            )
+            command.exec()
+            val finished = command.waitFor(HEALTH_PROBE_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+            if (!finished) {
+                runCatching { command.stopAndWait(true, 5, TimeUnit.SECONDS) }
+                false
+            } else {
+                command.waitFor() == 0
+            }
+        } catch (_: Exception) {
+            false
+        }
     }
 
     private fun stopInternal(

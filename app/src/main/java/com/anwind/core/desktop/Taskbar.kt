@@ -136,8 +136,17 @@ fun Taskbar(
 // 共享数据：固定应用 + 运行窗口
 // ============================================================
 
-/** 任务栏固定应用（v2.15：加入扫雷） */
-private val TASKBAR_PINNED_IDS = setOf("browser", "file_explorer", "settings", "minesweeper")
+// v3.2.23（用户问题 3）：任务栏窗口列表不再过滤 isVisible —— 此前
+// 五种主题里四种（Win95/XP/Aero7/Win10）把最小化窗口从任务栏一并
+// 滤掉，窗口本体又因 WindowHost 的 isVisible 门控离开组合，用户侧
+// 观感即“点最小化 = 窗口被关闭且任务栏不保留”。现在最小化窗口
+// 恒列在任务栏（非激活态渲染，MICA_11 主题一直是这个语义），点击
+// 经由既有 wm.taskbarClick() → focus() 恢复显示。
+
+/** 任务栏固定应用（v2.15：加入扫雷；v3.2.23：加入 wine-containers ——
+ *  它注册了 pinnedToTaskbar=true 却不在硬编码集合里，最小化后无从恢复） */
+private val TASKBAR_PINNED_IDS =
+    setOf("browser", "file_explorer", "settings", "minesweeper", "wine-containers")
 
 @Composable
 private fun rememberPinnedApps(): List<com.anwind.core.window.AppDef> =
@@ -184,7 +193,7 @@ private fun TaskbarWin95(
     modifier: Modifier = Modifier
 ) {
     val wm = remember { WindowManager.get() }
-    val runningWindows = remember(tick) { wm.windows.filter { it.isVisible } }
+    val runningWindows = remember(tick) { wm.windows }
     val pinnedApps = rememberPinnedApps()
 
     Box(
@@ -489,7 +498,7 @@ private fun TaskbarWinXp(
     modifier: Modifier = Modifier
 ) {
     val wm = remember { WindowManager.get() }
-    val runningWindows = remember(tick) { wm.windows.filter { it.isVisible } }
+    val runningWindows = remember(tick) { wm.windows }
     val pinnedApps = rememberPinnedApps()
 
     Box(
@@ -733,7 +742,7 @@ private fun TaskbarAero7(
     modifier: Modifier = Modifier
 ) {
     val wm = remember { WindowManager.get() }
-    val runningWindows = remember(tick) { wm.windows.filter { it.isVisible } }
+    val runningWindows = remember(tick) { wm.windows }
     val pinnedApps = rememberPinnedApps()
     val pinnedIds = pinnedApps.map { it.id }.toSet()
 
@@ -926,7 +935,7 @@ private fun TaskbarWin10(
     modifier: Modifier = Modifier
 ) {
     val wm = remember { WindowManager.get() }
-    val runningWindows = remember(tick) { wm.windows.filter { it.isVisible } }
+    val runningWindows = remember(tick) { wm.windows }
     val pinnedApps = rememberPinnedApps()
     val pinnedIds = pinnedApps.map { it.id }.toSet()
 

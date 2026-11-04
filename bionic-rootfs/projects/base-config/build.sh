@@ -46,4 +46,21 @@ EOF
   # X11 unix socket 目录占位（X 服务在 App 侧前缀创建同名目录）
   mkdir -p "${destDir}${prefix}/../tmp/.X11-unix" 2>/dev/null || true
   mkdir -p "${destDir}${prefix}/var/tmp"
+
+  # ---- v3.2.23（用户问题 7）：fontconfig 用户字体目录 ----
+  # App 启动链把 /storage/emulated/0/AnWind/fonts/ 里的用户字体动态
+  # 导入 $prefix/share/fonts/anwind-user/（rootfs-fonts 的默认扫描根
+  # 是 $prefix/share/fonts，本配置显式列出子目录 —— 防个别 fontconfig
+  # 版本/配置不递归；cachedir 指向 App 可写路径，缓存损坏自动重建）。
+  mkdir -p "${destDir}${prefix}/etc/fonts" "${destDir}${prefix}/share/fonts/anwind-user"
+  cat > "${destDir}${prefix}/etc/fonts/local.conf" << EOF
+<?xml version="1.0"?>
+<!DOCTYPE fontconfig SYSTEM "fonts.dtd">
+<fontconfig>
+  <!-- AnWind 用户字体（App 从 内部存储/AnWind/fonts/ 动态导入） -->
+  <dir>${prefix}/share/fonts/anwind-user</dir>
+  <!-- 缓存放 App 数据区（rootfs 其余路径对运行期只读） -->
+  <cachedir>/data/data/com.anwind/files/rootfs/var/cache/fontconfig</cachedir>
+</fontconfig>
+EOF
 }

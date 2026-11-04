@@ -277,6 +277,134 @@ object RootfsLauncher {
     }
 
     // ------------------------------------------------------------------
+    // v3.2.23（用户问题 2）：noexec 存储自动导入
+    // ------------------------------------------------------------------
+
+    /**
+     * 判断路径是否落在 noexec 挂载上。
+     *
+     * 读 /proc/self/mounts（本进程视角，含 sdcardfs/FUSE 项），取**最长
+     * 前缀**挂载点的挂载选项判定 —— /storage/emulated/0 的 sdcardfs
+     * 在 Android 上恒为 noexec，应用无法 remount；唯一出路是把文件
+     * 挪到内部 ext4/f2fs 数据区。挂载点里的空格转义（\040 等）按
+     * kernel 语义还原。
+     */
+    internal fun isNoexecPath(path: String): Boolean {
+        return try {
+            val target = File(path).absolutePath
+            var bestLen = -1
+            var noexec = false
+            File("/proc/self/mounts").readLines().forEach { line ->
+                val parts = line.split(' ')
+                if (parts.size >= 4) {
+                    val mnt = unescapeMountPath(parts[1])
+                    val isPrefix = target == mnt || target.startsWith("$mnt/")
+                    if (isPrefix && mnt.length > bestLen) {
+                        bestLen = mnt.length
+                        noexec = parts[3].split(',').any { it == "noexec" }
+                    }
+                }
+            }
+            bestLen >= 0 && noexec
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    /** /proc/self/mounts 挂载点转义还原（\040 空格 \011 制表 \134 反斜杠）。 */
+    private fun unescapeMountPath(s: String): String =
+        s.replace("\\040", " ").replace("\\011", "\t").replace("\\134", "\\")
+
+    /** 目录指纹：文件数 + 总字节数 + 主 exe mtime（变更即重导）。 */
+    private fun dirFingerprint(dir: File, exe: File): String {
+        var count = 0L
+        var size = 0L
+        dir.walkTopDown().forEach { f -> if (f.isFile) { count++; size += f.length() } }
+        return "$count-$size-${exe.lastModified()}"
+    }
+
+    /**
+     * exe 位于 noexec 存储时把其所在目录导入内部执行区，返回改写后的
+     * 参数列表；否则原样返回。指纹（文件数/总字节/exe mtime）命中时
+     * 零拷贝复用上次导入。
+     *
+     * 导入位置：`rootfs/home/.anwind/games/<容器名>/<源目录名>` ——
+     * 在容器目录之外（不进容器备份/删除生命周期），且处于
+     * /data/data 内部 ext4（可 exec）。目录级整体拷贝保证 exe 同目录
+     * 的 DLL / media\ / data\ 一并可用（CWD 亦指向该处）。
+     */
+    private fun stageNoexecExeIfNeeded(
+        wineArgs: List<String>,
+        container: ContainerData,
+        log: (String) -> Unit
+    ): List<String> {
+        val exePath = wineArgs.firstOrNull()?.trim() ?: return wineArgs
+        if (!exePath.startsWith("/")) return wineArgs
+        val exeFile = File(exePath)
+        if (!exeFile.isFile) return wineArgs
+        if (!isNoexecPath(exePath)) return wineArgs
+
+        val srcDir = exeFile.parentFile ?: return wineArgs
+        val stageDir = File(
+            File(
+                File(ContainerManager.ROOTFS_ROOT, "home/.anwind/games"),
+                container.name
+            ),
+            srcDir.name
+        )
+        val marker = File(stageDir, ".anwind-stage-fp")
+        val stagedExe = File(stageDir, exeFile.name)
+
+        runCatching {
+            val needFp = dirFingerprint(srcDir, exeFile)
+            if (marker.isFile && marker.readText() == needFp && stagedExe.isFile) {
+                log("noexec 存储检测：exe 位于不可执行挂载，复用内部执行区副本（指纹命中，零拷贝）")
+                log("→ $stagedExe")
+                return listOf(stagedExe.absolutePath) + wineArgs.drop(1)
+            }
+            // 空间预检（源目录总量 vs 目标可用空间，预留 64MB 余量）
+            var needBytes = 0L
+            srcDir.walkTopDown().forEach { if (it.isFile) needBytes += it.length() }
+            if (stageDir.usableSpace - 64L * 1024 * 1024 < needBytes) {
+                log("警告: 内部存储空间不足（需约 ${needBytes / 1024 / 1024}MB，可用 ${stageDir.usableSpace / 1024 / 1024}MB）—— 无法导入 noexec 存储上的游戏，本次按原路径启动（大概率因 PROT_EXEC 失败退出）")
+                return wineArgs
+            }
+            log("检测到 exe 位于 noexec 存储（$srcDir）—— wine 无法映射可执行段（PROT_EXEC），正在导入内部执行区：")
+            log("→ $stageDir（约 ${needBytes / 1024 / 1024}MB；首次导入需要一些时间，此后指纹命中即秒启）")
+            if (stageDir.exists()) stageDir.deleteRecursively()
+            stageDir.mkdirs()
+            var copied = 0
+            var copiedBytes = 0L
+            var files = 0
+            srcDir.walkTopDown().forEach { f ->
+                if (f.isDirectory) {
+                    File(stageDir, f.relativeTo(srcDir).path).mkdirs()
+                } else if (f.isFile) {
+                    files++
+                }
+            }
+            srcDir.walkTopDown().forEach { f ->
+                if (f.isDirectory) return@forEach
+                if (!f.isFile) return@forEach
+                val target = File(stageDir, f.relativeTo(srcDir).path)
+                target.parentFile?.mkdirs()
+                f.copyTo(target, overwrite = true)
+                copied++
+                copiedBytes += f.length()
+                if (copied % 200 == 0 || copied == files) {
+                    log("  导入中 $copied/$files 个文件（${copiedBytes / 1024 / 1024}MB）…")
+                }
+            }
+            marker.writeText(needFp)
+            log("导入完成（$copied 个文件）—— 以内部副本启动")
+            return listOf(stagedExe.absolutePath) + wineArgs.drop(1)
+        }.onFailure { e ->
+            log("警告: noexec 导入失败（${e.message ?: e.javaClass.simpleName}）—— 本次按原路径启动")
+        }
+        return wineArgs
+    }
+
+    // ------------------------------------------------------------------
     // 启动链
     // ------------------------------------------------------------------
 
@@ -380,7 +508,16 @@ object RootfsLauncher {
             val isPrefixCmd = wineArgs.firstOrNull() == "wineboot"
             val hasRunningSession = synchronized(sessions) { sessions.containsKey(key) }
             if (freshSession || isPrefixCmd || !hasRunningSession) {
-                WineServerUtils.ensureCleanBeforeStart(resolved, container, env) { sink.stamp(it) }
+                // v3.2.23（用户问题 6）：无运行中会话且非前缀构建时开
+                // 暖启动 —— 存活且健康的 wineserver（真实客户端 cmd /c
+                // exit 探测通过）直接复用：arm64ec 冷启动 server + 重读
+                // 注册表是二次启动明显偏慢的主因；同时避免把同容器仍在
+                // 跑的 X11 桌面/后台进程连根杀掉。探测超时（冻结/挂死）
+                // 自动退回三段式全量清理，v3.3.1 挂死根治语义不变。
+                WineServerUtils.ensureCleanBeforeStart(
+                    resolved, container, env, { sink.stamp(it) },
+                    warmStart = !isPrefixCmd && !hasRunningSession
+                )
             }
 
             // 6) GPU / Box64 环境叠加
@@ -593,12 +730,22 @@ object RootfsLauncher {
                 sink.stamp("启动已取消（会话在启动链中被停止或取代），不再拉起 wine")
                 return
             }
-            val command = buildCommand(resolved, wineArgs, dmode, resolution)
+            // v3.2.23（用户问题 2）：noexec 存储自动导入 —— exe 位于
+            // /storage/emulated 等 noexec 挂载时，wine 对 PE 映像的
+            // mmap(PROT_EXEC) 会失败（err:virtual:map_file_into_view
+            // failed to set PROT_EXEC + 紧随的 Could not load required
+            // media —— 映像段映射失败后程序即退，资源加载只是首当其冲
+            // 的表象）。把 exe 所在目录整体导入内部可执行区
+            // （rootfs/home/.anwind/games/<容器>/<目录>，ext4 可 exec），
+            // 后续启动指纹命中则零拷贝复用。CWD 随新路径解析，media /
+            // data 等相对资源照常可找。
+            val effectiveArgs = stageNoexecExeIfNeeded(wineArgs, container) { sink.stamp(it) }
+            val command = buildCommand(resolved, effectiveArgs, dmode, resolution)
             // v3.1：工作目录跟随 exe 所在目录（Unix 路径直取父目录 /
             // Windows 盘符路径经 dosdevices 映射）—— DX9 等大量游戏按
             // CWD 相对路径找 media\ 等资源，旧版写死 HOME 导致
             // "找不到 media" 报错（CubeMap.exe 实证）
-            val workingDir = resolveExeWorkingDir(wineArgs.firstOrNull(), container)
+            val workingDir = resolveExeWorkingDir(effectiveArgs.firstOrNull(), container)
                 ?: WineEnvironment.HOME_DIR
             if (workingDir != WineEnvironment.HOME_DIR) {
                 sink.stamp("工作目录=exe 所在目录 $workingDir（media 等相对路径可解析）")
@@ -658,7 +805,7 @@ object RootfsLauncher {
                             sink.stamp("wineboot 会话累计 8 分钟无输出且前缀未落盘 —— 判定挂死，自动恢复：终止会话 + 硬清理 wineserver")
                             runCatching { executor.stopAndWait(true, 10, TimeUnit.SECONDS) }
                             runCatching {
-                                WineServerUtils.ensureCleanBeforeStart(resolved, container, env) { sink.stamp(it) }
+                                WineServerUtils.ensureCleanBeforeStart(resolved, container, env, log = { sink.stamp(it) })
                             }
                             sink.stamp("→ 已自动恢复（挂死现场已记录于上方日志）；请重新构建前缀")
                             sink.stamp("→ 若再次挂死：请把本窗口完整日志（含进程现场与清理决策行）反馈给开发者")

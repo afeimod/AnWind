@@ -126,6 +126,10 @@ object WindowFocusHook {
             // 浮层直通区（虚拟键盘面板 / 手柄工具条 / 手柄设置窗）：敲键盘
             // 按键不应把键盘底下的窗口顶到前面
             if (TrackpadRouter.isPassthrough(x, y)) return
+            // v3.2.23（用户问题 4）：手柄 UI（元素/悬浮球/展开菜单）直判 ——
+            // 不依赖直通区登记时机（悬浮球在窗口树另一分支布局，登记有
+            // 时序差）；按手柄按键绝不应把手柄底下的窗口顶到前面。
+            if (com.anwind.core.input.gamepad.GamepadController.isOverPadUi(x, y)) return
 
             val wm = WindowManager.get()
             val windows = wm.windows.filter { it.isVisible }

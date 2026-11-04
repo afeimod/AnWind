@@ -681,7 +681,7 @@ object WineRegistry {
                     // v3.3.1：重试前硬清 wineserver（旧版仅 -k/-w —— 冻结/挂死的
                     // 守护 -k 杀不掉，重试必再挂在同一处；决策行进前缀日志）
                     runCatching {
-                        WineServerUtils.ensureCleanBeforeStart(resolved, container, env) { log(it) }
+                        WineServerUtils.ensureCleanBeforeStart(resolved, container, env, log = { log(it) })
                     }
                 }
             }

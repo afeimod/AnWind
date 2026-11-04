@@ -21,8 +21,12 @@ val ContainersApp = AppDef(
     displayName = "Wine 容器",
     iconAsset = "emoji:📦",
     launchMode = LaunchMode.FLOATING,
-    defaultWidth = 1060.dp,
-    defaultHeight = 680.dp,
+    // v3.2.23（用户问题 5）：默认尺寸 1060×680 → 900×600 —— 用户反馈
+    // "主界面太长太宽，拉小，字体保持默认"。字号经 LocalGuanliFontScale
+    // 以 900 为基准（见 ContainerScreens.kt），默认窗下与旧 1060dp 窗
+    // 完全同字号，仅窗口本体与布局尺寸收紧。
+    defaultWidth = 900.dp,
+    defaultHeight = 600.dp,
     pinnedToDesktop = true,
     pinnedToTaskbar = true
 ) { scope ->

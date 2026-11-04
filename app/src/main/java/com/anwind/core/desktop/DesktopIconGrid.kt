@@ -361,7 +361,8 @@ fun launchDesktopItem(item: DesktopItem, wm: WindowManager) {
     when (item.type) {
         DesktopItemType.BUILTIN_APP -> {
             AppRegistry.get(item.target)?.let { a ->
-                wm.open(
+                // v3.2.23（用户问题 3）：最小化窗口优先恢复（不再叠开重复窗）
+                wm.openOrRestore(
                     appId = a.id,
                     title = a.displayName,
                     launchMode = a.launchMode,
@@ -386,7 +387,8 @@ fun launchDesktopItem(item: DesktopItem, wm: WindowManager) {
         }
         DesktopItemType.SHORTCUT_APP -> {
             AppRegistry.get(item.target)?.let { a ->
-                wm.open(
+                // v3.2.23（用户问题 3）：最小化窗口优先恢复（不再叠开重复窗）
+                wm.openOrRestore(
                     appId = a.id,
                     title = a.displayName,
                     launchMode = a.launchMode,

@@ -1,32 +1,24 @@
 package com.anwind.core.input.gamepad
 
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Slider
-import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.anwind.AnWindApp
@@ -36,20 +28,33 @@ import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
 /**
- * 虚拟手柄悬浮设置窗（v2.15.2）：
+ * 虚拟手柄设置面板（v3.2.23 用户问题 4 重制）：
  *
- * - 标题栏可拖动整窗重新定位（限制在屏幕范围内）
- * - 添加/删除元素：按钮、摇杆、十字键
- * - 位置与大小调节：X/Y 归一化滑杆 + 尺寸滑杆（摇杆/十字键/按钮全部支持）
- * - 完整映射选择器：全部键盘按键（字母/数字/功能键/控制键/方向/WASD/符号）+ 鼠标功能
- * - 摇杆/十字键方向模式：方向键 ←↑→↓ ↔ WASD 一键切换
- * - 预设布局：经典手柄 / 简单布局；所有修改即时持久化（JSON → DataStore）
+ * **旧版痛点**（用户反馈"映射界面太麻烦"）：右侧卡片 + 点元素 → 选中 →
+ * 滚动到编辑区 → 点"按键映射"按钮 → 弹出二级全屏选择器 → 点分组 →
+ * 点键，六级操作；位置 X/Y 滑杆微调极慢；按钮标签 chips 一排（只决定
+ * 配色却占一屏注意力）。
+ *
+ * **重制设计（单层底栏面板）**：
+ * - 面板贴底居中，一条窄顶栏（预设 / 添加 / 编辑模式 / 完成）+ 元素行
+ *   列表，**一层结构到底**；
+ * - 点元素行 → **原地展开**编辑区：
+ *   - 按钮元素：分组 Tab + 按键网格**直接点选即完成映射**（当前映射
+ *     高亮显示，不进二级页）；
+ *   - 摇杆/十字键：方向模式（←↑→↓ / WASD）一键切换；
+ *   - 尺寸 −/+ 步进按钮（替代滑杆）；
+ *   - 删除该元素；
+ * - **去 posX/posY 滑杆**：编辑模式（✎）下直接在屏幕上拖动元素定位，
+ *   比滑杆直观且精确；
+ * - **去标签配色 chips**：按钮配色由 label 自动决定（A绿/B红/X蓝/Y黄），
+ *   表面显示映射按键名；
+ * - 修改即时持久化；布局在面板上层实时可见（面板只占底部）。
  */
 @Composable
 fun GamepadSettingsWindow(modifier: Modifier = Modifier) {
     if (!GamepadController.settingsOpen) return
 
-    // v2.20：设置面板登记为触控板直通区（真实手指可直接调节滑杆）；
+    // v2.20 语义保留：设置面板登记为触控板直通区（真实手指可直接操作）；
     // 关闭/离开组合时注销
     DisposableEffect(Unit) {
         onDispose { TrackpadRouter.registerPassthrough("gpSettings", null) }
@@ -58,11 +63,9 @@ fun GamepadSettingsWindow(modifier: Modifier = Modifier) {
     val app = AnWindApp.get()
     val scope = rememberCoroutineScope()
     val elements = GamepadController.elements
-    val selectedId = GamepadController.selectedElementId
-    val selected = elements.firstOrNull { it.id == selectedId }
 
-    // 映射选择器打开状态（选中分组）
-    var showActionPicker by remember { mutableStateOf(false) }
+    // 展开的元素行（v3.2.23：原地展开，单层结构；null = 全收起）
+    var expandedId by remember { mutableStateOf<String?>(null) }
 
     fun persist() {
         scope.launch { app.settingsStore.setGamepadConfig(GamepadController.toJson()) }
@@ -90,7 +93,7 @@ fun GamepadSettingsWindow(modifier: Modifier = Modifier) {
             )
         }
         GamepadController.updateElements(elements + newElement)
-        GamepadController.selectElement(newElement.id)
+        expandedId = newElement.id
         persist()
     }
 
@@ -99,296 +102,326 @@ fun GamepadSettingsWindow(modifier: Modifier = Modifier) {
             if (which == "simple") GamepadController.simpleLayout() else GamepadController.classicLayout()
         )
         GamepadController.selectElement(null)
+        expandedId = null
         persist()
     }
 
-    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
-        val density = LocalDensity.current
-        val screenWpx = with(density) { maxWidth.toPx() }
-        val screenHpx = with(density) { maxHeight.toPx() }
-
-        // ===== 悬浮窗拖动位移（标题栏拖拽，限制在屏幕内）=====
-        var winOffset by remember { mutableStateOf(Offset.Zero) }
-        fun applyWindowDrag(delta: Offset) {
-            val maxX = screenWpx * 0.62f   // 右锚点，向左最多拉到屏宽 25% 处仍可见
-            val minX = -screenWpx * 0.75f
-            val maxY = screenHpx * 0.55f
-            val minY = -screenHpx * 0.65f
-            winOffset = Offset(
-                (winOffset.x + delta.x).coerceIn(minX, maxX),
-                (winOffset.y + delta.y).coerceIn(minY, maxY)
-            )
-        }
-
-        // ===== 背景遮罩：点击关闭 =====
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(Color(0x33000000))
-                .clickable(
-                    interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
-                    indication = null
-                ) { GamepadController.settingsOpen = false }
-        )
-
-        // ===== 设置卡片（右侧居中，标题栏可拖动，限制高度可滚动） =====
+    Box(modifier = Modifier.fillMaxSize()) {
+        // ===== 底栏面板（贴底居中，最大宽 520dp，最大高 55%） =====
         Column(
             modifier = modifier
-                .align(Alignment.CenterEnd)
-                .padding(end = 10.dp)
-                .offset { IntOffset(winOffset.x.roundToInt(), winOffset.y.roundToInt()) }
-                .widthIn(min = 320.dp, max = 360.dp)
-                .heightIn(max = maxHeight - 24.dp)
-                // v2.20：登记为触控板直通区
+                .align(Alignment.BottomCenter)
+                .padding(bottom = 8.dp)
+                .widthIn(min = 300.dp, max = 520.dp)
+                .heightIn(max = 420.dp)
                 .onGloballyPositioned {
                     TrackpadRouter.registerPassthrough("gpSettings", it.boundsInWindowCompat())
                 }
-                .shadow(14.dp, RoundedCornerShape(16.dp))
-                .clip(RoundedCornerShape(16.dp))
+                .shadow(14.dp, RoundedCornerShape(18.dp))
+                .clip(RoundedCornerShape(18.dp))
                 .background(Color(0xF0162030))
-                .border(1.dp, Color(0x592DD4BF), RoundedCornerShape(16.dp))
+                .border(1.dp, Color(0x592DD4BF), RoundedCornerShape(18.dp))
         ) {
-            GpSettingsHeader(
-                onDismiss = { GamepadController.settingsOpen = false },
-                onDrag = { delta -> applyWindowDrag(delta) }
-            )
+            // ---- 顶栏：预设 / 添加 / 编辑模式 / 完成 ----
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Color(0x262DD4BF))
+                    .horizontalScroll(rememberScrollState())
+                    .padding(horizontal = 8.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                GpChip("经典", false, compact = true) { applyPreset("classic") }
+                GpChip("简单", false, compact = true) { applyPreset("simple") }
+                GpVDivider()
+                GpChip("＋键", false, compact = true) { addElement(GamepadController.ElementType.BUTTON) }
+                GpChip("＋摇杆", false, compact = true) { addElement(GamepadController.ElementType.JOYSTICK) }
+                GpChip("＋十字", false, compact = true) { addElement(GamepadController.ElementType.DPAD) }
+                GpVDivider()
+                GpChip(
+                    if (GamepadController.editMode) "✓ 拖动元素" else "✎ 编辑模式",
+                    active = GamepadController.editMode, compact = true
+                ) {
+                    GamepadController.editMode = !GamepadController.editMode
+                    if (!GamepadController.editMode) GamepadController.selectElement(null)
+                }
+                Spacer(Modifier.width(4.dp))
+                GpChip("完成", false, compact = true) { GamepadController.settingsOpen = false }
+            }
 
+            // ---- 元素行列表（可滚动） ----
             Column(
                 modifier = Modifier
                     .weight(1f)
                     .verticalScroll(rememberScrollState())
-                    .padding(horizontal = 12.dp)
+                    .padding(horizontal = 10.dp, vertical = 6.dp)
             ) {
-                // ===== 预设布局 =====
-                GpSectionLabel("预设布局")
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    GpChip("经典手柄", false) { applyPreset("classic") }
-                    GpChip("简单布局", false) { applyPreset("simple") }
-                    Spacer(Modifier.weight(1f))
+                if (elements.isEmpty()) {
+                    GpHint("暂无元素 —— 用顶栏 ＋ 添加，或套用「经典」预设")
                 }
-                GpHint("提示：点 ✎ 进入编辑模式后可直接拖动元素，点元素角标删除")
-
-                // ===== 元素列表 =====
-                GpSectionLabel("元素（${elements.size}）")
                 elements.forEach { el ->
-                    GpElementRow(
+                    GpElementRowV2(
                         element = el,
-                        selected = el.id == selectedId,
-                        onClick = {
-                            GamepadController.selectElement(if (selectedId == el.id) null else el.id)
+                        expanded = el.id == expandedId,
+                        onToggle = { expandedId = if (expandedId == el.id) null else el.id },
+                        onMap = { action ->
+                            updateElement(el.id) { it.copy(action = action) }
+                        },
+                        onDirMode = { mode ->
+                            updateElement(el.id) { it.copy(dirMode = mode) }
+                        },
+                        onSize = { delta ->
+                            updateElement(el.id) {
+                                it.copy(sizeDp = (it.sizeDp + delta).coerceIn(40f, 220f))
+                            }
                         },
                         onDelete = {
                             GamepadController.updateElements(elements.filter { it.id != el.id })
-                            if (selectedId == el.id) GamepadController.selectElement(null)
+                            if (expandedId == el.id) expandedId = null
                             persist()
                         }
                     )
                 }
-
-                // ===== 添加元素 =====
                 Spacer(Modifier.height(8.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    GpChip("＋ 按钮", false) { addElement(GamepadController.ElementType.BUTTON) }
-                    GpChip("＋ 摇杆", false) { addElement(GamepadController.ElementType.JOYSTICK) }
-                    GpChip("＋ 十字键", false) { addElement(GamepadController.ElementType.DPAD) }
-                }
-
-                // ===== 选中元素编辑器 =====
-                if (selected != null) {
-                    Spacer(Modifier.height(12.dp))
-                    GpSectionLabel("编辑：${typeLabel(selected)} \"${selected.label}\"")
-
-                    // 按钮标签快捷选择（决定按钮配色；按钮表面显示映射按键名）
-                    if (selected.type == GamepadController.ElementType.BUTTON) {
-                        GpSubLabel("按钮标签（配色用，表面显示映射按键）")
-                        Row(
-                            modifier = Modifier.horizontalScroll(rememberScrollState()),
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            listOf("A", "B", "X", "Y", "L1", "R1", "L2", "R2", "≡", "＋", "－", "Menu")
-                                .forEach { lb ->
-                                    GpChip(
-                                        lb,
-                                        active = selected.label == lb,
-                                        compact = true
-                                    ) { updateElement(selected.id) { it.copy(label = lb) } }
-                                }
-                        }
-                    }
-
-                    // 按钮映射（完整键鼠清单）
-                    if (selected.type == GamepadController.ElementType.BUTTON) {
-                        GpSubLabel("按键映射（全部键盘 + 鼠标功能）")
-                        GpMappingButton(
-                            text = selected.action.label,
-                            onClick = { showActionPicker = true }
-                        )
-                    }
-
-                    // 摇杆/十字键方向模式
-                    if (selected.type != GamepadController.ElementType.BUTTON) {
-                        GpSubLabel("方向模式（${if (selected.type == GamepadController.ElementType.JOYSTICK) "摇杆" else "十字键"} 上下左右输出）")
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            GpChip(
-                                "←↑→↓ 方向键",
-                                active = selected.dirMode == GamepadController.DirMode.ARROWS
-                            ) {
-                                updateElement(selected.id) { it.copy(dirMode = GamepadController.DirMode.ARROWS) }
-                            }
-                            GpChip(
-                                "WASD",
-                                active = selected.dirMode == GamepadController.DirMode.WASD
-                            ) {
-                                updateElement(selected.id) { it.copy(dirMode = GamepadController.DirMode.WASD) }
-                            }
-                        }
-                    }
-
-                    // 位置调节
-                    GpSubLabel("位置 X（${(selected.posX * 100).roundToInt()}%）")
-                    GpSlider(
-                        value = selected.posX,
-                        onValueChange = { v ->
-                            updateElement(selected.id) { it.copy(posX = v) }
-                        }
-                    )
-                    GpSubLabel("位置 Y（${(selected.posY * 100).roundToInt()}%）")
-                    GpSlider(
-                        value = selected.posY,
-                        onValueChange = { v ->
-                            updateElement(selected.id) { it.copy(posY = v) }
-                        }
-                    )
-
-                    // 大小调节
-                    GpSubLabel("大小（${selected.sizeDp.roundToInt()}dp）")
-                    GpSlider(
-                        value = selected.sizeDp,
-                        valueRange = 40f..220f,
-                        onValueChange = { v ->
-                            updateElement(selected.id) { it.copy(sizeDp = v) }
-                        }
-                    )
-
-                    Spacer(Modifier.height(6.dp))
-                }
-
-                Spacer(Modifier.height(16.dp))
             }
-        }
-
-        // ===== 映射选择器（全键盘 + 鼠标）=====
-        if (showActionPicker && selected != null) {
-            ActionPickerSheet(
-                onPick = { action ->
-                    updateElement(selected.id) { it.copy(action = action) }
-                    showActionPicker = false
-                },
-                onDismiss = { showActionPicker = false }
-            )
         }
     }
 }
 
 // ============================================================
-// 组件
+// 组件（v3.2.23 单层重制）
 // ============================================================
 
+/** 元素行：一行摘要 + 原地展开编辑区（映射网格 / 方向模式 / 尺寸步进）。 */
 @Composable
-private fun GpSettingsHeader(onDismiss: () -> Unit, onDrag: (Offset) -> Unit) {
-    Row(
+private fun GpElementRowV2(
+    element: GamepadController.PadElement,
+    expanded: Boolean,
+    onToggle: () -> Unit,
+    onMap: (GamepadController.PadAction) -> Unit,
+    onDirMode: (GamepadController.DirMode) -> Unit,
+    onSize: (Float) -> Unit,
+    onDelete: () -> Unit
+) {
+    Column(
         modifier = Modifier
             .fillMaxWidth()
-            .background(Color(0x332DD4BF))
-            .pointerInput(Unit) {
-                detectDragGestures { change, amount ->
-                    change.consume()
-                    onDrag(amount)
+            .padding(vertical = 3.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(if (expanded) Color(0x1A2DD4BF) else Color(0x14FFFFFF))
+            .border(1.dp, if (expanded) Color(0x662DD4BF) else Color(0x1FFFFFFF), RoundedCornerShape(12.dp))
+    ) {
+        // ---- 行摘要：图标 + 类型 + 当前映射 + 尺寸步进 + 删除 ----
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable(onClick = onToggle)
+                .padding(horizontal = 10.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            val icon = when (element.type) {
+                GamepadController.ElementType.JOYSTICK -> "🕹"
+                GamepadController.ElementType.DPAD -> "✛"
+                GamepadController.ElementType.BUTTON -> "⏺"
+            }
+            Text(icon, fontSize = 15.sp, color = Color(0xFF7FE8DC))
+            Text(
+                typeLabel(element),
+                color = Color(0xFFE2F5FF),
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Medium
+            )
+            // 当前映射（按钮=按键名；摇杆/十字键=方向模式）
+            Text(
+                if (element.type == GamepadController.ElementType.BUTTON) {
+                    "→ ${element.action.label.ifEmpty { "未映射" }}"
+                } else {
+                    "→ ${if (element.dirMode == GamepadController.DirMode.WASD) "WASD" else "←↑→↓"}"
+                },
+                color = Color(0xFF9AD8F5),
+                fontSize = 13.sp,
+                modifier = Modifier.weight(1f),
+                maxLines = 1
+            )
+            // 尺寸步进（−/+，替代滑杆）
+            GpStepButton("−") { onSize(-10f) }
+            Text(
+                "${element.sizeDp.roundToInt()}dp",
+                color = Color(0xFFB8C7D9),
+                fontSize = 12.sp,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.width(38.dp)
+            )
+            GpStepButton("＋") { onSize(+10f) }
+            // 删除
+            GpStepButton("🗑", danger = true, onClick = onDelete)
+        }
+
+        // ---- 原地展开的编辑区 ----
+        AnimatedVisibility(visible = expanded) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 8.dp, vertical = 4.dp)
+            ) {
+                if (element.type == GamepadController.ElementType.BUTTON) {
+                    // 按键网格：分组 Tab + 点键即完成映射（单层，无二级页）
+                    KeyGridInline(
+                        current = element.action,
+                        onPick = onMap
+                    )
+                } else {
+                    // 方向模式一键切换
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 4.dp, vertical = 4.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        GpChip(
+                            "←↑→↓ 方向键",
+                            active = element.dirMode == GamepadController.DirMode.ARROWS,
+                            compact = true
+                        ) { onDirMode(GamepadController.DirMode.ARROWS) }
+                        GpChip(
+                            "WASD",
+                            active = element.dirMode == GamepadController.DirMode.WASD,
+                            compact = true
+                        ) { onDirMode(GamepadController.DirMode.WASD) }
+                    }
+                    GpHint("位置：顶栏 ✎ 编辑模式下直接在屏幕上拖动元素")
                 }
             }
-            .padding(horizontal = 10.dp, vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        // 拖动手柄提示
-        Text("⠿", color = Color(0x66E2F5FF), fontSize = 14.sp)
-        Spacer(Modifier.width(7.dp))
-        Text("🎮", fontSize = 16.sp)
-        Spacer(Modifier.width(8.dp))
-        Text(
-            "虚拟手柄设置",
-            color = Color(0xFFE2F5FF),
-            fontSize = 15.sp,
-            fontWeight = FontWeight.SemiBold,
-            modifier = Modifier.weight(1f)
-        )
-        Box(
-            modifier = Modifier
-                .size(26.dp)
-                .clip(CircleShape)
-                .background(Color(0x1FFFFFFF))
-                .clickable(onClick = onDismiss),
-            contentAlignment = Alignment.Center
-        ) {
-            Text("×", color = Color(0xFFE2F5FF), fontSize = 15.sp, fontWeight = FontWeight.Bold)
         }
     }
 }
 
+/** 按键网格（内嵌版）：分组 Tab + 5 列网格，点键即完成映射。 */
 @Composable
-private fun GpSectionLabel(text: String) {
-    Text(
-        text,
-        color = Color(0xFF2DD4BF),
-        fontSize = 12.sp,
-        fontWeight = FontWeight.SemiBold,
-        modifier = Modifier.padding(top = 10.dp, bottom = 6.dp)
-    )
+private fun KeyGridInline(
+    current: GamepadController.PadAction,
+    onPick: (GamepadController.PadAction) -> Unit
+) {
+    var activeGroup by remember { mutableStateOf(0) }
+    val groups = GamepadController.ACTION_GROUPS
+
+    Column(modifier = Modifier.fillMaxWidth()) {
+        // 分组 Tab
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            groups.forEachIndexed { i, (name, _) ->
+                GpChip(name, active = i == activeGroup, compact = true) { activeGroup = i }
+            }
+        }
+        Spacer(Modifier.height(6.dp))
+
+        // 网格（5 列；当前映射高亮）
+        val actions = groups[activeGroup].second
+        actions.chunked(5).forEach { rowActions ->
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                rowActions.forEach { action ->
+                    val isCurrent = action.keyCode == current.keyCode && action.kind == current.kind
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(if (isCurrent) Color(0x662DD4BF) else Color(0x1FFFFFFF))
+                            .border(
+                                1.dp,
+                                if (isCurrent) Color(0xFF2DD4BF) else Color(0x26FFFFFF),
+                                RoundedCornerShape(8.dp)
+                            )
+                            .clickable { onPick(action) }
+                            .padding(vertical = 10.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = action.label,
+                            color = if (isCurrent) Color.White else Color(0xFFE2F5FF),
+                            fontSize = 12.sp,
+                            fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Medium,
+                            textAlign = TextAlign.Center,
+                            maxLines = 1
+                        )
+                    }
+                }
+                repeat(5 - rowActions.size) { Spacer(Modifier.weight(1f)) }
+            }
+            Spacer(Modifier.height(6.dp))
+        }
+    }
+}
+
+/** 小型步进/操作按钮（−/＋/🗑）。 */
+@Composable
+private fun GpStepButton(label: String, danger: Boolean = false, onClick: () -> Unit) {
+    var pressed by remember { mutableStateOf(false) }
+    Box(
+        modifier = Modifier
+            .size(30.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .background(
+                when {
+                    pressed -> if (danger) Color(0x66FF6B6B) else Color(0x332DD4BF)
+                    danger -> Color(0x1FFF6B6B)
+                    else -> Color(0x1AFFFFFF)
+                }
+            )
+            .clickable(onClick = onClick)
+            .padding(2.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            label,
+            color = if (danger) Color(0xFFFFB4B4) else Color(0xFFE2F5FF),
+            fontSize = 14.sp
+        )
+    }
 }
 
 @Composable
-private fun GpSubLabel(text: String) {
-    Text(
-        text,
-        color = Color(0xFF9FC4D8),
-        fontSize = 11.sp,
-        modifier = Modifier.padding(top = 8.dp, bottom = 2.dp)
-    )
-}
-
-@Composable
-private fun GpHint(text: String) {
-    Text(
-        text,
-        color = Color(0xFF6E8FA5),
-        fontSize = 10.sp,
-        modifier = Modifier.padding(top = 4.dp)
+private fun GpVDivider() {
+    Box(
+        Modifier
+            .width(1.dp)
+            .height(18.dp)
+            .background(Color(0x33FFFFFF))
     )
 }
 
 @Composable
 private fun GpChip(label: String, active: Boolean, compact: Boolean = false, onClick: () -> Unit) {
+    var pressed by remember { mutableStateOf(false) }
     Box(
         modifier = Modifier
-            .clip(RoundedCornerShape(8.dp))
+            .clip(RoundedCornerShape(14.dp))
             .background(
-                if (active) Color(0x4D2DD4BF) else Color(0x1FFFFFFF)
-            )
-            .border(
-                1.dp,
-                if (active) Color(0xFF2DD4BF) else Color(0x26FFFFFF),
-                RoundedCornerShape(8.dp)
+                when {
+                    active -> Color(0x662DD4BF)
+                    pressed -> Color(0x332DD4BF)
+                    else -> Color(0x1AFFFFFF)
+                }
             )
             .clickable(onClick = onClick)
             .padding(
-                horizontal = if (compact) 10.dp else 14.dp,
-                vertical = if (compact) 5.dp else 8.dp
+                horizontal = if (compact) 8.dp else 12.dp,
+                vertical = if (compact) 4.dp else 6.dp
             ),
         contentAlignment = Alignment.Center
     ) {
         Text(
             label,
-            color = if (active) Color(0xFF5EEAD4) else Color(0xFFCFE4F0),
-            fontSize = 11.sp,
+            color = if (active) Color.White else Color(0xFFDCEBF7),
+            fontSize = if (compact) 12.sp else 13.sp,
             fontWeight = if (active) FontWeight.SemiBold else FontWeight.Normal,
             maxLines = 1
         )
@@ -396,238 +429,17 @@ private fun GpChip(label: String, active: Boolean, compact: Boolean = false, onC
 }
 
 @Composable
-private fun GpMappingButton(text: String, onClick: () -> Unit) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(8.dp))
-            .background(Color(0x1FFFFFFF))
-            .border(1.dp, Color(0x402DD4BF), RoundedCornerShape(8.dp))
-            .clickable(onClick = onClick)
-            .padding(horizontal = 12.dp, vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Text(
-            "映射到",
-            color = Color(0xFF9FC4D8),
-            fontSize = 11.sp
-        )
-        Spacer(Modifier.weight(1f))
-        Text(
-            text,
-            color = Color(0xFF5EEAD4),
-            fontSize = 13.sp,
-            fontWeight = FontWeight.SemiBold,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
-        )
-        Spacer(Modifier.width(6.dp))
-        Text("▾", color = Color(0xFF5EEAD4), fontSize = 11.sp)
-    }
-}
-
-@Composable
-private fun GpSlider(
-    value: Float,
-    onValueChange: (Float) -> Unit,
-    valueRange: ClosedFloatingPointRange<Float> = 0.04f..0.96f
-) {
-    Slider(
-        value = value,
-        onValueChange = onValueChange,
-        valueRange = valueRange,
-        colors = SliderDefaults.colors(
-            thumbColor = Color(0xFF2DD4BF),
-            activeTrackColor = Color(0xFF2DD4BF),
-            inactiveTrackColor = Color(0x33FFFFFF)
-        ),
-        modifier = Modifier.fillMaxWidth()
+private fun GpHint(text: String) {
+    Text(
+        text,
+        color = Color(0x99B8C7D9),
+        fontSize = 11.sp,
+        modifier = Modifier.padding(horizontal = 4.dp, vertical = 4.dp)
     )
 }
 
-@Composable
-private fun GpElementRow(
-    element: GamepadController.PadElement,
-    selected: Boolean,
-    onClick: () -> Unit,
-    onDelete: () -> Unit
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 3.dp)
-            .clip(RoundedCornerShape(10.dp))
-            .background(if (selected) Color(0x332DD4BF) else Color(0x14FFFFFF))
-            .border(
-                1.dp,
-                if (selected) Color(0x662DD4BF) else Color.Transparent,
-                RoundedCornerShape(10.dp)
-            )
-            .clickable(onClick = onClick)
-            .padding(horizontal = 10.dp, vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        // 类型图标
-        Box(
-            modifier = Modifier
-                .size(30.dp)
-                .clip(CircleShape)
-                .background(Color(0x262DD4BF)),
-            contentAlignment = Alignment.Center
-        ) {
-            Text(
-                when (element.type) {
-                    GamepadController.ElementType.BUTTON -> "●"
-                    GamepadController.ElementType.JOYSTICK -> "◎"
-                    GamepadController.ElementType.DPAD -> "✛"
-                },
-                color = Color(0xFF5EEAD4),
-                fontSize = 14.sp
-            )
-        }
-        Spacer(Modifier.width(10.dp))
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = "${typeLabel(element)} · ${element.label}",
-                color = Color(0xFFE2F5FF),
-                fontSize = 12.sp,
-                fontWeight = FontWeight.Medium,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-            Text(
-                text = when (element.type) {
-                    GamepadController.ElementType.BUTTON ->
-                        "映射：${element.action.label} · ${(element.posX * 100).roundToInt()}%,${(element.posY * 100).roundToInt()}% · ${element.sizeDp.roundToInt()}dp"
-                    else ->
-                        "${if (element.dirMode == GamepadController.DirMode.WASD) "WASD" else "方向键"}模式 · ${(element.posX * 100).roundToInt()}%,${(element.posY * 100).roundToInt()}% · ${element.sizeDp.roundToInt()}dp"
-                },
-                color = Color(0xFF6E8FA5),
-                fontSize = 10.sp,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-        }
-        // 删除
-        Box(
-            modifier = Modifier
-                .size(26.dp)
-                .clip(CircleShape)
-                .background(Color(0x33EF4444))
-                .clickable(onClick = onDelete),
-            contentAlignment = Alignment.Center
-        ) {
-            Text("×", color = Color(0xFFFCA5A5), fontSize = 14.sp, fontWeight = FontWeight.Bold)
-        }
-    }
-}
-
 private fun typeLabel(element: GamepadController.PadElement): String = when (element.type) {
-    GamepadController.ElementType.BUTTON -> "按钮"
     GamepadController.ElementType.JOYSTICK -> "摇杆"
     GamepadController.ElementType.DPAD -> "十字键"
-}
-
-// ============================================================
-// 映射选择器（完整键盘 + 鼠标）
-// ============================================================
-
-/**
- * 映射选择器：分八个分组（字母/数字/功能键/控制键/方向键/WASD/符号/鼠标），
- * Tab 切换分组，网格点选即完成映射。
- */
-@Composable
-private fun ActionPickerSheet(
-    onPick: (GamepadController.PadAction) -> Unit,
-    onDismiss: () -> Unit
-) {
-    var activeGroup by remember { mutableStateOf(0) }
-    val groups = GamepadController.ACTION_GROUPS
-
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Color(0x66000000))
-            .clickable(
-                interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
-                indication = null,
-                onClick = onDismiss
-            ),
-        contentAlignment = Alignment.BottomCenter
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .fillMaxHeight(0.72f)
-                .clip(RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp))
-                .background(Color(0xF0162030))
-                .border(1.dp, Color(0x592DD4BF), RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp))
-                .clickable(
-                    interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
-                    indication = null,
-                    onClick = {} // 阻止点击穿透关闭
-                )
-                .padding(14.dp)
-        ) {
-            Text(
-                "选择映射（全部键盘按键 + 鼠标功能）",
-                color = Color(0xFFE2F5FF),
-                fontSize = 14.sp,
-                fontWeight = FontWeight.SemiBold
-            )
-            Spacer(Modifier.height(10.dp))
-
-            // 分组 Tab
-            Row(
-                modifier = Modifier.horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                groups.forEachIndexed { i, (name, _) ->
-                    GpChip(name, active = i == activeGroup, compact = true) { activeGroup = i }
-                }
-            }
-            Spacer(Modifier.height(10.dp))
-
-            // 按键网格
-            Column(
-                modifier = Modifier
-                    .weight(1f)
-                    .verticalScroll(rememberScrollState())
-            ) {
-                val actions = groups[activeGroup].second
-                // 5 列网格
-                actions.chunked(5).forEach { rowActions ->
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        rowActions.forEach { action ->
-                            Box(
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .background(Color(0x1FFFFFFF))
-                                    .border(1.dp, Color(0x26FFFFFF), RoundedCornerShape(8.dp))
-                                    .clickable { onPick(action) }
-                                    .padding(vertical = 10.dp),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Text(
-                                    text = action.label,
-                                    color = Color(0xFFE2F5FF),
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.Medium,
-                                    textAlign = TextAlign.Center,
-                                    maxLines = 1
-                                )
-                            }
-                        }
-                        repeat(5 - rowActions.size) { Spacer(Modifier.weight(1f)) }
-                    }
-                    Spacer(Modifier.height(6.dp))
-                }
-                Spacer(Modifier.height(10.dp))
-            }
-        }
-    }
+    GamepadController.ElementType.BUTTON -> "按钮「${element.label}」"
 }

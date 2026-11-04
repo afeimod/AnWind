@@ -25,27 +25,29 @@ val ruffleAssetWhitelist = setOf(
 )
 val filteredAssetsDir = layout.buildDirectory.dir("filteredAssets")
 val filterRuffleAssets = tasks.register<Sync>("filterRuffleAssets") {
-    description = "同步 src/main/assets 到过滤目录，ruffle/ 只保留白名单文件；*.tar.gz 改名 .tgz 规避 aapt2 剥层"
+    description = "同步 src/main/assets 到过滤目录，ruffle/ 只保留白名单文件；归档资产保留原始 .tar.gz/.tar.xz 名"
     into(filteredAssetsDir)
     from("src/main/assets") {
         exclude("ruffle/*")
         // ============================================================
-        // v3.2.22：aapt2 对以 ".gz" 结尾资产的构建期优化（AOSP
-        // Package.cpp 行为）：剥掉 gzip 层把 deflate 流直接作为 zip
-        // 压缩条目，资产名同步去掉 ".gz" 后缀 —— 实证（用户 APK +
-        // StackOverflow 22796903/4666098 + capacitor#5844）：
-        //   assets/dxvk/dxvk-2.3.1.tar.gz → APK 里变成
-        //   assets/dxvk/dxvk-2.3.1.tar（读出来已是解压的 22MB tar 流）
-        //   assets/termux/x11-xkb.tar.gz → 同样中招（fix9.10 的
-        //   ②级资产回退在正式包里实际打不开，一直是静默断链）
-        // v3.2.15 的"aapt2 实验证明其不改名"结论有误（直测没走
-        // link -A 全管线），App 侧 .tar 兼容只是绕过而非根治。
-        // 规避：同步期把 *.tar.gz 统一改名为等价格式 *.tgz ——
-        // aapt2 只剥 ".gz" 后缀，".tgz" 原名原字节保留；noCompress
-        // 已含 "tgz"（原字节存储，无二次压缩浪费）。App 侧扫描器
-        // （dxvkAssetType）本就识别 .tgz→GZIP，双端零改动。
+        // v3.2.23：撤销 v3.2.22 的 *.tar.gz→*.tgz 同步改名 —— 用户
+        // 要求 APK 内保留原始文件名。取证复核（本项目 AGP 8.5.2 完全
+        // 同版 aapt2 8.5.2-11315950 直测，link -A + -0 noCompress +
+        // optimize/collapse 全链路）：
+        //   ① assets/dxvk/dxvk-2.3.1.tar.gz → APK 条目名 dxvk-2.3.1.tar.gz，
+        //      字节级 cmp 与源文件完全一致（Deflated 与 Stored 两模式均验证）；
+        //   ② 裸 .gz / .tar.xz / 双后缀 .gz.gz 同样原名原字节保留；
+        //   ③ aapt2 optimize（资源收缩）与 --collapse-resource-names 均不触碰。
+        // 结论：aapt2 并不剥层改名 —— v3.2.22 的“AOSP Package.cpp 剥层”
+        // 判断是误诊（当时引用的 SO/capacitor 案例是 aapt v1 / 三方重打包
+        // 场景）。用户 APK 里出现的 .tar 更可能来自本地工具链或云端重打包
+        // （gunzip + 去后缀）。本仓库 CI（gradle assembleRelease，AGP
+        // 8.5.2）产物实测保留原名，故直接撤销改名。
+        // 防御：不信任后缀 —— App 侧资产扫描改为魔数校验（gzip/xz/zstd/
+        // ustar 头直判，见 AnWindTzstAssets.sniffType），即使个别用户
+        // 用三方工具重打包剥了层，扫描器仍按真实内容解压；xkb 回退链
+        //（TermuxBootstrapInstaller/XkbExtractor/termux-x11 脚本）同步容错。
         // ============================================================
-        rename("(.+)\\.tar\\.gz$", "$1.tgz")
     }
     from("src/main/assets/ruffle") {
         into("ruffle")
@@ -218,8 +220,25 @@ android {
         // 必 ENOSYS —— 冒烟树补打补丁（与 aarch64 交付构建同源；沙箱实跑
         // 动态/静态双冒烟 ANWIND_SMOKE_OK 验证），glibc 形态 build-box64.yml
         // 同步应用（静态程序 shm 转发同样受益）。
-        versionCode = 82
-        versionName = "2.38.19"
+        versionCode = 83
+        versionName = "2.38.20"
+        // v2.38.20（源码包 v3.2.23）：七诉求修复轮 ——
+        // ①资产原名保留：撤销 v3.2.22 的 *.tar.gz→*.tgz 同步改名（同版
+        //   aapt2 全链实测原名原字节保留）；App 侧资产扫描改魔数裁定
+        //   （sniffType），xkb 回退链双名候选容错。
+        // ②noexec 存储自动导入：exe 位于 /storage/emulated 等 noexec 挂载
+        //   时 wine mmap(PROT_EXEC) 必败 —— 启动链自动导入内部执行区
+        //   （rootfs/home/.anwind/games/<容器>），指纹命中零拷贝复用。
+        // ③最小化不再是“关闭”：任务栏四主题不再滤掉最小化窗口；桌面/
+        //   开始菜单走 openOrRestore；X11 最小化不被误标用户关闭。
+        // ④虚拟手柄重制：常驻悬浮球（GamepadFloatingBall）统一入口，
+        //   旧迷你工具条移除，映射设置重制单层面板，修触摸穿透。
+        // ⑤Wine 容器主窗 1060×680→900×600，字号缩放与尺寸缩放分离
+        //   （默认窗字号不变）。
+        // ⑥arm64ec 启动提速：wineserver 暖启动复用 + CJK 注册表单次
+        //   regedit /s 导入。
+        // ⑦rootfs+wine 中文支持：用户字体目录 /storage/emulated/0/
+        //   AnWind/fonts/ 启动链自动导入（fontconfig + 前缀 Fonts 双端）。
         // v2.38.19（源码包 v3.2.22）：四诉求修复轮 ——
         // ①box64 bionic 冒烟测试修复：RELR 冒烟的 python 段 Elf64_Shdr
         //   6 元组解包写了 5 个目标（CI 实炸 ValueError: too many values to
