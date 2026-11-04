@@ -231,8 +231,29 @@ android {
         // 必 ENOSYS —— 冒烟树补打补丁（与 aarch64 交付构建同源；沙箱实跑
         // 动态/静态双冒烟 ANWIND_SMOKE_OK 验证），glibc 形态 build-box64.yml
         // 同步应用（静态程序 shm 转发同样受益）。
-        versionCode = 86
-        versionName = "2.38.23"
+        versionCode = 87
+        versionName = "2.38.24"
+        // v2.38.24（源码包 v3.2.27）：DllOverrides 移除 + wineboot 后续链
+        // + /opt conf source 语义（用户 v3.2.26 实测反馈）——
+        // ①【用户强烈要求】APK 内置 DllOverrides 彻底移除（原 147 项表
+        //   v3.2.14 起"很多游戏报 media 错误"）：前缀 DLL 加载序完全按
+        //   rootfs/opt/prefix/ 安装包 user.reg/system.reg/fix-services.reg
+        //   执行；WineLibrary 不再写 dsound/quartz 键（仅 DPI/Windows
+        //   版本）；对旧版构建过的前缀一次性清洗（regedit "键"=- 删除
+        //   147 键值 + 重导 /opt/prefix 注册表，幂等标记）。
+        // ②wineboot -i 后续链同会话执行（用户："wineboot i 结束后啥也
+        //   没有，下次启动才解压和注册表"）：进程退出后 onExit 里继续
+        //   postPrefixBootChain —— /opt/prefix 资产解压 + 安装包注册表
+        //   导入 + dosdevices + EmulateModeset + ModernLook + DXVK +
+        //   函数库，逐步日志，对齐 startwine.sh 301-369 行。
+        // ③/opt conf 改 source 语义（用户："根本没有 env 或者 export"）：
+        //   全部 KEY=VALUE 导出给 wine 进程，仅 WINEPREFIX/加载器/X11/
+        //   LD_*/BOX64_*_PATH 黑名单不透传；PATH 合并追加；GLIBC_BIN
+        //   兜底导出（sh 同款）；locale.conf → LC_ALL/LANG。
+        // ④bionic-rootfs 中文：host-deps 补 language-pack-zh-hans（探测
+        //   式，Debian 无此包不炸）+ locale-gen zh_CN.UTF-8（arch/debian
+        //   双分支）；wine 构建侧 i386_CC/x86_64_CC 改指 llvm-mingw 包装
+        //   clang（wine ≤9.x 旧 configure 会把 NDK clang 当 PE 编译器）。
         // v2.38.23（源码包 v3.2.26）：数据丢失事故根治 + /opt 生态修正 ——
         // ①【严重】删除容器误删用户数据修复：Kotlin 1.9.25 的
         //   deleteRecursively 会穿透符号链接删目标内容（本机实证），

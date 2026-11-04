@@ -650,9 +650,16 @@ PCMBSF
   # 链接报 "undefined symbol: libandroid_shmget" 直接失败。
   export LDFLAGS+=" -Wl,--rosegment -landroid-shmem"
 
-  # PE→Unix thunk 亦用 ndk clang（CC 已含版本与 ccache）
-  export i386_CC="$CC"
-  export x86_64_CC="$CC"
+  # v3.2.27（用户问题 4 收尾）：PE 交叉编译器一律指向 llvm-mingw 的
+  # 包装器 clang（自带 --target=i*86-w64-mingw32 / x86_64-w64-mingw32）。
+  # 旧版 export i386_CC="$CC"（NDK clang）在 wine ≤9.x 旧 configure 下
+  # 会被当 PE 编译器使用（env 预置使 AC_CHECK_PROGS 探测被跳过）：
+  # NDK clang 目标是 *-linux-android，编不出 PE 对象。wine 10+/hangover
+  # 树的 configure 由 --with-mingw=<dir>/clang 统一覆盖本导出（无害）；
+  # wine 9.x 树（旧交叉逻辑）则实际消费这两个变量 —— 指向 llvm-mingw
+  # 包装器后 i386/x86_64 PE 侧才能真正按 mingw 目标编译。
+  export i386_CC="${_llvmMingwDir}/bin/i686-w64-mingw32-clang"
+  export x86_64_CC="${_llvmMingwDir}/bin/x86_64-w64-mingw32-clang"
 
   export CROSSCFLAGS="-O3 -pipe"
   export CROSSLDFLAGS="-s"

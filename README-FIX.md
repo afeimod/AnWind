@@ -1,5 +1,53 @@
 # AnWind Bionic 修复包 v2（2026-09-19）
 
+> **v3.2.27（2026-11-04，源码包对应 App v2.38.24 / versionCode 87）**：DllOverrides 彻底移除 + wineboot 后续链同会话执行 + /opt conf source 语义 + rootfs 中文依赖（用户 v3.2.26 实测反馈 + 参考 startwine.sh / wine-wow64 yml）。
+>
+> ## ① 【用户强烈要求】APK 自带 DllOverrides 注册彻底去掉，完全按照 rootfs/opt/prefix/ 下的注册表来
+>
+> **用户原话**："求求你把 apk 自带的 DllOverrides 注册去掉吧，自从有了他很多游戏都报 media 错误，完全按照 rootfs/opt/prefix/ 下的注册表来。"
+>
+> **修复**：
+> - **整体删除** `WineRegistry.ensureDllOverrides` + 147 项 `DLL_OVERRIDE_ENTRIES` 内置表 —— App 从此不写任何 DllOverrides；前缀的 DLL 加载序完全由 `rootfs/opt/prefix/` 安装包的 `user.reg` / `system.reg` / `fix-services.reg` 决定（startwine.sh 同源语义：安装包注册表在 wineboot 后导入，无内置表覆盖）；
+> - **旧前缀一次性清洗**（`purgeLegacyDllOverrides`，幂等标记 `.anwind-dlloverrides-purged`）：v3.2.14~v3.2.26 构建过的容器启动时自动 `regedit` 导入 `"键"=-` 删除语法清掉 147 个键值（恢复 wine 默认加载序），随后**重导** /opt/prefix 的三个注册表（旧链路里内置表在安装包之后导入、把调好的值盖掉了，这里按参考脚本顺序补回来）；
+> - `WineLibrary`（函数库设置）不再写 dsound/quartz 的 DllOverrides 键 —— 仅保留 DPI（LogPixels）与 Windows 版本三件套；容器「函数库」页 UI 同步改为说明文案；
+> - CLI 侧 `anwind-container` 的 `install-dxvk` / `install-vkd3d` 保持不变（用户显式安装时的定向 d3d8/d3d9/d3d10core/d3d11/dxgi/d3d12 键，语义正确）。
+>
+> ## ② wineboot -i 结束后同会话继续解压 + 注册表（对齐 startwine.sh 301-369 行）
+>
+> **用户原话**："wineboot i 后依旧是结束构建前缀了，啥也没有继续，下次启动软件才进行解压和注册表，参考 sh 你是一点也不看。"
+>
+> **根因**：`wineboot` 会话被归为"宿主工具命令"（`isHostToolCommand`）→ 整条 ensure 链（含 /opt/prefix 资产注入）被跳过，wineboot 进程一退出会话就结束；那些步骤只在**下次**启动游戏（非宿主工具命令）时才跑。
+>
+> **修复**（`RootfsLauncher.postPrefixBootChain`，两条入口共用一份实现）：
+> - `wineboot -i` 进程退出后在 **onExit 回调里继续**前缀构建链：/opt/prefix 资产解压（drive_c/directx/fix-fonts 归档 + start 开始菜单 + marlett.ttf）→ user/system/fix-services 注册表导入 → dosdevices → EmulateModeset → ModernLook → DXVK → 旧 DllOverrides 清洗 → 函数库设置，**每步日志进前缀构建窗口**，最后统一打点"前缀构建完成"；
+> - 游戏会话路径（前缀不存在时 initializePrefixIfNeeded 同步建前缀）同样走 `postPrefixBootChain`，消除两份重复实现。
+>
+> ## ③ /opt conf 读取改为 source 语义（"你根本没有 env 或者 export"）
+>
+> **用户原话**："启动 wine 依旧没有读取 opt 下的任何 conf 配置，你根本没有 env 或者 export，更没有执行 sh 里那种 . /路径。"
+>
+> **根因**：v3.2.26 的白名单（BOX64_*/WINEESYNC/WINEFSYNC/WINEDEBUG/WINEDLLOVERRIDES/cores）太窄 —— env.conf 里的 MESA_*/GALLIUM_*/自定义调优变量全部被丢弃，等于没读。
+>
+> **修复**（`WineEnvironment.applyOptConfEnv` 重写）：
+> - `. /opt/conf/*.conf` 的 source 语义：**全部 KEY=VALUE 都 export** 给 wine 进程，逐项日志（`opt 生态: conf N 项已 source（export M 项: KEY=VALUE…）`）；
+> - 仅 App 链路生存关键变量黑名单不透传（WINEPREFIX/WINE/WINELOADER/WINESERVER、DISPLAY/XAUTHORITY、HOME/TMPDIR、LD_PRELOAD/LD_LIBRARY_PATH/LD_DEBUG、BOX64_PATH/BOX64_LD_LIBRARY_PATH —— 覆盖即断链，日志里大声说明）；
+> - `PATH` 合并非覆盖（conf PATH 里缺失的目录前置补入，等价 sh 的 `export PATH=/usr/bin:$PATH`）；
+> - `GLIBC_BIN` 兜底导出（sh 同款，指向 rootfs 的 usr/local/bin）；
+> - locale.conf → `LC_ALL`/`LANG`；容器 env= 仍在链路最后可覆盖一切；cores.conf 的 PRIMARY_CORES 走通用导出（容器 cores 配置仍优先）。
+>
+> ## ④ rootfs / wine 构建中文依赖（"locales language-pack-zh-hans 这两个依赖没有，所以一直没有中文"）
+>
+> 对照用户提供的 wine-wow64 参考 yml 的依赖与"设置中文语言环境"步骤：
+> - `host-deps.sh` debian/ubuntu 分支：**探测式安装 `language-pack-zh-hans`**（Ubuntu 专属包名，Debian 无此包不炸）+ `locale-gen zh_CN.UTF-8` + `update-locale LANG=zh_CN.UTF-8`；arch 分支 locale.gen 同步启用 zh_CN.UTF-8（`locales` 包此前已装）；
+> - wine 构建已有 `--enable-nls` + zh_CN/wine.mo 落包校验（msgfmt 缺失时 CI 日志提示，App 侧 WineLocaleSupport 从 APK assets 兜底安装 zh_CN/zh_TW/ja/ko）；
+> - rootfs-locale 配方（glibc locale-archive 含 zh_CN.UTF-8）+ rootfs-fonts（CJK 字体）维持既有链路；
+> - **mfplat 补丁**（yml 的 wine_do_not_create_dxgi_manager2.patch）：核查后**不适用** —— 该补丁针对 wine-10.4/proton 树的 mfplat/main.c，wine 11（hangover-11.16）已重构删除 `resolver_create_gstreamer_handler` / `MFCreateDXGIDeviceManager`，hunk 无处落地；我们的 gstreamer 全家桶（good/bad/ugly/libav）已启用，媒体链路走 winegstreamer。
+>
+> ## ⑤ wine 构建：PE 交叉编译器修正（x86_64 形态 wine ≤9.x 收尾）
+>
+> - `projects/wine/build.sh`：`i386_CC`/`x86_64_CC` 由 NDK clang（`$CC`）改指 **llvm-mingw 包装器 clang**（i686/x86_64-w64-mingw32-clang，自带 mingw target）—— wine ≤9.x 旧 configure 会把环境预置的 CC 当 PE 编译器（探测被跳过），NDK clang 目标是 *-linux-android 编不出 PE 对象；wine 10+/hangover 树由 `--with-mingw=<dir>/clang` 统一覆盖（无害）；
+> - 退出码传播（make / make install / pre_package / build_system / make_pkg 五层硬失败）与 `-mabi=ms` 剥除（wine ≤9.x MSVCRTFLAGS）此前已在 v3.2.24 落地，本轮核查确认。
+
 > **v3.2.26（2026-11-04，源码包对应 App v2.38.23 / versionCode 86）**：数据丢失事故根治 + /opt 生态路径修正轮（用户 v3.2.25 实测反馈）。
 >
 > ## ① 【严重】删除容器把 Download / exagear 整目录内容删光 —— 根因与根治

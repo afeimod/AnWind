@@ -9,28 +9,28 @@ import java.util.concurrent.TimeUnit
 /**
  * v3.2.15（wineguanli.py 重制）：容器「函数库」设置的注册表落地。
  *
- * 对应 wineguanli.py 的 update_user_registry_file / update_windows_
- * version_in_system_reg：
- *  - dsound / dshow（DirectShow=quartz）→ HKCU\Software\Wine\DllOverrides
- *    的 DLL 加载序（builtin,native / native,builtin）；
+ * v3.2.27（用户强烈要求：去掉 APK 自带的 DllOverrides，完全按照
+ * rootfs/opt/prefix/ 下的注册表来）：**不再写任何 DllOverrides 键** ——
+ * dsound / dshow（DirectShow=quartz）的 DLL 加载序设置随内置表一起移除，
+ * 前缀的 DLL 加载序完全由 /opt/prefix 安装包的 user.reg 决定；
+ * 本类只保留与 DLL 加载序无关的两件套：
  *  - dpi → HKCU\Control Panel\Desktop 的 LogPixels（dword，十六进制 8 位）；
  *  - winver → HKLM\Software\Microsoft\Windows NT\CurrentVersion 的
  *    CurrentVersion / ProductName / CurrentBuild 三件套（wineguanli.py
  *    版本映射表逐条移植，见 [WindowsVersions]）。
  *
- * 实现方式：单次 `wine regedit /s` 导入（与 [WineRegistry.ensureDllOverrides]
- * 同一模式），不逐键起进程；wineguanli.py 的直接文本改写依赖其特定
- * 前缀编码（UTF-8），而 wine 原生前缀的 .reg 为 UTF-16LE —— regedit
- * 导入对两种形态都正确，且无需关心编码。
+ * 实现方式：单次 `wine regedit /s` 导入；wineguanli.py 的直接文本改写
+ * 依赖其特定前缀编码（UTF-8），而 wine 原生前缀的 .reg 为 UTF-16LE ——
+ * regedit 导入对两种形态都正确，且无需关心编码。
  *
- * 幂等：.anwind-library 标记记录已应用的四元组指纹，值变化才重新导入；
+ * 幂等：.anwind-library 标记记录已应用的指纹，值变化才重新导入；
  * 失败不阻断启动链（下次自动重试）。
  */
 object WineLibrary {
 
     private fun marker(prefix: File) = File(prefix, ".anwind-library")
 
-    /** 四元组指纹（值变化 → 重新导入）。 */
+    /** 指纹（值变化 → 重新导入；dsound/dshow 已不再写注册表，仅参与指纹）。 */
     private fun fingerprint(c: ContainerData): String =
         "${c.dsound}|${c.dshow}|${c.dpi}|${c.winver}"
 
@@ -53,7 +53,7 @@ object WineLibrary {
             val prev = runCatching { mark.readText().trim() }.getOrDefault("")
             if (prev == fp) return true
         }
-        log("应用函数库设置（dsound/quartz/DPI=${container.dpi}/Windows=${WindowsVersions.fromId(container.winver).label}）……")
+        log("应用函数库设置（DPI=${container.dpi}/Windows=${WindowsVersions.fromId(container.winver).label}；DLL 加载序不写入 —— 完全遵循 /opt/prefix 安装包注册表）……")
         return try {
             val anwindDir = File(prefix, "drive_c/anwind")
             anwindDir.mkdirs()
@@ -71,7 +71,7 @@ object WineLibrary {
             val code = if (finished) runCatching { cmd.waitFor() }.getOrDefault(-1) else -1
             if (finished && code == 0) {
                 runCatching { mark.writeText(fp) }
-                log("函数库设置已写入注册表（dsound=${container.dsound} quartz=${container.dshow} DPI=${container.dpi}）")
+                log("函数库设置已写入注册表（DPI=${container.dpi} Windows=${WindowsVersions.fromId(container.winver).label}）")
                 true
             } else {
                 log("警告: 函数库设置导入未确认成功（退出码=$code；下次启动自动重试）")
@@ -103,14 +103,11 @@ object WineLibrary {
         else "函数库设置导入失败（详见日志；下次启动自动重试）"
     }
 
-    /** 生成 regedit 导入文件（REGEDIT4 / ANSI-ASCII，wine regedit 原生支持）。 */
+    /** 生成 regedit 导入文件（REGEDIT4 / ANSI-ASCII，wine regedit 原生支持）。
+     *  v3.2.27：不再包含 DllOverrides 键（用户要求完全按 /opt/prefix 注册表）。 */
     private fun buildReg(c: ContainerData): String = buildString {
         val ver = WindowsVersions.fromId(c.winver)
         appendLine("REGEDIT4")
-        appendLine()
-        appendLine("[HKEY_CURRENT_USER\\Software\\Wine\\DllOverrides]")
-        appendLine("\"dsound\"=\"${c.dsound}\"")
-        appendLine("\"quartz\"=\"${c.dshow}\"")
         appendLine()
         appendLine("[HKEY_CURRENT_USER\\Control Panel\\Desktop]")
         appendLine("\"LogPixels\"=dword:${dpiHex(c.dpi)}")

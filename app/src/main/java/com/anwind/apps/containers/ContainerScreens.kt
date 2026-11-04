@@ -1410,18 +1410,12 @@ private fun LibraryTab(
     onChange: (ContainerData) -> Unit,
     onApplyNow: () -> Unit
 ) {
-    GGroup("DirectSound (dsound) 设置") {
-        GComboBox(
-            options = listOf("builtin,native", "native,builtin"),
-            selected = edit.dsound,
-            onSelect = { onChange(edit.copy(dsound = it)) }
-        )
-    }
-    GGroup("DirectShow (quartz) 设置") {
-        GComboBox(
-            options = listOf("builtin,native", "native,builtin"),
-            selected = edit.dshow,
-            onSelect = { onChange(edit.copy(dshow = it)) }
+    GGroup("DLL 加载序（由 /opt/prefix 安装包决定）") {
+        GNote(
+            "v3.2.27 起 App 不再写任何 DllOverrides —— DLL 加载序完全由\n" +
+                "rootfs/opt/prefix/ 安装包的 user.reg / system.reg 决定，\n" +
+                "与 startwine.sh 参考链路一致（避免内置覆盖表引发 media 错误）。\n" +
+                "如需自定义，请在容器 env= 里加 WINEDLLOVERRIDES 或重导 /opt/prefix 注册表"
         )
     }
     GGroup("DPI设置 (屏幕缩放)") {
@@ -1462,11 +1456,11 @@ private fun LibraryTab(
     }
     GGroup("说明") {
         GNote(
-            "1. DirectSound (dsound) 用于音频播放\n" +
-                "2. DirectShow (quartz) 用于多媒体播放\n" +
-                "3. DPI设置控制Windows应用程序的显示缩放比例\n" +
-                "4. Windows版本设置会修改system.reg中的Windows版本信息\n" +
-                "5. 配置保存到容器（dsound/dshow/dpi/winver），启动链自动写入注册表"
+            "1. DLL 加载序（dsound/quartz 等）不再由 App 写入注册表 ——\n" +
+                "   完全按 rootfs/opt/prefix/ 安装包的注册表执行（v3.2.27）\n" +
+                "2. DPI设置控制Windows应用程序的显示缩放比例\n" +
+                "3. Windows版本设置会修改system.reg中的Windows版本信息\n" +
+                "4. 配置保存到容器（dpi/winver），启动链自动写入注册表"
         )
     }
     // wineguanli.py：💾 立即应用设置
@@ -1510,7 +1504,7 @@ private fun MoreConfigTab(
                 appendLine("架构: ${edit.backend.label}　Wine: ${edit.wine.ifEmpty { "默认" }}")
                 appendLine("分辨率: ${if (edit.screen == "native") "全屏" else edit.screen}（${edit.dmode.label}）")
                 appendLine("CPU主核心: ${edit.cores.ifEmpty { "全部（不隔离）" }}")
-                appendLine("dsound=${edit.dsound} quartz=${edit.dshow} DPI=${edit.dpi}")
+                appendLine("DPI=${edit.dpi}（dsound/quartz 加载序随 /opt/prefix 安装包）")
                 appendLine("Windows: ${WindowsVersions.fromId(edit.winver).label}")
                 appendLine("MANGOHUD: ${edit.mangohud.ifEmpty { "未配置" }}")
                 appendLine("env 变量数: ${envList.size}" + if (envList.isEmpty()) "" else "（${envList.joinToString(", ") { it.first }}）")
@@ -2167,20 +2161,12 @@ private fun MoreSettingsDialog(
                     1 -> {
                         // wineguanli.py create_library_tab（对话框版，全局语义 → 容器）
                         GGroup("函数库设置") {
-                            GField("DirectSound (dsound)") {
-                                GComboBox(
-                                    options = listOf("builtin,native", "native,builtin"),
-                                    selected = edit.dsound,
-                                    onSelect = { edit = edit.copy(dsound = it) }
-                                )
-                            }
-                            GField("DirectShow (quartz)") {
-                                GComboBox(
-                                    options = listOf("builtin,native", "native,builtin"),
-                                    selected = edit.dshow,
-                                    onSelect = { edit = edit.copy(dshow = it) }
-                                )
-                            }
+                            // v3.2.27：DLL 加载序（dsound/quartz）不再由 App 写注册表
+                            GNote(
+                                "DLL 加载序完全由 rootfs/opt/prefix/ 安装包注册表决定\n" +
+                                    "（v3.2.27 起 App 不写 DllOverrides，防 media 错误）；\n" +
+                                    "自定义请用容器 env= 的 WINEDLLOVERRIDES"
+                            )
                             GField("DPI (LogPixels)") {
                                 val dpi = edit.dpi.toIntOrNull() ?: 96
                                 Row(verticalAlignment = Alignment.CenterVertically) {

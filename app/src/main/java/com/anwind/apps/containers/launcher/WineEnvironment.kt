@@ -573,22 +573,25 @@ object WineEnvironment {
     }
 
     /**
-     * 应用 /opt 生态环境（conf 白名单 + locale.conf）。
+     * 应用 /opt 生态环境（conf **source 语义** + locale.conf）。
      *
-     * v3.2.26：新增 wineDir/log 参数 —— 探测候选加入 wine 槽位目录
-     * （WinFusion 风格包把 conf/prefix 打进 wine 目录树的场景），
-     * 每一步决策写进会话日志（探测结果、locale 生效/跳过原因、
-     * 逐项 conf 应用），用户在日志里直接看到"读了哪里、用了哪些"。
-     *
-     * 调用位置：applyWineCompatEnv 之后、applyExtraEnv 之前 ——
-     *  * conf 的 WINEESYNC/WINEFSYNC/BOX64_* 覆盖 AnWind 安全默认/预设
-     *    （用户安装的调优包优先于内置默认）；
+     * v3.2.27（用户原话："启动 wine 依旧没有读取 opt 下的任何 conf 配置，
+     * 你根本没有 env 或者 export，更没有执行 sh 里那种. /路径"）：
+     * 旧实现的 BOX64_*/WINEESYNC/… 白名单太窄 —— env.conf 里的
+     * MESA_*/GALLIUM_*/自定义调优变量全部被丢弃，等于没读。现按
+     * startwine.sh `. /opt/conf/*.conf` 的 source 语义执行：
+     *  - **全部 KEY=VALUE 都 export** 给 wine 进程（逐项日志可见），
+     *    仅 App 链路生存所需的关键变量（WINEPREFIX/加载器/X11/动态库
+     *    路径等，见 [CONF_BLOCKED_KEYS]）不透传并大声说明；
+     *  - PATH 特殊处理：合并而非覆盖 —— conf PATH 中 env PATH 缺失的
+     *    目录前置补入（等价 sh 的 `export PATH=/usr/bin:$PATH` 追加语义）；
+     *  - GLIBC_BIN 兜底导出（sh：`export GLIBC_BIN=/usr/local/bin`）——
+     *    指向 rootfs 的 usr/local/bin，供 rootfs 脚本定位 box64/wineserver；
      *  * 容器 env=（applyExtraEnv，链路最后）仍可覆盖一切；
      *  * locale.conf 覆盖基础 LANG（安装包的显式语言声明）并加导 LC_ALL
-     *    （wine 按 LC_ALL 决定 ANSI 代码页，CJK 程序必需；App 原生链无
-     *    bash，无 setlocale 噪音）；
-     *  * cores.conf 的 PRIMARY_CORES 仅在容器 cores 未配置时生效
-     *    （applyTuningEnv 在其后，容器配置始终优先）。
+     *    （wine 按 LC_ALL 决定 ANSI 代码页，CJK 程序必需）；
+     *  * cores.conf 的 PRIMARY_CORES/SECONDARY_CORES 走通用导出；
+     *    applyTuningEnv 在其后，容器 cores 配置始终优先。
      */
     fun applyOptConfEnv(
         env: MutableMap<String, String>,
@@ -599,6 +602,7 @@ object WineEnvironment {
         val root = optRoot(wineDir)
         if (root == null) {
             log("opt 生态: 未检测到（探测: ${optProbeReport(wineDir)}）—— conf/locale.conf 全部旁路")
+            log("→ 期望位置: /data/data/com.anwind/files/rootfs/opt/{conf,locale.conf,prefix,dxvk1} 或 wine 槽位目录内同名布局")
             return
         }
         val conf = readOptConfs(wineDir)
@@ -612,7 +616,7 @@ object WineEnvironment {
             else -> {
                 env["LC_ALL"] = lc
                 env["LANG"] = lc
-                log("opt locale.conf → LC_ALL=$lc（wine 按 LC_ALL 决定 ANSI 代码页）")
+                log("opt 生态: locale.conf 生效 → export LC_ALL=$lc LANG=$lc（wine 按 LC_ALL 决定 ANSI 代码页）")
             }
         }
         if (conf.isEmpty()) {
@@ -622,36 +626,66 @@ object WineEnvironment {
         }
         val userEnv = container.env
         val applied = mutableListOf<String>()
+        val blocked = mutableListOf<String>()
         conf.forEach { (k, v) ->
             when {
-                k.startsWith("BOX64_") ||
-                    k == "WINEESYNC" || k == "WINEFSYNC" || k == "WINEDEBUG" ||
-                    k == "WINEDLLOVERRIDES" || k.startsWith("WINEHIDE") -> {
-                    // 容器 env= 已显式设置的键跳过（最高优先）
-                    if (userEnv.contains("$k=")) {
-                        log("opt conf: $k 被容器 env= 显式配置覆盖，保留容器值")
-                    } else {
-                        env[k] = v
-                        applied.add("$k=$v")
+                // 容器 env= 已显式设置的键跳过（最高优先）
+                userEnv.contains("$k=") -> {
+                    log("opt conf: $k 被容器 env= 显式配置覆盖，保留容器值")
+                }
+                k in CONF_BLOCKED_KEYS -> blocked.add(k)
+                k == "PATH" -> {
+                    // 合并而非覆盖：conf PATH 里 env PATH 缺失的目录前置补入
+                    // （sh 的 `export PATH=/usr/bin:$PATH` 同款追加语义）
+                    val cur = env["PATH"] ?: ""
+                    val have = cur.split(':').filter { it.isNotBlank() }.toSet()
+                    val add = v.split(':').filter { it.isNotBlank() && it !in have }
+                    if (add.isNotEmpty()) {
+                        env["PATH"] = (add + cur).joinToString(":")
+                        applied.add("PATH+=${add.joinToString(":")}")
                     }
                 }
-                k == "PRIMARY_CORES" && !env.containsKey("PRIMARY_CORES") -> {
-                    env["PRIMARY_CORES"] = v
-                    applied.add("PRIMARY_CORES=$v")
-                    conf["SECONDARY_CORES"]?.let {
-                        env.putIfAbsent("SECONDARY_CORES", it)
-                        applied.add("SECONDARY_CORES=$it")
-                    }
+                else -> {
+                    env[k] = v
+                    applied.add("$k=$v")
                 }
             }
         }
+        if (blocked.isNotEmpty()) {
+            log("opt 生态: ${blocked.joinToString(", ")} 属 App 链路关键变量（WINEPREFIX/加载器/X11/动态库路径），conf 值不透传")
+        }
         // wine_path.conf 已按用户要求剔除：wine 目录由 AnWind 槽位体系管理
-        if (applied.isEmpty()) {
-            log("opt 生态: conf ${conf.size} 项均不在应用白名单（BOX64_*/WINEESYNC/WINEFSYNC/WINEDEBUG/WINEDLLOVERRIDES/cores 之外不透传）")
-        } else {
-            log("opt 生态: 已应用 ${applied.size} 项（${applied.joinToString(", ").take(300)}）")
+        log(
+            if (applied.isEmpty()) "opt 生态: conf ${conf.size} 项解析后无新增导出（全部被容器 env= 覆盖或为关键变量）"
+            else "opt 生态: conf ${conf.size} 项已 source（export ${applied.size} 项: ${applied.joinToString(", ").take(400)}）"
+        )
+        // GLIBC_BIN（startwine.sh：export GLIBC_BIN=/usr/local/bin）——
+        // 指向 rootfs 的 usr/local/bin（box64/wineserver 包装所在地），
+        // conf/env 均未设置且目录存在时兜底导出，供 rootfs 脚本消费。
+        if (!env.containsKey("GLIBC_BIN") && !userEnv.contains("GLIBC_BIN=")) {
+            val glibcBin = File("$RFS_USR/local/bin")
+            if (glibcBin.isDirectory) {
+                env["GLIBC_BIN"] = glibcBin.absolutePath
+                log("opt 生态: export GLIBC_BIN=${glibcBin.absolutePath}（startwine.sh 同款）")
+            }
         }
     }
+
+    /**
+     * conf 值不得覆盖 App 链路关键变量（wine/box64 进程生存所需）。
+     * source 语义的黑名单：WINEPREFIX/加载器与 X11 会话/动态库搜索路径
+     * （LD_* 会破坏 aarch64 宿主二进制加载）/BOX64_*_PATH（App 按 wine
+     * 槽位精心构造，覆盖即断链）。其余变量全部透传。
+     */
+    private val CONF_BLOCKED_KEYS = setOf(
+        "WINEPREFIX", "WINE", "WINELOADER", "WINESERVER", "WINEDLLPATH", "WINEDLLDIR",
+        "WINELOADERNOEXEC", "WINEBOOT",
+        "DISPLAY", "XAUTHORITY", "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR",
+        "HOME", "PWD", "SHELL", "USER", "LOGNAME", "TERM",
+        "TMPDIR", "TEMP", "TMP", "PULSE_SERVER",
+        "LD_PRELOAD", "LD_LIBRARY_PATH", "LD_DEBUG",
+        "BOX64_PATH", "BOX64_LD_LIBRARY_PATH"
+    )
 
     /**
      * 用户附加环境 + DLL 覆盖（apply_extra_env 移植）。

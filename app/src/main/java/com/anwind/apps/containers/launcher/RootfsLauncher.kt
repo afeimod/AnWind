@@ -561,11 +561,13 @@ object RootfsLauncher {
 
             // 6c) v3.2.25（用户问题：wine 启动没读 rootfs/opt/conf 与
             //     locale.conf）：/opt 生态环境（startwine.sh/startfex.sh
-            //     参考链路）—— opt/conf/*.conf 白名单（WINEESYNC/BOX64_*
-            //     覆盖安全默认，用户安装的调优包优先）+ opt/locale.conf
+            //     参考链路）—— v3.2.27 升级为 **source 语义**：
+            //     opt/conf/*.conf 的全部 KEY=VALUE 都 export 给 wine
+            //     进程（仅 WINEPREFIX/加载器/X11/LD_*/BOX64_*_PATH 等
+            //     App 生存关键变量不透传；PATH 合并追加），+ opt/locale.conf
             //     （LC_ALL/LANG，wine 按 LC_ALL 决定 ANSI 代码页）+
-            //     cores.conf（PRIMARY_CORES，容器 cores 未配置时生效）。
-            //     容器 env=（applyExtraEnv，链路最后）仍可覆盖一切。
+            //     GLIBC_BIN 兜底导出。容器 env=（applyExtraEnv，链路最后）
+            //     仍可覆盖一切。
             WineEnvironment.applyOptConfEnv(env, container, resolved.wineDir) { sink.stamp(it) }
 
             // v3.2.10（用户问题：syswow64 无法生成）：恢复 wineboot 会话的
@@ -668,63 +670,10 @@ object RootfsLauncher {
                         sink.stamp(line)
                         prefixLogLine(key, line)
                     }
-                    // v3.2.25（用户问题：构建前缀没解压 rootfs/opt/prefix
-                    // 的文件与注册表）：WinFusion 风格 wine 包的前缀预置
-                    // 资产注入（startwine.sh 301-369 行同源：drive_c/
-                    // directx/fix-fonts 归档 + start/ 开始菜单 + marlett.ttf
-                    // + user/system/fix-services 注册表 + opt/dxvk1）。
-                    // 幂等（.anwind-opt-prefix 标记）；无 /opt/prefix 零动作。
-                    runCatching {
-                        WineRegistry.bootstrapOptPrefix(resolved, container, env) { line ->
-                            sink.stamp(line)
-                            prefixLogLine(key, line)
-                        }
-                    }.onFailure {
-                        sink.stamp("警告: /opt/prefix 预置资产注入异常: ${it.message}（下次启动自动重试）")
-                    }
-                    // v3.1：dosdevices 兑底（z: → / 等）—— /storage/emulated/0
-                    // 这类宿主路径经 Z: 盘可达；缺失时某些精简 wine 构建不建
-                    // z: 盘，游戏按绝对路径找资源文件会全挂（media 找不到的
-                    // 另一诱因）
-                    WineRegistry.ensureDosdevices(container) { sink.stamp(it) }
-                    WineRegistry.ensureEmulateModeset(resolved, container, env) { sink.stamp(it) }
-                    // v3.2.11（用户问题 3）：wine 创建的窗口现代化 —— ClearType
-                    // 字体平滑 / 拖动显示窗口内容 / light 视觉主题 / Windows 10/11
-                    // 强调色配色 / 程序化渐变壁纸。单次 regedit 导入 + 前缀内幂等
-                    // 标记；游戏自绘皮肤不受影响，失败不阻断启动（下次自动重试）。
-                    WineRegistry.ensureModernLook(resolved, container, env) { sink.stamp(it) }
-                    // v3.2.14（用户问题 3）：构建前缀时自动打入 APK 内置 DXVK
-                    // （assets/dxvk/dxvk-<ver>.tar.gz → C:\windows 的 system32/
-                    // syswow64，容器 dxvk=off 时跳过；幂等指纹，失败不阻断）。
-                    // v3.2.26：移到 DllOverrides **之前** —— DllOverrides 现在
-                    // 按前缀内实际存在的 native DLL 过滤，DXVK 落盘后 d3d9/
-                    // dxgi 等键才会被保留（顺序颠倒会把 DXVK 键全部过滤掉）。
-                    runCatching {
-                        com.anwind.apps.terminal.termux.AnWindTzstAssets.applyDxvkToContainer(
-                            context,
-                            File(container.prefixPath),
-                            dxvkEnabled = container.dxvk != ContainerData.DXVK_OFF
-                        ) { sink.stamp(it) }
-                    }.onFailure {
-                        sink.stamp("警告: DXVK 注入异常: ${it.message}（下次启动自动重试）")
-                    }
-                    // v3.2.14（用户问题 3）：构建前缀时注入 DllOverrides 注册表
-                    // （DXVK/DirectX 组件；v3.2.26 修正：安装包 user.reg 已
-                    // 导入时跳过内置表，否则按前缀内实际存在的 native DLL
-                    // 过滤后写入；幂等，失败不阻断）。
-                    runCatching {
-                        WineRegistry.ensureDllOverrides(resolved, container, env) { sink.stamp(it) }
-                    }.onFailure {
-                        sink.stamp("警告: DllOverrides 注入异常: ${it.message}（下次启动自动重试）")
-                    }
-                    // v3.2.15（wineguanli.py 重制）：函数库设置注册表落地
-                    // （dsound/quartz DLL 加载序 + LogPixels DPI + Windows 版本
-                    // 三件套；regedit 导入，指纹幂等，失败不阻断）。
-                    runCatching {
-                        WineLibrary.ensureApplied(resolved, container, env) { sink.stamp(it) }
-                    }.onFailure {
-                        sink.stamp("警告: 函数库设置注入异常: ${it.message}（下次启动自动重试）")
-                    }
+                    // v3.2.27：wineboot 之后的统一前缀构建链（提取为
+                    // postPrefixBootChain —— 与 wineboot -i 会话的 onExit
+                    // 后续链同源，两条入口不再各写一份）。
+                    postPrefixBootChain(context, resolved, container, env, key, sink)
                 } finally {
                     _prefixBuildFlow.value = null
                 }
@@ -816,6 +765,25 @@ object RootfsLauncher {
                 }
                 .onExit { code ->
                     sessionEnded.set(true)
+                    // v3.2.27（用户问题：“wineboot i 结束后依旧是结束构建前缀了，
+                    // 啥也没有继续，下次启动软件才进行解压和注册表”）：
+                    // wineboot -i 进程退出后**继续**前缀构建链 —— /opt/prefix
+                    // 资产解压 + 安装包注册表导入 + dosdevices + DXVK + 函数库
+                    // 设置，全部在本会话（前缀构建窗口）内完成并逐步显示日志，
+                    // 对齐 startwine.sh 301-369 行（wineboot -u 之后的 tar 解压 /
+                    // regedit 导入 / dosdevices / fix-fonts / dxvk 一条龙）。
+                    // 旧版这些步骤只在下次启动游戏时才跑（isHostToolCommand
+                    // 分支把它们全部跳过）。
+                    if (isPrefixSession) {
+                        runCatching {
+                            postPrefixBootChain(context, resolved, container, env, key, sink)
+                        }.onFailure {
+                            sink.stamp("警告: wineboot 后续链异常: ${it.message}（下次启动自动重试）")
+                            prefixLogLine(key, "wineboot 后续链异常: ${it.message}")
+                        }
+                        sink.stamp("前缀构建完成（wineboot + /opt/prefix 资产解压 + 注册表链全部结束）")
+                        prefixLogLine(key, "前缀构建完成")
+                    }
                     onSessionExit(key, code, sink)
                     if (isPrefixSession) _prefixBuildFlow.value = null
                 }
@@ -863,6 +831,81 @@ object RootfsLauncher {
         } finally {
             // 仅当令牌仍归本链所有时才清除（新链已覆盖时不误伤）
             pendingLaunches.remove(key, token)
+        }
+    }
+
+    /**
+     * v3.2.27：wineboot 之后的统一前缀构建链（两条入口共用）：
+     *  - 游戏会话（非宿主工具命令）：initializePrefixIfNeeded 同步跑完
+     *    wineboot -i 后接着执行；
+     *  - 手动 wineboot -i 会话：进程退出后在 onExit 回调里接着执行 ——
+     *    修复“wineboot 结束后啥也不继续，下次启动才解压/导注册表”。
+     *
+     * 步骤（对齐 startwine.sh 前缀构建段 301-369 行，每步日志可见）：
+     *  1. bootstrapOptPrefix —— /opt/prefix 预置资产（drive_c/directx/
+     *     fix-fonts 归档 + start 开始菜单 + marlett.ttf + user/system/
+     *     fix-services 注册表 + dxvk1）；
+     *  2. ensureDosdevices —— d:/e:/z: 盘符链接兑底；
+     *  3. ensureEmulateModeset —— 无 RandR 环境的显示模式注册表；
+     *  4. ensureModernLook —— 窗口现代化（ClearType/主题/壁纸）；
+     *  5. applyDxvkToContainer —— APK 内置 DXVK（容器 dxvk=off 跳过）；
+     *  6. purgeLegacyDllOverrides —— v3.2.27：清除旧版内置 DllOverrides
+     *     残留并重导 /opt/prefix 注册表（App 从此不写任何 DllOverrides，
+     *     完全按安装包注册表来）；
+     *  7. WineLibrary.ensureApplied —— DPI/Windows 版本（不再含 DLL 加载序）。
+     */
+    private fun postPrefixBootChain(
+        context: Context,
+        resolved: WineRuntime.Resolved,
+        container: ContainerData,
+        env: Map<String, String>,
+        key: String,
+        sink: SessionLogSink
+    ) {
+        val prefixLog: (String) -> Unit = { line ->
+            sink.stamp(line)
+            prefixLogLine(key, line)
+        }
+        runCatching {
+            WineRegistry.bootstrapOptPrefix(resolved, container, env, prefixLog)
+        }.onFailure {
+            sink.stamp("警告: /opt/prefix 预置资产注入异常: ${it.message}（下次启动自动重试）")
+        }
+        // v3.1：dosdevices 兑底（z: → / 等）—— /storage/emulated/0
+        // 这类宿主路径经 Z: 盘可达；缺失时某些精简 wine 构建不建
+        // z: 盘，游戏按绝对路径找资源文件会全挂（media 找不到的
+        // 另一诱因）
+        WineRegistry.ensureDosdevices(container) { sink.stamp(it) }
+        WineRegistry.ensureEmulateModeset(resolved, container, env) { sink.stamp(it) }
+        // v3.2.11（用户问题 3）：wine 创建的窗口现代化 —— ClearType
+        // 字体平滑 / 拖动显示窗口内容 / light 视觉主题。游戏自绘皮肤
+        // 不受影响，失败不阻断启动（下次自动重试）。
+        WineRegistry.ensureModernLook(resolved, container, env) { sink.stamp(it) }
+        // v3.2.14（用户问题 3）：构建前缀时自动打入 APK 内置 DXVK
+        // （assets/dxvk/dxvk-<ver>.tar.gz → C:\windows 的 system32/
+        // syswow64，容器 dxvk=off 时跳过；幂等指纹，失败不阻断）。
+        runCatching {
+            com.anwind.apps.terminal.termux.AnWindTzstAssets.applyDxvkToContainer(
+                context,
+                File(container.prefixPath),
+                dxvkEnabled = container.dxvk != ContainerData.DXVK_OFF
+            ) { sink.stamp(it) }
+        }.onFailure {
+            sink.stamp("警告: DXVK 注入异常: ${it.message}（下次启动自动重试）")
+        }
+        // v3.2.27（用户强烈要求）：清除旧版内置 DllOverrides 残留 +
+        // 重导 /opt/prefix 安装包注册表（App 不再写任何 DllOverrides）。
+        runCatching {
+            WineRegistry.purgeLegacyDllOverrides(resolved, container, env, prefixLog)
+        }.onFailure {
+            sink.stamp("警告: 旧版 DllOverrides 清洗异常: ${it.message}（下次启动自动重试）")
+        }
+        // v3.2.15（wineguanli.py 重制）：函数库设置注册表落地
+        // （v3.2.27 起仅 DPI/Windows 版本，无 DLL 加载序；指纹幂等）。
+        runCatching {
+            WineLibrary.ensureApplied(resolved, container, env) { sink.stamp(it) }
+        }.onFailure {
+            sink.stamp("警告: 函数库设置注入异常: ${it.message}（下次启动自动重试）")
         }
     }
 

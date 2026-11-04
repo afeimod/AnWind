@@ -284,90 +284,67 @@ object WineRegistry {
     }
 
     // ------------------------------------------------------------------
-    // v3.2.14（用户问题 3）：HKCU\Software\Wine\DllOverrides 注入
+    // v3.2.27（用户强烈要求）：APK 内置 DllOverrides 彻底移除
     // ------------------------------------------------------------------
 
-    /** DllOverrides 已写入的标记文件（容器前缀内）。 */
+    /** 旧版（v3.2.14 ~ v3.2.26）DllOverrides 已写入的标记文件（容器前缀内）。 */
     private fun dllOverridesMarker(prefix: File) = File(prefix, ".anwind-dlloverrides")
 
+    /** 旧版注入清洗完成标记（幂等，v3.2.27 新增）。 */
+    private fun dllOverridesPurgedMarker(prefix: File) = File(prefix, ".anwind-dlloverrides-purged")
+
     /**
-     * v3.2.14（用户问题 3）：构建前缀时注入 Software\Wine\DllOverrides ——
-     * DXVK/DirectX 组件组合拳的注册表配置（d3d9/dxgi/wined3d 等 native 优先、
-     * xinput/quartz/dinput builtin 优先，共 147 项，列表与用户提供的
-     * 配置逐字一致）。
+     * v3.2.27（用户原话："求求你把 apk 自带的 DllOverrides 注册去掉吧，
+     * 自从有了他很多游戏都报 media 错误，完全按照 rootfs/opt/prefix/
+     * 下的注册表来"）：
      *
-     * 单次 wine regedit /s 导入（一个 wine 进程完成全部键值，与
-     * [ensureModernLook] 同一模式），不逐键起进程。幂等标记
-     * .anwind-dlloverrides；失败不阻断启动链（下次自动重试）。
+     *  - 内置 147 项 DllOverrides 注入（ensureDllOverrides /
+     *    DLL_OVERRIDE_ENTRIES）已整体删除 —— 前缀的 DLL 加载序一律以
+     *    rootfs/opt/prefix/ 安装包的 user.reg / system.reg / fix-services.reg
+     *    为准（startwine.sh 同源语义）；
+     *  - 对 v3.2.14 ~ v3.2.26 期间构建过的旧前缀做**一次性清洗**：
+     *    ① regedit 导入 `"键"=-` 删除语法，清掉内置表写过的全部键值
+     *       （DLL 加载序恢复 wine 默认）；
+     *    ② 重导 /opt/prefix/{user,system,fix-services}.reg（存在才导）——
+     *       旧链路里内置表在安装包注册表【之后】导入，把安装包调好的
+     *       值覆盖掉了，这里按参考脚本顺序补回来；
+     *    ③ 删除旧标记 .anwind-dlloverrides 与 dlloverrides.reg 残留。
      *
-     * native,builtin 语义：前缀内 system32/syswow64 有对应 DLL（如注入的
-     * DXVK）则优先加载，否则回退 wine 内建 —— 未注入 DXVK 的容器该配置
-     * 无副作用，无需按容器开关区分。
+     * 幂等（.anwind-dlloverrides-purged 标记）；从未注入过的前缀（无旧
+     * 标记、无残留 reg 文件）零动作零日志。失败不阻断启动链。
      */
-    fun ensureDllOverrides(
+    fun purgeLegacyDllOverrides(
         resolved: WineRuntime.Resolved,
         container: ContainerData,
         env: Map<String, String>,
         log: (String) -> Unit = {}
-    ): Boolean {
+    ) {
         val prefix = File(container.prefixPath)
-        if (!File(prefix, "system.reg").isFile) {
-            log("跳过 DllOverrides 注入：前缀未就绪（system.reg 缺失 —— wineboot 未成功）")
-            return true   // 前缀未建：留给 wineboot 后的下次启动
+        if (!File(prefix, "system.reg").isFile) return   // 前缀未建：无需清洗
+        if (dllOverridesPurgedMarker(prefix).isFile) return
+        val legacyReg = File(prefix, "drive_c/anwind/dlloverrides.reg")
+        val wasInjected = dllOverridesMarker(prefix).isFile || legacyReg.isFile
+        if (!wasInjected) {
+            runCatching { dllOverridesPurgedMarker(prefix).createNewFile() }
+            return
         }
-        if (dllOverridesMarker(prefix).isFile) return true
-        // v3.2.26（用户问题："apk 的 DllOverrides 注册表注册就是错误的，
-        // 乱七八糟的"）：安装包自带 user.reg 已导入时，DllOverrides 以
-        // **安装包配置为准**，内置表不再覆盖（参考链路语义：WinFusion
-        // 的 user.reg 是随包调好的，App 的 147 项组合拳只在无 /opt 生态
-        // 时兜底）。
-        if (optPrefixMarker(prefix).isFile) {
-            log("DllOverrides: 检测到 /opt/prefix 安装包 user.reg 已导入，内置覆盖表跳过（以安装包配置为准）")
-            return true
-        }
-        // v3.2.26：内置表按前缀内**实际存在**的 native DLL 过滤 ——
-        // "native,builtin" 仅在该 DLL 确实已落进 system32/syswow64 时
-        // 写入（DXVK 注入 / directx 运行时解压之后才轮到本函数），
-        // 否则该键跳过、让 wine 按默认序加载。修复旧版"强制 native
-        // 优先但前缀里根本没有该 DLL"导致的 D3DX/媒体加载失败
-        // （native 缺失时 wine 回落 builtin，而 d3dx9_* 等组件无
-        // builtin 实现 → 加载直接失败 → "Could not load required media"）。
-        val system32 = File(prefix, "drive_c/windows/system32")
-        val syswow64 = File(prefix, "drive_c/windows/syswow64")
-        fun nativeExists(name: String): Boolean =
-            File(system32, "$name.dll").isFile || File(syswow64, "$name.dll").isFile
-        val entries = DLL_OVERRIDE_ENTRIES.mapNotNull { (name, value) ->
-            when {
-                value == "builtin,native" -> name to value              // builtin 优先恒安全
-                nativeExists(name) -> name to value                     // native 存在才强制 native 优先
-                else -> null                                             // native 缺失：跳过
-            }
-        }
-        val dropped = DLL_OVERRIDE_ENTRIES.size - entries.size
-        if (entries.isEmpty()) {
-            log("DllOverrides: 前缀内无任何 native DirectX/DXVK DLL（既无 DXVK 注入也无 directx 运行时），内置覆盖表整体跳过（wine 默认加载序即为最优）")
-            runCatching { dllOverridesMarker(prefix).writeText("applied=1\nentries=0\nreason=no-native-dlls") }
-            return true
-        }
-        log("注入 Direct3D/DXVK DLL 覆盖注册表（HKCU\\Software\\Wine\\DllOverrides，${entries.size} 项" +
-            (if (dropped > 0) "，另 $dropped 项因前缀内无对应 native DLL 跳过" else "") + "）……")
-        return try {
+        log("检测到旧版（≤v3.2.26）内置 DllOverrides 残留 —— 按用户要求清除，前缀注册表完全以 /opt/prefix 安装包为准")
+        // ① 删除内置表键值（wine regedit 的 "name"=- 值删除语法）
+        runCatching {
             val anwindDir = File(prefix, "drive_c/anwind")
             anwindDir.mkdirs()
-            val reg = buildString {
+            val purge = File(anwindDir, "dlloverrides-purge.reg")
+            purge.writeText(buildString {
                 appendLine("REGEDIT4")
                 appendLine()
                 appendLine("[HKEY_CURRENT_USER\\Software\\Wine\\DllOverrides]")
-                for ((name, value) in entries) {
-                    appendLine("\"$name\"=\"$value\"")
+                for (name in LEGACY_DLL_OVERRIDE_NAMES) {
+                    appendLine("\"$name\"=-")
                 }
-            }
-            val regFile = File(anwindDir, "dlloverrides.reg")
-            regFile.writeText(reg)
-
+            })
             val cmd = NativeShellExecutor.create()
                 .setCommand(*WineRuntime.wineCommand(resolved).toTypedArray(),
-                            "regedit", "/s", "C:\\anwind\\dlloverrides.reg")
+                            "regedit", "/s", "C:\\anwind\\dlloverrides-purge.reg")
                 .putEnv(env)
                 .putEnv("WINEPREFIX", container.prefixPath)
                 .setWorkingDir(WineEnvironment.HOME_DIR)
@@ -375,168 +352,79 @@ object WineRegistry {
             val finished = runCatching { cmd.waitFor(120, TimeUnit.SECONDS) }.getOrDefault(false)
             val code = if (finished) runCatching { cmd.waitFor() }.getOrDefault(-1) else -1
             if (finished && code == 0) {
-                runCatching { dllOverridesMarker(prefix).writeText("applied=1\nentries=${entries.size}") }
-                log("DllOverrides 已写入（${entries.size} 项，仅含前缀内实际存在的 native DLL）")
-                true
+                log("已删除内置 DllOverrides 的 ${LEGACY_DLL_OVERRIDE_NAMES.size} 个键值（DLL 加载序恢复默认）")
             } else {
-                log("警告: DllOverrides 导入未确认成功（退出码=$code；下次启动自动重试）")
-                false
+                log("警告: DllOverrides 清洗退出码=$code（继续重导 /opt/prefix 注册表）")
             }
-        } catch (e: Exception) {
-            log("警告: DllOverrides 注入异常：${e.message}（下次启动自动重试）")
-            false
+        }.onFailure { log("警告: DllOverrides 清洗异常: ${it.message}（继续）") }
+        // ② 重导 /opt/prefix 注册表（存在才导 —— 与 bootstrapOptPrefix 同一通路）
+        val pd = WineEnvironment.optRoot(resolved.wineDir)?.let { File(it, "prefix") }
+        if (pd?.isDirectory == true) {
+            listOf("user.reg", "system.reg", "fix-services.reg").forEach { name ->
+                val reg = File(pd, name)
+                if (!reg.isFile) return@forEach
+                runCatching {
+                    val cmd = NativeShellExecutor.create()
+                        .setCommand(*WineRuntime.wineCommand(resolved).toTypedArray(),
+                                    "regedit", reg.absolutePath)
+                        .putEnv(env)
+                        .putEnv("WINEPREFIX", container.prefixPath)
+                        .setWorkingDir(WineEnvironment.HOME_DIR)
+                        .exec()
+                    val code = cmd.waitFor()
+                    log(if (code == 0) "重导安装包注册表: $name（恢复安装包的 DLL 加载序配置）"
+                        else "警告: 重导 $name 退出码 $code")
+                }.onFailure { log("警告: 重导 $name 异常: ${it.message}") }
+            }
+        } else {
+            log("（无 /opt/prefix 安装包 —— 仅删除内置键，不重导注册表）")
         }
+        // ③ 清残留 + 幂等标记
+        runCatching { legacyReg.delete() }
+        runCatching { dllOverridesMarker(prefix).delete() }
+        runCatching { dllOverridesPurgedMarker(prefix).createNewFile() }
+        log("旧版 DllOverrides 清洗完成 —— 今后前缀注册表完全由 /opt/prefix 安装包决定，App 不再写任何 DllOverrides")
     }
 
-    /** v3.2.14：DllOverrides 键值表（用户提供配置逐字转换，勿随意改动）。 */
-    private val DLL_OVERRIDE_ENTRIES: List<Pair<String, String>> = listOf(
-        "amstream" to "native,builtin",
-        "atl100" to "native,builtin",
-        "d3d10" to "native,builtin",
-        "d3d10_1" to "native,builtin",
-        "d3d10core" to "native,builtin",
-        "d3d11" to "native,builtin",
-        "d3d12" to "native,builtin",
-        "d3d12core" to "native,builtin",
-        "d3d8" to "native,builtin",
-        "d3d9" to "native,builtin",
-        "d3dcompiler_33" to "native,builtin",
-        "d3dcompiler_34" to "native,builtin",
-        "d3dcompiler_35" to "native,builtin",
-        "d3dcompiler_36" to "native,builtin",
-        "d3dcompiler_37" to "native,builtin",
-        "d3dcompiler_38" to "native,builtin",
-        "d3dcompiler_39" to "native,builtin",
-        "d3dcompiler_40" to "native,builtin",
-        "d3dcompiler_41" to "native,builtin",
-        "d3dcompiler_42" to "native,builtin",
-        "d3dcompiler_43" to "native,builtin",
-        "d3dcsx_42" to "native,builtin",
-        "d3dcsx_43" to "native,builtin",
-        "d3dx10" to "native,builtin",
-        "d3dx10_33" to "native,builtin",
-        "d3dx10_34" to "native,builtin",
-        "d3dx10_35" to "native,builtin",
-        "d3dx10_36" to "native,builtin",
-        "d3dx10_37" to "native,builtin",
-        "d3dx10_38" to "native,builtin",
-        "d3dx10_39" to "native,builtin",
-        "d3dx10_40" to "native,builtin",
-        "d3dx10_41" to "native,builtin",
-        "d3dx10_42" to "native,builtin",
-        "d3dx10_43" to "native,builtin",
-        "d3dx11_42" to "native,builtin",
-        "d3dx11_43" to "native,builtin",
-        "d3dx9_24" to "native,builtin",
-        "d3dx9_25" to "native,builtin",
-        "d3dx9_26" to "native,builtin",
-        "d3dx9_27" to "native,builtin",
-        "d3dx9_28" to "native,builtin",
-        "d3dx9_29" to "native,builtin",
-        "d3dx9_30" to "native,builtin",
-        "d3dx9_31" to "native,builtin",
-        "d3dx9_32" to "native,builtin",
-        "d3dx9_33" to "native,builtin",
-        "d3dx9_34" to "native,builtin",
-        "d3dx9_35" to "native,builtin",
-        "d3dx9_36" to "native,builtin",
-        "d3dx9_37" to "native,builtin",
-        "d3dx9_38" to "native,builtin",
-        "d3dx9_39" to "native,builtin",
-        "d3dx9_40" to "native,builtin",
-        "d3dx9_41" to "native,builtin",
-        "d3dx9_42" to "native,builtin",
-        "d3dx9_43" to "native,builtin",
-        "ddraw" to "native,builtin",
-        "dinput" to "builtin,native",
-        "dinput8" to "native,builtin",
-        "dmband" to "native,builtin",
-        "dmcompos" to "native,builtin",
-        "dmime" to "native,builtin",
-        "dmloader" to "native,builtin",
-        "dmscript" to "native,builtin",
-        "dmstyle" to "native,builtin",
-        "dmsynth" to "native,builtin",
-        "dmusic" to "native,builtin",
-        "dmusic32" to "native,builtin",
-        "dplaysvr.exe" to "native,builtin",
-        "dplayx" to "native,builtin",
-        "dpmodemx" to "native,builtin",
-        "dpnet" to "native,builtin",
-        "dpnhpast" to "native,builtin",
-        "dpnhupnp" to "native,builtin",
-        "dpnsvr.exe" to "native,builtin",
-        "dpwsockx" to "native,builtin",
-        "dsound" to "native,builtin",
-        "dswave" to "native,builtin",
-        "dxgi" to "native,builtin",
-        "mf" to "native,builtin",
-        "msvcm80" to "native,builtin",
-        "msvcp100" to "native,builtin",
-        "msvcp80" to "native,builtin",
-        "msvcr100" to "native,builtin",
-        "msvcr80" to "native,builtin",
-        "qasf" to "native,builtin",
-        "qcap" to "native,builtin",
-        "qdvd" to "native,builtin",
-        "qedit" to "native,builtin",
-        "quartz" to "builtin,native",
-        "vcomp" to "native,builtin",
-        "vcomp100" to "native,builtin",
-        "version" to "native,builtin",
-        "wined3d" to "native,builtin",
-        "winhttp" to "native,builtin",
-        "wmadmod" to "native,builtin",
-        "wmasf" to "native,builtin",
-        "wmvcore" to "native,builtin",
-        "wmvdecod" to "native,builtin",
-        "x3daudio1_0" to "native,builtin",
-        "x3daudio1_1" to "native,builtin",
-        "x3daudio1_2" to "native,builtin",
-        "x3daudio1_3" to "native,builtin",
-        "x3daudio1_4" to "native,builtin",
-        "x3daudio1_5" to "native,builtin",
-        "x3daudio1_6" to "native,builtin",
-        "x3daudio1_7" to "native,builtin",
-        "xactengine2_0" to "native,builtin",
-        "xactengine2_1" to "native,builtin",
-        "xactengine2_10" to "native,builtin",
-        "xactengine2_2" to "native,builtin",
-        "xactengine2_3" to "native,builtin",
-        "xactengine2_4" to "native,builtin",
-        "xactengine2_5" to "native,builtin",
-        "xactengine2_6" to "native,builtin",
-        "xactengine2_7" to "native,builtin",
-        "xactengine2_8" to "native,builtin",
-        "xactengine2_9" to "native,builtin",
-        "xactengine3_0" to "native,builtin",
-        "xactengine3_1" to "native,builtin",
-        "xactengine3_2" to "native,builtin",
-        "xactengine3_3" to "native,builtin",
-        "xactengine3_4" to "native,builtin",
-        "xactengine3_5" to "native,builtin",
-        "xactengine3_6" to "native,builtin",
-        "xactengine3_7" to "native,builtin",
-        "xapofx1_0" to "native,builtin",
-        "xapofx1_1" to "native,builtin",
-        "xapofx1_2" to "native,builtin",
-        "xapofx1_3" to "native,builtin",
-        "xapofx1_4" to "native,builtin",
-        "xapofx1_5" to "native,builtin",
-        "xaudio2_0" to "native,builtin",
-        "xaudio2_1" to "native,builtin",
-        "xaudio2_2" to "native,builtin",
-        "xaudio2_3" to "native,builtin",
-        "xaudio2_4" to "native,builtin",
-        "xaudio2_5" to "native,builtin",
-        "xaudio2_6" to "native,builtin",
-        "xaudio2_7" to "native,builtin",
-        "xinput1_1" to "builtin,native",
-        "xinput1_2" to "builtin,native",
-        "xinput1_3" to "builtin,native",
-        "xinput1_4" to "builtin,native",
-        "xinput9_1_0" to "builtin,native",
-        "xinputuap" to "builtin,native"
+    /** v3.2.14 ~ v3.2.26 内置表写过的全部键名（仅用于旧前缀清洗，勿再新增）。 */
+    private val LEGACY_DLL_OVERRIDE_NAMES: List<String> = listOf(
+        "amstream", "atl100", "d3d10", "d3d10_1",
+        "d3d10core", "d3d11", "d3d12", "d3d12core",
+        "d3d8", "d3d9", "d3dcompiler_33", "d3dcompiler_34",
+        "d3dcompiler_35", "d3dcompiler_36", "d3dcompiler_37", "d3dcompiler_38",
+        "d3dcompiler_39", "d3dcompiler_40", "d3dcompiler_41", "d3dcompiler_42",
+        "d3dcompiler_43", "d3dcsx_42", "d3dcsx_43", "d3dx10",
+        "d3dx10_33", "d3dx10_34", "d3dx10_35", "d3dx10_36",
+        "d3dx10_37", "d3dx10_38", "d3dx10_39", "d3dx10_40",
+        "d3dx10_41", "d3dx10_42", "d3dx10_43", "d3dx11_42",
+        "d3dx11_43", "d3dx9_24", "d3dx9_25", "d3dx9_26",
+        "d3dx9_27", "d3dx9_28", "d3dx9_29", "d3dx9_30",
+        "d3dx9_31", "d3dx9_32", "d3dx9_33", "d3dx9_34",
+        "d3dx9_35", "d3dx9_36", "d3dx9_37", "d3dx9_38",
+        "d3dx9_39", "d3dx9_40", "d3dx9_41", "d3dx9_42",
+        "d3dx9_43", "ddraw", "dinput", "dinput8",
+        "dmband", "dmcompos", "dmime", "dmloader",
+        "dmscript", "dmstyle", "dmsynth", "dmusic",
+        "dmusic32", "dplaysvr.exe", "dplayx", "dpmodemx",
+        "dpnet", "dpnhpast", "dpnhupnp", "dpnsvr.exe",
+        "dpwsockx", "dsound", "dswave", "dxgi",
+        "mf", "msvcm80", "msvcp100", "msvcp80",
+        "msvcr100", "msvcr80", "qasf", "qcap",
+        "qdvd", "qedit", "quartz", "vcomp",
+        "vcomp100", "version", "wined3d", "winhttp",
+        "wmadmod", "wmasf", "wmvcore", "wmvdecod",
+        "x3daudio1_0", "x3daudio1_1", "x3daudio1_2", "x3daudio1_3",
+        "x3daudio1_4", "x3daudio1_5", "x3daudio1_6", "x3daudio1_7",
+        "xactengine2_0", "xactengine2_1", "xactengine2_10", "xactengine2_2",
+        "xactengine2_3", "xactengine2_4", "xactengine2_5", "xactengine2_6",
+        "xactengine2_7", "xactengine2_8", "xactengine2_9", "xactengine3_0",
+        "xactengine3_1", "xactengine3_2", "xactengine3_3", "xactengine3_4",
+        "xactengine3_5", "xactengine3_6", "xactengine3_7", "xapofx1_0",
+        "xapofx1_1", "xapofx1_2", "xapofx1_3", "xapofx1_4",
+        "xapofx1_5", "xaudio2_0", "xaudio2_1", "xaudio2_2",
+        "xaudio2_3", "xaudio2_4", "xaudio2_5", "xaudio2_6",
+        "xaudio2_7", "xinput1_1", "xinput1_2", "xinput1_3",
+        "xinput1_4", "xinput9_1_0", "xinputuap",
     )
 
     /**
