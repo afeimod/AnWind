@@ -577,9 +577,9 @@ object WineEnvironment {
      *
      * v3.2.27（用户原话："启动 wine 依旧没有读取 opt 下的任何 conf 配置，
      * 你根本没有 env 或者 export，更没有执行 sh 里那种. /路径"）：
-     * 旧实现的 BOX64_*/WINEESYNC/… 白名单太窄 —— env.conf 里的
-     * MESA_*/GALLIUM_*/自定义调优变量全部被丢弃，等于没读。现按
-     * startwine.sh `. /opt/conf/*.conf` 的 source 语义执行：
+     * 旧实现的 BOX64_*、WINEESYNC 等白名单太窄 —— env.conf 里的
+     * MESA_*、GALLIUM_*、自定义调优变量全部被丢弃，等于没读。现按
+     * startwine.sh 逐个 source /opt/conf 下全部 *.conf 的语义执行：
      *  - **全部 KEY=VALUE 都 export** 给 wine 进程（逐项日志可见），
      *    仅 App 链路生存所需的关键变量（WINEPREFIX/加载器/X11/动态库
      *    路径等，见 [CONF_BLOCKED_KEYS]）不透传并大声说明；
