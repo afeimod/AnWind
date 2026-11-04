@@ -229,6 +229,50 @@ pre_setup() {
   # memfd_create 优先、ashmem 兜底，LDFLAGS 已带 -landroid-shmem）。
   # 这里把原型注入调用文件；wine >=10 官方树/hangover-11 树已删除
   # esync/fsync（合并重构进 sync.c，无 shm 调用），文件缺失自动跳过。
+
+  # v3.2.24（用户问题 4）：wine ≤9.x 树 -mabi=ms 剥除 —— x86_64 形态
+  # wine-9.7 CI 实证炸点根治：
+  #   clang: error: unsupported option '-mabi=' for target
+  #          'x86_64-unknown-linux-android28'
+  #   make: *** [Makefile:...: dlls/dinput/data_formats.o] Error 1
+  # 【根因】wine 9.x configure.ac（MSVCRTFLAGS 段）对 HOST_ARCH=x86_64
+  # 的非 mingw 宿主**无条件**执行
+  #     MSVCRTFLAGS="$MSVCRTFLAGS -mabi=ms"
+  # —— if test -z "$PE_ARCHS" 只包裹“能力检测 + 报错”，flag 本身照加
+  # （上游假设 x86_64 unix 编译器是 GCC；GCC 支持 -mabi=ms，clang 全系
+  # 不支持该选项）。我们 --enable-archs=i386,x86_64 + --with-mingw →
+  # PE_ARCHS 非空 → 检测被跳过 → flag 静默进入 MSVCRTFLAGS → make
+  # install 阶段编译 unix 侧 implib 对象（#pragma makedep implib 的
+  # data_formats.c 等 13 个文件，makedep.c 仅对 arch=0 且 use_msvcrt
+  # 的目标附加 msvcrt_flags）时传给 NDK clang → 必炸。
+  # 【修法】configure 运行【前】sed 掉 configure 里这行赋值（tarball 自
+  # 带 configure；pre_setup 先于框架 ./configure 执行，时机正确）。
+  # 【安全性】MSVCRTFLAGS 只作用于 unix 侧 arch=0 的模块对象编译
+  # （makedep.c 3233 行，arch>0 的 PE 侧不吃它）；受影响的 13 个
+  # implib 文件全部是纯数据/入口表（dinput/data_formats.c 无任何函数
+  # 定义，msvcrt 系列 CRT 数学/入口对象在 unix .a 中无人调用），
+  # sysv/ms ABI 差异只影响函数调用约定 —— 数据零影响。wine 10+ 树
+  # 的 configure 无此行（上游已随 arm64ec 导出重构一并移除），
+  # sed 不命中即 no-op，幂等且无副作用。
+  strip_mabi_ms_for_clang() {
+    local _cfg="${srcDir}/${pjName}/configure"
+    [[ -f "$_cfg" ]] || return 0
+    if grep -q 'MSVCRTFLAGS="\$MSVCRTFLAGS -mabi=ms"' "$_cfg"; then
+      sed -i 's/MSVCRTFLAGS="\$MSVCRTFLAGS -mabi=ms"/MSVCRTFLAGS="\$MSVCRTFLAGS"/' "$_cfg" \
+        && echo "已剥除 wine ≤9.x configure 的 MSVCRTFLAGS -mabi=ms（NDK clang 不支持；unix 侧 implib 对象为纯数据，ABI 无影响）"
+    else
+      echo "ℹ️ configure 无 -mabi=ms 赋值行（wine 10+ 树），跳过剥除"
+    fi
+    # aclocal.m4 同步（autoreconf 路径防回归；缺文件/无匹配均 no-op）
+    local _acm="${srcDir}/${pjName}/aclocal.m4"
+    if [[ -f "$_acm" ]] && grep -q 'MSVCRTFLAGS="\$MSVCRTFLAGS -mabi=ms"' "$_acm"; then
+      sed -i 's/MSVCRTFLAGS="\$MSVCRTFLAGS -mabi=ms"/MSVCRTFLAGS="\$MSVCRTFLAGS"/' "$_acm" \
+        && echo "已剥除 aclocal.m4 的同款 -mabi=ms 赋值（autoreconf 路径）"
+    fi
+    return 0
+  }
+  strip_mabi_ms_for_clang
+
   inject_shm_compat() {
     local _f
     for _f in dlls/ntdll/unix/esync.c dlls/ntdll/unix/fsync.c \

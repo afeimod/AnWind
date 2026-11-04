@@ -305,7 +305,7 @@ internal fun BluetoothDevicesSection() {
     Spacer(Modifier.height(8.dp))
 
     // ===== 虚拟游戏手柄（v2.15：开启 + 悬浮设置窗） =====
-    val gamepadEnabled by app.settingsStore.gamepadEnabled.collectAsState(initial = false)
+    val gamepadEnabled by app.settingsStore.gamepadEnabled.collectAsState(initial = true) /* v3.2.24：默认开启，initial 对齐新默认避免首帧误显已关闭 */
     SettingsCard(
         icon = Icons.Default.SportsEsports,
         iconBackgroundColor = Color(0xFF107C10),

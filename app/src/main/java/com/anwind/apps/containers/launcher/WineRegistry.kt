@@ -94,7 +94,7 @@ object WineRegistry {
     }
 
     /**
-     * 确保前缀的 dosdevices 盘符映射完整（v3.1 新增）。
+     * 确保前缀的 dosdevices 盘符映射完整（v3.1 新增；v3.2.24 扩展）。
      *
      * wineboot 建前缀时会创建 c: → ../drive_c 与 z: → /，但个别精简
      * 构建 / 异常中断的前缀会缺 z: —— 之后：
@@ -103,9 +103,18 @@ object WineRegistry {
      *  - 游戏按绝对路径（Z:\\storage\\…）找 media 等资源时直接报
      *    "找不到 media"。
      *
+     * v3.2.24（用户问题 3，对齐 startwine.sh / startfex.sh 的盘符矩阵）：
+     *  - d: → /storage/emulated/0/Download（存在时）：参考链路的
+     *    D 盘 —— 用户下载的 exe/游戏/资源的主入口，wine 安装器与游戏
+     *    打开/另存对话框默认可达；目录不存在（无外部存储权限机型）
+     *    时跳过，不留死链。
+     *  - e: → /storage/emulated/0/exagear（存在时）：参考链路的 E 盘，
+     *    老用户从 exagear 目录迁移数据时的习惯路径。
+     *
      * 幂等：仅在链接缺失时补建（z: → / 绝对符号链接；c: 缺失时指向
-     * 前缀内 drive_c，与 wine 默认布局一致）。前缀尚未初始化（无
-     * dosdevices 目录）时跳过 —— 归 wineboot 管。
+     * 前缀内 drive_c，与 wine 默认布局一致；d:/e: 同样仅在目标目录
+     * 存在且链接缺失时建）。前缀尚未初始化（无 dosdevices 目录）时
+     * 跳过 —— 归 wineboot 管。
      */
     fun ensureDosdevices(container: ContainerData, log: (String) -> Unit = {}) {
         runCatching {
@@ -132,6 +141,26 @@ object WineRegistry {
                     log("已补 dosdevices c: → ../drive_c")
                 } catch (e: Exception) {
                     log("警告: c: 盘补建失败（${e.message}）")
+                }
+            }
+
+            // v3.2.24（用户问题 3）：d:/e: 盘符（对齐 startwine.sh 的
+            // ln -sf /storage/emulated/0/Download …dosdevices/d: 等）。
+            // 仅目标目录存在且盘符缺失时补建 —— 不覆盖用户已有映射
+            //（用户可能把 d: 指到别处），目标不存在时跳过不留死链。
+            listOf(
+                "d:" to "/storage/emulated/0/Download",
+                "e:" to "/storage/emulated/0/exagear"
+            ).forEach { (drive, targetPath) ->
+                val target = File(targetPath)
+                val link = File(dd, drive)
+                if (!link.exists() && target.isDirectory) {
+                    try {
+                        android.system.Os.symlink(targetPath, link.absolutePath)
+                        log("已补 dosdevices $drive → $targetPath（参考 startwine.sh 盘符矩阵）")
+                    } catch (e: Exception) {
+                        log("警告: $drive 盘补建失败（${e.message}）")
+                    }
                 }
             }
         }

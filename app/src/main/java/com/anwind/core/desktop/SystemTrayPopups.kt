@@ -270,7 +270,7 @@ fun QuickSettingsPanel(
     val fg = if (theme.isDark) Color.White else Color.Black
 
     // ===== 虚拟游戏手柄（v2.15）：快速开关，首开顺手弹设置窗 =====
-    val gamepadEnabled by app.settingsStore.gamepadEnabled.collectAsState(initial = false)
+    val gamepadEnabled by app.settingsStore.gamepadEnabled.collectAsState(initial = true) /* v3.2.24：默认开启，initial 对齐新默认避免首帧误显已关闭 */
 
     /** 打开系统设置面板 */
     fun openSystemPanel(action: String, name: String) {

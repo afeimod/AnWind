@@ -136,7 +136,24 @@ fun GamepadFloatingBall(onPersistConfig: () -> Unit) {
             pos.y - with(density) { 10.dp.toPx() } - menuHeightEstimate(density)
         }
 
-        // ===== 展开的控制菜单 =====
+        // ===== v3.2.24（用户问题 2）：点菜单外任意处收起的透明捕获层 =====
+        // 【z 序修复】必须声明在菜单与悬浮球【之前】：Compose 的 Box 子
+        // 件按声明顺序绘制 z 序（后声明者在上）。v3.2.23 把它放在最后 →
+        // 全屏捕获层盖在菜单上方，四个菜单项的点击全部被它拦截 →
+        // “悬浮球四个按键没有一个能用”（点击只触发收起，onClick 永不执行）。
+        // 现在顺序：捕获层（最底）→ 菜单（中）→ 悬浮球（最顶，展开时
+        // 仍可拖动/点击）。
+        if (expanded) {
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .pointerInput(Unit) {
+                        detectTapGestures { expanded = false }
+                    }
+            )
+        }
+
+        // ===== 展开的控制菜单（在捕获层之上，点击直达菜单项） =====
         if (expanded) {
             Column(
                 modifier = Modifier
@@ -256,17 +273,6 @@ fun GamepadFloatingBall(onPersistConfig: () -> Unit) {
                 "🎮",
                 fontSize = 22.sp,
                 color = Color.White
-            )
-        }
-
-        // 菜单展开时：点菜单外任意处收起（一次性透明捕获层）
-        if (expanded) {
-            Box(
-                Modifier
-                    .fillMaxSize()
-                    .pointerInput(Unit) {
-                        detectTapGestures { expanded = false }
-                    }
             )
         }
     }

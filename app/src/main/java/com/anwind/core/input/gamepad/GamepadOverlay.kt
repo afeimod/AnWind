@@ -62,7 +62,7 @@ import kotlin.math.sin
 @Composable
 fun GamepadOverlay() {
     val app = AnWindApp.get()
-    val gamepadEnabled by app.settingsStore.gamepadEnabled.collectAsState(initial = false)
+    val gamepadEnabled by app.settingsStore.gamepadEnabled.collectAsState(initial = true) /* v3.2.24：默认开启，initial 对齐新默认避免首帧误显已关闭 */
     if (!gamepadEnabled) return
 
     // 首次组合：加载持久化布局

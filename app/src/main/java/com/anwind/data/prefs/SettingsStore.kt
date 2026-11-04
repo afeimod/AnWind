@@ -268,7 +268,11 @@ class SettingsStore(private val context: Context) {
     val keyboardDragEnabled: Flow<Boolean> = context.appPrefs.data.map { it[Keys.KEYBOARD_DRAG_ENABLED] ?: true }
 
     // === 虚拟游戏手柄（v2.15） ===
-    val gamepadEnabled: Flow<Boolean> = context.appPrefs.data.map { it[Keys.GAMEPAD_ENABLED] ?: false }
+    // v3.2.24（用户问题 2）：总开关默认 true —— 手柄功能默认开启，
+    // 悬浮球（GamepadFloatingBall）开箱即见（元素默认收起，只出球，
+    // 见 GamepadController.visible 注释）；「关闭手柄」（球菜单）或
+    // 设置页开关可关闭（写入 false 后不再回默认）。
+    val gamepadEnabled: Flow<Boolean> = context.appPrefs.data.map { it[Keys.GAMEPAD_ENABLED] ?: true }
     val gamepadConfig: Flow<String> = context.appPrefs.data.map { it[Keys.GAMEPAD_CONFIG] ?: "" }
 
     // === 系统 ===

@@ -468,14 +468,20 @@ data class DoctorCheck(
  *
  * @property name      槽位名（目录名：wine 或 wine-9.8 等）
  * @property dir       绝对路径（/usr/opt/<name>）
- * @property version   .anwind-wine-info 里的 version=（wine --version 输出）
+ * v3.2.24：新增 kind 字段（.anwind-wine-info 的 kind=：
+ * x86_64-wow64-x11 / arm64ec-split-wow64-x11 等，CI 配方实际写入的
+ * 形态标识；选择器里作为副标题展示，用户能分清装的是哪个形态）。
+ *
+ * @property version   .anwind-wine-info 的 version→tag→kind 回退链
  * @property installed 安装时间戳
+ * @property kind      构建形态标识（CI 配方 pre_package 写入）
  */
 data class WineInstall(
     val name: String,
     val dir: String,
     val version: String = "",
-    val installed: String = ""
+    val installed: String = "",
+    val kind: String = ""
 ) {
     /** 选择器展示文本（含版本号）。 */
     val displayLabel: String

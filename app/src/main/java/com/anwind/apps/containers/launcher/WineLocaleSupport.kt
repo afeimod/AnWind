@@ -9,8 +9,11 @@ import java.util.concurrent.TimeUnit
 
 /**
  * v3.2.1（用户问题 4）—— wine 中文/本地化支持（wine.mo 翻译 + CJK 字体）。
+ * v3.2.24（用户问题 5）—— 字体落位修正：rootfs 侧一律安装到
+ * rootfs/usr/share/fonts 目录（fontconfig 标准扫描路径），不再以
+ * 根目录 AnWind/fonts 为主目录。
  *
- * ## 根因（两层）
+ * ## 根因（三层）
  *
  * 1. **界面语言（英文环境）**：wine 配方 `--enable-nls` 且 `--prefix=
  *    $prefix/opt/wine` —— wine 的 LOCALEDIR 指向 wine 安装目录内的
@@ -26,8 +29,8 @@ import java.util.concurrent.TimeUnit
  *    编译期默认路径）—— 无论 wine 按哪条路径解析都命中。已有同名文件
  *    （CI 新包自带）不覆盖。
  *
- * 2. **中文渲染（方块字）**：bionic rootfs 的 wine 前缀没有任何 CJK
- *    字体 —— wine 内置字体只有 Tahoma 等拉丁字面，中文全部渲染为
+ * 2. **中文渲染（方块字）—— wine GDI 侧**：前缀没有任何 CJK 字体
+ *    —— wine 内置字体只有 Tahoma 等拉丁字面，中文全部渲染为
  *    方块/空白。修复：把 **Android 系统自带的 CJK 字体**
  *    （/system/fonts/NotoSansCJK/MiSans/…，全球可读）复制进前缀
  *    `drive_c/windows/Fonts/`，并写注册表：
@@ -36,21 +39,39 @@ import java.util.concurrent.TimeUnit
  *    - HKLM\…\FontSubstitutes：MS Shell Dlg → 中文字体（Windows
  *      中文版的官方替换约定）—— 未指定字体的老程序默认即得中文字形。
  *
+ * 3. **中文渲染 —— rootfs/X11 侧（v3.2.24 用户问题 5）**：此前 CJK
+ *    字体只进前缀（GDI 侧），rootfs 的 fontconfig 扫描路径
+ *    （usr/share/fonts/）里没有中文字体 —— wine 的 freetype 后端与
+ *    X11 侧字体名匹配都找不到中文字形。修复：同一份系统 CJK 字体
+ *    同步落到 `rootfs/usr/share/fonts/anwind-cjk/`；用户字体投放
+ *    目录改为 `rootfs/usr/share/fonts/anwind-user/`（直接就在
+ *    fontconfig 扫描路径内，无需再“导入”；rootfs 侧不再依赖根
+ *    目录 AnWind/fonts）。旧 `/storage/emulated/0/AnWind/fonts/`
+ *    作为兼容源继续合并读取。
+ *
  * 全部幂等（前缀内标记文件 + 目标存在检查），每次启动链快速通过。
  */
 object WineLocaleSupport {
     private const val TAG = "WineLocaleSupport"
 
     /**
-     * v3.2.23（用户问题 7）：用户字体投放目录（设备侧）。
+     * v3.2.24（用户问题 5）：用户字体投放目录 —— **rootfs 内**
+     * `usr/share/fonts/anwind-user/`（即
+     * /data/data/com.anwind/files/rootfs/usr/share/fonts/anwind-user/，
+     * 经 AnWind 文件管理器或终端可直接访问）。放进去的 .ttf/.otf/.ttc
+     * 立即处于 fontconfig 扫描路径内；启动链只需把 GDI 侧（前缀
+     * Fonts + 注册表）补齐。
      *
-     * 把自己的中文字体（.ttf/.otf/.ttc）放到 `内部存储/AnWind/fonts/`
-     * （即 /storage/emulated/0/AnWind/fonts/），每次 wine 启动链自动
-     * 导入：rootfs fontconfig 侧（X11/freetype 渲染）+ 容器前缀
-     * drive_c/windows/Fonts（wine GDI 侧，按注册表枚举）。幂等指纹，
-     * 增删字体后下次启动自动同步。
+     * 兼容：旧版投放目录 `/storage/emulated/0/AnWind/fonts/` 里的字体
+     * 仍会被合并导入（不再作为文档化的主目录）。
      */
-    private const val USER_FONT_DIR = "/storage/emulated/0/AnWind/fonts"
+    private const val USER_FONT_DIR = "usr/share/fonts/anwind-user"
+
+    /** 旧版投放目录（v3.2.23 及之前）：兼容读取，字体合并导入。 */
+    private const val LEGACY_USER_FONT_DIR = "/storage/emulated/0/AnWind/fonts"
+
+    /** rootfs 侧 CJK 字体目录（fontconfig 扫描路径内，v3.2.24）。 */
+    private val ROOTFS_CJK_FONT_DIR = "usr/share/fonts/anwind-cjk"
 
     /** assets 内的 wine.mo（语言目录名 → asset 文件名）。 */
     private val WINE_MO_ASSETS = mapOf(
@@ -178,6 +199,23 @@ object WineLocaleSupport {
         val ext = File(src).extension.ifEmpty { "ttf" }
         val dstName = "anwind-cjk.$ext"
         val dst = File(fontsDir, dstName)
+        // v3.2.24（用户问题 5）：rootfs 侧同步 —— 同一份字体落进
+        // rootfs/usr/share/fonts/anwind-cjk/（fontconfig 扫描路径内，
+        // wine freetype 后端 / X11 侧中文字形来源；目标已存在即跳过）。
+        runCatching {
+            val rootfsDir = File(ContainerManager.ROOTFS_ROOT, ROOTFS_CJK_FONT_DIR)
+            rootfsDir.mkdirs()
+            val rootfsCopy = File(rootfsDir, "anwind-cjk.$ext")
+            if (!rootfsCopy.isFile) {
+                File(src).inputStream().use { input ->
+                    FileOutputStream(rootfsCopy).use { output -> input.copyTo(output) }
+                }
+                log("已安装 CJK 字体到 rootfs: ${rootfsCopy.absolutePath}（fontconfig 扫描路径内）")
+                runCatching {
+                    File(ContainerManager.ROOTFS_ROOT, "var/cache/fontconfig").deleteRecursively()
+                }
+            }
+        }.onFailure { log("警告: CJK 字体安装到 rootfs 失败（${it.message}）—— X11 侧中文可能仍为方块") }
         runCatching {
             File(src).inputStream().use { input ->
                 FileOutputStream(dst).use { output -> input.copyTo(output) }
@@ -261,21 +299,39 @@ object WineLocaleSupport {
         env: Map<String, String>,
         log: (String) -> Unit
     ) {
-        val srcDir = File(USER_FONT_DIR)
-        if (!srcDir.isDirectory) return
-        val fonts = srcDir.listFiles { f ->
-            f.isFile && f.extension.lowercase() in setOf("ttf", "otf", "ttc")
-        }?.sortedBy { it.name } ?: return
+        // v3.2.24（用户问题 5）：主目录 = rootfs/usr/share/fonts/anwind-user
+        // （rootfs 内、fontconfig 扫描路径直接可见）；旧
+        // /storage/emulated/0/AnWind/fonts 作为兼容源合并扫描。
+        val fonts = listOf(
+            File(ContainerManager.ROOTFS_ROOT, USER_FONT_DIR),
+            File(LEGACY_USER_FONT_DIR)
+        ).filter { it.isDirectory }
+            .flatMap { dir ->
+                dir.listFiles { f ->
+                    f.isFile && f.extension.lowercase() in setOf("ttf", "otf", "ttc")
+                }.orEmpty().toList()
+            }
+            .distinctBy { "${it.name}:${it.length()}" }
+            .sortedBy { it.name }
         if (fonts.isEmpty()) return
 
-        // ---- 1) rootfs fontconfig 侧 ----
-        val rootfsFontsDir = File(ContainerManager.ROOTFS_ROOT, "usr/share/fonts/anwind-user")
+        // ---- 1) rootfs fontconfig 侧（v3.2.24：主目录内文件本就直接
+        // 处于扫描路径；此处仅负责把【旧存储目录】的字体并进来 + 指纹
+        // 变更时清理已删除的字体与 fontconfig 缓存）----
+        val rootfsFontsDir = File(ContainerManager.ROOTFS_ROOT, USER_FONT_DIR)
         val marker = File(rootfsFontsDir, ".anwind-user-fp")
         val fp = fonts.joinToString("|") { "${it.name}:${it.length()}" }
         if (!(marker.isFile && runCatching { marker.readText() }.getOrNull() == fp)) {
             runCatching {
                 rootfsFontsDir.mkdirs()
-                fonts.forEach { it.copyTo(File(rootfsFontsDir, it.name), overwrite = true) }
+                fonts.forEach {
+                    val dst = File(rootfsFontsDir, it.name)
+                    // 同文件守卫：主目录内的字体 copyTo 自身会把文件清空
+                    //（File.copyTo 无同路径保护，输出流打开即截断）
+                    if (it.absolutePath != dst.absolutePath) {
+                        it.copyTo(dst, overwrite = true)
+                    }
+                }
                 // 指纹变更：清掉旧字体与 fontconfig 缓存（下次渲染重建）
                 rootfsFontsDir.listFiles()?.forEach { f ->
                     if (f.isFile && f.name != ".anwind-user-fp" &&

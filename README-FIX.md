@@ -44,17 +44,19 @@
 > - **wineserver 暖启动**（`WineServerUtils.kt`）：无运行中会话且非前缀构建时，存活 server 通过真实客户端健康探测（`wine cmd /c exit`，6 秒超时）即**复用**——跳过 `-k`/`-w` 与硬清理，内存注册表缓存、rpcss/explorer 后台服务全保留（arm64ec 冷启动 server + 重读注册表是二次启动明显偏慢的主因）；无残留直接返回（免 -k/-w 进程拉起）；探测超时（冻结/挂死）退回原三段式全量清理（v3.3.1 挂死根治语义不变）。顺带修复"运行 exe 会把同容器正在跑的 X11 桌面会话连根杀掉"。
 > - **注册表批量化**（`WineLocaleSupport.kt`）：CJK 字体注册从逐条 `wine reg add`（9~13 次进程拉起，arm64ec 上白花十几秒）改为 REGEDIT4 文本一次 `wine regedit /s` 导入（与 `WineRegistry.ensureDllOverrides` 同模式）。
 >
-> ## ⑦ rootfs + wine 中文支持（字体放置路径）
+> ## ⑦ rootfs + wine 中文支持（字体放置路径 · v3.2.24 更新）
 >
-> **用户字体目录：`内部存储/AnWind/fonts/`（即 `/storage/emulated/0/AnWind/fonts/`）**。把自己的中文字体（.ttf/.otf/.ttc）放进去即可，每次 wine 启动链自动导入（`WineLocaleSupport.kt` 新增 `importUserFonts`）：
-> - rootfs fontconfig 侧（X11/freetype 渲染）：复制到 `rootfs/usr/share/fonts/anwind-user/`（`base-config/build.sh` 写 `/etc/fonts/local.conf` 显式扫描该目录 + cachedir 指向 App 可写路径）；
+> **用户字体目录（v3.2.24 起）：`rootfs/usr/share/fonts/anwind-user/`**（即 `/data/data/com.anwind/files/rootfs/usr/share/fonts/anwind-user/`，经 AnWind 文件管理器或终端可直接访问）。把自己的中文字体（.ttf/.otf/.ttc）放进去即可 —— 该目录本身就在 fontconfig 扫描路径内（`/usr/share/fonts`），启动链只需补 GDI 侧（`WineLocaleSupport.kt` 的 `importUserFonts`）：
+> - rootfs fontconfig 侧（X11/freetype 渲染）：目录本身即扫描路径；旧 `内部存储/AnWind/fonts/`（`/storage/emulated/0/AnWind/fonts/`）里的字体仍会合并导入（兼容源）；
 > - wine 前缀侧（GDI 渲染）：复制进 `drive_c/windows/Fonts` 并按文件名写注册表（REGEDIT4 单次导入）。
+>
+> 另 v3.2.24：系统 CJK 字体（NotoSansCJK/MiSans 等）除装进前缀外，同步落到 `rootfs/usr/share/fonts/anwind-cjk/`（此前 rootfs 侧一份都没有，freetype/X11 路径中文全方块）。
 >
 > 幂等指纹（文件名:长度），增删字体后下次启动自动同步；目录不存在/为空静默跳过，无字体时回落内置 CJK 方案（fontconfig 别名 + 注册表 Fonts/FontSubstitutes，SimSun/SimHei/Microsoft YaHei 等）。
 >
 > ## 验证
 >
-> 沙箱搭 Android SDK 34 + Gradle 8.7 + AGP 8.5.2 + Kotlin 1.9.25（与 CI 同栈）全量实编：`:app:compileReleaseKotlin` BUILD SUCCESSFUL。aapt2 打包行为以同版二进制全链实验定论（资产原名原字节保留）。设备侧验证：装新 APK 后检查 ①APK 内 `assets/dxvk/dxvk-2.3.1.tar.gz` 原名；②noexec 路径跑 exe 会话日志出现"正在导入内部执行区"；③最小化后任务栏图标还在、点击恢复；④手柄悬浮球拖动/菜单；⑤容器窗 900×600；⑥二次启动 exe 明显加快且 X11 桌面不被杀；⑦`AnWind/fonts/` 放字体后启动 wine 显示中文。
+> 沙箱搭 Android SDK 34 + Gradle 8.7 + AGP 8.5.2 + Kotlin 1.9.25（与 CI 同栈）全量实编：`:app:compileReleaseKotlin` BUILD SUCCESSFUL。aapt2 打包行为以同版二进制全链实验定论（资产原名原字节保留）。设备侧验证：装新 APK 后检查 ①APK 内 `assets/dxvk/dxvk-2.3.1.tar.gz` 原名；②noexec 路径跑 exe 会话日志出现"正在导入内部执行区"；③最小化后任务栏图标还在、点击恢复；④手柄悬浮球拖动/菜单；⑤容器窗 900×600；⑥二次启动 exe 明显加快且 X11 桌面不被杀；⑦`rootfs/usr/share/fonts/anwind-user/`（或旧 `AnWind/fonts/`）放字体后启动 wine 显示中文。
 
 > **v3.2.20（2026-11-03）**：CI 实报双故障修复轮（用户反馈：①APK 构建 `ContainerScreens.kt` 8 处编译错误；②box64 运行"还是老样子"—— wineboot 启动即 SIGSEGV，wine 会话日志 `wine-9.2-20261103-095002-606.log`）。
 >

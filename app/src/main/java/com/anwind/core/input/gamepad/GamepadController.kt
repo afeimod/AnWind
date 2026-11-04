@@ -244,12 +244,12 @@ object GamepadController {
     /**
      * 手柄**元素**（摇杆/十字键/按钮）是否显示。
      *
-     * v3.2.23（用户问题 4）：语义升级 —— 悬浮球（GamepadFloatingBall）
-     * 常驻控制入口，手柄本体可单独收起只留悬浮球；「关闭手柄」（球菜单）
-     * 则连球一起退场（gamepadEnabled=false）。默认 true（开启手柄即出元素），
-     * 随 gamepad_config v3 持久化。
+     * v3.2.24（用户问题 2）：默认改为 **false** —— 开启手柄即只出悬浮球，
+     * 元素（摇杆/按键）默认收起，从球菜单「显示手柄」展开；避免开屏
+     * 即满屏摇杆/按键遮挡游戏画面。随 gamepad_config v3 的 padVisible
+     * 持久化（用户选过就记住）。
      */
-    var visible by mutableStateOf(true)
+    var visible by mutableStateOf(false)
 
     /** 悬浮球位置（归一化 0..1，相对 (屏宽-球宽)/(屏高-球高)）；默认右上角 */
     var ballPosX by mutableStateOf(0.965f)
@@ -298,8 +298,9 @@ object GamepadController {
             val arr: JSONArray = try {
                 val root = JSONObject(json)
                 if (root.optInt("v", 1) < 2) return@runCatching
-                // v3.2.23：v3 新字段（v2 配置缺省 → 默认值）
-                visible = root.optBoolean("padVisible", true)
+                // v3.2.24：v3 新字段（v2 配置缺省 → 默认值）；padVisible
+                // 缺省改为 false（默认收起，只留悬浮球 —— 用户问题 2）
+                visible = root.optBoolean("padVisible", false)
                 ballPosX = root.optDouble("ballX", 0.965).toFloat().coerceIn(0f, 1f)
                 ballPosY = root.optDouble("ballY", 0.06).toFloat().coerceIn(0f, 1f)
                 root.optJSONArray("elements") ?: return@runCatching

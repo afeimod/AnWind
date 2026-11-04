@@ -855,12 +855,11 @@ object TermuxBootstrapInstaller {
             inBootstrap.copyTo(dest, overwrite = true)
             return
         }
-        // ② 旧独立资产（兼容旧包/旧管线仍可用的场景）
-        // v3.2.23：撤销 v3.2.22 的 .tgz 单名引用，改双名候选 —— 打包侧
-        // 已恢复原始 .tar.gz 资产名（同版 aapt2 实测原名原字节保留，
-        // v3.2.22 的“aapt2 剥层”是误诊）；.tgz 作为第二候选兜底（用户
-        // 自行用旧管线/三方工具重打包时可能出现），两级都缺失才走 ③。
-        val copied = listOf("termux/x11-xkb.tar.gz", "termux/x11-xkb.tgz").any { candidate ->
+        // ② 独立资产（v3.2.24：APK 打包期已把 x11-xkb.tar.gz 改名为
+        // x11-xkb.tgz —— 单后缀不在用户侧打包管线"强制解压 .tar.gz"
+        // 的匹配名单里，从源头跳过；候选顺序 .tgz 优先命中新包，
+        // .tar.gz 兜底旧 APK/旧管线产物。两类都不匹配时走 ③。）
+        val copied = listOf("termux/x11-xkb.tgz", "termux/x11-xkb.tar.gz").any { candidate ->
             try {
                 copyAssetScript(context, candidate, dest, executable = false)
                 true

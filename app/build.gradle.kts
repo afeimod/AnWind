@@ -25,29 +25,40 @@ val ruffleAssetWhitelist = setOf(
 )
 val filteredAssetsDir = layout.buildDirectory.dir("filteredAssets")
 val filterRuffleAssets = tasks.register<Sync>("filterRuffleAssets") {
-    description = "同步 src/main/assets 到过滤目录，ruffle/ 只保留白名单文件；归档资产保留原始 .tar.gz/.tar.xz 名"
+    description = "同步 src/main/assets 到过滤目录，ruffle/ 只保留白名单文件；归档资产 *.tar.gz→*.tgz / *.tar.xz→*.txz 打包期改名"
     into(filteredAssetsDir)
     from("src/main/assets") {
         exclude("ruffle/*")
         // ============================================================
-        // v3.2.23：撤销 v3.2.22 的 *.tar.gz→*.tgz 同步改名 —— 用户
-        // 要求 APK 内保留原始文件名。取证复核（本项目 AGP 8.5.2 完全
-        // 同版 aapt2 8.5.2-11315950 直测，link -A + -0 noCompress +
-        // optimize/collapse 全链路）：
-        //   ① assets/dxvk/dxvk-2.3.1.tar.gz → APK 条目名 dxvk-2.3.1.tar.gz，
-        //      字节级 cmp 与源文件完全一致（Deflated 与 Stored 两模式均验证）；
-        //   ② 裸 .gz / .tar.xz / 双后缀 .gz.gz 同样原名原字节保留；
-        //   ③ aapt2 optimize（资源收缩）与 --collapse-resource-names 均不触碰。
-        // 结论：aapt2 并不剥层改名 —— v3.2.22 的“AOSP Package.cpp 剥层”
-        // 判断是误诊（当时引用的 SO/capacitor 案例是 aapt v1 / 三方重打包
-        // 场景）。用户 APK 里出现的 .tar 更可能来自本地工具链或云端重打包
-        // （gunzip + 去后缀）。本仓库 CI（gradle assembleRelease，AGP
-        // 8.5.2）产物实测保留原名，故直接撤销改名。
-        // 防御：不信任后缀 —— App 侧资产扫描改为魔数校验（gzip/xz/zstd/
-        // ustar 头直判，见 AnWindTzstAssets.sniffType），即使个别用户
-        // 用三方工具重打包剥了层，扫描器仍按真实内容解压；xkb 回退链
-        //（TermuxBootstrapInstaller/XkbExtractor/termux-x11 脚本）同步容错。
+        // v3.2.24（用户问题 1）：*.tar.gz → *.tgz / *.tar.xz → *.txz
+        // 打包期改名（双后缀 → 单后缀中转）。
+        // ------------------------------------------------------------
+        // 用户实测本地/云端 APK 打包管线仍会把 assets 内 *.tar.gz 强制
+        // gunzip 成 .tar（v3.2.23 的“同版 aapt2 不剥层”结论只对本仓库
+        // CI 成立，覆盖不了用户侧工具链）—— 单后缀 .tgz/.txz 不在常见
+        // 强制解压逻辑的匹配名单里，从源头跳过该逻辑。
+        // 落名规则（Gradle Sync rename，对目录内全部资产生效）：
+        //   dxvk/dxvk-2.3.1.tar.gz → dxvk/dxvk-2.3.1.tgz
+        //   termux/x11-xkb.tar.gz  → termux/x11-xkb.tgz
+        // 运行时三重防御（已具备，保持不变）：
+        //   ① 双名候选：TermuxBootstrapInstaller.installXkbData 的
+        //      ["termux/x11-xkb.tar.gz", "termux/x11-xkb.tgz"] 列表；
+        //   ② AnWindTzstAssets.scanDxvkAssets 按后缀启发（.tgz/.txz
+        //      均在列）+ 目录扫描（不依赖固定文件名）；
+        //   ③ 魔数裁定：sniffType / XkbExtractor 直读 gzip/xz/zstd/
+        //      ustar 头 —— 即便个别管线仍剥层改名，解压器按真实内容工作。
+        // 部署侧还原（“最后改回 tar.gz”）：XKB 数据落盘为
+        //   $PREFIX/etc/anwind/x11/xkb.tar.gz（installXkbData 的 dest
+        // 固定名），rootfs 侧脚本引用的均为落盘后路径，不受 APK 内
+        // 资产名影响。
         // ============================================================
+        rename { name ->
+            when {
+                name.endsWith(".tar.gz") -> name.removeSuffix(".tar.gz") + ".tgz"
+                name.endsWith(".tar.xz") -> name.removeSuffix(".tar.xz") + ".txz"
+                else -> name
+            }
+        }
     }
     from("src/main/assets/ruffle") {
         into("ruffle")
@@ -220,8 +231,29 @@ android {
         // 必 ENOSYS —— 冒烟树补打补丁（与 aarch64 交付构建同源；沙箱实跑
         // 动态/静态双冒烟 ANWIND_SMOKE_OK 验证），glibc 形态 build-box64.yml
         // 同步应用（静态程序 shm 转发同样受益）。
-        versionCode = 83
-        versionName = "2.38.20"
+        versionCode = 84
+        versionName = "2.38.21"
+        // v2.38.21（源码包 v3.2.24）：五诉求修复轮 ——
+        // ①APK 打包 tar.gz 强制解压防御：*.tar.gz→*.tgz / *.tar.xz→
+        //   *.txz 打包期改名（单后缀不在强制解压逻辑匹配名单）；运行时
+        //   双名候选 + 魔数裁定双保险；XKB 落盘仍为 xkb.tar.gz 原名。
+        // ②虚拟手柄三修复：总开关默认开（悬浮球开箱即见）；元素默认
+        //   收起（只出球，球菜单「显示手柄」展开）；悬浮球菜单 z 序
+        //   修复（透明捕获层曾盖住菜单 → 四按键全部点不到）。
+        // ③启动链对齐 startwine.sh/startfex.sh 参考实现：BOX64_PATH=
+        //   $WINE_DIR/bin + BOX64_LD_LIBRARY_PATH 前插 wine 自身
+        //   lib/wine/{i386,x86_64}-unix；dosdevices 补 d:/e: 盘；
+        //   wine 槽位解析主槽位缺失时扫描全部 wine* 槽位；listWines
+        //   读取 .anwind-wine-info 实际写入的 kind/tag（版本回退链）。
+        // ④bionic wine9.7 构建失败根治：x86_64 剥除 configure 无条件
+        //   追加的 MSVCRTFLAGS -mabi=ms（clang 不支持；unix 侧 implib
+        //   对象纯数据无 ABI 影响）；arm64ec 回填上游 wine-10 的
+        //   .drectve 导出修复（lld-link EC 符号解析）；构建框架
+        //   make install 失败检查补齐（此前残缺包照发 [OK]）。
+        // ⑤中文字体落位 rootfs/usr/share/fonts/：系统 CJK 字体同步装
+        //   anwind-cjk/（fontconfig 扫描路径）；用户字体投放目录改为
+        //   rootfs/usr/share/fonts/anwind-user/（旧 AnWind/fonts 兼容
+        //   读取）。
         // v2.38.20（源码包 v3.2.23）：七诉求修复轮 ——
         // ①资产原名保留：撤销 v3.2.22 的 *.tar.gz→*.tgz 同步改名（同版
         //   aapt2 全链实测原名原字节保留）；App 侧资产扫描改魔数裁定

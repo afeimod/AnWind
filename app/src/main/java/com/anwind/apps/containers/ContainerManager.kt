@@ -223,11 +223,20 @@ object ContainerManager {
             f.isDirectory && f.name.startsWith("wine") && File(f, "bin/wine").isFile
         }.orEmpty()
             .map { dir ->
+                // v3.2.24（用户问题 3）：真正的读取 rootfs/opt 槽位信息 ——
+                // CI 构建脚本（wine/hangover-wine 配方 pre_package）实际写入
+                // .anwind-wine-info 的键是 kind= / tag= / backend=，而旧代码
+                // 只读 version= / installed=（从未有人写入 → 选择器里版本
+                // 恒空白）。现在按 version→tag→kind 回退链取版本展示，
+                // kind（x86_64-wow64-x11 / arm64ec-…）作为形态说明一并读出。
                 WineInstall(
                     name = dir.name,
                     dir = dir.absolutePath,
-                    version = readWineInfo(dir, "version"),
-                    installed = readWineInfo(dir, "installed")
+                    version = readWineInfo(dir, "version")
+                        .ifEmpty { readWineInfo(dir, "tag") }
+                        .ifEmpty { readWineInfo(dir, "kind") },
+                    installed = readWineInfo(dir, "installed"),
+                    kind = readWineInfo(dir, "kind")
                 )
             }
             .sortedBy { it.name }

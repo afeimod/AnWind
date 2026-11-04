@@ -1085,7 +1085,14 @@ build_system() {
         DESTDIR="${destDir}" PREFIX="${prefix}" install \
           || { err "${pjName}: install() 返回失败，中止构建"; exit 1; }
       else
-        PREFIX="${prefix}" make install DESTDIR="${destDir}"
+        # v3.2.24：make install 失败必须中止 —— wine x86_64 CI 实证：
+        # make（编译）成功，make install 阶段还要编译 unix 侧 implib
+        # 对象（dlls/dinput/data_formats.o 等），报错退出（-mabi=ms，
+        # clang 不支持）后此路径无错误检查 → 上层照打 [OK] 构建完成、
+        # package() 出残缺包（d 之后字母序的 dll 全缺）。与 install()
+        # 路径同款硬失败。
+        PREFIX="${prefix}" make install DESTDIR="${destDir}" \
+          || { err "${pjName}: make install 失败，中止构建"; exit 1; }
       fi
       if declare -F pre_package >/dev/null; then
         info "存在前置打包操作,开始执行"

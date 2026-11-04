@@ -135,6 +135,11 @@ object WineRuntime {
         val global = readGlobalConfKey("default_wine")
         if (global.isBlank()) {
             return File(WINE_OPT, "wine").takeIf { it.isDirectory }
+                // v3.2.24（用户问题 3）：主槽位缺失时扫描全部 wine* 槽位
+                // 取第一个（listWines 同源逻辑：目录名 wine 开头且含
+                // bin/wine）—— rootfs/usr/opt 里装了什么就真正用什么，
+                // 不再"只认死名 /usr/opt/wine，装了 wine-9.7 也说没装"。
+                ?: ContainerManager.listWines().firstOrNull()?.let { File(it.dir) }
         }
         val globalDir = if (global.startsWith("/")) File(global)
                         else File(WINE_OPT, global)

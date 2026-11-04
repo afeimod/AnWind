@@ -175,12 +175,10 @@ object WineEnvironment {
      * x86_64 版（rootfs 里的插件是 aarch64，x86_64 libgstreamer 加载不了）。
      */
     fun applyBox64Env(env: MutableMap<String, String>, container: ContainerData, wineDir: File) {
-        // v3.2.13（用户问题 5："启动时没有任何日志"）：BOX64_LOG 由 0 改 1。
-        // 旧值 0 + NOBANNER=1 = box64 的全部日志（含错误报告）被整体静音：
-        // box64 加载失败/符号缺失/wine 崩溃时会话日志窗口一行不吐，用户
-        // 只能对着"无任何日志"猜 —— 与"box64 无法启动"的可诊断性直接
-        // 冲突。LOG=1 仅输出 error 级（首行错误即可定位根因），正常启动
-        // 依旧安静（banner 仍由 NOBANNER=1 抑制，无性能开销）。
+        // v3.2.24（用户问题 3，对齐 startwine.sh / startfex.sh）：
+        //   export BOX64_PATH=$WINE_PATH/bin
+        //   export BOX64_LD_LIBRARY_PATH=$WINEPATH/lib/wine/i386-unix:$WINEPATH/lib/wine/x86_64-unix
+        // （BOX64_LOG 的 v3.2.13 说明：由 0 改 1，error 级输出保留可诊断性）
         env["BOX64_LOG"] = "1"
         env["BOX64_NOBANNER"] = "1"
         env["BOX64_DYNAREC_TRACE"] = "0"
@@ -193,6 +191,36 @@ object WineEnvironment {
         val box64rc = File("$RFS_USR/etc/box64.box64rc")
         if (box64rc.isFile && !container.env.contains("BOX64_ENVFILE=")) {
             env["BOX64_ENVFILE"] = box64rc.absolutePath
+        }
+        // v3.2.24（用户问题 3）：BOX64_PATH —— wine 槽位自身的 bin 目录。
+        // 未注入前：wine（box64 仿真）内 exec 子进程（wineserver/wineboot/
+        // 安装器 exe 再拉起的 x86_64 子进程）时，box64 只能在 PATH 里找
+        // x86_64 目标；而 $WINE_DIR/bin 不在 PATH —— 参考脚本
+        // startwine.sh/startfex.sh 的同款导出，这是参考链路能跑、
+        // AnWind 链路部分场景子进程拉不起的差异点之一。
+        // 注入后：box64 对仿真进程的 exec 直接在 wine 自己的 bin 里找，
+        // 与 MiceWine/Winlator 的 BOX64_PATH 用法一致。仅目录存在时写入。
+        val wineBinDir = File(wineDir, "bin")
+        if (wineBinDir.isDirectory) {
+            env["BOX64_PATH"] = wineBinDir.absolutePath
+        }
+        // v3.2.24（用户问题 3）：BOX64_LD_LIBRARY_PATH 前插 wine 槽位
+        // 自身的 unix 库目录（lib/wine/i386-unix + x86_64-unix，存在才加）。
+        // startwine.sh：export BOX64_LD_LIBRARY_PATH=…/i386-unix:…/x86_64-unix ——
+        // wine 的 unix 侧 .so（ntdll.so 背后的 unix 库、各 *.so 驱动）由
+        // box64 仿真加载时，优先在 wine 自己的 lib/wine/<arch>-unix 里
+        // 解析；旧链路只给了 x86_64-bionic 闭包目录，wine 自身 unix 库
+        // 目录缺位（对齐参考脚本的第二差异点）。顺序：wine unix 目录 →
+        // x86_64-bionic 闭包（下方）→ glibc 目录（下方）。
+        val wineUnixLibDirs = listOf(
+            File(wineDir, "lib/wine/i386-unix"),
+            File(wineDir, "lib/wine/x86_64-unix")
+        ).filter { it.isDirectory }
+        if (wineUnixLibDirs.isNotEmpty()) {
+            val existing0 = env["BOX64_LD_LIBRARY_PATH"]
+            val prefix0 = wineUnixLibDirs.joinToString(":") { it.absolutePath }
+            env["BOX64_LD_LIBRARY_PATH"] = if (existing0.isNullOrBlank()) prefix0
+            else "$prefix0:$existing0"
         }
         // wine 包自带的 x86_64-bionic 依赖闭包（存在才追加；旧版包无此目录）
         val bionicLibDir = File(wineDir, "lib/x86_64-bionic")
