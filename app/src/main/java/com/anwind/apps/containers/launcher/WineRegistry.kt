@@ -901,4 +901,205 @@ object WineRegistry {
             }
         }
     }
+
+    // ------------------------------------------------------------------
+    // /opt/prefix 前缀预置资产注入（v3.2.25，startwine.sh 301-369 行移植）
+    // ------------------------------------------------------------------
+
+    /** opt/prefix 注入完成标记（幂等）。 */
+    private fun optPrefixMarker(prefix: File) = File(prefix, ".anwind-opt-prefix")
+
+    /**
+     * WinFusion 风格 wine 发行包的前缀预置资产注入（用户问题：
+     * "构建前缀也没有解压 rootfs/opt/prefix/ 下的文件和注册表注册"）。
+     *
+     * 参考链路（startwine.sh 前缀构建段）：
+     *  1. drive_c.tar.xz / directx.tar.xz → drive_c/
+     *  2. start 目录 → ProgramData/Microsoft/Windows/Start Menu（开始菜单）
+     *  3. marlett.ttf → windows/Fonts
+     *  4. user.reg / system.reg / fix-services.reg → wine regedit 导入
+     *  5. fix-fonts.tar.xz → windows/
+     *  6. opt/dxvk1 下的 dxvk 归档 → windows/（virgl-enabled 标记存在时跳过）
+     *  7. .update-timestamp=disable（参考脚本同款防重跑语义）
+     *
+     * 约定：
+     *  - 仅当 opt/prefix 目录存在时生效（未安装 /opt 生态包零动作）；
+     *  - 幂等（.anwind-opt-prefix 标记）；任一步失败仅记录、不阻断启动
+     *    （与参考脚本容错语义一致；失败步骤下次重建容器时重试）；
+     *  - 归档双后缀候选（.tar.xz/.txz/.tar）+ 魔数嗅探（tar.gz 强解压
+     *    防御的运行期语义，与 AnWindTzstAssets 同源思路）；
+     *  - 与终端侧 anwind-wine bootstrap_opt_prefix 同源双保险 —— 两端
+     *    各自幂等，先到先应用（标记互认）。
+     *
+     * @return true 表示无需注入（无 /opt/prefix / 已注入 / 前缀未就绪）。
+     */
+    fun bootstrapOptPrefix(
+        resolved: WineRuntime.Resolved,
+        container: ContainerData,
+        env: Map<String, String>,
+        log: (String) -> Unit = {}
+    ): Boolean {
+        val prefix = File(container.prefixPath)
+        if (!File(prefix, "system.reg").isFile) return true   // 前缀未就绪（下次启动重试）
+        if (optPrefixMarker(prefix).isFile) return true
+        val root = WineEnvironment.optRoot() ?: return true
+        val pd = File(root, "prefix")
+        if (!pd.isDirectory) return true
+
+        log("检测到 /opt/prefix 预置资产（${pd.absolutePath}），开始注入……")
+        val driveC = File(prefix, "drive_c")
+        val windows = File(driveC, "windows")
+
+        // ① drive_c / directx 归档
+        extractOptArchive(pd, "drive_c", driveC, log)
+        extractOptArchive(pd, "directx", driveC, log)
+
+        // ② 开始菜单快捷方式
+        val startDir = File(pd, "start")
+        if (startDir.isDirectory) {
+            val menu = File(driveC, "ProgramData/Microsoft/Windows/Start Menu")
+            runCatching {
+                menu.mkdirs()
+                startDir.copyRecursively(menu, overwrite = true)
+                log("开始菜单快捷方式 → ${menu.absolutePath}")
+            }.onFailure { log("警告: 开始菜单复制失败: ${it.message}") }
+        }
+
+        // ③ marlett 字体
+        File(pd, "marlett.ttf").takeIf { it.isFile }?.let { src ->
+            runCatching {
+                File(windows, "Fonts").mkdirs()
+                src.copyTo(File(windows, "Fonts/marlett.ttf"), overwrite = true)
+                log("marlett.ttf → windows/Fonts")
+            }.onFailure { log("警告: marlett.ttf 复制失败: ${it.message}") }
+        }
+
+        // ④ 注册表导入（wine regedit 客户端 —— 与 ensureEmulateModeset 同一通路）
+        listOf("user.reg", "system.reg", "fix-services.reg").forEach { name ->
+            val reg = File(pd, name)
+            if (!reg.isFile) return@forEach
+            log("导入注册表: $name")
+            runCatching {
+                val cmd = NativeShellExecutor.create()
+                    .setCommand(*WineRuntime.wineCommand(resolved).toTypedArray(), "regedit", reg.absolutePath)
+                    .putEnv(env)
+                    .putEnv("WINEPREFIX", container.prefixPath)
+                    .setWorkingDir(WineEnvironment.HOME_DIR)
+                    .exec()
+                val code = cmd.waitFor()
+                if (code != 0) log("警告: regedit $name 退出码 $code（继续其余步骤）")
+            }.onFailure { log("警告: regedit $name 异常: ${it.message}") }
+        }
+
+        // ⑤ fix-fonts 归档 → windows/
+        extractOptArchive(pd, "fix-fonts", windows, log)
+
+        // ⑥ dxvk（virgl 启用时跳过 —— 参考脚本同款条件）
+        if (!File(root, "virgl/virgl-enabled").exists()) {
+            val dxvkDir = File(root, "dxvk1")
+            val archive = dxvkDir.takeIf { it.isDirectory }
+                ?.listFiles { f ->
+                    f.isFile && (
+                        f.name.endsWith(".tar.gz") || f.name.endsWith(".tgz") ||
+                            f.name.endsWith(".tar.xz") || f.name.endsWith(".txz") ||
+                            f.name.endsWith(".tar")
+                        )
+                }
+                ?.maxByOrNull { it.name }
+            if (archive != null) {
+                log("安装 dxvk: ${archive.name}")
+                extractOptArchive(dxvkDir, archive.name, windows, log, explicit = archive.name)
+            }
+        }
+
+        // ⑦ wineserver 落盘注册表（参考脚本 wineserver -k 同款）
+        runCatching {
+            val serverBin = WineRuntime.hostToolBin(resolved, "wineserver")
+            NativeShellExecutor.create()
+                .setCommand(serverBin.absolutePath, "-w")
+                .putEnv(env)
+                .putEnv("WINEPREFIX", container.prefixPath)
+                .setWorkingDir(WineEnvironment.HOME_DIR)
+                .exec()
+                .waitFor(20, TimeUnit.SECONDS)
+            NativeShellExecutor.create()
+                .setCommand(serverBin.absolutePath, "-k")
+                .putEnv(env)
+                .putEnv("WINEPREFIX", container.prefixPath)
+                .setWorkingDir(WineEnvironment.HOME_DIR)
+                .exec()
+                .waitFor(10, TimeUnit.SECONDS)
+        }
+
+        runCatching { optPrefixMarker(prefix).createNewFile() }
+        runCatching { File(prefix, ".update-timestamp").writeText("disable") }
+        log("/opt/prefix 预置资产注入完成")
+        return true
+    }
+
+    /**
+     * opt/prefix 归档解压：按双后缀候选（.tar.xz/.txz/.tar）+ 魔数嗅探
+     * 选解压器（gzip/xz/zstd/plain tar），经 TarCompressorUtils 落盘。
+     */
+    private fun extractOptArchive(
+        dir: File,
+        base: String,
+        dest: File,
+        log: (String) -> Unit,
+        explicit: String? = null
+    ) {
+        val candidates = if (explicit != null) {
+            listOf(File(dir, explicit))
+        } else {
+            listOf(".tar.xz", ".txz", ".tar").map { File(dir, "$base$it") }
+        }
+        val archive = candidates.firstOrNull { it.isFile } ?: return
+        runCatching {
+            val type = sniffTarType(archive)
+                ?: run {
+                    log("警告: ${archive.name} 魔数无法识别，跳过")
+                    return
+                }
+            dest.mkdirs()
+            val ok = com.termux.x11.controller.core.TarCompressorUtils.extract(type, archive, dest)
+            if (ok) {
+                log("解压 ${archive.name} → ${dest.absolutePath}")
+            } else {
+                log("警告: ${archive.name} 解压失败（下次重建容器时重试）")
+            }
+        }.onFailure { log("警告: ${archive.name} 解压异常: ${it.message}") }
+    }
+
+    /** 归档魔数嗅探（与 AnWindTzstAssets.sniffType 同源）。 */
+    private fun sniffTarType(file: File): com.termux.x11.controller.core.TarCompressorUtils.Type? {
+        return try {
+            java.io.RandomAccessFile(file, "r").use { raf ->
+                val head = ByteArray(6)
+                val n = raf.read(head)
+                val b = head.toList()
+                when {
+                    n >= 2 && b[0] == 0x1f.toByte() && b[1] == 0x8b.toByte() ->
+                        com.termux.x11.controller.core.TarCompressorUtils.Type.GZIP
+                    n >= 6 && b[0] == 0xfd.toByte() && b[1] == 0x37.toByte() &&
+                        b[2] == 0x7a.toByte() && b[3] == 0x58.toByte() &&
+                        b[4] == 0x5a.toByte() && b[5] == 0x00.toByte() ->
+                        com.termux.x11.controller.core.TarCompressorUtils.Type.XZ
+                    n >= 4 && b[0] == 0x28.toByte() && b[1] == 0xb5.toByte() &&
+                        b[2] == 0x2f.toByte() && b[3] == 0xfd.toByte() ->
+                        com.termux.x11.controller.core.TarCompressorUtils.Type.ZSTD
+                    else -> {
+                        // 纯 tar：ustar 魔数在 257 偏移
+                        raf.seek(257)
+                        val magic = ByteArray(5)
+                        val m = raf.read(magic)
+                        if (m == 5 && String(magic) == "ustar") {
+                            com.termux.x11.controller.core.TarCompressorUtils.Type.PLAIN
+                        } else null
+                    }
+                }
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
 }

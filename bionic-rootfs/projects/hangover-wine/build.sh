@@ -463,6 +463,35 @@ pre_setup() {
     return 1
   fi
 
+  # v3.2.25：0013 rpcrt4 EC 符号 thunk 校验（CI (13) 实证阵亡点：
+  # dlls/rpcrt4/aarch64-windows/rpcrt4.dll 链接失败 —— lld-link
+  # "undefined symbol: stubless_thunks/vtbl_thunks (EC symbol)"）。
+  # 0007c 的空桩只求编译通过，但 C 侧取址引用要求符号带 EC 入口
+  # 跳板元数据，裸 asm .globl 符号满足不了 → 链接必炸。0013 把
+  # EC 趟改为独立 naked 函数 + 函数指针数组（链接器自动合成入口
+  # 跳板）。判据：0007c 生效后（cstub.c 含 __arm64ec__ 字样）而
+  # 0013 未生效（cstub.c 无 NdrProxyForwardingFunction 宏标记）。
+  # wine-10+/hangover 树 cstub.c 已整段重写（无 THUNK_ENTRY asm 宏）
+  # → 两判据不同时成立，自然跳过；x86_64/降级形态无 EC 趟亦跳过。
+  if [[ "${args}" == *"--enable-archs=arm64ec,"* ]] \
+     && [[ -f dlls/rpcrt4/cstub.c ]] \
+     && grep -q '__arm64ec__' dlls/rpcrt4/cstub.c 2>/dev/null \
+     && ! grep -q 'NdrProxyForwardingFunction' dlls/rpcrt4/cstub.c 2>/dev/null; then
+    echo "::error::0013-fix-arm64ec-rpcrt4-thunks 补丁未生效（cstub.c 仍为 0007c 空桩形态，无 naked 函数 thunk）！"
+    echo "   arm64ec 链接必炸于 dlls/rpcrt4/aarch64-windows/rpcrt4.dll：undefined symbol: vtbl_thunks (EC symbol)（CI (13) 实证）"
+    echo "   请核查源码树形态与补丁锚点：projects/hangover-wine/0013-fix-arm64ec-rpcrt4-thunks-wine97.patch"
+    return 1
+  fi
+  if [[ "${args}" == *"--enable-archs=arm64ec,"* ]] \
+     && [[ -f dlls/rpcrt4/cproxy.c ]] \
+     && grep -q '__ASM_GLOBAL_FUNC( stubless_thunks' dlls/rpcrt4/cproxy.c 2>/dev/null \
+     && ! grep -q '__arm64ec__' dlls/rpcrt4/cproxy.c 2>/dev/null; then
+    echo "::error::0013-fix-arm64ec-rpcrt4-thunks 补丁未生效（cproxy.c 的 stubless_thunks 仍为裸 asm 定义，无 EC 分支）！"
+    echo "   arm64ec 链接必炸于 dlls/rpcrt4/aarch64-windows/rpcrt4.dll：undefined symbol: stubless_thunks (EC symbol)（CI (13) 实证）"
+    echo "   请核查源码树形态与补丁锚点：projects/hangover-wine/0013-fix-arm64ec-rpcrt4-thunks-wine97.patch"
+    return 1
+  fi
+
   # bionic POSIX shm 兼容注入（幂等）：
   # bionic 任何 API 级别都没有 shm_open/shm_unlink（bionic 官方文档
   # status.md 列为 "Missing functions ... explicitly disallowed by

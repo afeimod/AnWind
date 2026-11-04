@@ -85,7 +85,7 @@ CONF_GLOBAL="$RFS_USR/etc/anwind/container.conf"
 X11_SOCK_DIR="$APP_PREFIX/tmp/.X11-unix"
 LOG_DIR="$CONT_ROOT/logs"
 
-version() { echo "anwind-wine 2.12.0 (v2.3 基线恢复 + 纯日志，零行为改动)"; }
+version() { echo "anwind-wine 2.13.0 (v2.3 基线 + /opt 生态配置/前缀引导，对齐 startwine.sh/startfex.sh)"; }
 
 # ---------- 纯日志（v2.12 唯一新增的执行代码） ----------
 # 仅当 App 会话传入 ANWIND_SESSION_LOG（可写文件路径）时生效；终端直跑
@@ -139,6 +139,171 @@ conf_read() { # <file> <key> [default]
     [ -r "$1" ] && _v="$(sed -n "s/^$2=//p" "$1" | head -n 1 | tr -d '\r')"
     if [ -z "$_v" ] && [ -n "${3:-}" ]; then _v="$3"; fi
     printf '%s' "$_v"
+}
+
+# ============================================================
+# /opt 生态配置（v3.2.25，对齐 startwine.sh / startfex.sh 参考链路）
+# ============================================================
+# 用户安装的 wine 发行包（WinFusion 风格）自带一套 /opt 布局：
+#   opt/conf/wine_path.conf   wine 目录声明（WINE_PATH=/opt/...）
+#   opt/conf/env.conf         运行环境开关（WINEESYNC/BOX64_* 等）
+#   opt/conf/cores.conf       核绑定（PRIMARY_CORES/SECONDARY_CORES）
+#   opt/conf/path.conf、dynarec_*.conf   其余调优
+#   opt/locale.conf           语言（LC_ALL，参考脚本 export LC_ALL=...）
+#   opt/prefix/               前缀预置资产（drive_c/directx/fix-fonts
+#                             归档 + start/ 开始菜单 + marlett.ttf +
+#                             user.reg/system.reg/fix-services.reg）
+#   opt/dxvk1/                dxvk 归档；opt/virgl/virgl-enabled 跳过标记
+# 设备侧路径：rootfs/opt（WinFusion 风格包落盘处）优先，
+# usr/opt（AnWind 自有槽位）兑底 —— 两处都检查。
+# 解析方式：逐行 KEY=VALUE 白名单提取（不 source 不 eval）——
+# 配置文件不能执行任意代码，也无法破坏容器隔离变量（WINEPREFIX/
+# PATH/DISPLAY/HOME 等），优先级：容器 env= > opt conf > 内置默认。
+OPT_ROOT=""
+OPT_CONF_KV=""
+OPT_WINE_PATH=""
+
+# opt/conf 固定顺序（对齐 startfex.sh）+ 其余 *.conf 兑底（dynarec_* 等）
+load_opt_confs() {
+    local _root _f _k _v
+    for _root in "$RFS_ROOT/opt" "$RFS_USR/opt"; do
+        [ -d "$_root/conf" ] && { OPT_ROOT="$_root"; break; }
+    done
+    [ -n "$OPT_ROOT" ] || return 0
+    local _confs=""
+    for _f in wine_path.conf env.conf cores.conf path.conf \
+              dynarec_fixmpeg.conf dynarec_active.conf; do
+        [ -r "$OPT_ROOT/conf/$_f" ] && _confs="$_confs $OPT_ROOT/conf/$_f"
+    done
+    for _f in "$OPT_ROOT"/conf/*.conf; do
+        [ -r "$_f" ] || continue
+        case " $_confs " in *" $_f "*) ;; *) _confs="$_confs $_f" ;; esac
+    done
+    [ -n "$_confs" ] || { OPT_ROOT=""; return 0; }
+    # shellcheck disable=SC2086
+    OPT_CONF_KV="$(for _f in $_confs; do
+        sed -e 's/#.*$//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' "$_f" \
+          | sed -n 's/^\(export \)\{0,1\}\([A-Za-z_][A-Za-z0-9_]*\)=\(.*\)$/\2=\3/p'
+    done)"
+    [ -n "$OPT_CONF_KV" ] || { OPT_ROOT=""; return 0; }
+    OPT_WINE_PATH="$(opt_conf_value WINE_PATH)"
+    [ -z "$OPT_WINE_PATH" ] && OPT_WINE_PATH="$(opt_conf_value WINEPATH)"
+    log "opt 生态配置: $OPT_ROOT（$(printf '%s\n' "$OPT_CONF_KV" | wc -l | tr -d ' ') 项）"
+    return 0
+}
+
+# 查询 opt conf 键值（无则空）
+opt_conf_value() { # <key>
+    [ -n "$OPT_CONF_KV" ] || return 0
+    printf '%s\n' "$OPT_CONF_KV" | sed -n "s/^$1=//p" | head -n 1
+}
+
+# 容器 env= 是否已显式设置某键（容器配置优先于 opt conf）
+cont_env_has() { # <key>
+    case " $(conf_read "$CONT_CONF" env "") " in *"$1="*) return 0 ;; esac
+    return 1
+}
+
+# opt/conf 的 BOX64_*/WINE* 白名单应用（不覆盖容器 env= 已设键）
+apply_opt_conf_env() {
+    local _k _v
+    [ -n "$OPT_CONF_KV" ] || return 0
+    # here-doc 而非管道 —— 循环必须留在当前 shell，export 才能存活
+    while IFS='=' read -r _k _v; do
+        [ -n "$_k" ] || continue
+        case "$_k" in
+            BOX64_*|WINEESYNC|WINEFSYNC|WINEDEBUG|WINEDLLOVERRIDES|WINEHIDE*)
+                cont_env_has "$_k" && continue
+                # shellcheck disable=SC2163
+                export "${_k}=${_v}" && log "opt conf: $_k=$_v"
+                ;;
+        esac
+    done <<EOF
+$OPT_CONF_KV
+EOF
+    # 核绑定变量（taskset 应用见 apply_taskset_cores）
+    if [ -z "${PRIMARY_CORES:-}" ]; then
+        _v="$(opt_conf_value PRIMARY_CORES)"
+        if [ -n "$_v" ]; then
+            export PRIMARY_CORES="$_v"
+            export SECONDARY_CORES="$(opt_conf_value SECONDARY_CORES)"
+            log "opt conf: PRIMARY_CORES=$_v"
+        fi
+    fi
+    return 0
+}
+
+# apply_box64_env 之后的 BOX64_* 二次应用：conf 值覆盖 AnWind 预设
+# （用户安装的 /opt 包调优优先于内置 preset），容器 env= 已设键仍最高
+# —— 容器 env= 的 BOX64_* 由 apply_box64_env 末尾专门分支兜底重放，
+# 此处 cont_env_has 再拦一道，三级优先：容器 env= > opt conf > 预设。
+apply_opt_conf_env_box64() {
+    [ -n "$OPT_CONF_KV" ] || return 0
+    local _k _v
+    # here-doc 而非管道 —— 循环必须留在当前 shell，export 才能存活
+    while IFS='=' read -r _k _v; do
+        [ -n "$_k" ] || continue
+        case "$_k" in
+            BOX64_*)
+                cont_env_has "$_k" && continue
+                # shellcheck disable=SC2163
+                export "${_k}=${_v}" && log "opt conf(覆盖预设): $_k=$_v"
+                ;;
+        esac
+    done <<EOF
+$OPT_CONF_KV
+EOF
+    return 0
+}
+
+# opt/locale.conf → LC_ALL/LANG（参考脚本：export LC_ALL="$(cat /opt/locale.conf)"）
+apply_opt_locale() {
+    local _lc=""
+    [ -n "$OPT_ROOT" ] && [ -r "$OPT_ROOT/locale.conf" ] \
+        && _lc="$(head -n 1 "$OPT_ROOT/locale.conf" 2>/dev/null)"
+    _lc="$(printf '%s' "$_lc" | tr -d '[:space:]\"')"
+    _lc="${_lc%\'}"; _lc="${_lc#\'}"
+    [ -n "$_lc" ] || return 0
+    if printf '%s' "$_lc" | grep -Eq '^[A-Za-z]{2,3}(_[A-Za-z]{2,4})?(\.[A-Za-z0-9-]+)?(@[A-Za-z0-9-]+)?$'; then
+        export LC_ALL="$_lc"
+        export LANG="$_lc"
+        log "opt locale.conf → LC_ALL=$LC_ALL"
+    else
+        warn "opt/locale.conf 内容非法（$_lc），忽略"
+    fi
+    return 0
+}
+
+# 核绑定（参考脚本：taskset -c $PRIMARY_CORES）—— 本 shell 自亲和，
+# 所有子进程（wine/wineserver/游戏）自动继承；无 taskset 或核心号
+# 无效时静默退回系统调度（参考脚本同款告警语义，不阻断）。
+apply_taskset_cores() {
+    local _cores="${PRIMARY_CORES:-}"
+    [ -n "$_cores" ] || return 0
+    local _tsc
+    _tsc="$(command -v taskset 2>/dev/null)"
+    [ -x "$_tsc" ] || { log "PRIMARY_CORES=$_cores 但无 taskset（rootfs 未内置），跳过核绑定"; return 0; }
+    if "$_tsc" -p -c "$_cores" "$$" >/dev/null 2>&1; then
+        info "核绑定: taskset -p -c $_cores（wine 及全部子进程继承）"
+    else
+        log "taskset -p -c $_cores 失败（核心号越界/沙箱限制），保持系统调度"
+    fi
+    return 0
+}
+
+# wine_path.conf 的 WINE_PATH（chroot 视角 /opt/...）→ 设备路径候选
+opt_wine_dir_candidate() {
+    local _v="$OPT_WINE_PATH" _d
+    [ -n "$_v" ] || return 1
+    case "$_v" in
+        /data/data/com.anwind/*) _d="$_v" ;;
+        /opt/*)  _d="$RFS_ROOT$_v" ;;
+        /usr/opt/*) _d="$RFS_USR${_v#/usr}" ;;
+        /*) _d="$_v" ;;
+        *) return 1 ;;
+    esac
+    [ -x "$_d/bin/wine" ] || return 1
+    printf '%s' "$_d"
 }
 
 # ============================================================
@@ -409,7 +574,16 @@ resolve_wine_dir() {
         if [ -n "$_d" ]; then
             WINE_DIR="$RFS_USR/opt/$_d"
         else
-            WINE_DIR="$RFS_USR/opt/wine"
+            # v3.2.25：opt/conf/wine_path.conf 的 WINE_PATH（用户安装的
+            # WinFusion 风格 wine 包自带的目录声明）→ 无显式选择时的
+            # wine 目录候选；仍缺则回退主槽位。
+            local _oc
+            if _oc="$(opt_wine_dir_candidate)"; then
+                WINE_DIR="$_oc"
+                info "wine 目录来自 opt/conf/wine_path.conf: $_oc"
+            else
+                WINE_DIR="$RFS_USR/opt/wine"
+            fi
         fi
     fi
     WINE_X86="$WINE_DIR/bin/wine"
@@ -737,6 +911,122 @@ wine_run() {
     esac
 }
 
+# 宿主 wineserver 直连调用（wineserver 是真实 Unix ELF，不经 wine loader）
+wine_server_call() { # <args...>
+    local _bin
+    case "$BACKEND" in
+        box64|native|fexcore|arm64ec) _bin="$(dirname "$WINE_X86")/wineserver" ;;
+        hangover)                     _bin="$(dirname "$WINE_HANGOVER")/wineserver" ;;
+    esac
+    case "$BACKEND" in
+        box64)    "$BOX64_BIN" "$_bin" "$@" ;;
+        native|arm64ec|hangover) "$_bin" "$@" ;;
+        fexcore)  "$FEX_BIN" "$_bin" "$@" ;;
+    esac
+}
+
+# ============================================================
+# /opt/prefix 前缀预置资产注入（v3.2.25，参考 startwine.sh 前缀构建段）
+# ============================================================
+# 参考链路（startwine.sh 301-369 行）：wineboot 初始化后解压 /opt/prefix
+# 下的预置资产并导入注册表：
+#   drive_c.tar.xz / directx.tar.xz → drive_c/
+#   start/* → ProgramData/Microsoft/Windows/Start Menu
+#   marlett.ttf → windows/Fonts
+#   user.reg / system.reg / fix-services.reg → wine regedit 导入
+#   fix-fonts.tar.xz → windows/
+#   /opt/dxvk1/*.tar.gz → windows/（virgl 启用时跳过）
+#   .update-timestamp=disable（防重跑标记，参考脚本同款）
+# 仅在 /opt/prefix 存在（WinFusion 风格 wine 发行包）时生效；幂等
+# （.anwind-opt-prefix 标记）；任一步失败仅告警不阻断（与参考脚本
+# 容错语义一致）。App 侧容器流程（WineRegistry.bootstrapOptPrefix）
+# 同源双保险 —— 两端各自幂等，先到先应用。
+opt_extract_into() { # <dstDir> <label> [候选归档...]
+    local _dst="$1" _label="$2"; shift 2
+    local _f _tar
+    [ -d "$_dst" ] || mkdir -p "$_dst" 2>/dev/null || { warn "无法创建目录 $_dst，跳过 $_label"; return 1; }
+    for _f in "$@"; do
+        [ -f "$_f" ] || continue
+        _tar="$(command -v tar 2>/dev/null)"
+        [ -x "$_tar" ] || { warn "无 tar 可用，跳过 $_label"; return 1; }
+        if "$_tar" -xf "$_f" -C "$_dst" 2>/dev/null; then
+            info "解压 $_label → ${_dst#$RFS_ROOT}"
+            return 0
+        fi
+        # toybox tar 无 xz 支持时的兑底：xzcat 管道
+        if command -v xzcat >/dev/null 2>&1 \
+            && xzcat "$_f" 2>/dev/null | "$_tar" -x -C "$_dst" 2>/dev/null; then
+            info "解压 $_label（xzcat 管道）→ ${_dst#$RFS_ROOT}"
+            return 0
+        fi
+        warn "解压失败: $(basename "$_f")（tar 无该压缩支持）"
+        return 1
+    done
+    return 0   # 候选都不存在：可选资产，静默
+}
+
+bootstrap_opt_prefix() {
+    local _pd
+    [ -n "$OPT_ROOT" ] || return 0
+    _pd="$OPT_ROOT/prefix"
+    [ -d "$_pd" ] || return 0
+    [ -f "$WINEPREFIX/system.reg" ] || return 0   # 前缀未初始化，下次启动再来
+    local _marker="$WINEPREFIX/.anwind-opt-prefix"
+    [ -f "$_marker" ] && return 0
+
+    info "检测到 /opt/prefix 预置资产（$_pd），开始注入……"
+    local _c="$WINEPREFIX/drive_c" _f _r
+
+    # ① drive_c / directx 归档（.tar.xz / .txz / .tar 双后缀候选）
+    opt_extract_into "$_c" drive_c \
+        "$_pd/drive_c.tar.xz" "$_pd/drive_c.txz" "$_pd/drive_c.tar" || true
+    opt_extract_into "$_c" directx \
+        "$_pd/directx.tar.xz" "$_pd/directx.txz" "$_pd/directx.tar" || true
+
+    # ② 开始菜单快捷方式（wine 前缀标准路径为 ProgramData）
+    if [ -d "$_pd/start" ]; then
+        local _sm="$_c/ProgramData/Microsoft/Windows/Start Menu"
+        mkdir -p "$_sm" 2>/dev/null || true
+        if cp -r "$_pd/start/." "$_sm/" 2>/dev/null; then
+            info "开始菜单快捷方式 → ${_sm#$RFS_ROOT}"
+        fi
+    fi
+
+    # ③ marlett 字体
+    [ -f "$_pd/marlett.ttf" ] && cp -f "$_pd/marlett.ttf" "$_c/windows/Fonts/" 2>/dev/null || true
+
+    # ④ 注册表导入（user / system / fix-services）
+    for _r in user.reg system.reg fix-services.reg; do
+        [ -f "$_pd/$_r" ] || continue
+        info "导入注册表: $_r"
+        wine_run regedit "$_pd/$_r" >/dev/null 2>&1 \
+            || warn "regedit $_r 导入失败（下次启动不重试，可手动: wine regedit $_pd/$_r）"
+    done
+
+    # ⑤ fix-fonts 归档 → windows/
+    opt_extract_into "$_c/windows" fix-fonts \
+        "$_pd/fix-fonts.tar.xz" "$_pd/fix-fonts.txz" "$_pd/fix-fonts.tar" || true
+
+    # ⑥ dxvk（virgl 启用时跳过 —— 参考脚本同款条件）
+    if [ ! -e "$OPT_ROOT/virgl/virgl-enabled" ] && [ -d "$OPT_ROOT/dxvk1" ]; then
+        for _f in "$OPT_ROOT"/dxvk1/*.tar.gz "$OPT_ROOT"/dxvk1/*.tgz; do
+            [ -f "$_f" ] || continue
+            info "安装 dxvk: $(basename "$_f")"
+            opt_extract_into "$_c/windows" dxvk "$_f" || true
+            break
+        done
+    fi
+
+    # ⑦ 强制 wineserver 落盘注册表（参考脚本 wineserver -k 同款）
+    wine_server_call -w >/dev/null 2>&1 || true
+    wine_server_call -k >/dev/null 2>&1 || true
+
+    touch "$_marker" 2>/dev/null || true
+    echo disable > "$WINEPREFIX/.update-timestamp" 2>/dev/null || true
+    info "/opt/prefix 预置资产注入完成"
+    return 0
+}
+
 run_wine() {
     # 纯日志：前缀状态观测（只读探测，不改任何流程）
     log "run_wine: 前缀 system.reg $([ -f "$WINEPREFIX/system.reg" ] && echo 已存在 || echo 不存在-将首次初始化)"
@@ -785,6 +1075,10 @@ run_wine() {
         log "wineboot -i 退出码=$_wb_rc"
         echo
     fi
+    # /opt/prefix 预置资产注入（v3.2.25；参考 startwine.sh 前缀构建段：
+    # wineboot 后解压 /opt/prefix 资产 + 注册表导入 + dxvk。幂等标记，
+    # /opt/prefix 不存在时零动作）
+    bootstrap_opt_prefix
     # 显示模式虚拟化（幂等；必须先于一切 wine 子命令——explorer 初始化
     # 显示设置时就需要它，否则模式表写不进注册表，游戏全部报错）
     ensure_emulate_modeset
@@ -870,20 +1164,27 @@ esac
 
 resolve_container
 load_container
+load_opt_confs
+apply_opt_locale
 resolve_wine_dir
 DMODE="$(conf_read "$CONT_CONF" dmode "off")"
 DMODE_RESOLUTION=""
 
-# 顺序关键：隔离 → 显示握手 → 音频 → GPU → Android 安全默认 → 附加环境 → X 服务自启 → 后端
+# 顺序关键：隔离 → 显示握手 → 音频 → GPU → Android 安全默认 → /opt 生态
+# 配置（v3.2.25：覆盖安全默认，但容器 env= 仍在其后可覆盖）→ 附加环境 →
+# X 服务自启 → 后端 → 核绑定
 isolate_env
 apply_display_mode
 audio_setup
 apply_gpu_env
 apply_android_safe_env
+apply_opt_conf_env
 apply_extra_env
 ensure_x11
 pick_backend
 case "$BACKEND" in box64|fexcore) apply_box64_env ;; esac
+apply_opt_conf_env_box64
+apply_taskset_cores
 
 info "容器=$CONT_NAME 后端=$BACKEND wine形态=${WINE_ARCH:-?} DISPLAY=$DISPLAY WINEPREFIX=$WINEPREFIX"
 [ -n "$DMODE_RESOLUTION" ] && info "显示模式 dmode=$DMODE 分辨率=$DMODE_RESOLUTION（X11 握手已写入）"

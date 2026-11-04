@@ -1,5 +1,53 @@
 # AnWind Bionic 修复包 v2（2026-09-19）
 
+> **v3.2.25（2026-11-04，源码包对应 App v2.38.22 / versionCode 85）**：arm64ec 构建根治 + /opt 生态接入轮。
+>
+> ## ① bionic wine 9.7 arm64ec 构建失败（rpcrt4 EC 符号链接阵亡）根治
+>
+> **用户日志**（wine-build-log-arm64ec (13).zip）：
+> ```
+> lld-link: error: undefined symbol: stubless_thunks (EC symbol)
+> lld-link: error: undefined symbol: #stubless_thunks (EC symbol)
+> lld-link: error: undefined symbol: vtbl_thunks (EC symbol)
+> winegcc: .../llvm-mingw-22/bin/clang failed
+> make: *** [dlls/rpcrt4/aarch64-windows/rpcrt4.dll] Error 2
+> ```
+>
+> **根因**：`stubless_thunks` / `vtbl_thunks` 在 cproxy.c / cstub.c 内由 `__ASM_GLOBAL_FUNC` 裸汇编定义、由 C 代码取址引用（fill_stubless_table / delegating_vtbl 初始化）。ARM64EC 目标文件对符号有"风味"要求 —— C 侧取址产生 **EC symbol** 引用（期望带 x64(EC)→native 入口跳板元数据的符号），裸 asm `.globl` 符号没有该元数据 → lld-link 视为未定义。v3.2.24 的 0007c 曾把 EC 趟改成空桩（THUNK_ENTRY_SIZE=0），但空桩的符号风味问题依旧 —— 链接照炸（本次日志实证）。
+>
+> **修复**（新补丁 `0013-fix-arm64ec-rpcrt4-thunks-wine97.patch`，对齐 wine-9.7 树内已被同一 CI 工具链实证可编的 `__arm64ec__ naked` 函数模式 —— ndr_stubless.c 的 NdrClientCall2 等四处入口）：
+> - cstub.c：每个 `NdrProxyForwardingFunction##num` 独立 naked 函数（体照抄 aarch64 版：x0=this 换 `pvServerObject` 后尾跳服务器 vtbl 槽位；x16/x17 为 IP 暂存寄存器，两种调用约定均可自由使用）；`delegating_vtbl.methods` 改存函数指针（wine-10 thunks.c 同构）。
+> - cproxy.c：`call_stubless_func` naked 实现 + `ObjectStublessClient##num` 独立 naked thunk + `stubless_thunk_table` 函数指针数组；`fill_stubless_table` EC 趟查表填充。参数区视图构造与同文件 EC NdrClientCall2 同款（[this, rdx, r8, r9, 栈...] 连续视图）。
+> - 编译器为 naked C 函数生成正确的 EC 符号，lld-link 自动合成入口跳板 → vtable 条目可被 EC(x64) 侧代码直接调用，**链接与运行双修**。
+> - build.sh 增加 0013 生效校验（cstub/cproxy 无 naked thunk 标记时构建前置报错，不再浪费 28 分钟 CI 撞同一链接错误）。
+> - 本地验证：CI 补丁链全量重放后 patch --dry-run 全 hunk 命中 + 应用后字节一致；宏结构独立复制品 gcc -S 验证通过。
+>
+> ## ② wine 启动读取 rootfs/opt/conf 与 locale.conf（startwine.sh / startfex.sh 参考链路）
+>
+> **用户诉求**：wine 启动没有读取 rootfs/opt 的 conf 下的配置，以及 opt 下的 locale.conf。
+>
+> **修复**（脚本 `anwind-wine` v2.13 + App 侧 `WineEnvironment.applyOptConfEnv` 双端同源）：
+> - **opt/conf 解析**：固定顺序（startfex.sh 同款：wine_path → env → cores → path → dynarec_fixmpeg → dynarec_active）+ 其余 .conf 兜底；逐行 KEY=VALUE 白名单提取（**不 source 不 eval** —— 配置文件不能执行任意代码，也碰不到容器隔离变量）；
+> - **wine_path.conf**：WINE_PATH（chroot 视角 `/opt/...` → 设备路径换算）成为 wine 目录候选（容器 wine= 未显式指定时生效，`WineRuntime.resolveWineDir` 同源支持）；
+> - **env.conf / dynarec_*.conf**：`BOX64_*` / `WINEESYNC` / `WINEFSYNC` / `WINEDEBUG` / `WINEDLLOVERRIDES` 白名单导出，覆盖 AnWind 安全默认/预设（用户安装的调优包优先）；
+> - **cores.conf**：PRIMARY_CORES/SECONDARY_CORES 导出 + 脚本侧 `taskset -p` 自亲和（wine 及全部子进程继承；rootfs 无 taskset 时静默跳过，参考脚本同款告警语义）；
+> - **locale.conf**：LC_ALL/LANG（wine 按 LC_ALL 决定 ANSI 代码页，CJK 程序必需；非法内容拦截）；
+> - **优先级**：容器 env= > opt conf > 内置默认（三级，双端一致）；rootfs/opt（WinFusion 风格包落盘处）优先、usr/opt 兜底。
+>
+> ## ③ 前缀构建解压 rootfs/opt/prefix 文件与注册表
+>
+> **用户诉求**：构建前缀也没有解压 rootfs/opt/prefix/ 下的文件和注册表注册。
+>
+> **修复**（脚本 `bootstrap_opt_prefix` + App 侧 `WineRegistry.bootstrapOptPrefix` 同源双保险，两端各自幂等、标记互认）—— startwine.sh 301-369 行完整移植：
+> 1. `drive_c.tar.xz` / `directx.tar.xz` → drive_c/（双后缀候选 .tar.xz/.txz/.tar + 魔数嗅探 gzip/xz/zstd/plain）；
+> 2. `start/` → ProgramData/Microsoft/Windows/Start Menu（开始菜单快捷方式）；
+> 3. `marlett.ttf` → windows/Fonts；
+> 4. `user.reg` / `system.reg` / `fix-services.reg` → wine regedit 导入（与 EmulateModeset 同一通路）；
+> 5. `fix-fonts.tar.xz` → windows/；
+> 6. `opt/dxvk1/` 下 dxvk 归档 → windows/（`opt/virgl/virgl-enabled` 标记存在时跳过，参考脚本同款条件）；
+> 7. wineserver -w/-k 落盘注册表 + `.update-timestamp=disable`（参考脚本同款防重跑）。
+> App 侧在 `initializePrefixIfNeeded` 成功后自动执行（RootfsLauncher 8a 步）；脚本侧在 wineboot -i 后执行。无 /opt/prefix 时零动作；失败不阻断（下次重试）。
+
 > **v3.2.23（2026-11-04，源码包对应 App v2.38.20 / versionCode 83）**：七诉求修复轮。
 >
 > ## ① tar.gz / tar.xz 资产在 APK 内保留原始文件名

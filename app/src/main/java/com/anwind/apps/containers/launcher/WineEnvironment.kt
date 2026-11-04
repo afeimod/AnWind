@@ -451,6 +451,143 @@ object WineEnvironment {
         env["PULSE_SERVER"] = ""
     }
 
+    // ------------------------------------------------------------------
+    // 5) /opt 生态配置（v3.2.25，对齐 startwine.sh / startfex.sh 参考链路）
+    // ------------------------------------------------------------------
+
+    /**
+     * /opt 生态根目录：用户安装的 WinFusion 风格 wine 发行包把配置与
+     * 预置资产放在 rootfs/opt/（opt/conf 下的 .conf、opt/locale.conf、
+     * opt/prefix/、opt/dxvk1/）；AnWind 自有槽位的等价物在 usr/opt/。
+     * 两处按序探测，取第一个有实质内容（conf 目录 / locale.conf /
+     * prefix 目录任一存在）者；无则 null（全部 /opt 功能自动旁路）。
+     */
+    fun optRoot(): File? = listOf(File("$RFS_ROOT/opt"), File("$RFS_USR/opt"))
+        .firstOrNull { root ->
+            File(root, "conf").isDirectory ||
+                File(root, "locale.conf").isFile ||
+                File(root, "prefix").isDirectory
+        }
+
+    /**
+     * 解析 opt/conf 内全部 .conf 的 KEY=VALUE（与 anwind-wine 脚本
+     * load_opt_confs 同源语义）：
+     *  - 固定顺序（startfex.sh 同款）：wine_path / env / cores / path /
+     *    dynarec_fixmpeg / dynarec_active；
+     *  - 其余 *.conf（dynarec_* 等）按名兜底；
+     *  - 仅提取 `KEY=VALUE` / `export KEY=VALUE` 行（去注释/引号），
+     *    不执行 —— 配置文件无法注入任意代码，也碰不到容器隔离变量。
+     *
+     * @return 键值映射；无 /opt/conf 时为空 map。
+     */
+    fun readOptConfs(): Map<String, String> {
+        val confDir = optRoot()?.let { File(it, "conf") } ?: return emptyMap()
+        if (!confDir.isDirectory) return emptyMap()
+        val fixed = listOf(
+            "wine_path.conf", "env.conf", "cores.conf", "path.conf",
+            "dynarec_fixmpeg.conf", "dynarec_active.conf"
+        )
+        val files = LinkedHashMap<String, File>()
+        fixed.forEach { name -> File(confDir, name).takeIf { it.isFile }?.let { files[name] = it } }
+        confDir.listFiles { f -> f.isFile && f.name.endsWith(".conf") }
+            ?.sortedBy { it.name }
+            ?.forEach { files.putIfAbsent(it.name, it) }
+        val out = LinkedHashMap<String, String>()
+        files.values.forEach { f ->
+            f.readLines().forEach { raw ->
+                var line = raw.trim()
+                if (line.isEmpty() || line.startsWith("#")) return@forEach
+                line = line.removePrefix("export ").trim()
+                val eq = line.indexOf('=')
+                if (eq <= 0) return@forEach
+                val key = line.substring(0, eq).trim()
+                if (!key.matches(Regex("[A-Za-z_][A-Za-z0-9_]*"))) return@forEach
+                var value = line.substring(eq + 1).trim()
+                if ((value.startsWith("\"") && value.endsWith("\"") && value.length >= 2) ||
+                    (value.startsWith("'") && value.endsWith("'") && value.length >= 2)
+                ) {
+                    value = value.substring(1, value.length - 1)
+                }
+                out.putIfAbsent(key, value)
+            }
+        }
+        return out
+    }
+
+    /**
+     * opt/locale.conf → 语言（startwine.sh：export LC_ALL="$(cat /opt/locale.conf)"）。
+     *
+     * @return 合法 locale 字符串；无文件/内容非法为 null。
+     */
+    fun readOptLocale(): String? {
+        val f = optRoot()?.let { File(it, "locale.conf") } ?: return null
+        if (!f.isFile) return null
+        val raw = runCatching { f.readLines().firstOrNull() }.getOrNull() ?: return null
+        val value = raw.trim().trim('"', '\'')
+        if (value.isEmpty()) return null
+        // C / C.UTF-8 / POSIX / language / language_REGION.charset / @modifier
+        return value.takeIf {
+            it.matches(Regex("[A-Za-z]{2,3}(_[A-Za-z]{2,4})?(\\.[A-Za-z0-9-]+)?(@[A-Za-z0-9-]+)?"))
+        }
+    }
+
+    /**
+     * 应用 /opt 生态环境（conf 白名单 + locale.conf）。
+     *
+     * 调用位置：applyWineCompatEnv 之后、applyExtraEnv 之前 ——
+     *  * conf 的 WINEESYNC/WINEFSYNC/BOX64_* 覆盖 AnWind 安全默认/预设
+     *    （用户安装的调优包优先于内置默认）；
+     *  * 容器 env=（applyExtraEnv，链路最后）仍可覆盖一切；
+     *  * locale.conf 覆盖基础 LANG（安装包的显式语言声明）并加导 LC_ALL
+     *    （wine 按 LC_ALL 决定 ANSI 代码页，CJK 程序必需；App 原生链无
+     *    bash，无 setlocale 噪音）；
+     *  * cores.conf 的 PRIMARY_CORES 仅在容器 cores 未配置时生效
+     *    （applyTuningEnv 在其后，容器配置始终优先）。
+     */
+    fun applyOptConfEnv(env: MutableMap<String, String>, container: ContainerData) {
+        val conf = readOptConfs()
+        // locale.conf（优先于基础 LANG；容器 env= 仍可在链路最后覆盖）
+        readOptLocale()?.let { lc ->
+            if (!container.env.contains("LC_ALL=") && !container.env.contains("LANG=")) {
+                env["LC_ALL"] = lc
+                env["LANG"] = lc
+            }
+        }
+        if (conf.isEmpty()) return
+        val userEnv = container.env
+        conf.forEach { (k, v) ->
+            when {
+                k.startsWith("BOX64_") ||
+                    k == "WINEESYNC" || k == "WINEFSYNC" || k == "WINEDEBUG" ||
+                    k == "WINEDLLOVERRIDES" || k.startsWith("WINEHIDE") -> {
+                    // 容器 env= 已显式设置的键跳过（最高优先）
+                    if (!userEnv.contains("$k=")) env[k] = v
+                }
+                k == "PRIMARY_CORES" && !env.containsKey("PRIMARY_CORES") -> {
+                    env["PRIMARY_CORES"] = v
+                    conf["SECONDARY_CORES"]?.let { env.putIfAbsent("SECONDARY_CORES", it) }
+                }
+            }
+        }
+    }
+
+    /**
+     * v3.2.25：opt/conf/wine_path.conf 的 WINE_PATH（chroot 视角路径）
+     * → 设备路径 wine 目录候选。无声明 / 路径无 bin/wine 时 null。
+     */
+    fun optConfWineDir(): File? {
+        val conf = readOptConfs()
+        val declared = conf["WINE_PATH"] ?: conf["WINEPATH"] ?: return null
+        val dir = when {
+            declared.startsWith("/data/data/com.anwind/") -> File(declared)
+            declared.startsWith("/opt/") -> File("$RFS_ROOT$declared")
+            declared.startsWith("/usr/opt/") -> File("$RFS_USR${declared.removePrefix("/usr")}")
+            declared.startsWith("/") -> File(declared)
+            else -> return null
+        }
+        return dir.takeIf { File(it, "bin/wine").isFile }
+    }
+
     /**
      * 用户附加环境 + DLL 覆盖（apply_extra_env 移植）。
      *

@@ -231,8 +231,8 @@ android {
         // 必 ENOSYS —— 冒烟树补打补丁（与 aarch64 交付构建同源；沙箱实跑
         // 动态/静态双冒烟 ANWIND_SMOKE_OK 验证），glibc 形态 build-box64.yml
         // 同步应用（静态程序 shm 转发同样受益）。
-        versionCode = 84
-        versionName = "2.38.21"
+        versionCode = 85
+        versionName = "2.38.22"
         // v2.38.21（源码包 v3.2.24）：五诉求修复轮 ——
         // ①APK 打包 tar.gz 强制解压防御：*.tar.gz→*.tgz / *.tar.xz→
         //   *.txz 打包期改名（单后缀不在强制解压逻辑匹配名单）；运行时

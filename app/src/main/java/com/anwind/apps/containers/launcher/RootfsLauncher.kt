@@ -559,6 +559,15 @@ object RootfsLauncher {
                 env, resolved.arch, resolved.wineDir, container.env
             )
 
+            // 6c) v3.2.25（用户问题：wine 启动没读 rootfs/opt/conf 与
+            //     locale.conf）：/opt 生态环境（startwine.sh/startfex.sh
+            //     参考链路）—— opt/conf/*.conf 白名单（WINEESYNC/BOX64_*
+            //     覆盖安全默认，用户安装的调优包优先）+ opt/locale.conf
+            //     （LC_ALL/LANG，wine 按 LC_ALL 决定 ANSI 代码页）+
+            //     cores.conf（PRIMARY_CORES，容器 cores 未配置时生效）。
+            //     容器 env=（applyExtraEnv，链路最后）仍可覆盖一切。
+            WineEnvironment.applyOptConfEnv(env, container)
+
             // v3.2.10（用户问题：syswow64 无法生成）：恢复 wineboot 会话的
             // HODLL64/HODLL 注入，撤销 v3.1.6 的移除。
             // 【v3.1.6 误判复盘】当时以为"前缀创建只执行 aarch64 PE"，把
@@ -646,6 +655,20 @@ object RootfsLauncher {
                     ) { line ->
                         sink.stamp(line)
                         prefixLogLine(key, line)
+                    }
+                    // v3.2.25（用户问题：构建前缀没解压 rootfs/opt/prefix
+                    // 的文件与注册表）：WinFusion 风格 wine 包的前缀预置
+                    // 资产注入（startwine.sh 301-369 行同源：drive_c/
+                    // directx/fix-fonts 归档 + start/ 开始菜单 + marlett.ttf
+                    // + user/system/fix-services 注册表 + opt/dxvk1）。
+                    // 幂等（.anwind-opt-prefix 标记）；无 /opt/prefix 零动作。
+                    runCatching {
+                        WineRegistry.bootstrapOptPrefix(resolved, container, env) { line ->
+                            sink.stamp(line)
+                            prefixLogLine(key, line)
+                        }
+                    }.onFailure {
+                        sink.stamp("警告: /opt/prefix 预置资产注入异常: ${it.message}（下次启动自动重试）")
                     }
                     // v3.1：dosdevices 兑底（z: → / 等）—— /storage/emulated/0
                     // 这类宿主路径经 Z: 盘可达；缺失时某些精简 wine 构建不建

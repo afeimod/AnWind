@@ -1,0 +1,197 @@
+# anwind: wine-9.7 arm64ec rpcrt4 EC 符号链接失败根治（v3.2.25）
+#
+# 【根因】CI 实测（wine-build-log-arm64ec (13).zip）：
+#     lld-link: error: undefined symbol: stubless_thunks (EC symbol)
+#     lld-link: error: undefined symbol: #stubless_thunks (EC symbol)
+#     lld-link: error: undefined symbol: vtbl_thunks (EC symbol)
+#     lld-link: error: undefined symbol: #vtbl_thunks (EC symbol)
+#     winegcc: .../llvm-mingw-22/bin/clang failed
+#     make: *** [dlls/rpcrt4/aarch64-windows/rpcrt4.dll] Error 2
+# 这些符号在 cproxy.c / cstub.c 内用 __ASM_GLOBAL_FUNC 裸汇编定义、
+# 由 C 代码（fill_stubless_table / delegating_vtbl 初始化）取址引用。
+# ARM64EC 目标文件对符号有“风味”要求：C 取址产生 “EC symbol” 引用
+# （期望带 x64(EC)→native 入口跳板元数据的符号），裸 asm .globl 符号
+# 没有该元数据 → lld-link 视为未定义。0007c 曾把 EC 趟改成空桩
+# （THUNK_ENTRY_SIZE=0），符号风味问题依旧 —— 空桩同样无法满足 EC
+# 引用，链接照炸（本次日志实证）。
+#
+# 【修法】对齐 wine-9.7 树内已被同一工具链实证可编的 __arm64ec__
+# naked 函数模式（ndr_stubless.c 的 NdrClientCall2 等四处入口）：
+#   * cstub.c：每个 NdrProxyForwardingFunction##num 独立 naked 函数
+#     （体照抄 aarch64 版：x0=this，换 pvServerObject 后尾跳服务器
+#     vtbl 槽位；x16/x17 为 IP 暂存寄存器，两种调用约定均可自由用）；
+#     delegating_vtbl.methods 改存函数指针（wine-10 thunks.c 同构）。
+#   * cproxy.c：call_stubless_func naked 实现 + ObjectStublessClient##num
+#     独立 naked thunk + stubless_thunk_table 函数指针数组；
+#     fill_stubless_table EC 趟查表填充。
+# 编译器为 naked C 函数生成正确的 EC 符号，lld-link 自动合成入口
+# 跳板 → vtable 条目可被 EC(x64) 侧代码直接调用，链接与运行双修。
+#
+# 【已知限制】EC 浮点参数经 fpu_stack=NULL 传递（与 9.7 树内 EC
+# NdrClientCall2 同一限制）；纯转发 thunk 不触碰浮点寄存器，不受影响。
+#
+# 【互斥】锚点为 0007c/0007 应用后的 wine-9.7 形态：
+#   * wine-10+ / hangover-11 树：cproxy/cstub 已整段重写（thunks.c +
+#     #pragma makedep arm64ec_x64）→ 本补丁 hunk 全不命中 → 静默跳过；
+#   * wine-9.2：0007c 的 EC 分支锚点一致可命中（同构修法亦适用）。
+#
+# 【验证】本地补丁链全量重放（0012→0001b→…→0011，含各失败 hunk 的
+# 等价状态）后 patch --dry-run 全 hunk 命中；宏结构（token 粘贴/
+# 字符串拼接/函数数组）独立 C 复制品 gcc -S 验证通过。
+--- a/dlls/rpcrt4/cstub.c
++++ b/dlls/rpcrt4/cstub.c
+@@ -146,11 +146,36 @@
+     ".long 8*("#num")\n\t"
+ 
+ #elif defined(__arm64ec__)
+-/* anwind: arm64ec 编译趟禁用 x64 thunk 裸汇编（EC clang 不认 x86 指令，
+- * 上游 wine-10 已整段重写为纯 C；旧树 EC 只求可编译，空桩与上游对不支持
+- * 架构的 #else 兜底同款，delegating stubs 在 EC 无实际用户） */
+-#define THUNK_ENTRY_SIZE 0
+-#define THUNK_ENTRY(num) ""
++/* anwind v3.2.25: ARM64EC 趟改为独立 naked 函数（取代 0007c 的空桩）。
++ *
++ * 【根因】空桩不够：EC 目标文件对符号有“风味”要求 —— C 代码引用
++ * __ASM_GLOBAL_FUNC 裸汇编定义的 vtbl_thunks 时，clang 生成 “EC symbol”
++ * 引用（期望带 EC 入口跳板的符号），裸 asm 符号没有该元数据 →
++ * lld-link: undefined symbol: vtbl_thunks (EC symbol)（CI (13) 日志
++ * dlls/rpcrt4/aarch64-windows/rpcrt4.dll 链接阵亡点）。
++ *
++ * 【修法】每个 thunk 独立 naked C 函数 —— 编译器为其生成正确的 EC
++ * 符号与元数据，链接器自动合成 x64(EC)→native 入口跳板，vtable
++ * 条目由此可被 EC(x64) 侧代码直接调用。函数体照抄 aarch64 版
++ * （x0=this；x16/x17 为 IP 暂存寄存器，两种调用约定下均可自由使用）：
++ * 把 this 换成 this->stub_buffer.pvServerObject（偏移 0x20，与 x64
++ * 版一致），尾跳到服务器对象 vtbl 对应槽位。函数指针数组结构对齐
++ * 上游 wine-10 thunks.c（上游用 arm64ec_x64 专用趟编纯 x64 thunk；
++ * wine-9.7 的 makedep 无该机制，改用 EC 原生 naked 函数）。 */
++#define THUNK_ENTRY(num) \
++    static void __attribute__((naked)) NdrProxyForwardingFunction##num(void) \
++    { \
++        asm( ".seh_proc \"#NdrProxyForwardingFunction" #num "\"\n\t" \
++             "ldr x0, [x0, #0x20]\n\t" \
++             "ldr x16, [x0]\n\t" \
++             "mov x17, #" #num "\n\t" \
++             "ldr x16, [x16, x17, lsl #3]\n\t" \
++             "br x16\n\t" \
++             ".seh_endproc" ); \
++    }
++ALL_THUNK_ENTRIES
++#undef THUNK_ENTRY
++#define THUNK_ENTRY_SIZE 0  /* EC：vtable 用函数指针数组填充，无偏移算术 */
+ 
+ #elif defined(__arm__)
+ 
+@@ -179,8 +204,10 @@
+ 
+ #endif
+ 
++#ifndef __arm64ec__
+ extern void vtbl_thunks(void);
+ __ASM_GLOBAL_FUNC( vtbl_thunks, ALL_THUNK_ENTRIES )
++#endif
+ #undef THUNK_ENTRY
+ 
+ static const struct
+@@ -191,7 +218,11 @@
+ {
+     { delegating_QueryInterface, delegating_AddRef, delegating_Release },
+     {
++#ifdef __arm64ec__
++#define THUNK_ENTRY(num) (void *)NdrProxyForwardingFunction##num,
++#else
+ #define THUNK_ENTRY(num) (char *)vtbl_thunks + ((num) - 3) * THUNK_ENTRY_SIZE,
++#endif
+         ALL_THUNK_ENTRIES
+ #undef THUNK_ENTRY
+     }
+--- a/dlls/rpcrt4/cproxy.c
++++ b/dlls/rpcrt4/cproxy.c
+@@ -194,6 +194,64 @@
+     "mov w16,#("#num")\n\t" \
+     "b " __ASM_NAME("call_stubless_func") "\n\t"
+ 
++#elif defined(__arm64ec__)
++
++/* anwind v3.2.25: ARM64EC 趟的 stubless thunk 实现（同 cstub.c 根因：
++ * __ASM_GLOBAL_FUNC 裸汇编符号无 EC 元数据，C 引用得到
++ * “undefined symbol: stubless_thunks (EC symbol)”）。
++ *
++ * call_stubless_func 为 naked C 函数（同文件 ndr_stubless.c 四处
++ * __arm64ec__ naked 入口同款模式，该模式已在本 CI 工具链实证可编）：
++ * EC 调用约定下 x0=this(rcx)、x1-x3=rdx/r8/r9、x4=栈参数区指针、
++ * x16=thunk 序号（IP 暂存寄存器，两种约定下均可自由使用）。
++ * 参数区视图构造与同文件 EC NdrClientCall2 同款：把 r8/r9 与
++ * this/rdx 前插进 x4 栈区，得到 [this, rdx, r8, r9, 栈...] 的
++ * 连续视图（与 x64 版 %rcx→0x40(%rsp) 的视图等价）；浮点参数
++ * 不支持（fpu_stack=NULL，与 9.7 EC NdrClientCall2 同一限制）。 */
++__attribute__((naked)) static void call_stubless_func(void)
++{
++    asm( ".seh_proc \"#call_stubless_func\"\n\t"
++         "stp x29, x30, [sp, #-0x10]!\n\t"
++         ".seh_save_fplr_x 0x10\n\t"
++         ".seh_endprologue\n\t"
++         "stp x2, x3, [x4, #-0x10]!\n\t"
++         "stp x0, x1, [x4, #-0x10]!\n\t"
++         "mov x2, x4\n\t"
++         "mov x3, #0\n\t"
++         "ldr x17, [x0]\n\t"
++         "ldr x17, [x17, #-16]\n\t"
++         "ldr x1, [x17, #8]\n\t"
++         "ldr x5, [x17, #16]\n\t"
++         "ldrh w5, [x5, x16, lsl 1]\n\t"
++         "add x1, x1, x5\n\t"
++         "ldr x0, [x17]\n\t"
++         "bl \"#NdrpClientCall2\"\n\t"
++         "ldp x29, x30, [sp], #0x10\n\t"
++         "ret\n\t"
++         ".seh_endproc" );
++}
++
++#define THUNK_ENTRY(num) \
++    static void __attribute__((naked)) ObjectStublessClient##num(void) \
++    { \
++        asm( ".seh_proc \"#ObjectStublessClient" #num "\"\n\t" \
++             "mov w16, #" #num "\n\t" \
++             "b \"#call_stubless_func\"\n\t" \
++             ".seh_endproc" ); \
++    }
++ALL_THUNK_ENTRIES
++#undef THUNK_ENTRY
++
++/* vtable 填充改用函数指针数组（对齐上游 wine-10 thunks.c 结构）：
++ * 每项都是独立 EC 符号，链接器自动生成入口跳板，x64(EC) 侧可调用 */
++static const void * const stubless_thunk_table[NB_THUNK_ENTRIES - 3] =
++{
++#define THUNK_ENTRY(num) (void *)ObjectStublessClient##num,
++    ALL_THUNK_ENTRIES
++#undef THUNK_ENTRY
++};
++#define THUNK_ENTRY_SIZE 0  /* EC：无偏移算术 */
++
+ #else  /* __i386__ */
+ 
+ #warning You must implement stubless proxies for your CPU
+@@ -203,8 +261,10 @@
+ 
+ #endif  /* __i386__ */
+ 
++#ifndef __arm64ec__
+ extern void stubless_thunks(void);
+ __ASM_GLOBAL_FUNC( stubless_thunks, ALL_THUNK_ENTRIES )
++#endif
+ #undef THUNK_ENTRY
+ 
+ BOOL fill_stubless_table( IUnknownVtbl *vtbl, DWORD num )
+@@ -218,7 +278,11 @@
+         return FALSE;
+     }
+     for (i = 0; i < num - 3; i++, entry++)
++#ifdef __arm64ec__
++        if (*entry == (void *)-1) *entry = stubless_thunk_table[i];
++#else
+         if (*entry == (void *)-1) *entry = (char *)stubless_thunks + i * THUNK_ENTRY_SIZE;
++#endif
+ 
+     return TRUE;
+ }
