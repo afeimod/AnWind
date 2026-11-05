@@ -191,7 +191,7 @@ object RootfsLauncher {
             val executor = NativeShellExecutor.create()
                 .setCommand(*command.toTypedArray())
                 .putEnv(installerEnv())
-                .setWorkingDir(WineEnvironment.HOME_DIR)
+                .setWorkingDir(WineEnvironment.RUNTIME_DIR)
                 .onStdOut { sink.log(it) }
                 .onStdErr { sink.log(it) }
                 .onExit { code -> onSessionExit(key, code, sink) }
@@ -575,6 +575,14 @@ object RootfsLauncher {
             //     但 conf/locale.conf/前缀解包注册全旁路"的设备侧根因。
             OptEcosystemSupport.ensure(resolved.wineDir) { sink.stamp(it) }
             WineEnvironment.applyOptConfEnv(env, container, resolved.wineDir) { sink.stamp(it) }
+            // v3.3.2：MIDI 音色库探测（配合 wine 0010-midimap-fluidsynth
+            // 补丁；rootfs 有 .sf2 时设 WINE_MIDI_SOUNDFONT，无则零动作）
+            WineEnvironment.applyMidiSoundfontEnv(env) { sink.stamp(it) }
+            // v3.3.2：home 顶层乱码文件隔离（用户反馈 home 出现
+            // "pE@ঈ@8@@@hh…" 类内存转储文件 —— 历史会话 CWD=home 时
+            // wine/box64 崩溃转储落盘；会话 CWD 已全部改到 rootfs/usr/tmp，
+            // 存量乱码文件移入 .anwind/quarantine 供人工甄别，不自动删除）
+            quarantineHomeGarbageFiles { sink.stamp(it) }
 
             // v3.2.10（用户问题：syswow64 无法生成）：恢复 wineboot 会话的
             // HODLL64/HODLL 注入，撤销 v3.1.6 的移除。
@@ -871,6 +879,51 @@ object RootfsLauncher {
      *     v3.2.29 起连"清洗旧 DllOverrides"的机制也一并移除 —— APK 对
      *     DllOverrides 零动作，注册表完全由 /opt/prefix 安装包决定）。
      */
+    /**
+     * v3.3.2：rootfs/home 顶层的乱码文件移入隔离区（不删除）。
+     *
+     * 识别规则（宁可漏不可误伤）：文件名含 U+FFFD（非法字节解码残留）、
+     * 含南亚/东南亚文字块（孟加拉/泰米尔/缅/高棉等 —— 用户实测乱码
+     * "pE@ঈ@8@@@hh肨肕ll@…" 的特征，正常中文/英文文件名不含）、含 CJK
+     * 扩展 B 区（𫀁 类平面四字节字符）或文件名超长（>96 字符）。
+     * 命中即移动到 rootfs/home/.anwind/quarantine/（保留原名前缀 +
+     * 时间戳），可人工甄别后删除或移回。
+     */
+    private fun quarantineHomeGarbageFiles(log: (String) -> Unit) {
+        val home = WineEnvironment.HOME_DIR
+        val quarantine = File(home, ".anwind/quarantine")
+        runCatching {
+            val suspectBlocks = setOf(
+                Character.UnicodeBlock.BENGALI, Character.UnicodeBlock.TAMIL,
+                Character.UnicodeBlock.TELUGU, Character.UnicodeBlock.KANNADA,
+                Character.UnicodeBlock.MALAYALAM, Character.UnicodeBlock.GUJARATI,
+                Character.UnicodeBlock.GURMUKHI, Character.UnicodeBlock.SINHALA,
+                Character.UnicodeBlock.MYANMAR, Character.UnicodeBlock.KHMER,
+                Character.UnicodeBlock.LAO, Character.UnicodeBlock.THAANA,
+                Character.UnicodeBlock.TIBETAN, Character.UnicodeBlock.MONGOLIAN,
+                Character.UnicodeBlock.ETHIOPIC, Character.UnicodeBlock.CHEROKEE,
+                Character.UnicodeBlock.OGHAM, Character.UnicodeBlock.RUNIC,
+                Character.UnicodeBlock.YI_SYLLABLES,
+                Character.UnicodeBlock.CJK_UNIFIED_IDEOGRAPHS_EXTENSION_B
+            )
+            var moved = 0
+            home.listFiles { f -> f.isFile }?.forEach { f ->
+                val name = f.name
+                val suspicious = name.contains('\uFFFD') || name.length > 96 || name.any {
+                    val b = Character.UnicodeBlock.of(it)
+                    b != null && b in suspectBlocks
+                }
+                if (suspicious) {
+                    quarantine.mkdirs()
+                    val stamp = System.currentTimeMillis()
+                    val safe = name.take(48).replace(Regex("[\\x00-\\x1f]"), "?")
+                    if (f.renameTo(File(quarantine, "$stamp-$safe"))) moved++
+                }
+            }
+            if (moved > 0) log("home 清理: $moved 个乱码文件移入 home/.anwind/quarantine（可人工甄别后删除）")
+        }
+    }
+
     private fun postPrefixBootChain(
         context: Context,
         resolved: WineRuntime.Resolved,
@@ -883,6 +936,37 @@ object RootfsLauncher {
             sink.stamp(line)
             prefixLogLine(key, line)
         }
+        // ---- (-1) v3.3.2：wineboot 失败自动重跑一次（system.reg 缺失时）----
+        // 用户设备日志（wine-9.2-20261104-200746）实证：wineboot -i 因
+        // err:virtual:map_fixed_area out of memory（39 位地址空间挤占）+
+        // 服务自启失败等次生故障退出后 system.reg 未生成 → /opt/prefix
+        // 的三个注册表（user.reg/system.reg/fix-services.reg）注入被跳过
+        // → 游戏 DLL 加载序无安装包配置 → "media 错误"依旧。wineboot 可
+        // 重入，重跑一次成本低（分钟级一次性路径）；仍失败才放行，日志
+        // 大声可见。
+        val systemReg = File(container.prefixPath, "system.reg")
+        if (!systemReg.isFile) {
+            prefixLog("前缀未就绪（system.reg 缺失）→ 自动重跑一次 wineboot -i 修复……")
+            runCatching {
+                val rbCmd = WineRuntime.wineCommand(resolved) + listOf("wineboot", "-i")
+                val rb = NativeShellExecutor.create()
+                    .setCommand(*rbCmd.toTypedArray())
+                    .putEnv(env)
+                    .putEnv("WINEPREFIX", container.prefixPath)
+                    .setWorkingDir(WineEnvironment.RUNTIME_DIR)
+                    .exec()
+                val finished = runCatching { rb.waitFor(300, TimeUnit.SECONDS) }.getOrDefault(false)
+                if (!finished) {
+                    runCatching { rb.stopAndWait(true, 10, TimeUnit.SECONDS) }
+                    prefixLog("警告: wineboot 重试超时（300s），已终止 —— 前缀构建链继续（失败步骤下次启动自动重试）")
+                } else {
+                    prefixLog(
+                        "wineboot 重试结束（退出码=${runCatching { rb.exitValue() }.getOrDefault(-1)}，" +
+                            "system.reg ${if (systemReg.isFile) "已生成 ✓" else "仍缺失 ✗"}）"
+                    )
+                }
+            }.onFailure { prefixLog("警告: wineboot 重试异常: ${it.message}") }
+        }
         // ---- 0) taskmgr 保活（wineboot -i 之后；wineguanli.py 同款）----
         val tmCmd = WineRuntime.wineCommand(resolved) + listOf("taskmgr")
         prefixLog(
@@ -894,7 +978,7 @@ object RootfsLauncher {
                 .setCommand(*tmCmd.toTypedArray())
                 .putEnv(env)
                 .putEnv("WINEPREFIX", container.prefixPath)
-                .setWorkingDir(WineEnvironment.HOME_DIR)
+                .setWorkingDir(WineEnvironment.RUNTIME_DIR)
                 .exec()
         }.onFailure {
             prefixLog("警告: taskmgr 保活启动失败（${it.message}）—— 继续构建链（失败步骤下次启动自动重试）")

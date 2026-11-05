@@ -231,8 +231,21 @@ android {
         // 必 ENOSYS —— 冒烟树补打补丁（与 aarch64 交付构建同源；沙箱实跑
         // 动态/静态双冒烟 ANWIND_SMOKE_OK 验证），glibc 形态 build-box64.yml
         // 同步应用（静态程序 shm 转发同样受益）。
-        versionCode = 89
-        versionName = "2.38.26"
+        versionCode = 90
+        versionName = "2.38.27"
+        // v3.3.2（源码包 v3.3.2）：wine 语言根治补丁 + MIDI 软合成 + 语言
+        // 设置恢复 —— ①wine 0009 补丁（用户 wine 10.5 参考树同款）：
+        // ntdll/unix/env.c 的 unix_to_win_locale 在 __ANDROID__ 下直读
+        // LC_ALL，绕开 bionic setlocale 失效（zh_CN.UTF-8 不被识别 →
+        // LCID 回落英文 → 界面英文/ACP 1252）；②wine 0010 补丁：midimap
+        // 内置 FluidSynth 软合成端口（用户参考树完整移植，10.x 树适用）；
+        // ③容器语言下拉恢复（编辑页 + 新建对话框，显式档 LANG/LC_ALL
+        // 直接生效，auto 档跟随 /opt/locale.conf）；④wineboot 失败自动
+        // 重跑一次（system.reg 缺失时 —— 修复 /opt/prefix 注册表注入被
+        // 跳过导致的"media 错误"）；⑤regedit 导入 /S 静默；⑥全部 wine
+        // 会话 CWD 从 home 改到 rootfs/usr/tmp + home 顶层乱码文件隔离
+        // （用户反馈 home 出现 "pE@ঈ…" 内存转储文件）；⑦MIDI 音色库
+        // 自动探测（WINE_MIDI_SOUNDFONT）。
         // v2.38.24（源码包 v3.2.27）：DllOverrides 移除 + wineboot 后续链
         // + /opt conf source 语义（用户 v3.2.26 实测反馈）——
         // ①【用户强烈要求】APK 内置 DllOverrides 彻底移除（原 147 项表

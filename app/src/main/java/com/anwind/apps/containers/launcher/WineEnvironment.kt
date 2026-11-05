@@ -1,6 +1,7 @@
 package com.anwind.apps.containers.launcher
 
 import com.anwind.apps.containers.Box64Preset
+import com.anwind.apps.containers.ContainerLangs
 import com.anwind.apps.containers.ContainerData
 import com.anwind.apps.containers.ContainerManager
 import java.io.File
@@ -50,17 +51,22 @@ object WineEnvironment {
         env["XDG_CACHE_HOME"] = "$RFS_ROOT/home/.cache"
         env["XDG_DATA_HOME"] = "$RFS_ROOT/home/.local/share"
 
-        // --- 语言（§3）：**完全由 /opt 生态 conf 决定**（v3.2.29 用户指令
-        //     「把 apk 自带的都去掉，完全使用 conf 配置文件」）——
-        //     startwine.sh 参考链路 `export LC_ALL="$(cat /opt/locale.conf)"`。
-        //     APK 不再携带任何内置语言配置：container.lang 已不再参与
-        //     wine 环境（编辑页/长按菜单的语言选择项一并移除）；
-        //     LANG 与 LC_ALL 同取 rootfs/opt/locale.conf 首行，缺失时
-        //     兜底 zh_CN.UTF-8。App 原生启动链直接 exec 宿主二进制、
-        //     无 bash 参与，bionic 无 locale 数据也不会有 setlocale 噪音；
-        //     wine 按 LC_ALL 决定界面语言与 ANSI 代码页。conf/*.conf 若
-        //     显式 export LANG/LC_ALL，由 applyOptConfEnv 通用逻辑再覆盖。
-        val lang = readOptLocale(wineDir) ?: "zh_CN.UTF-8"
+        // --- 语言（§3）：容器显式语言 > /opt/locale.conf > zh_CN.UTF-8
+        //     （v3.3.2 恢复 container.lang —— v3.2.29 曾移除语言选择项，
+        //     用户反馈"语言设置你给去掉了？那个更改后可以更改启动配置
+        //     语言"）。startwine.sh 参考链路 `export LC_ALL="$(cat
+        //     /opt/locale.conf)"`：auto 档同语义取 rootfs/opt/locale.conf
+        //     首行；显式档（简体中文/繁體/English/日本語/한국어）LANG 与
+        //     LC_ALL 同用容器值。注意：bionic 无 locale 数据，libc 的
+        //     setlocale 对 zh_CN.UTF-8 失效 —— wine 界面语言由 ntdll 的
+        //     locale 解析决定，0009-android-locale-lc-all 补丁（用户
+        //     wine 10.5 参考树同款）让 __ANDROID__ 下直接读 LC_ALL，
+        //     本变量的值从此真正决定 wine 的 LCID/界面语言/ACP。
+        //     conf/*.conf 若显式 export LANG/LC_ALL，由 applyOptConfEnv
+        //     通用逻辑再覆盖；容器 env= 仍最高。
+        val lang = if (container.lang in ContainerLangs.CHOICES && container.lang != ContainerLangs.AUTO)
+            container.lang
+        else readOptLocale(wineDir) ?: "zh_CN.UTF-8"
         env["LANG"] = lang
         env["LC_ALL"] = lang
 
@@ -661,6 +667,43 @@ object WineEnvironment {
             i = if (braced) j + 1 else j
         }
         return sb.toString()
+    }
+
+    /**
+     * v3.3.2：MIDI SoundFont 自动探测（配合 0010-midimap-fluidsynth
+     * wine 补丁 —— midimap 内置 "Wine Software Synth" 软合成端口）。
+     *
+     * rootfs 预置 .sf2 音色库（FluidR3_GM 等）时自动设置
+     * WINE_MIDI_SOUNDFONT，midimap 的 unix 侧据此 dlopen libfluidsynth
+     * 并加载音色（缺失时补丁侧静默回落 —— 无内置合成端口，行为与
+     * 未打补丁一致，不影响构建与启动）。容器 env= 仍可覆盖。
+     */
+    fun applyMidiSoundfontEnv(env: MutableMap<String, String>, log: (String) -> Unit = {}) {
+        if (!env["WINE_MIDI_SOUNDFONT"].isNullOrBlank()) return
+        // 用户 env/conf 已显式指定 MIDI_SF2_PATH（生态包惯例：
+        // env.conf 的 MIDI_SF2_PATH=/…/opt/midi_server/sndfnt.sf2）→ 直接映射
+        env["MIDI_SF2_PATH"]?.takeIf { it.isNotBlank() }?.let { p ->
+            val f = File(p)
+            if (f.isFile && f.length() > 0) {
+                env["WINE_MIDI_SOUNDFONT"] = f.absolutePath
+                log("MIDI 音色库: ${f.name}（来自 MIDI_SF2_PATH）→ WINE_MIDI_SOUNDFONT")
+                return
+            }
+        }
+        val dirs = listOf(
+            "$RFS_ROOT/usr/share/soundfonts",
+            "$RFS_ROOT/usr/local/share/soundfonts",
+            "$RFS_ROOT/usr/share/sounds/sf2",
+            "$RFS_ROOT/opt/soundfonts",
+            "$RFS_ROOT/opt/midi_server"
+        )
+        val sf2 = dirs.asSequence()
+            .map { File(it) }
+            .filter { it.isDirectory }
+            .flatMap { it.listFiles { f -> f.isFile && f.name.lowercase().endsWith(".sf2") }?.asSequence() ?: emptySequence() }
+            .firstOrNull { it.length() > 1024 * 1024 } ?: return
+        env["WINE_MIDI_SOUNDFONT"] = sf2.absolutePath
+        log("MIDI 音色库: ${sf2.name} → WINE_MIDI_SOUNDFONT（midimap 内置软合成可用）")
     }
 
     /**

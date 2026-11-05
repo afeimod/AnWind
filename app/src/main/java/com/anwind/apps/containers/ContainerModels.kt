@@ -153,16 +153,35 @@ enum class DisplayMode(val id: String, val label: String, val desc: String) {
 // 容器语言选项（container.conf 的 lang= 键，v2.26 新增）
 // ---------------------------------------------------------------------------
 
-/** 容器语言（wine 代码页/IME 行为由它决定；与 Termux 会话语言完全隔离）。 */
+/** 容器语言（wine 代码页/界面语言由它决定；与 Termux 会话语言完全隔离）。
+ *
+ * v3.3.2（用户反馈"语言设置你给去掉了？那个更改后可以更改启动配置语言"）：
+ * 语言下拉恢复 —— v3.2.29 曾整体移除（当时 wine 语言改由 /opt/locale.conf
+ * 独家决定，容器编辑页只剩只读说明）。现按 startwine.sh/wineguanli.py 语义
+ * 恢复为可选项：显式选择 → LANG/LC_ALL 直接用它（winelib 0009 补丁修复
+ * bionic setlocale 失效后 LC_ALL 真正决定 wine 界面语言）；"跟随
+ * /opt/locale.conf"（auto）→ 读生态包 locale.conf，无则兜底 zh_CN.UTF-8。
+ */
 object ContainerLangs {
+    /** auto：不显式指定，跟随 /opt/locale.conf（生态包未装时兜底 zh_CN.UTF-8）。 */
+    const val AUTO = "auto"
+
     val CHOICES: List<String> = listOf(
-        "zh_CN.UTF-8", "en_US.UTF-8", "zh_TW.UTF-8",
+        AUTO, "zh_CN.UTF-8", "en_US.UTF-8", "zh_TW.UTF-8",
         "ja_JP.UTF-8", "ko_KR.UTF-8"
     )
     val DISPLAY: List<String> = listOf(
-        "简体中文", "English", "繁體中文", "日本語", "한국어"
+        "跟随 /opt/locale.conf", "简体中文", "English", "繁體中文", "日本語", "한국어"
     )
-    const val DEFAULT = "zh_CN.UTF-8"
+    const val DEFAULT = AUTO
+
+    /** 存储值 → 下拉显示名（未知值回落第一项）。 */
+    fun displayOf(value: String): String =
+        DISPLAY.getOrElse(CHOICES.indexOf(value)) { DISPLAY.first() }
+
+    /** 下拉显示名 → 存储值（未知项回落 auto）。 */
+    fun valueOf(display: String): String =
+        CHOICES.getOrElse(DISPLAY.indexOf(display)) { AUTO }
 }
 
 // ---------------------------------------------------------------------------

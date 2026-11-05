@@ -1,5 +1,96 @@
 # AnWind Bionic 修复包 v2（2026-09-19）
 
+> **v3.3.2（2026-11-05，源码包对应 App v2.38.27 / versionCode 90）**：wine 语言根治补丁（LC_ALL 直读）+ midimap 内置 FluidSynth 软合成 + 容器语言下拉恢复 + wineboot 失败自动重跑 + home 乱码文件隔离（用户本轮实测反馈 + 用户提供的 wine 10.5 参考树逐文件比对移植）。
+>
+> ## ① 【用户诉求】"wine 依旧无法中文环境运行，一直是英文……查看 wine 和 rootfs 的 bionic 构建是否缺少相关文件，设置 zh_CN.utf8 没反应"
+>
+> **根因**（wine-9.2 源码 `dlls/ntdll/unix/env.c` 逐行核实 + 设备日志交叉印证）：
+> wine 的界面语言/LCID 由 ntdll `init_locale()` 决定，而它**依赖 libc 的 setlocale**：
+> `setlocale(LC_ALL, "")` 在 bionic 上只认 C/POSIX/C.UTF-8 —— "zh_CN.UTF-8" 不被
+> 识别 → `setlocale(LC_CTYPE, NULL)` 返回 "C" → `unix_to_win_locale("C")` 产出的
+> win_name 在 locale.nls 里查不到 → system_lcid/user_lcid 落空 → 回落
+> `MAKELANGID(LANG_ENGLISH, SUBLANG_DEFAULT)` → **界面英文 + ACP=1252**。
+> glibc 构建的参考环境（startwine.sh）setlocale 正常返回 zh_CN.UTF-8 所以一切正常
+> —— bionic rootfs 没有 locale 数据，App 端设 LANG/LC_ALL 多少次都没用。
+> wine.mo（v3.2.27 起已装 ×6）只覆盖 Unix 侧消息，救不了 PE 资源语言。
+>
+> **修复**（新补丁 `bionic-rootfs/projects/wine/0009-android-locale-lc-all.patch`，
+> 与用户提供的 wine 10.5 参考树逐字节同款 —— 参考树与上游 wine-10.5 的 env.c
+> 全部差异就这 6 行）：`unix_to_win_locale()` 开头加 `__ANDROID__` 分支，环境变量
+> LC_ALL 非空时直接作为 unix locale 名参与解析，绕开 bionic 失效的 setlocale ——
+> LC_ALL=zh_CN.UTF-8 → "zh-CN" → locale.nls → LCID 0x0804 → PE 资源中文 + ACP=936。
+> **适用性已在七棵树逐一实测**（git apply --check 全过）：official wine-9.2/9.7/10.5/11.0、
+> proton_10.0、hangover-11.16/10.18 —— 项目构建的**全部树/版本通用**（函数区段各代一致）。
+>
+> ## ② 【用户诉求】参考 wine 10.5 修改树的 midi 音效修改，制作补丁
+>
+> 参考树相对上游 wine-10.5 的 midimap 改动完整移植（新补丁
+> `bionic-rootfs/projects/wine/0010-midimap-fluidsynth.patch`）：
+> - `dlls/midimap/synth.h / synth.c / synth_unix.c` 新增 —— 内置 "Wine Software
+>   Synth" 软合成端口：unix 侧运行时 dlopen libfluidsynth（.so/.so.3/.so.2 自动探测），
+>   加载 SoundFont，经 wine 音频驱动（pulse 等）出声；缺库/缺音色时 setup 失败、
+>   静默回落（无内置端口，行为同未打补丁，不影响构建与启动）；
+> - `midimap.c` 端口枚举追加合成端口（MIDIMAP_Port* 五个分发助手），真实设备照旧
+>   走 midiOut*；`Makefile.in` 加 UNIXLIB=midimap.so / UNIX_LIBS=$(PTHREAD_LIBS) / 两个新源文件；
+> - **适用树**（git apply --check 实测全过）：official wine-10.5/11.0、proton_10.0、
+>   hangover-11.16/10.18 —— midimap 的 unix 库架构是 wine 10.x+ 结构，official 9.x
+>   旧树该文件结构不同（hunk 失败仅告警不中断，--forward），建议 9.2 用户用 CI 另建
+>   official-10.5 槽位（顺带获得 10.x 对 39 位地址空间的更好适配 —— 11-04 日志里
+>   wineboot 的 `err:virtual:map_fixed_area out of memory` 正是 39 位 VA 挤占）；
+> - **App 侧配套**（`WineEnvironment.applyMidiSoundfontEnv`，启动链自动执行）：扫描
+>   rootfs 的 /usr/share/soundfonts、/usr/local/share/soundfonts、/usr/share/sounds/sf2、
+>   /opt/soundfonts 下的 .sf2（>1MB），命中即设 `WINE_MIDI_SOUNDFONT`（补丁侧同名
+>   环境变量语义）；未命中零动作（rootfs 构建若已把音色装到系统目录，补丁侧自动扫描同样生效）。
+>
+> ## ③ 【用户诉求】"语言设置你给去掉了？那个更改后可以更改启动配置语言"
+>
+> v3.2.29 曾把容器语言选择项整体移除（当时 wine 语言改由 /opt/locale.conf 独家决定）。
+> v3.3.2 恢复并真正生效：
+> - **编辑页 + 新建容器对话框**各恢复"语言"下拉：跟随 /opt/locale.conf（auto，默认）/
+>   简体中文 / English / 繁體中文 / 日本語 / 한국어（对齐 wineguanli.py 语言映射）；
+> - `WineEnvironment.buildBaseEnv` 语言优先级：**容器显式 lang > /opt/locale.conf >
+>   zh_CN.UTF-8 兜底** —— 显式档直接作为 LANG/LC_ALL（配合 0009 补丁在 bionic 上
+>   真正决定 wine 界面语言），auto 档即 startwine.sh 的 `export LC_ALL="$(cat
+>   /opt/locale.conf)"` 语义；conf/*.conf 显式 export 的 LANG/LC_ALL 仍可再覆盖，
+>   容器 env= 最高。
+>
+> ## ④ 【用户诉求】"根本没有清理干净，还是很多报 media 错误"+ 注册表注入被跳过的闭环
+>
+> **2.38.16 以后 main 全量审计结论**（b794d3e^..HEAD 62 文件 +8427/-2814，注册表相关）：
+> - `WineRegistry.ensureDllOverrides`（147 项内置 DLL 覆盖表）：b0c1e69（2.38.23）改为
+>   按前缀内**实际存在**的 native DLL 过滤写入 → 07de0c7（2.38.24）**整体删除** +
+>   purgeLegacyDllOverrides 旧前缀清洗 → 5daef52（2.38.29）连清洗机制也一并移除
+>   —— 现在 App 对 DllOverrides **零动作**，前缀 DLL 加载序完全由 /opt/prefix
+>   安装包的 user.reg/system.reg/fix-services.reg 决定（WineLibrary 仅写 DPI/Windows 版本）；
+> - `bootstrapOptPrefix`（/opt/prefix 三注册表导入链）：早退分支全部改为大声日志、
+>   探测候选扩到 wine 槽位/套层 opt/（2.38.25/28）；
+> - **media 错误残留的真因**（设备日志 wine-9.2-20261104-200746 实证）：wineboot -i 因
+>   `err:virtual:map_fixed_area out of memory`（39 位地址空间挤占）+ 服务自启失败退出，
+>   **system.reg 未生成** → /opt/prefix 三个注册表注入被"前缀未就绪"跳过 → 游戏 DLL
+>   加载序无安装包配置 → media 错误依旧。**本轮闭环**（`RootfsLauncher.postPrefixBootChain`
+>   开头新增）：system.reg 缺失时**自动重跑一次 wineboot -i**（wineboot 可重入，300s
+>   超时保护），重试后大声报告 system.reg 状态；仍失败才放行（下次启动自动重试）。
+> - `regedit` 导入命令补 `/S` 静默（GUI 错误弹窗不再阻塞前缀构建窗口，退出码非 0
+>   照旧大声告警）——"打注册表时这种报错需要点击"的直接缓解。
+>
+> ## ⑤ 【用户诉求】home 目录出现乱码文件（"pE@ঈ@8@@@hh肨肕ll@…"）
+>
+> 字节特征是内存转储被当文件名落盘（孟加拉/泰米尔字符混 @、pE、ll 等重复片段）——
+> 历史会话的工作目录是 rootfs/home，wine/box64 子进程崩溃时转储/日志直接写 home 顶层。
+> **修复双管**：①全部 wine 会话 CWD 从 `WineEnvironment.HOME_DIR` 改到
+> `WineEnvironment.RUNTIME_DIR`（rootfs/usr/tmp，17 处：注册表导入/函数库/CJK 字体/
+> modern-UI/保活/前缀链等）—— 后续崩溃转储不再落 home；②启动链新增
+> `quarantineHomeGarbageFiles`：home 顶层文件名含 U+FFFD / 南亚东南亚文字块 /
+> CJK 扩展 B / 超长（>96 字符）的存量乱码文件移入 `home/.anwind/quarantine/`
+>（保留原名可甄别，**不自动删除**任何文件）。
+>
+> ## ⑥ 语法修复与版本
+>
+> - faccbf3「修构建」已修复 WineEnvironment.kt 的 CI 报错（681:6 Missing '}' /
+>   851:1 Unclosed comment）；本轮全仓 141 个 .kt 经 ktlint 0.50（Kotlin 1.9 PSI）
+>   解析级检查：**零语法错误**（输出全部为 trailing-comma/indent 等风格项，编译器不 care）。
+> - App v2.38.26 → v2.38.27（versionCode 89 → 90）。
+>
 > **v3.2.27（2026-11-04，源码包对应 App v2.38.24 / versionCode 87）**：DllOverrides 彻底移除 + wineboot 后续链同会话执行 + /opt conf source 语义 + rootfs 中文依赖（用户 v3.2.26 实测反馈 + 参考 startwine.sh / wine-wow64 yml）。
 >
 > ## ① 【用户强烈要求】APK 自带 DllOverrides 注册彻底去掉，完全按照 rootfs/opt/prefix/ 下的注册表来

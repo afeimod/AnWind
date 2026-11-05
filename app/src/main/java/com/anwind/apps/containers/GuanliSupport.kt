@@ -362,7 +362,7 @@ object GuanliSupport {
                 val cmd = NativeShellExecutor.create()
                     .setCommand(*WineRuntime.wineCommand(resolved).toTypedArray(), "regedit", "/s", "C:\\anwind\\appdefaults.reg")
                     .putEnv(env)
-                    .setWorkingDir(WineEnvironment.HOME_DIR)
+                    .setWorkingDir(WineEnvironment.RUNTIME_DIR)
                     .exec()
                 val ok = cmd.waitFor(60, TimeUnit.SECONDS)
                 if (ok && cmd.waitFor() == 0) null else "注册表导入失败（详见会话日志）"

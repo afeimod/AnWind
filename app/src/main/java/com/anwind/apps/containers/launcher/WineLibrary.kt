@@ -65,7 +65,7 @@ object WineLibrary {
                             "regedit", "/s", "C:\\anwind\\library.reg")
                 .putEnv(env)
                 .putEnv("WINEPREFIX", container.prefixPath)
-                .setWorkingDir(WineEnvironment.HOME_DIR)
+                .setWorkingDir(WineEnvironment.RUNTIME_DIR)
                 .exec()
             val finished = runCatching { cmd.waitFor(120, TimeUnit.SECONDS) }.getOrDefault(false)
             val code = if (finished) runCatching { cmd.waitFor() }.getOrDefault(-1) else -1

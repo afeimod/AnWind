@@ -51,7 +51,7 @@ object WineRegistry {
                 )
                 .putEnv(env)
                 .putEnv("WINEPREFIX", container.prefixPath)
-                .setWorkingDir(WineEnvironment.HOME_DIR)
+                .setWorkingDir(WineEnvironment.RUNTIME_DIR)
                 .exec()
             val code = cmd.waitFor()
             if (code == 0) {
@@ -86,7 +86,7 @@ object WineRegistry {
                     .setCommand(*WineRuntime.wineCommand(resolved).toTypedArray(), *args)
                     .putEnv(env)
                     .putEnv("WINEPREFIX", container.prefixPath)
-                    .setWorkingDir(WineEnvironment.HOME_DIR)
+                    .setWorkingDir(WineEnvironment.RUNTIME_DIR)
                     .exec()
                     .waitFor(15, java.util.concurrent.TimeUnit.SECONDS)
             }
@@ -273,7 +273,7 @@ object WineRegistry {
                             "regedit", "/s", "C:\\anwind\\modern-ui.reg")
                 .putEnv(env)
                 .putEnv("WINEPREFIX", container.prefixPath)
-                .setWorkingDir(WineEnvironment.HOME_DIR)
+                .setWorkingDir(WineEnvironment.RUNTIME_DIR)
                 .exec()
             // 超时即告失败（不阻塞启动链；不落标记 → 下次启动自动重试）
             val finished = runCatching { cmd.waitFor(120, TimeUnit.SECONDS) }.getOrDefault(false)
@@ -472,7 +472,7 @@ object WineRegistry {
                     .setCommand(*cmdPrefix.toTypedArray(), "wineboot", "-i")
                     .putEnv(env)
                     .putEnv("WINEPREFIX", container.prefixPath)
-                    .setWorkingDir(WineEnvironment.HOME_DIR)
+                    .setWorkingDir(WineEnvironment.RUNTIME_DIR)
                     .onStdOut { gotOutput = true; log(it) }
                     .onStdErr { gotOutput = true; log(it) }
                     .exec()
@@ -584,7 +584,7 @@ object WineRegistry {
                 .setCommand(*WineRuntime.wineCommand(resolved).toTypedArray(), "--version")
                 .putEnv(testEnv)
                 .putEnv("WINEPREFIX", container.prefixPath)
-                .setWorkingDir(WineEnvironment.HOME_DIR)
+                .setWorkingDir(WineEnvironment.RUNTIME_DIR)
                 .onStdOut { synchronized(output) { output.append(it).append('\n') } }
                 .onStdErr { synchronized(output) { output.append(it).append('\n') } }
                 .exec()
@@ -815,10 +815,13 @@ object WineRegistry {
             log("导入注册表: $name")
             runCatching {
                 val cmd = NativeShellExecutor.create()
-                    .setCommand(*WineRuntime.wineCommand(resolved).toTypedArray(), "regedit", reg.absolutePath)
+                    // v3.3.2：补 /S 静默 —— regedit 导入失败时的错误弹窗
+                    //（GUI 对话框）会阻塞前缀构建窗口，静默化后错误只进
+                    // 日志（退出码非 0 照旧大声告警）。
+                    .setCommand(*WineRuntime.wineCommand(resolved).toTypedArray(), "regedit", "/S", reg.absolutePath)
                     .putEnv(env)
                     .putEnv("WINEPREFIX", container.prefixPath)
-                    .setWorkingDir(WineEnvironment.HOME_DIR)
+                    .setWorkingDir(WineEnvironment.RUNTIME_DIR)
                     .exec()
                 val code = cmd.waitFor()
                 if (code != 0) log("警告: regedit $name 退出码 $code（继续其余步骤）")
@@ -843,7 +846,7 @@ object WineRegistry {
                                 "start", "/unix", "/opt/apps/install.bat")
                     .putEnv(env)
                     .putEnv("WINEPREFIX", container.prefixPath)
-                    .setWorkingDir(WineEnvironment.HOME_DIR)
+                    .setWorkingDir(WineEnvironment.RUNTIME_DIR)
                     .exec()
                 val finished = runCatching { cmd.waitFor(600, TimeUnit.SECONDS) }.getOrDefault(false)
                 if (!finished) {
@@ -858,7 +861,7 @@ object WineRegistry {
                     .setCommand(serverBin.absolutePath, "-k")
                     .putEnv(env)
                     .putEnv("WINEPREFIX", container.prefixPath)
-                    .setWorkingDir(WineEnvironment.HOME_DIR)
+                    .setWorkingDir(WineEnvironment.RUNTIME_DIR)
                     .exec()
                     .waitFor(15, TimeUnit.SECONDS)
             }.onFailure { log("警告: install.bat 执行异常: ${it.message}（继续）") }
@@ -872,7 +875,7 @@ object WineRegistry {
                 .setCommand(serverBin.absolutePath, "-k")
                 .putEnv(env)
                 .putEnv("WINEPREFIX", container.prefixPath)
-                .setWorkingDir(WineEnvironment.HOME_DIR)
+                .setWorkingDir(WineEnvironment.RUNTIME_DIR)
                 .exec()
                 .waitFor(15, TimeUnit.SECONDS)
         }
@@ -902,14 +905,14 @@ object WineRegistry {
                 .setCommand(serverBin.absolutePath, "-w")
                 .putEnv(env)
                 .putEnv("WINEPREFIX", container.prefixPath)
-                .setWorkingDir(WineEnvironment.HOME_DIR)
+                .setWorkingDir(WineEnvironment.RUNTIME_DIR)
                 .exec()
                 .waitFor(20, TimeUnit.SECONDS)
             NativeShellExecutor.create()
                 .setCommand(serverBin.absolutePath, "-k")
                 .putEnv(env)
                 .putEnv("WINEPREFIX", container.prefixPath)
-                .setWorkingDir(WineEnvironment.HOME_DIR)
+                .setWorkingDir(WineEnvironment.RUNTIME_DIR)
                 .exec()
                 .waitFor(10, TimeUnit.SECONDS)
         }

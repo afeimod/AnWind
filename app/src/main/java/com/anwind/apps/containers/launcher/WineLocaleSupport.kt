@@ -258,7 +258,7 @@ object WineLocaleSupport {
                     "regedit", "/s", "C:\\anwind\\cjk-fonts.reg")
                 .putEnv(env)
                 .putEnv("WINEPREFIX", container.prefixPath)
-                .setWorkingDir(WineEnvironment.HOME_DIR)
+                .setWorkingDir(WineEnvironment.RUNTIME_DIR)
                 .exec()
             val finished = cmd.waitFor(60, TimeUnit.SECONDS)
             if (!finished) {
@@ -376,7 +376,7 @@ object WineLocaleSupport {
                     "regedit", "/s", "C:\\anwind\\user-fonts.reg")
                 .putEnv(env)
                 .putEnv("WINEPREFIX", container.prefixPath)
-                .setWorkingDir(WineEnvironment.HOME_DIR)
+                .setWorkingDir(WineEnvironment.RUNTIME_DIR)
                 .exec()
             val finished = cmd.waitFor(60, TimeUnit.SECONDS)
             if (!finished) {

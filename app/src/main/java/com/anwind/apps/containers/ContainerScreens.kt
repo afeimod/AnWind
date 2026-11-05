@@ -856,7 +856,8 @@ private fun LeftContainerListBox(
     }
 
     // 长按菜单（wineguanli.py show_container_context_menu 同款条目；
-    // v3.2.29：语言切换项移除 —— wine 语言完全由 /opt/locale.conf 决定）
+    // 语言在编辑页/新建对话框的"语言"下拉里改 —— v3.3.2 恢复，显式值
+    // 直接决定启动配置的 LANG/LC_ALL）
     menuFor?.let { c ->
         GDropdownMenu(expanded = true, onDismiss = { menuFor = null }) {
             GDropdownMenuItem("▶️ 运行容器") { menuFor = null; onRun(c) }
@@ -1111,7 +1112,14 @@ private fun BasicSettingsTab(
             }
         }
         GField("🌐 语言:") {
-            GNote("由 rootfs/opt/locale.conf 决定（LC_ALL）—— v3.2.29 起 APK 不再内置语言配置")
+            // v3.3.2 恢复（用户："语言设置你给去掉了？那个更改后可以更改
+            // 启动配置语言"）：显式档直接作为 LANG/LC_ALL（配合 wine
+            // 0009 补丁在 bionic 上生效），auto 档跟随 /opt/locale.conf。
+            GComboBox(
+                options = ContainerLangs.DISPLAY,
+                selected = ContainerLangs.displayOf(edit.lang),
+                onSelect = { v -> onChange(edit.copy(lang = ContainerLangs.valueOf(v))) }
+            )
         }
         GField("⏱️ 帧数限制:") {
             GComboBox(
@@ -2697,6 +2705,7 @@ private fun NewContainerDialog(
     var arch by remember { mutableStateOf("x86_64") }
     var wine by remember { mutableStateOf("") }
     var res by remember { mutableStateOf("全屏") }
+    var lang by remember { mutableStateOf(ContainerLangs.DEFAULT) }
     var frame by remember { mutableStateOf("默认(不限制)") }
     var error by remember { mutableStateOf<String?>(null) }
 
@@ -2757,7 +2766,13 @@ private fun NewContainerDialog(
                 )
             }
             GField("语言:") {
-                GNote("由 rootfs/opt/locale.conf 决定（LC_ALL）")
+                // v3.3.2 恢复：新建容器即可选语言（跟随 /opt/locale.conf
+                // 为默认），保存进容器 lang=，启动链写入 LANG/LC_ALL。
+                GComboBox(
+                    options = ContainerLangs.DISPLAY,
+                    selected = ContainerLangs.displayOf(lang),
+                    onSelect = { lang = ContainerLangs.valueOf(it) }
+                )
             }
             GField("帧数限制:") {
                 GComboBox(
@@ -2786,7 +2801,7 @@ private fun NewContainerDialog(
                         wine = wine,
                         screen = if (res == "全屏") "native" else res,
                         dmode = if (res == "全屏") DisplayMode.OFF else DisplayMode.D,
-                        lang = ContainerLangs.DEFAULT,
+                        lang = lang,
                         frame = when (frame) { "60" -> "60"; "120" -> "120"; else -> "0" }
                     )
                     val err = ContainerManager.create(data)
