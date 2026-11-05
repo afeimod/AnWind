@@ -1,5 +1,7 @@
 # AnWind Bionic 修复包 v2（2026-09-19）
 
+> **v3.3.2-r2（2026-11-05 hotfix，同日重发，App 版本不变 v2.38.27 / versionCode 90）**：修 CI 编译错 `RootfsLauncher.kt:964:63 Unresolved reference: exitValue` —— v3.3.2 新增的"wineboot 失败自动重跑"代码把 `NativeShellExecutor` 句柄当 `java.lang.Process` 调了（执行器 API 只有 `waitFor()/stopAndWait()`，没有 `exitValue()`）。修复：`NativeShellExecutor` 补 `exitValue(): Int`（语义对齐 `java.lang.Process`：进程仍在运行抛 `IllegalThreadStateException`，退出码从 exec Future 取 —— 句柄在 exec 完成时会被收尾置空，只有 Future 里存着真实退出码）。调用点零改动；全仓其余 5 处 `exitValue` 均在 `java.lang.Process` 上，不受影响。全仓 executor 方法调用比对审计：除该处外与类 API 全部匹配，无其他编译错。
+>
 > **v3.3.2（2026-11-05，源码包对应 App v2.38.27 / versionCode 90）**：wine 语言根治补丁（LC_ALL 直读）+ midimap 内置 FluidSynth 软合成 + 容器语言下拉恢复 + wineboot 失败自动重跑 + home 乱码文件隔离（用户本轮实测反馈 + 用户提供的 wine 10.5 参考树逐文件比对移植）。
 >
 > ## ① 【用户诉求】"wine 依旧无法中文环境运行，一直是英文……查看 wine 和 rootfs 的 bionic 构建是否缺少相关文件，设置 zh_CN.utf8 没反应"

@@ -181,6 +181,26 @@ class NativeShellExecutor private constructor() {
         return future.join()
     }
 
+    /**
+     * 立即返回退出码（v3.3.2-r2 hotfix）。
+     *
+     * 语义对齐 java.lang.Process.exitValue：进程仍在运行时抛
+     * IllegalThreadStateException（调用方通常先 [waitFor] 拿到 true 再取码）。
+     * 注意退出码从 [execFuture] 取而不是 [process] —— exec 完成时 IO 线程
+     * 会把 process 句柄收尾置空，此时只有 Future 里存着真实退出码；
+     * 若 Future 尚差一步完成，join() 只会阻塞几微秒等它落定，无死锁面。
+     *
+     * @throws IllegalThreadStateException 进程未启动 / 仍在运行
+     */
+    fun exitValue(): Int {
+        val p = process
+        if (p != null && p.isAlive) {
+            throw IllegalThreadStateException("Process is still running.")
+        }
+        return execFuture?.join()
+            ?: throw IllegalThreadStateException("Process was never started.")
+    }
+
     private fun startStdReader(
         stream: java.io.InputStream,
         consumer: ((String) -> Unit)?,
