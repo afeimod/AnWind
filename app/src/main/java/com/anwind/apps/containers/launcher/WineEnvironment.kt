@@ -697,8 +697,8 @@ object WineEnvironment {
      *    指向 rootfs 的 usr/local/bin，供 rootfs 脚本定位 box64/wineserver；
      *  * 容器 env=（applyExtraEnv，链路最后）仍可覆盖一切；
      *  * locale.conf → LANG/LC_ALL 已上移 buildBaseEnv（v3.2.29：语言
-     *    唯一来源 /opt/locale.conf；conf/*.conf 显式 export 的 LANG/
-     *    LC_ALL 走下方通用覆盖逻辑）；
+     *    唯一来源 /opt/locale.conf；conf 目录各 .conf 显式 export 的
+     *    LANG/LC_ALL 走下方通用覆盖逻辑）；
      *  * cores.conf 的 PRIMARY_CORES/SECONDARY_CORES 走通用导出；
      *    applyTuningEnv 在其后，容器 cores 配置始终优先。
      */
