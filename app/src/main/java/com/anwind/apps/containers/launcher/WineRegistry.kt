@@ -463,14 +463,20 @@ object WineRegistry {
                 val watchdog = Thread({
                     try { Thread.sleep(WATCHDOG_MIN * 60_000L) } catch (_: InterruptedException) { return@Thread }
                     if (!gotOutput && !File(container.prefixPath, "system.reg").isFile) {
-                        log("wineboot -i 已 ${WATCHDOG_MIN} 分钟无任何输出且 system.reg 未落盘 ——")
+                        log("wineboot 已 ${WATCHDOG_MIN} 分钟无任何输出且 system.reg 未落盘 ——")
                         log("（mono/gecko 安装提示框等待确认属正常；否则疑似挂死）提前抓取进程现场：")
                         dumpWineHangSnapshot(resolved, container, log)
                     }
                 }, "anwind-prefix-watchdog").apply { isDaemon = true; start() }
+                // v3.3.3（用户问题 3，startfex.sh 同款）：-i → -u —— 参考链
+                // rm -rf 前缀后 wineboot -u 安装（前缀缺失时 -u 一样初始化），
+                // 且附 WINEDLLOVERRIDES="mscoree=disabled"（参考同款）压掉
+                // mono 安装器弹窗 —— 与下面 explorer 虚拟桌面配合，提示框
+                // 不再阻塞构建。
                 val executor = NativeShellExecutor.create()
-                    .setCommand(*cmdPrefix.toTypedArray(), "wineboot", "-i")
+                    .setCommand(*cmdPrefix.toTypedArray(), "wineboot", "-u")
                     .putEnv(env)
+                    .putEnv("WINEDLLOVERRIDES", "mscoree=disabled")
                     .putEnv("WINEPREFIX", container.prefixPath)
                     .setWorkingDir(WineEnvironment.RUNTIME_DIR)
                     .onStdOut { gotOutput = true; log(it) }
@@ -487,7 +493,7 @@ object WineRegistry {
                     dumpWineHangSnapshot(resolved, container, log)
                     runCatching { executor.stopAndWait(true, 10, TimeUnit.SECONDS) }
                     lastCode = -1
-                    log("wineboot -i 第 ${attempt} 次超时（>${TIMEOUT_MIN} 分钟无退出），已强制结束" +
+                    log("wineboot 第 ${attempt} 次超时（>${TIMEOUT_MIN} 分钟无退出），已强制结束" +
                         if (attempt == 1) "，清残留后重试一次…" else "")
                     log("→ 典型原因：残留/冻结的 wineserver 使客户端阻塞在握手（v3.3.1 已自动硬清理）/ 提示框等待确认 / 早期初始化崩溃；请把本窗口日志反馈给开发者")
                 } else {
@@ -713,6 +719,71 @@ object WineRegistry {
     private fun optPrefixMarker(prefix: File) = File(prefix, ".anwind-opt-prefix")
 
     /**
+     * v3.3.3：/opt/prefix 注册表 bionic regedit 兼容性规范化（用户问题 4：
+     * “opt 生态包里的 reg 注册表总是报错，是不是格式不适合 bionic”），
+     *
+     * wine regedit 对导入文件的要求（reg_import.c 同源规则）：
+     *  - 头行必须是 "WINE REGISTRY Version 2"（wine 原生）/"REGEDIT4"/
+     *    "Windows Registry Editor Version 5.00" 之一；生态包手工维护的
+     *    .reg 常缺头行 → regedit 逐键报错（GUI 弹窗即由此来）；
+     *  - Windows regedit 导出的 5.00 文件常为 UTF-16LE+BOM，生态包二次
+     *    保存可能丢 BOM / 换成带 BOM 的 UTF-8 → 解析失败；
+     *  - CRLF 兼容，但 UTF-16 无 BOM 时首键会被吞。
+     *
+     * 规范化（不改 /opt 源文件 —— 规范化副本落前缀 .anwind-regtmp 再导入）：
+     *  1. UTF-16LE(BOM) → UTF-8；UTF-8 BOM 剥离；
+     *  2. CRLF/CR → LF；
+     *  3. 缺头行时按首个键行的反斜杠形态补头：含 "\\"（双反斜杠转义）
+     *     → "WINE REGISTRY Version 2"；否则 → "Windows Registry Editor
+     *     Version 5.00"（hex(2)/hex(7) 值类型全兼容）；
+     *  4. 已合法 → 不生成副本（返回 null，调用方原样导入）。
+     *
+     * @return 规范化副本路径；无需改动/读取失败时 null（调用方回退原文件）。
+     */
+    private fun normalizeRegForBionic(src: File, workDir: File, log: (String) -> Unit): File? {
+        return runCatching {
+            val raw = src.readBytes()
+            if (raw.isEmpty()) return null
+            val actions = mutableListOf<String>()
+            val body: String = when {
+                raw.size >= 2 && raw[0] == 0xFF.toByte() && raw[1] == 0xFE.toByte() -> {
+                    actions.add("UTF-16LE→UTF-8")
+                    String(raw, 2, raw.size - 2, Charsets.UTF_16LE)
+                }
+                raw.size >= 3 && raw[0] == 0xEF.toByte() && raw[1] == 0xBB.toByte() && raw[2] == 0xBF.toByte() -> {
+                    actions.add("剥离 UTF-8 BOM")
+                    String(raw, 3, raw.size - 3, Charsets.UTF_8)
+                }
+                else -> String(raw, Charsets.UTF_8)
+            }
+            val unified = body.replace("\r\n", "\n").replace('\r', '\n')
+            if (unified != body) actions.add("CRLF→LF")
+            val firstLine = unified.lineSequence().firstOrNull { it.isNotBlank() }?.trim().orEmpty()
+            val hasHeader = firstLine.startsWith("WINE REGISTRY") ||
+                firstLine.equals("REGEDIT4", ignoreCase = true) ||
+                firstLine.startsWith("Windows Registry Editor")
+            val finalText = if (hasHeader) unified else {
+                // 首个键行的反斜杠形态：wine 原生格式键路径双反斜杠转义
+                //（[Software\\Wine\\...]），Windows 5.00 格式单反斜杠。
+                val firstKey = unified.lineSequence()
+                    .firstOrNull { it.trim().startsWith("[") }?.trim().orEmpty()
+                val wineStyle = firstKey.contains("\\\\")
+                actions.add(
+                    if (wineStyle) "补 WINE REGISTRY Version 2 头行"
+                    else "补 Windows Registry Editor Version 5.00 头行"
+                )
+                (if (wineStyle) "WINE REGISTRY Version 2\n\n" else "Windows Registry Editor Version 5.00\n\n") + unified
+            }
+            if (actions.isEmpty()) return null
+            workDir.mkdirs()
+            val out = File(workDir, src.name)
+            out.writeText(finalText)
+            log("→ 规范化: ${src.name}（${actions.joinToString("、")}）—— 以副本导入，/opt 源文件未改")
+            out
+        }.getOrNull()
+    }
+
+    /**
      * WinFusion 风格 wine 发行包的前缀预置资产注入（用户问题：
      * "构建前缀也没有解压 rootfs/opt/prefix/ 下的文件和注册表注册"）。
      *
@@ -758,7 +829,14 @@ object WineRegistry {
             }
             return true
         }
-        if (optPrefixMarker(prefix).isFile) return true   // 已注入（幂等静默）
+        if (optPrefixMarker(prefix).isFile) {
+            // v3.3.3（用户日志实证：标记命中后每次启动零日志，用户误读为
+            // “构建前缀在 wineboot 后就结束了/注册表没打”）—— 幂等跳过
+            // 也要大声说出来了。
+            log("/opt/prefix 已注入过（.anwind-opt-prefix 标记命中）—— 跳过重复注入")
+            log("（如需重打注册表/资产：删除前缀内 .anwind-opt-prefix 标记或重建前缀）")
+            return true
+        }
         // v3.2.28：注入前先跑 /opt 生态自愈（rootfs/opt 顶层生态 tar 包
         // 自动解包 + 套层/槽位 opt/ 候选）—— 生态包没解开时这里是最后一道补救
         OptEcosystemSupport.ensure(resolved.wineDir, log)
@@ -809,22 +887,27 @@ object WineRegistry {
         }
 
         // ④ 注册表导入（wine regedit 客户端 —— 与 ensureEmulateModeset 同一通路）
+        val regTmpDir = File(prefix, ".anwind-regtmp")
         listOf("user.reg", "system.reg", "fix-services.reg").forEach { name ->
             val reg = File(pd, name)
             if (!reg.isFile) return@forEach
             log("导入注册表: $name")
             runCatching {
+                // v3.3.3（用户问题 4）：bionic regedit 兼容性规范化 ——
+                // 编码/BOM/头行/换行自动修复后以副本导入（见函数注释）。
+                val importFile = normalizeRegForBionic(reg, regTmpDir, log) ?: reg
                 val cmd = NativeShellExecutor.create()
                     // v3.3.2：补 /S 静默 —— regedit 导入失败时的错误弹窗
                     //（GUI 对话框）会阻塞前缀构建窗口，静默化后错误只进
                     // 日志（退出码非 0 照旧大声告警）。
-                    .setCommand(*WineRuntime.wineCommand(resolved).toTypedArray(), "regedit", "/S", reg.absolutePath)
+                    .setCommand(*WineRuntime.wineCommand(resolved).toTypedArray(), "regedit", "/S", importFile.absolutePath)
                     .putEnv(env)
                     .putEnv("WINEPREFIX", container.prefixPath)
                     .setWorkingDir(WineEnvironment.RUNTIME_DIR)
                     .exec()
                 val code = cmd.waitFor()
                 if (code != 0) log("警告: regedit $name 退出码 $code（继续其余步骤）")
+                else log("导入注册表: $name ✓")
             }.onFailure { log("警告: regedit $name 异常: ${it.message}") }
         }
 

@@ -28,6 +28,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.anwind.apps.containers.launcher.OptConfSupport
 import com.anwind.apps.containers.launcher.RootfsLauncher
 import com.anwind.apps.containers.launcher.WineEnvironment
 import com.anwind.core.theme.LocalWinTheme
@@ -101,7 +102,7 @@ val LocalGuanliScale = staticCompositionLocalOf { 1f }
 val LocalGuanliFontScale = staticCompositionLocalOf { 1f }
 
 /** 字号缩放基准（主窗默认宽）：与 ContainerApp.defaultWidth 对齐。 */
-const val GuanliFontBaseDp = 900f
+const val GuanliFontBaseDp = 800f
 
 /** dp × 尺寸缩放。 */
 @Composable
@@ -127,7 +128,7 @@ fun gsp(s: TextUnit): TextUnit = (s.value * LocalGuanliFontScale.current).sp
  *    56dp 的 Material 输入框 + 未缩放字号双重叠加）。
  * 只调这一个常量即可继续微调整面尺寸。
  */
-const val GuanliUiK = 0.8f
+const val GuanliUiK = 0.68f
 
 /**
  * 弹窗内容收紧：弹窗内容在 WinDialogHost 子树组合（另一棵组合树），
@@ -1129,6 +1130,117 @@ private fun BasicSettingsTab(
                     onChange(edit.copy(frame = when (v) { "60" -> "60"; "120" -> "120"; else -> "0" }))
                 }
             )
+        }
+    }
+
+    // v3.3.3（用户问题 5）：/opt 生态配置读取与写回 —— 容器编辑此前只动
+    // container.conf，/opt/conf 的生效值既看不到也改不了（用户："容器编辑
+    // 所有东西都没有读取 opt 下的相关配置，也无法更改选项来改变 opt 下的
+    // 配置"）。本组直接读写生态包 conf（wineguanli.py 同款 replace-or-
+    // append 语义，路径与启动链 source 同源 —— 改的就是启动用的那份），
+    // 下次启动 wine 即生效。
+    GGroup("⚙️ /opt 生态配置（全局，改完下次启动生效）") {
+        val optScope = rememberCoroutineScope()
+        val optCtx = LocalContext.current
+        var optRootLabel by remember { mutableStateOf("探测中…") }
+        var optLocale by remember { mutableStateOf("") }
+        var optCores by remember { mutableStateOf("") }
+        var optEnv by remember { mutableStateOf("") }
+        var optDetected by remember { mutableStateOf(false) }
+
+        fun reloadOpt() {
+            val r = OptConfSupport.root()
+            optDetected = r != null
+            optRootLabel = r?.absolutePath ?: "未检测到 /opt 生态（请先安装生态包到 rootfs/opt）"
+            optLocale = OptConfSupport.locale() ?: ""
+            optCores = OptConfSupport.primaryCores() ?: ""
+            optEnv = OptConfSupport.envEntries().joinToString("\n") { (k, v) -> "$k=$v" }
+        }
+        LaunchedEffect(Unit) {
+            withContext(Dispatchers.IO) { reloadOpt() }
+        }
+        fun saveOpt(op: () -> String?) {
+            optScope.launch {
+                val err = withContext(Dispatchers.IO) { op() }
+                withContext(Dispatchers.IO) { reloadOpt() }
+                android.widget.Toast.makeText(
+                    optCtx, err ?: "已写入 /opt/conf（下次启动 wine 生效）",
+                    android.widget.Toast.LENGTH_SHORT
+                ).show()
+            }
+        }
+
+        GNote(optRootLabel)
+        if (optDetected) {
+            GField("🌐 locale.conf（语言，跟随档的 LANG/LC_ALL 来源）:") {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedTextField(
+                        value = optLocale,
+                        onValueChange = { optLocale = it },
+                        placeholder = { Text("如 zh_CN.UTF-8", fontSize = gsp(10.sp)) },
+                        singleLine = true,
+                        textStyle = androidx.compose.ui.text.TextStyle(fontSize = gsp(12.sp)),
+                        modifier = Modifier.weight(1f)
+                    )
+                    Spacer(Modifier.width(gdp(6.dp)))
+                    GSmallButton("💾", GuanliColors.greenDeep, Modifier) {
+                        saveOpt { OptConfSupport.writeLocale(optLocale) }
+                    }
+                }
+            }
+            GField("🧩 cores.conf PRIMARY_CORES（CPU 核心绑定）:") {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedTextField(
+                        value = optCores,
+                        onValueChange = { optCores = it },
+                        placeholder = { Text("如 0-3 / 0,4,5（空 = 全核心）", fontSize = gsp(10.sp)) },
+                        singleLine = true,
+                        textStyle = androidx.compose.ui.text.TextStyle(fontSize = gsp(12.sp)),
+                        modifier = Modifier.weight(1f)
+                    )
+                    Spacer(Modifier.width(gdp(6.dp)))
+                    GSmallButton("💾", GuanliColors.greenDeep, Modifier) {
+                        saveOpt { OptConfSupport.writePrimaryCores(optCores) }
+                    }
+                }
+            }
+            GField("🧪 env.conf 环境变量（每行 KEY=VALUE，对应 wineguanli 的环境变量页）:") {
+                OutlinedTextField(
+                    value = optEnv,
+                    onValueChange = { optEnv = it },
+                    placeholder = { Text("MESA_GL_VERSION_OVERRIDE=4.6\nDXVK_FRAME_RATE=60 …", fontSize = gsp(10.sp)) },
+                    textStyle = androidx.compose.ui.text.TextStyle(fontSize = gsp(11.sp)),
+                    modifier = Modifier.fillMaxWidth().height(gdp(96.dp))
+                )
+                Spacer(Modifier.height(gdp(4.dp)))
+                Row {
+                    GSmallButton("💾 保存全部", GuanliColors.greenDeep, Modifier) {
+                        saveOpt {
+                            // 解析编辑框 → 逐键写（replace-or-append）；
+                            // 被删除的行同步从 env.conf 移除。
+                            val pairs = optEnv.lines().mapNotNull { l ->
+                                val t = l.trim()
+                                if (t.isEmpty() || t.startsWith("#")) return@mapNotNull null
+                                val eq = t.indexOf('=')
+                                if (eq <= 0) return@mapNotNull null
+                                t.substring(0, eq).trim() to t.substring(eq + 1).trim()
+                            }
+                            val oldKeys = OptConfSupport.envEntries().map { it.first }.toSet()
+                            val newKeys = pairs.map { it.first }.toSet()
+                            (oldKeys - newKeys).forEach { OptConfSupport.removeEnvKey(it) }
+                            pairs.forEach { p ->
+                                val err = OptConfSupport.writeEnvKey(p.first, p.second)
+                                if (err != null) return@saveOpt err
+                            }
+                            null
+                        }
+                    }
+                    Spacer(Modifier.width(gdp(8.dp)))
+                    GSmallButton("↻ 重读", GuanliColors.accent, Modifier) {
+                        optScope.launch { withContext(Dispatchers.IO) { reloadOpt() } }
+                    }
+                }
+            }
         }
     }
 

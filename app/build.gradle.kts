@@ -231,8 +231,19 @@ android {
         // 必 ENOSYS —— 冒烟树补打补丁（与 aarch64 交付构建同源；沙箱实跑
         // 动态/静态双冒烟 ANWIND_SMOKE_OK 验证），glibc 形态 build-box64.yml
         // 同步应用（静态程序 shm 转发同样受益）。
-        versionCode = 90
-        versionName = "2.38.27"
+        versionCode = 91
+        versionName = "2.38.28"
+        // v3.3.3（源码包 v3.3.3）：media 根治（noexec 导入空间误判修复）
+        // + /opt conf 双向 + UI 紧凑化 —— ①stageNoexecExeIfNeeded 空间预检
+        // 改查必然存在的 rootfs 根（旧版查尚不存在的 stageDir，usableSpace
+        // 恒为 0 → 导入永远被拒 → noexec 游戏 PROT_EXEC 失败，"Could not
+        // load required media" 退出码 137）；②wineboot -i → -u
+        //（startfex.sh 同款）+ WINEDLLOVERRIDES=mscoree=disabled 压弹窗；
+        // ③/opt/prefix 三注册表 bionic regedit 兼容性规范化（编码/BOM/
+        // 头行/换行自动修复，副本导入不碰源文件）+ 幂等跳过大声日志；
+        // ④新增 OptConfSupport + 容器编辑页 "/opt 生态配置"组（locale.conf/
+        // cores.conf/env.conf 直读直写，wineguanli.py 同语义）；⑤容器管理
+        // 窗口 900×600 → 800×560、GuanliUiK 0.8 → 0.68（图三比例）。
         // v3.3.2（源码包 v3.3.2）：wine 语言根治补丁 + MIDI 软合成 + 语言
         // 设置恢复 —— ①wine 0009 补丁（用户 wine 10.5 参考树同款）：
         // ntdll/unix/env.c 的 unix_to_win_locale 在 __ANDROID__ 下直读

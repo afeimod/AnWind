@@ -362,11 +362,18 @@ object RootfsLauncher {
                 log("→ $stagedExe")
                 return listOf(stagedExe.absolutePath) + wineArgs.drop(1)
             }
-            // 空间预检（源目录总量 vs 目标可用空间，预留 64MB 余量）
+            // 空间预检（源目录总量 vs 目标可用空间，预留 64MB 余量）。
+            // v3.3.3（用户日志“可用 0MB”实证）：File.usableSpace() 对**不存在**
+            // 的路径返回 0 —— stageDir 首次导入时尚未创建，预检永远拿到 0 →
+            // 导入永远被拒 → 游戏留在 noexec 存储 → PROT_EXEC 映射失败 →
+            // 游戏“Could not load required media”退出（退出码 137）。改查
+            // 必然存在的 rootfs 根；查询结果 ≤0（无法判定）时不再硬拒，
+            // 转入尽力拷贝（失败由外层 runCatching 兑底回退原路径启动）。
             var needBytes = 0L
             srcDir.walkTopDown().forEach { if (it.isFile) needBytes += it.length() }
-            if (stageDir.usableSpace - 64L * 1024 * 1024 < needBytes) {
-                log("警告: 内部存储空间不足（需约 ${needBytes / 1024 / 1024}MB，可用 ${stageDir.usableSpace / 1024 / 1024}MB）—— 无法导入 noexec 存储上的游戏，本次按原路径启动（大概率因 PROT_EXEC 失败退出）")
+            val usable = File(ContainerManager.ROOTFS_ROOT).usableSpace
+            if (usable > 0 && usable - 64L * 1024 * 1024 < needBytes) {
+                log("警告: 内部存储空间不足（需约 ${needBytes / 1024 / 1024}MB，可用 ${usable / 1024 / 1024}MB）—— 无法导入 noexec 存储上的游戏，本次按原路径启动（大概率因 PROT_EXEC 失败退出）")
                 return wineArgs
             }
             log("检测到 exe 位于 noexec 存储（$srcDir）—— wine 无法映射可执行段（PROT_EXEC），正在导入内部执行区：")
@@ -946,12 +953,14 @@ object RootfsLauncher {
         // 大声可见。
         val systemReg = File(container.prefixPath, "system.reg")
         if (!systemReg.isFile) {
-            prefixLog("前缀未就绪（system.reg 缺失）→ 自动重跑一次 wineboot -i 修复……")
+            prefixLog("前缀未就绪（system.reg 缺失）→ 自动重跑一次 wineboot -u 修复……")
             runCatching {
-                val rbCmd = WineRuntime.wineCommand(resolved) + listOf("wineboot", "-i")
+                // v3.3.3：-i → -u（startfex.sh 同款）+ 压 mono 弹窗。
+                val rbCmd = WineRuntime.wineCommand(resolved) + listOf("wineboot", "-u")
                 val rb = NativeShellExecutor.create()
                     .setCommand(*rbCmd.toTypedArray())
                     .putEnv(env)
+                    .putEnv("WINEDLLOVERRIDES", "mscoree=disabled")
                     .putEnv("WINEPREFIX", container.prefixPath)
                     .setWorkingDir(WineEnvironment.RUNTIME_DIR)
                     .exec()

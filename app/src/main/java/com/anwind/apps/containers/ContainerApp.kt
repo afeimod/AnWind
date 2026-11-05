@@ -21,12 +21,13 @@ val ContainersApp = AppDef(
     displayName = "Wine 容器",
     iconAsset = "emoji:📦",
     launchMode = LaunchMode.FLOATING,
-    // v3.2.23（用户问题 5）：默认尺寸 1060×680 → 900×600 —— 用户反馈
-    // "主界面太长太宽，拉小，字体保持默认"。字号经 LocalGuanliFontScale
-    // 以 900 为基准（见 ContainerScreens.kt），默认窗下与旧 1060dp 窗
-    // 完全同字号，仅窗口本体与布局尺寸收紧。
-    defaultWidth = 900.dp,
-    defaultHeight = 600.dp,
+    // v3.3.3（用户问题 2）：默认尺寸 900×600 → 800×560 —— 用户反馈
+    // "比例太大了，按照图三（linbox 容器管理器）这种比例重新做，包括窗口
+    // 和字体"。三件套联动：窗口 800×560 + 字号缩放基准同步 800
+    // （GuanliFontBaseDp，默认窗下 fontScale=1）+ 全局收紧系数
+    // GuanliUiK 0.8 → 0.68（字体/框体整体 15% 线性收紧，对齐图三密度）。
+    defaultWidth = 800.dp,
+    defaultHeight = 560.dp,
     pinnedToDesktop = true,
     pinnedToTaskbar = true
 ) { scope ->

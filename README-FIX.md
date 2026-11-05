@@ -1,5 +1,66 @@
 # AnWind Bionic 修复包 v2（2026-09-19）
 
+> **v3.3.3（2026-11-05，App v2.38.28 / versionCode 91）**：media 报错根治（noexec 导入空间误判）+ wineboot -u 对齐 startfex.sh + /opt 注册表 bionic 兼容规范化 + 容器编辑页 /opt conf 直读直写 + 界面按图三（linbox）比例紧凑化（本轮日志 wine-9.2 会话 + 截图逐项定位 + wineguanli.py / startfex.sh 参考移植）。
+>
+> ## ① 【用户诉求】"很多还是 media 报错，你还是没清理完善，根据 2.38.16 分支作为参考继续修复"
+>
+> **根因**（本轮日志 wine-9.2-20261105 会话逐行核实）——**不是注册表**：
+> `0130:err:virtual:map_file_into_view failed to set PROT_EXEC on file map, noexec filesystem?` →
+> 游戏"Could not load required media"退出（137）。exe 在 /storage/emulated/0
+> （FUSE noexec 挂载），wine 映射 PE 可执行段被拒。App 本有"noexec 游戏自动导入
+> 内部执行区"机制，但日志显示 **"需约 3MB，可用 0MB"** —— 设备并未满（wine 全程
+> 正常写文件）：`stageNoexecExeIfNeeded` 的空间预检查的是**尚不存在**的 stageDir，
+> Java `File.usableSpace()` 对不存在路径恒返回 0 → **导入永远被拒** → 每次都按
+> 原路径启动 → 必现 media 报错。
+> **修复**：预检改查必然存在的 rootfs 根（`ContainerManager.ROOTFS_ROOT`）；
+> 查询 ≤0（无法判定）时不再硬拒，转尽力拷贝（失败由外层兜底回退）。
+> 2.38.16 参考结论：该版本无此机制（终端链路 glibc-runner 时代 exe 经 app 问题
+> 不同源），本轮修复保持现架构不回退。
+>
+> ## ② 【用户诉求】"构建前缀不要在 wineboot -i 后就结束，要继续运行 taskmgr，startfex.sh 可参考，好像用的是 wineboot u，还有一些符号什么的"
+>
+> **日志真相**：taskmgr 保活其实启动了，但 113ms 后"前缀构建链完成"——
+> `bootstrapOptPrefix` 的幂等标记（.anwind-opt-prefix）命中后**完全静默跳过**，
+> 用户看到的"零日志秒结束"就是它（不是没跑，是跑了但一声不吭）。
+> **修复**：①标记命中也大声日志（"已注入过——跳过；如需重打删标记或重建前缀"）；
+> ②wineboot -i → **-u**（startfex.sh 同款：rm 前缀后 wineboot -u 安装，
+> 前缀缺失时 -u 一样初始化），并附 `WINEDLLOVERRIDES="mscoree=disabled"`
+> （参考同款）压掉 mono 安装器弹窗（fresh init 与 system.reg 缺失重跑两处）；
+> ③dosdevices 符号链接（"还有一些符号"）v3.2.28 已含 z:/c:/d:/e:/x: 全套
+> （startfex.sh 盘符矩阵），本轮核对无缺。
+>
+> ## ③ 【用户诉求】"opt.zip 里的两个 reg 注册表总是报错，是不是格式不适合 bionic，帮我改一下"
+>
+> **根因**：wine regedit 对导入文件要求头行必须是 "WINE REGISTRY Version 2" /
+> "REGEDIT4" / "Windows Registry Editor Version 5.00" 之一，且编码需可识别
+> （Windows 导出的 5.00 文件是 UTF-16LE+BOM；生态包手工维护的 .reg 常缺头行/
+> 乱编码 → 逐键报错弹窗）。**修复**（`WineRegistry.normalizeRegForBionic`，
+> 导入前自动规范化，**不改 /opt 源文件**——副本落前缀 .anwind-regtmp 再导入）：
+> UTF-16LE→UTF-8、剥 UTF-8 BOM、CRLF→LF、缺头行时按首个键行反斜杠形态智能补头
+> （含 `\\` 转义 → wine 原生头；否则 → 5.00 头）；每个文件的规范化动作与导入
+> 退出码全部大声日志（成功也打 ✓）。生态包无需重新打包，旧包直接受益。
+>
+> ## ④ 【用户诉求】"容器编辑所有东西都没有读取 opt 下的相关配置，也无法更改选项来改变 opt 下的配置"
+>
+> **修复**（新增 `OptConfSupport` + 编辑页"⚙️ /opt 生态配置"组）：
+> - **直读**：locale.conf（语言跟随档的 LANG/LC_ALL 来源）、cores.conf 的
+>   PRIMARY_CORES、env.conf 全部 KEY=VALUE，进编辑页即显示当前生效值（含
+>   /opt 根路径，"未检测到生态"也明说）；
+> - **直写**：三处均可编辑保存 —— replace-or-append 语义与 wineguanli.py
+>   逐字节同款（save_mangohud_config 的逐行替换/追加/删除），env.conf 支持
+>   增改删一行保存；原子落盘（tmp+rename）；路径复用启动链 `optRoot()` 同源
+>   探测 —— **改的就是启动 wine 时 source 的那份**，下次启动即生效；
+> - 容器级字段（语言显式档/帧数等）优先级不变：容器显式值 > /opt/conf >
+>   兜底（v3.3.2 语义）。
+>
+> ## ⑤ 【用户诉求】"容器编辑界面比例太大了，按照图三（linbox）这种比例重新做，包括窗口和字体"
+>
+> **修复**（沿用 v3.2.21 设计的全局缩放体系，三常量联动）：
+> - 容器管理窗口 900×600 → **800×560**（ContainerApp.defaultWidth/Height）；
+> - 字号缩放基准 GuanliFontBaseDp 900 → 800（默认窗下 fontScale=1）；
+> - 全局收紧系数 **GuanliUiK 0.8 → 0.68** —— 全部控件/字体/弹窗再线性收紧
+>   15%，密度对齐图三；后续微调仍只动这一个常量。
+>
 > **v3.3.2-r2（2026-11-05 hotfix，同日重发，App 版本不变 v2.38.27 / versionCode 90）**：修 CI 编译错 `RootfsLauncher.kt:964:63 Unresolved reference: exitValue` —— v3.3.2 新增的"wineboot 失败自动重跑"代码把 `NativeShellExecutor` 句柄当 `java.lang.Process` 调了（执行器 API 只有 `waitFor()/stopAndWait()`，没有 `exitValue()`）。修复：`NativeShellExecutor` 补 `exitValue(): Int`（语义对齐 `java.lang.Process`：进程仍在运行抛 `IllegalThreadStateException`，退出码从 exec Future 取 —— 句柄在 exec 完成时会被收尾置空，只有 Future 里存着真实退出码）。调用点零改动；全仓其余 5 处 `exitValue` 均在 `java.lang.Process` 上，不受影响。全仓 executor 方法调用比对审计：除该处外与类 API 全部匹配，无其他编译错。
 >
 > **v3.3.2（2026-11-05，源码包对应 App v2.38.27 / versionCode 90）**：wine 语言根治补丁（LC_ALL 直读）+ midimap 内置 FluidSynth 软合成 + 容器语言下拉恢复 + wineboot 失败自动重跑 + home 乱码文件隔离（用户本轮实测反馈 + 用户提供的 wine 10.5 参考树逐文件比对移植）。
