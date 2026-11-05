@@ -788,25 +788,31 @@ object RootfsLauncher {
                     sessionEnded.set(true)
                     // v3.2.27（用户问题：“wineboot i 结束后依旧是结束构建前缀了，
                     // 啥也没有继续，下次启动软件才进行解压和注册表”）：
-                    // wineboot -i 进程退出后**继续**前缀构建链 —— /opt/prefix
+                    // wineboot 进程退出后**继续**前缀构建链 —— /opt/prefix
                     // 资产解压 + 安装包注册表导入 + dosdevices + DXVK + 函数库
                     // 设置，全部在本会话（前缀构建窗口）内完成并逐步显示日志，
                     // 对齐 startwine.sh 301-369 行（wineboot -u 之后的 tar 解压 /
                     // regedit 导入 / dosdevices / fix-fonts / dxvk 一条龙）。
-                    // 旧版这些步骤只在下次启动游戏时才跑（isHostToolCommand
-                    // 分支把它们全部跳过）。
+                    // v3.3.4（用户问题 5）：顺序调整 —— ① wineboot 会话先收尾
+                    // 摘牌（onSessionExit）；② 解压与注册链（postPrefixBootChain
+                    // taskmgrAtEnd=true）随后执行，全部完成后在链尾启动
+                    // taskmgr 并登记为新会话（旧顺序 onSessionExit 在后会把
+                    // 链尾登记的 taskmgr 会话摘掉）。
+                    onSessionExit(key, code, sink)
                     if (isPrefixSession) {
                         runCatching {
-                            postPrefixBootChain(context, resolved, container, env, key, sink)
+                            postPrefixBootChain(
+                                context, resolved, container, env, key, sink,
+                                taskmgrAtEnd = true
+                            )
                         }.onFailure {
                             sink.stamp("警告: wineboot 后续链异常: ${it.message}（下次启动自动重试）")
                             prefixLogLine(key, "wineboot 后续链异常: ${it.message}")
                         }
-                        sink.stamp("前缀构建完成（wineboot + /opt/prefix 资产解压 + 注册表链全部结束）")
+                        sink.stamp("前缀构建完成（wineboot → 解压 → 注册表 → taskmgr，startwine.sh 顺序）")
                         prefixLogLine(key, "前缀构建完成")
+                        _prefixBuildFlow.value = null
                     }
-                    onSessionExit(key, code, sink)
-                    if (isPrefixSession) _prefixBuildFlow.value = null
                 }
                 .exec()
 
@@ -858,33 +864,40 @@ object RootfsLauncher {
     /**
      * v3.2.27：wineboot 之后的统一前缀构建链（两条入口共用）：
      *  - 游戏会话（非宿主工具命令）：initializePrefixIfNeeded 同步跑完
-     *    wineboot -i 后接着执行；
-     *  - 手动 wineboot -i 会话：进程退出后在 onExit 回调里接着执行 ——
+     *    wineboot 后接着执行；
+     *  - 手动 wineboot 会话：进程退出后在 onExit 回调里接着执行 ——
      *    修复“wineboot 结束后啥也不继续，下次启动才解压/导注册表”。
      *
-     * v3.2.29（用户指令，wineguanli.py 前缀安装线程同款语义）：链路入口
-     * 先拉起 **taskmgr 保活** —— wineboot 退出后若没有存活的 wine 客户端，
-     * wineserver 随即收尾，后面的 /opt 解压（分钟级）与 regedit 注册就会
-     * 断在半路（用户实测"wineboot i 后直接结束，没有继续运行 wine"）。
-     * 参考链路在 wineboot -i 后立刻运行 taskmgr 占位，让"解压和注册"
-     * 继续走完；本链收尾时结束保活进程。启动形态：
-     *  - arm64ec（AARCH64 后端）→ `wine taskmgr`；
-     *  - x86_64（BOX64 后端）→ `box64 wine taskmgr`（wineCommand 自动包装）；
-     *  - FEX 勾选（FEXMODE 标志）→ env 带 `HODLL=libwow64fex.dll`
-     *    （startfex.sh 同款，由 applyWineCompatEnv 按 fexMode 注入）。
+     * v3.3.4（用户问题 5："wineboot i 后运行 taskmgr 不是你那样啊，是先
+     * 进行解压和注册再启动 taskmgr 啊，而且乱七八糟的，特别是会报无法
+     * 访问的错误"）：**撤销 v3.2.29 的 taskmgr 前置保活** —— 旧版在解压/
+     * 注册表导入之前就把 taskmgr 拉起来：
+     *  - taskmgr 在半成品前缀上启动，与 regedit 导入并发争注册表，
+     *    弹"无法访问"错误框；
+     *  - 构建画面与 taskmgr 窗口混在一起（"乱七八糟"）；
+     *  - 参考链路事实核查：startwine.sh / startfex.sh 里 wineboot 之后是
+     *    【tar 解压 → cp 快捷方式 → regedit 三连 → fix-fonts → dxvk →
+     *    wineserver -k】，每步都是独立 wine 客户端（server 按需拉起，
+     *    并不需要保活进程）；`startwine taskmgr` 的 taskmgr 是构建
+     *    【全部完成之后】才运行的最终命令（wineguanli.py 安装前缀 =
+     *    `startwine taskmgr`，同义）。新顺序与之逐字对齐。
      *
      * 步骤（对齐 startwine.sh 前缀构建段 301-369 行，每步日志可见）：
-     *  0. taskmgr 保活启动（收尾时结束）；
-     *  1. bootstrapOptPrefix —— /opt/prefix 预置资产（drive_c/directx/
-     *     fix-fonts 归档 + start 开始菜单 + marlett.ttf + user/system/
-     *     fix-services 注册表 + dxvk1）；
+     *  1. bootstrapOptPrefix —— /opt/prefix 预置资产（arm64ec 跳过
+     *     drive_c/directx 两个 xz 预置包，见 WineRegistry v3.3.4）+
+     *     start 开始菜单 + marlett.ttf + user/system/fix-services
+     *     注册表 + fix-fonts + dxvk1；
      *  2. ensureDosdevices —— d:/e:/z: 盘符链接兑底；
      *  3. ensureEmulateModeset —— 无 RandR 环境的显示模式注册表；
      *  4. ensureModernLook —— 窗口现代化（ClearType/主题/壁纸）；
      *  5. applyDxvkToContainer —— APK 内置 DXVK（容器 dxvk=off 跳过）；
-     *  6. WineLibrary.ensureApplied —— DPI/Windows 版本（无 DLL 加载序；
-     *     v3.2.29 起连"清洗旧 DllOverrides"的机制也一并移除 —— APK 对
-     *     DllOverrides 零动作，注册表完全由 /opt/prefix 安装包决定）。
+     *  6. WineLibrary.ensureApplied —— DPI/Windows 版本（无 DLL 加载序）。
+     *  7.（可选 [taskmgrAtEnd]）解压与注册【全部完成之后】启动
+     *     taskmgr（`startwine taskmgr` 同款：作为构建成功、容器就绪的
+     *     可视信号保持运行，并登记为容器会话）。启动形态：
+     *     - arm64ec → `wine taskmgr`；x86_64 → `box64 wine taskmgr`
+     *       （wineCommand 自动包装）；FEX 勾选 → env 带
+     *       HODLL=libwow64fex.dll（startfex.sh 同款）。
      */
     /**
      * v3.3.2：rootfs/home 顶层的乱码文件移入隔离区（不删除）。
@@ -937,7 +950,10 @@ object RootfsLauncher {
         container: ContainerData,
         env: Map<String, String>,
         key: String,
-        sink: SessionLogSink
+        sink: SessionLogSink,
+        // v3.3.4：true = 链尾启动 taskmgr（手动"安装前缀"会话）；
+        // false = 不启动（游戏会话 —— 游戏本身就是随后的启动目标）
+        taskmgrAtEnd: Boolean = false
     ) {
         val prefixLog: (String) -> Unit = { line ->
             sink.stamp(line)
@@ -976,28 +992,16 @@ object RootfsLauncher {
                 }
             }.onFailure { prefixLog("警告: wineboot 重试异常: ${it.message}") }
         }
-        // ---- 0) taskmgr 保活（wineboot -i 之后；wineguanli.py 同款）----
-        val tmCmd = WineRuntime.wineCommand(resolved) + listOf("taskmgr")
-        prefixLog(
-            "wineboot 结束 → 启动 taskmgr 保活继续解压/注册（${tmCmd.joinToString(" ")}" +
-                (env["HODLL"]?.let { "，HODLL=$it（FEX 模式）" } ?: "") + "）"
-        )
-        val tmExecutor = runCatching {
-            NativeShellExecutor.create()
-                .setCommand(*tmCmd.toTypedArray())
-                .putEnv(env)
-                .putEnv("WINEPREFIX", container.prefixPath)
-                .setWorkingDir(WineEnvironment.RUNTIME_DIR)
-                .exec()
+        // v3.3.4：taskmgr 前置保活已移除（用户问题 5 —— 参考链路里解压与
+        // 注册表的每一步都是独立 wine 客户端，wineserver 按需拉起，无需
+        // 保活；taskmgr 提前跑反而与 regedit 争注册表弹"无法访问"）。
+        // 解压与注册先行、taskmgr 链尾启动，见函数 KDoc。
+        runCatching {
+            WineRegistry.bootstrapOptPrefix(resolved, container, env, prefixLog)
         }.onFailure {
-            prefixLog("警告: taskmgr 保活启动失败（${it.message}）—— 继续构建链（失败步骤下次启动自动重试）")
-        }.getOrNull()
-        try {
-            runCatching {
-                WineRegistry.bootstrapOptPrefix(resolved, container, env, prefixLog)
-            }.onFailure {
-                sink.stamp("警告: /opt/prefix 预置资产注入异常: ${it.message}（下次启动自动重试）")
-            }
+            sink.stamp("警告: /opt/prefix 预置资产注入异常: ${it.message}（下次启动自动重试）")
+        }
+        run {
             // v3.1：dosdevices 兑底（z: → / 等）—— /storage/emulated/0
             // 这类宿主路径经 Z: 盘可达；缺失时某些精简 wine 构建不建
             // z: 盘，游戏按绝对路径找资源文件会全挂（media 找不到的
@@ -1027,15 +1031,37 @@ object RootfsLauncher {
             }.onFailure {
                 sink.stamp("警告: 函数库设置注入异常: ${it.message}（下次启动自动重试）")
             }
-        } finally {
-            // ---- 保活收尾：先温和后强制，绝不阻断主链结果 ----
-            if (tmExecutor != null) {
-                runCatching {
-                    if (!tmExecutor.stopAndWait(false, 3, TimeUnit.SECONDS)) {
-                        tmExecutor.stopAndWait(true, 3, TimeUnit.SECONDS)
+        }
+        // ---- 7) 链尾 taskmgr（v3.3.4 用户问题 5："先进行解压和注册再启动
+        //      taskmgr"）：解压/注册表/函数库全部就位后才启动 ——
+        //      `startwine taskmgr` 同款，作为"前缀构建完成、容器就绪"的
+        //      可视信号保持运行（登记为容器会话，UI 显示运行中/可停止）。
+        if (taskmgrAtEnd) {
+            val tmCmd = WineRuntime.wineCommand(resolved) + listOf("taskmgr")
+            prefixLog(
+                "解压与注册全部完成 → 启动 taskmgr（${tmCmd.joinToString(" ")}" +
+                    (env["HODLL"]?.let { "，HODLL=$it（FEX 模式）" } ?: "") + "）—— 前缀就绪，容器可正常使用"
+            )
+            runCatching {
+                val tmExecutor = NativeShellExecutor.create()
+                    .setCommand(*tmCmd.toTypedArray())
+                    .putEnv(env)
+                    .putEnv("WINEPREFIX", container.prefixPath)
+                    .setWorkingDir(WineEnvironment.RUNTIME_DIR)
+                    .onExit { code ->
+                        sink.log("\n[taskmgr 退出码: $code] 前缀构建会话结束 " +
+                            SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date()))
+                        unregisterSession(key)
                     }
+                    .exec()
+                // 立即退出（加载失败等）时不登记会话，避免"运行中"状态滞留
+                if (tmExecutor.isRunning) {
+                    registerSession(key, WineSession(key, tmExecutor, sink))
+                } else {
+                    prefixLog("taskmgr 已随即退出（容器资产与注册表不受影响，可直接运行程序）")
                 }
-                prefixLog("taskmgr 保活结束（前缀构建链完成）")
+            }.onFailure {
+                prefixLog("警告: taskmgr 启动失败（${it.message}）—— 前缀资产与注册表已全部就位，不影响使用")
             }
         }
     }

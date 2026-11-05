@@ -72,10 +72,14 @@ import kotlinx.coroutines.withContext
  *  - CPU 核心：cores=（wineguanli 写 /opt/conf/cores.conf，AnWind 写
  *    容器键 + PRIMARY_CORES/SECONDARY_CORES 环境注入，语义一致）
  *  - 函数库：dsound=/dshow=/dpi=/winver=（注册表落地见 WineLibrary）
- *  - DY 配置：env= 内 BOX64_* 变量（wineguanli 写全局 /opt/conf/box64.conf，
- *    AnWind 容器级 env= 由启动链 applyExtraEnv 最后叠加，可覆盖一切）
- *  - 环境变量：MESA_GL_VERSION/MESA_GLSL_VERSION/VKD3D_FEATURE_LEVEL/
- *    MESA_EXTENSION_OVERRIDE/DXVK_HUD/TU_DEBUG/MANGOHUD_CONFIG → env=/mangohud=
+ *  - DY 配置（v3.3.4 重写）：/opt/conf/custom.conf 定义表 +
+ *    dynarec_active.conf 当前值（wineguanli DynarecEditor 同款全局
+ *    语义）；应用时同步清理容器 env= 里的旧 BOX64_* 覆盖
+ *  - 环境变量（v3.3.4）：MESA_GL_VERSION_OVERRIDE/MESA_GLSL_VERSION_OVERRIDE/
+ *    VKD3D_FEATURE_LEVEL/MESA_EXTENSION_OVERRIDE/DXVK_HUD/TU_DEBUG/
+ *    MANGOHUD/MANGOHUD_CONFIG —— 读写 /opt/conf/env.conf（参考
+ *    save_advanced_settings 同款；旧版误写 MESA_GL_VERSION 等 Mesa 不读
+ *    的变量名 + 只落容器 env=，是"怎么改都没反应"的双重根因）
  *  - Direct3D / CNC DDraw：HKCU AppDefaults\<exe>\DllOverrides（wine 原生
  *    按程序覆盖机制，等效 wineguanli 的"复制 DLL 到 exe 目录"）
  */
@@ -128,7 +132,21 @@ fun gsp(s: TextUnit): TextUnit = (s.value * LocalGuanliFontScale.current).sp
  *    56dp 的 Material 输入框 + 未缩放字号双重叠加）。
  * 只调这一个常量即可继续微调整面尺寸。
  */
-const val GuanliUiK = 0.68f
+const val GuanliUiK = 0.72f
+
+/**
+ * v3.3.4（用户问题 2："wine容器界面字体太小"）：字号补偿系数。
+ *
+ * 背景：v3.2.21/v3.3.3 两轮"整体收紧"（1.0→0.8→0.68）把布局与字号
+ * 一起缩小 —— 框体密度对齐了参考截图，但 13sp 标题实际渲染只剩
+ * ~8.8sp，用户实测"字体太小"。本系数只放大字号、不动框体：
+ *  - LocalDensity 覆盖改为 Density(density × GuanliUiK, fontScale ×
+ *    GuanliFontBoost) —— dp 换算维持紧凑（0.72），sp 换算补回
+ *    （0.72 × 1.35 ≈ 0.97 ≈ 设计原尺寸）；
+ *  - 两处密度覆盖同步（主窗根部 + [GuanliDialogScale] 弹窗层），
+ *    Material 组件与 gdp/gsp 自定义控件同步受益。
+ */
+const val GuanliFontBoost = 1.35f
 
 /**
  * 弹窗内容收紧：弹窗内容在 WinDialogHost 子树组合（另一棵组合树），
@@ -142,7 +160,8 @@ const val GuanliUiK = 0.68f
 fun GuanliDialogScale(winScale: Float, winFontScale: Float = winScale, content: @Composable () -> Unit) {
     val base = LocalDensity.current
     CompositionLocalProvider(
-        LocalDensity provides Density(base.density * GuanliUiK, base.fontScale),
+        // v3.3.4：fontScale 侧叠加 GuanliFontBoost —— 弹窗字号与主窗同步放大
+        LocalDensity provides Density(base.density * GuanliUiK, base.fontScale * GuanliFontBoost),
         LocalGuanliScale provides winScale,
         LocalGuanliFontScale provides winFontScale
     ) { content() }
@@ -360,7 +379,10 @@ fun ContainerListContent(scope: WindowContentScope) {
         CompositionLocalProvider(
             LocalGuanliScale provides scale,
             LocalGuanliFontScale provides fontScale,
-            LocalDensity provides Density(baseDens.density * GuanliUiK, baseDens.fontScale)
+            // v3.3.4（用户问题 2："界面字体太小"）：fontScale 侧叠加
+            // GuanliFontBoost（1.35）—— dp/sp 双轨后框体保持紧凑
+            //（×0.72），字号补回设计尺寸（×0.72×1.35≈0.97）。
+            LocalDensity provides Density(baseDens.density * GuanliUiK, baseDens.fontScale * GuanliFontBoost)
         ) {
             Column(Modifier.fillMaxSize()) {
                 // ---------------- 工具栏（wineguanli.py QToolBar 同款） ----------------
@@ -475,7 +497,8 @@ fun ContainerListContent(scope: WindowContentScope) {
         MoreSettingsDialog(
             container = c,
             onDismiss = { moreFor = null },
-            onSaved = { moreFor = null; refresh() }
+            onSaved = { moreFor = null; refresh() },
+            onOpenMango = { moreFor = null; mangoFor = c }
         )
     }
     mangoFor?.let { c ->
@@ -1646,7 +1669,7 @@ private fun GuanliAdvancedPage(
                 )
                 Spacer(Modifier.width(gdp(10.dp)))
                 Text(
-                    "wineguanli.py 写全局 /opt/conf/*.conf；AnWind 原生链路把同等配置落到所选容器（container.conf），启动时注入",
+                    "DY/Box 配置写 /opt/conf/*.conf（wineguanli.py 同款全局语义，启动链 source）；MANGOHUD 随所选容器",
                     fontSize = gsp(10.sp), color = themeSec()
                 )
             }
@@ -1701,7 +1724,20 @@ private fun GuanliAdvancedPage(
 }
 
 // ===========================================================================
-// ⚡ DY 配置（wineguanli.py DynarecEditor 完整移植）
+// ⚡ DY 配置（v3.3.4 重写：wineguanli.py DynarecEditor 逐面移植）
+//
+// 用户问题 2："好多放在高级设置里的东西你全放在了一个框框里了，不好选啊，
+// 根据参考py来，比如box选项，dy配置选项等" —— 旧版把 BOX64_* 变量拍平成
+// 容器 env= 的纯文本行（KEY = VALUE + 删除按钮），既没有按定义表渲染控件，
+// 也没读写 /opt/conf。现按参考 DynarecEditor 逐面重制：
+//  - 数据源：/opt/conf/custom.conf（变量定义表 export VAR=候选值,…）+
+//    /opt/conf/dynarec_active.conf（当前生效值）—— 就是启动链
+//    readOptConfs source 的那两份，改的即生效；
+//  - 控件：0/1 变量 → "启用"勾选；多值变量 → 候选值下拉（不好选→好选）；
+//  - 预设：🔒 兼容模式 / 🚀 性能模式 / ⚖️ 平衡模式（GuanliSupport.DY_PRESETS）；
+//  - 应用：整文件重写 dynarec_active.conf（apply_config 同款），并清理
+//    各容器 env= 里旧版写入的 BOX64_*/BOX86_* 覆盖（不清理则容器级
+//    残留压着新配置 → 又是"怎么改都没反应"）。
 // ===========================================================================
 
 @Composable
@@ -1712,17 +1748,74 @@ private fun DyConfigTab(
     val context = LocalContext.current
     val cs = rememberCoroutineScope()
 
-    // 变量列表 = 容器 env= 的 K=V 视图（工作副本，应用时落盘）
-    var pairs by remember(sel.name, sel.env) {
-        mutableStateOf(GuanliSupport.parseEnv(sel.env).toMutableList())
-    }
+    // 定义表（custom.conf 顺序）与当前值 —— 快照状态，改值即刷新
+    var loaded by remember { mutableStateOf(false) }
+    var available by remember { mutableStateOf(false) }
+    var vars by remember { mutableStateOf<List<Pair<String, List<String>>>>(emptyList()) }
+    var current by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
     var presetSel by remember { mutableStateOf("自定义") }
-    var newKey by remember { mutableStateOf("") }
-    var newValue by remember { mutableStateOf("") }
-    var delIdx by remember { mutableStateOf(-1) }
+    var selectedVar by remember { mutableStateOf<String?>(null) }
+    var newVar by remember { mutableStateOf("") }
+    var newVals by remember { mutableStateOf("") }
+    var busyMsg by remember { mutableStateOf<String?>(null) }
 
-    // wineguanli.py：预设配置组
-    GGroup("预设配置（容器：${sel.name}）") {
+    // 装配（wineguanli load_config：custom.conf 缺失自建默认表；active 缺值/越值回落首候选）
+    fun reload() {
+        loaded = true
+        if (OptConfSupport.root() == null) {
+            available = false
+            vars = emptyList()
+            current = emptyMap()
+            return
+        }
+        OptConfSupport.ensureDyCustomConf()
+        val v = OptConfSupport.dyVariables()
+        val active = OptConfSupport.dyActive()
+        val cur = LinkedHashMap<String, String>()
+        v.forEach { (name, values) ->
+            cur[name] = active[name]?.takeIf { it in values } ?: values.first()
+        }
+        available = true
+        vars = v.entries.map { it.key to it.value }
+        current = cur
+    }
+
+    LaunchedEffect(Unit) {
+        withContext(Dispatchers.IO) { reload() }
+    }
+
+    if (!loaded) {
+        Box(Modifier.fillMaxWidth().padding(gdp(24.dp)), contentAlignment = Alignment.Center) {
+            CircularProgressIndicator(modifier = Modifier.size(gdp(26.dp)), strokeWidth = gdp(2.5.dp))
+        }
+        return
+    }
+    if (!available) {
+        GGroup("DY 配置（Box64/Box86 动态重编译）") {
+            GNote(
+                "未检测到 /opt 生态（rootfs/opt/{conf,locale.conf,prefix,dxvk1}）——\n" +
+                    "DY 配置读写 /opt/conf/custom.conf 与 dynarec_active.conf，\n" +
+                    "请先把生态包解到 rootfs/opt 后重进本页"
+            )
+        }
+        return
+    }
+
+    fun setVar(name: String, value: String) {
+        current = current.toMutableMap().apply { put(name, value) }
+        presetSel = "自定义"
+    }
+
+    fun applyPreset(name: String) {
+        GuanliSupport.DY_PRESETS[name]?.let { preset ->
+            current = current.toMutableMap().apply {
+                preset.forEach { (k, v) -> if (containsKey(k)) put(k, v) }
+            }
+        }
+    }
+
+    // ---- 预设配置（wineguanli DynarecEditor 预设组） ----
+    GGroup("预设配置（全局 /opt/conf，所有容器共用）") {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("预设:", fontSize = gsp(13.sp), color = themeFg())
             Spacer(Modifier.width(gdp(8.dp)))
@@ -1731,102 +1824,178 @@ private fun DyConfigTab(
                 selected = presetSel,
                 onSelect = { name ->
                     presetSel = name
-                    // wineguanli.py apply_preset：预设值整体替换 BOX64_* 变量
-                    GuanliSupport.DY_PRESETS[name]?.let { preset ->
-                        val others = pairs.filter { !it.first.startsWith("BOX64_") }
-                        pairs = (others + preset.entries.map { it.key to it.value }).toMutableList()
-                    }
-                }
+                    applyPreset(name)   // wineguanli apply_preset：预设值整体替换
+                },
+                width = 200.dp
             )
             Spacer(Modifier.weight(1f))
             GSmallButton("重置默认", GuanliColors.grey, Modifier) {
-                pairs = GuanliSupport.parseEnv(sel.env).toMutableList()
-                presetSel = "自定义"
+                cs.launch(Dispatchers.IO) {
+                    val err = OptConfSupport.resetDyCustomConf()
+                    withContext(Dispatchers.Main) {
+                        busyMsg = err
+                        if (err == null) {
+                            // wineguanli reset_default：恢复定义表 + 回到兼容模式
+                            reload()
+                            applyPreset("🔒 兼容模式")
+                            presetSel = "🔒 兼容模式"
+                            android.widget.Toast.makeText(
+                                context, "已恢复默认定义表并回到兼容模式（点『应用配置』生效）",
+                                android.widget.Toast.LENGTH_SHORT
+                            ).show()
+                        }
+                    }
+                }
             }
         }
         GNote("预设值来自 wineguanli.py DynarecEditor（兼容/性能/平衡各 9 项 BOX64_DYNAREC_* 变量）")
     }
 
-    // wineguanli.py：变量列表（QListWidget 行）
-    GGroup("变量列表（env=）") {
-        if (pairs.isEmpty()) {
-            Text("（空）—— 未配置任何环境变量", fontSize = gsp(12.sp), color = GuanliColors.info)
-        }
-        pairs.forEachIndexed { i, (k, v) ->
+    // ---- 变量列表（wineguanli update_list：横向行 = 变量名 + 当前值 + 控件） ----
+    GGroup("变量列表（点击行选中；0/1 变量勾选启用，多值变量下拉选择）") {
+        vars.forEach { (name, values) ->
+            val cur = current[name] ?: values.first()
             Row(
                 Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(gdp(4.dp)))
-                    .background(if (i % 2 == 0) GuanliColors.rowAlt else themeCard())
+                    .background(
+                        if (selectedVar == name) GuanliColors.accent.copy(alpha = 0.14f)
+                        else GuanliColors.rowAlt
+                    )
                     .border(
                         gdp(0.5.dp),
-                        if (delIdx == i) GuanliColors.redFab else themeSec().copy(alpha = 0.15f),
+                        if (selectedVar == name) GuanliColors.accent else themeSec().copy(alpha = 0.12f),
                         RoundedCornerShape(gdp(4.dp))
                     )
-                    .clickable { delIdx = if (delIdx == i) -1 else i }
+                    .clickable { selectedVar = if (selectedVar == name) null else name }
                     .padding(horizontal = gdp(10.dp), vertical = gdp(6.dp)),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(k, fontSize = gsp(12.sp), fontWeight = FontWeight.Bold, color = themeFg())
-                Text(" = ", fontSize = gsp(12.sp), color = themeSec())
-                Text(v, fontSize = gsp(12.sp), color = themeFg(), modifier = Modifier.weight(1f))
-                if (delIdx == i) {
+                // 变量名（wineguanli：bold + 固定宽）
+                Text(
+                    name, fontSize = gsp(12.sp), fontWeight = FontWeight.Bold, color = themeFg(),
+                    maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.width(gdp(230.dp))
+                )
+                // 当前值（wineguanli："当前: X"）
+                Text(
+                    "当前: $cur", fontSize = gsp(11.sp), color = themeSec(),
+                    modifier = Modifier.width(gdp(88.dp))
+                )
+                // 控件：{0,1} → 启用勾选；多值 → 候选下拉
+                if (values.toSet() == setOf("0", "1")) {
+                    GCheckRow("启用", cur == "1") { on ->
+                        setVar(name, if (on) "1" else "0")
+                    }
+                } else {
+                    GComboBox(
+                        options = values,
+                        selected = cur,
+                        onSelect = { v -> setVar(name, v) },
+                        width = 150.dp
+                    )
+                }
+                Spacer(Modifier.weight(1f))
+                if (selectedVar == name) {
                     GSmallButton("删除变量", GuanliColors.redFab, Modifier) {
-                        pairs = pairs.toMutableList().apply { removeAt(i) }
-                        delIdx = -1
-                        presetSel = "自定义"
+                        cs.launch(Dispatchers.IO) {
+                            val err = OptConfSupport.removeDyVariable(name)
+                            withContext(Dispatchers.Main) {
+                                busyMsg = err
+                                if (err == null) {
+                                    reload()
+                                    selectedVar = null
+                                }
+                            }
+                        }
                     }
                 }
             }
         }
         Spacer(Modifier.height(gdp(6.dp)))
-        // wineguanli.py：添加变量
+        // 添加变量（wineguanli add_variable：变量名 + 逗号分隔候选值）
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(gdp(6.dp))) {
             OutlinedTextField(
-                value = newKey,
-                onValueChange = { newKey = it },
-                label = { Text("变量名", fontSize = gsp(10.sp)) },
+                value = newVar,
+                onValueChange = { newVar = it },
+                label = { Text("变量名（大写/数字/_）", fontSize = gsp(10.sp)) },
                 singleLine = true,
                 textStyle = androidx.compose.ui.text.TextStyle(fontSize = gsp(12.sp)),
                 modifier = Modifier.weight(1f)
             )
             OutlinedTextField(
-                value = newValue,
-                onValueChange = { newValue = it },
-                label = { Text("值", fontSize = gsp(10.sp)) },
+                value = newVals,
+                onValueChange = { newVals = it },
+                label = { Text("候选值（如 0,1,2）", fontSize = gsp(10.sp)) },
                 singleLine = true,
                 textStyle = androidx.compose.ui.text.TextStyle(fontSize = gsp(12.sp)),
                 modifier = Modifier.weight(1f)
             )
             GSmallButton("添加变量", Color(0xFF4CAF50), Modifier) {
-                val k = newKey.trim().uppercase()
-                if (k.isNotEmpty() && newValue.isNotBlank()) {
-                    pairs = pairs.toMutableList().apply {
-                        val idx = indexOfFirst { it.first == k }
-                        if (idx >= 0) this[idx] = k to newValue.trim() else add(k to newValue.trim())
+                val k = newVar.trim().uppercase()
+                val vals = newVals.trim()
+                if (Regex("^[A-Z0-9_]+$").matches(k) &&
+                    vals.split(',').all { Regex("^\\d+$").matches(it.trim()) }
+                ) {
+                    cs.launch(Dispatchers.IO) {
+                        val err = OptConfSupport.appendDyVariable(k, vals)
+                        withContext(Dispatchers.Main) {
+                            busyMsg = err
+                            if (err == null) {
+                                reload()
+                                newVar = ""; newVals = ""
+                            }
+                        }
                     }
-                    newKey = ""; newValue = ""
-                    presetSel = "自定义"
+                } else {
+                    busyMsg = "变量名仅允许大写字母/数字/下划线，候选值仅允许数字（逗号分隔）"
+                }
+            }
+        }
+        if (busyMsg != null) {
+            Text(busyMsg ?: "", fontSize = gsp(11.sp), color = GuanliColors.red)
+        }
+    }
+
+    // ---- 应用配置（wineguanli apply_config：整文件重写 dynarec_active.conf） ----
+    GSmallButton("✅ 应用配置", GuanliColors.blueFab, Modifier.fillMaxWidth().height(gdp(44.dp))) {
+        cs.launch(Dispatchers.IO) {
+            val ordered = vars.mapNotNull { (k, _) -> current[k]?.let { k to it } }
+            var err = OptConfSupport.writeDynarecActive(ordered)
+            // 清理各容器 env= 里旧版 DY 页写入的 BOX64_*/BOX86_* 覆盖
+            //（容器 env= 最后叠加、优先级最高 —— 不清理则新配置被压着不生效）
+            var cleaned = 0
+            if (err == null) {
+                val dyKeys = vars.map { it.first }.toSet()
+                ContainerManager.list().forEach { c ->
+                    val has = GuanliSupport.parseEnv(c.env).any { it.first in dyKeys }
+                    if (has) {
+                        val e2 = ContainerManager.update(
+                            c.copy(env = GuanliSupport.removeEnvKeys(c.env, dyKeys))
+                        )
+                        if (e2 == null) cleaned++ else err = "容器 ${c.name} 清理旧 DY 覆盖失败：$e2"
+                    }
+                }
+            }
+            withContext(Dispatchers.Main) {
+                if (err == null) {
+                    android.widget.Toast.makeText(
+                        context,
+                        "DY 配置已写入 /opt/conf/dynarec_active.conf" +
+                            (if (cleaned > 0) "（并清理 $cleaned 个容器的旧覆盖）" else ""),
+                        android.widget.Toast.LENGTH_SHORT
+                    ).show()
+                    onSaved()
+                } else {
+                    busyMsg = err
                 }
             }
         }
     }
-
-    // wineguanli.py：应用配置
-    GSmallButton("应用配置", GuanliColors.blueFab, Modifier.fillMaxWidth().height(gdp(44.dp))) {
-        cs.launch(Dispatchers.IO) {
-            val err = ContainerManager.update(sel.copy(env = GuanliSupport.serializeEnv(pairs)))
-            withContext(Dispatchers.Main) {
-                android.widget.Toast.makeText(
-                    context, err ?: "DY 配置已应用到容器 ${sel.name}", android.widget.Toast.LENGTH_SHORT
-                ).show()
-                if (err == null) onSaved()
-            }
-        }
-    }
     GNote(
-        "wineguanli.py 写 /opt/conf/box64.conf（全局）；AnWind 把同等变量写进容器 env=，" +
-            "启动链 applyExtraEnv 最后叠加 —— 优先级高于一切预设，可逐容器差异化"
+        "写入 /opt/conf/dynarec_active.conf（wineguanli.py 同款，启动链 source 生效，" +
+            "优先级高于 Box64 预设；当前容器 ${sel.name} 的 env= 旧 DY 覆盖已随应用自动清理）"
     )
 }
 
@@ -2159,13 +2328,32 @@ private fun MangoHudTab(
 private fun MoreSettingsDialog(
     container: ContainerData,
     onDismiss: () -> Unit,
-    onSaved: () -> Unit
+    onSaved: () -> Unit,
+    // v3.3.4：环境变量页 MANGOHUD 组的"配置MANGOHUD"入口（打开详细配置对话框）
+    onOpenMango: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val cs = rememberCoroutineScope()
     var tab by remember { mutableStateOf(0) }
     var edit by remember(container.name) { mutableStateOf(container) }
     var saveMsg by remember { mutableStateOf<String?>(null) }
+    // v3.3.4（用户问题 1："更多设置根本没有读取和更改配置文件，怎么改都没
+    // 反应"）：/opt/conf 生态配置快照 —— wineguanli.py
+    // AdvancedSettingsDialog.load_current_settings 同款读取（env.conf +
+    // cores.conf）。环境变量页显示值 = 容器 env= 覆盖 > env.conf 当前值；
+    // 保存时按参考 save_advanced_settings 语义写回 env.conf（空值删行）+
+    // cores.conf 双键 + 容器 env= 同步清理（旧容器级残留覆盖不同步清理的
+    // 话，改动永远被 container.conf 压着 → "没反应"）。
+    var envConfWork by remember(container.name) { mutableStateOf<Map<String, String>>(emptyMap()) }
+    var optCores by remember(container.name) { mutableStateOf("") }
+    var hasOptEco by remember(container.name) { mutableStateOf(false) }
+    LaunchedEffect(container.name) {
+        withContext(Dispatchers.IO) {
+            hasOptEco = OptConfSupport.root() != null
+            envConfWork = OptConfSupport.envEntries().toMap()
+            optCores = OptConfSupport.primaryCores() ?: ""
+        }
+    }
     // 多选对话框请求（MESA扩展/DXVK HUD/TU_DEBUG）
     var multiSelect by remember { mutableStateOf<MultiSelectRequest?>(null) }
     multiSelect?.let { req ->
@@ -2188,7 +2376,8 @@ private fun MoreSettingsDialog(
     WinDialog(
         title = "更多设置 · ${container.name}",
         onDismiss = onDismiss,
-        width = 620.dp * GuanliUiK
+        // v3.3.4：620 → 680（字号补偿后三列下拉不换行）
+        width = 680.dp * GuanliUiK
     ) {
         GuanliDialogScale(dlgScale, dlgFontScale) {
         Column(Modifier.fillMaxWidth()) {
@@ -2221,7 +2410,11 @@ private fun MoreSettingsDialog(
                         // wineguanli.py create_cpu_tab（与容器 CPU 页同构）
                         GGroup("CPU核心分配（勾选为主核心）") {
                             val total = Runtime.getRuntime().availableProcessors()
-                            val primary = WineEnvironment.parseCoreSpec(edit.cores)
+                            // v3.3.4（用户问题 1）：容器 cores= 为空时回落显示
+                            // /opt/conf/cores.conf 的 PRIMARY_CORES（参考
+                            // load_current_settings 直接读 cores.conf 的语义）
+                            val spec = edit.cores.ifBlank { optCores }
+                            val primary = WineEnvironment.parseCoreSpec(spec)
                                 .filter { it in 0 until total }.toSortedSet()
                             GCheckFlow(
                                 items = (0 until total).map { it.toString() to "核心$it" },
@@ -2242,6 +2435,12 @@ private fun MoreSettingsDialog(
                                     .background(GuanliColors.rowAlt)
                                     .padding(gdp(8.dp))
                             )
+                            if (edit.cores.isBlank() && optCores.isNotBlank()) {
+                                GNote("容器未单独配置 —— 当前显示 /opt/conf/cores.conf 的 PRIMARY_CORES=\"$optCores\"")
+                            }
+                            // v3.3.4：保存时同步写 /opt/conf/cores.conf（参考
+                            // save_advanced_settings 的 PRIMARY/SECONDARY 双键）
+                            GNote("保存时同步写入 /opt/conf/cores.conf（PRIMARY_CORES/SECONDARY_CORES，/opt 生态脚本与启动链共用）")
                         }
                     }
                     1 -> {
@@ -2303,7 +2502,19 @@ private fun MoreSettingsDialog(
                             }
                         }
                     }
-                    2 -> EnvVarsTab(edit = edit, onChange = { edit = it }, openMulti = { multiSelect = it })
+                    2 -> EnvVarsTab(
+                        edit = edit,
+                        envConf = envConfWork,
+                        hasOptEco = hasOptEco,
+                        onEnvConfChange = { k, v ->
+                            envConfWork = envConfWork.toMutableMap().apply {
+                                if (v == null) remove(k) else put(k, v)
+                            }
+                        },
+                        onChange = { edit = it },
+                        openMulti = { multiSelect = it },
+                        onOpenMango = onOpenMango
+                    )
                     3 -> AdvancedFuncTab(container = edit)
                     4 -> D3dTab(container = edit)
                     5 -> NativeTab(edit = edit, onChange = { edit = it }, onSaved = onSaved)
@@ -2328,11 +2539,57 @@ private fun MoreSettingsDialog(
                 Button(
                     onClick = {
                         cs.launch(Dispatchers.IO) {
-                            val err = ContainerManager.update(edit)
+                            // v3.3.4（用户问题 1）：三路落盘 ——
+                            // ① 容器副本 container.conf（cores/dpi/winver 等），
+                            //    env= 里环境变量页管理的键（含旧版误写的
+                            //    MESA_GL_VERSION/MESA_GLSL_VERSION）一并清理 ——
+                            //    容器 env= 优先级最高，不清理则 /opt 改动永远被压着；
+                            // ② /opt/conf/env.conf（wineguanli.py
+                            //    save_advanced_settings 同款：非空 replace-or-append，
+                            //    选"（默认）"= 删行）；
+                            // ③ /opt/conf/cores.conf 双键（容器 cores 非空时）。
+                            // 无 /opt 生态时 ② 回落为合并进容器 env=（启动链
+                            // applyExtraEnv 注入），设置照样生效。
+                            val cleanedEnv = GuanliSupport.removeEnvKeys(
+                                edit.env,
+                                GuanliSupport.ENV_TAB_KEYS + GuanliSupport.ENV_TAB_LEGACY_KEYS
+                            )
+                            var err = ContainerManager.update(edit.copy(env = cleanedEnv))
+                            if (err == null) {
+                                if (hasOptEco) {
+                                    for (k in GuanliSupport.ENV_TAB_KEYS) {
+                                        val v = envConfWork[k]
+                                        val e = if (v.isNullOrBlank()) OptConfSupport.removeEnvKey(k)
+                                                else OptConfSupport.writeEnvKey(k, v)
+                                        if (e != null) { err = "env.conf 写入失败：$e"; break }
+                                    }
+                                    if (err == null && edit.cores.isNotBlank()) {
+                                        val total = Runtime.getRuntime().availableProcessors()
+                                        val primary = WineEnvironment.parseCoreSpec(edit.cores)
+                                            .filter { it in 0 until total }.toSortedSet()
+                                        val secondary = (0 until total).filter { it !in primary }
+                                        OptConfSupport.writeCores(
+                                            WineEnvironment.formatCoreSpec(primary.toList()),
+                                            WineEnvironment.formatCoreSpec(secondary)
+                                        )?.let { err = "cores.conf 写入失败：$it" }
+                                    }
+                                } else {
+                                    var env = cleanedEnv
+                                    for (k in GuanliSupport.ENV_TAB_KEYS) {
+                                        val v = envConfWork[k]
+                                        env = if (v.isNullOrBlank()) GuanliSupport.removeEnvKeys(env, listOf(k))
+                                              else GuanliSupport.mergeEnv(env, mapOf(k to v))
+                                    }
+                                    err = ContainerManager.update(edit.copy(env = env))
+                                }
+                            }
                             withContext(Dispatchers.Main) {
                                 if (err == null) {
                                     android.widget.Toast.makeText(
-                                        context, "设置已保存", android.widget.Toast.LENGTH_SHORT
+                                        context,
+                                        if (hasOptEco) "设置已保存（container.conf + /opt/conf 生态配置）"
+                                        else "设置已保存（container.conf，未检测到 /opt 生态）",
+                                        android.widget.Toast.LENGTH_SHORT
                                     ).show()
                                     onSaved()
                                 } else {
@@ -2351,20 +2608,37 @@ private fun MoreSettingsDialog(
 
 // ===========================================================================
 // 环境变量选项卡（wineguanli.py create_env_tab：MESA/MANGOHUD/DXVK/TU_DEBUG）
+//
+// v3.3.4（用户问题 1："更多设置根本没有读取和更改配置文件，怎么改都没反应"）：
+//  - 读取：显示值 = 容器 env= 覆盖 > /opt/conf/env.conf 当前值（参考
+//    load_current_settings 直接读 env.conf 的语义 + 容器级覆盖可见）；
+//  - 写回：保存时按 save_advanced_settings 语义写 /opt/conf/env.conf
+//    （非空 replace-or-append，选"（默认）"= 删行）；无 /opt 生态时由
+//    保存逻辑回落合并进容器 env=（启动链 applyExtraEnv 注入）；
+//  - 键名修正：MESA 两个键改为 Mesa 官方的 MESA_GL_VERSION_OVERRIDE /
+//    MESA_GLSL_VERSION_OVERRIDE（旧版误用 MESA_GL_VERSION/MESA_GLSL_VERSION，
+//    Mesa 根本不读这两个变量 —— "怎么改都没反应"的直接根因）。
 // ===========================================================================
 
 @Composable
 private fun EnvVarsTab(
     edit: ContainerData,
+    envConf: Map<String, String>,
+    hasOptEco: Boolean,
+    onEnvConfChange: (String, String?) -> Unit,
     onChange: (ContainerData) -> Unit,
-    openMulti: (MultiSelectRequest) -> Unit
+    openMulti: (MultiSelectRequest) -> Unit,
+    onOpenMango: () -> Unit
 ) {
-    fun setEnvVar(key: String, value: String?) {
-        // null = 移除该变量
-        val cur = GuanliSupport.parseEnv(edit.env).toMutableList()
-        cur.removeAll { it.first == key }
-        if (value != null) cur.add(key to value)
-        onChange(edit.copy(env = GuanliSupport.serializeEnv(cur)))
+    // 生效值：容器 env= 优先，其次 env.conf —— 两个配置源都真实读取
+    fun effective(key: String): String? =
+        GuanliSupport.envValue(edit.env, key) ?: envConf[key]
+
+    // 修改一个键：写 env.conf 工作副本 + 从容器 env= 移除同名键
+    //（容器 env= 优先级最高 —— 不同步移除的话改动永远不生效）
+    fun setVar(key: String, value: String?) {
+        onEnvConfChange(key, value)
+        onChange(edit.copy(env = GuanliSupport.removeEnvKeys(edit.env, listOf(key))))
     }
 
     // ---- MESA配置（wineguanli：MESA版本/GLSL版本/VKD3D特性 三下拉） ----
@@ -2374,31 +2648,35 @@ private fun EnvVarsTab(
                 Text("MESA版本:", fontSize = gsp(11.sp), color = themeFg())
                 GComboBox(
                     options = listOf("（默认）", "2.1", "3.1", "3.3", "3.3COMPAT", "4.6", "4.6COMPAT"),
-                    selected = GuanliSupport.envValue(edit.env, "MESA_GL_VERSION") ?: "（默认）",
-                    onSelect = { v -> setEnvVar("MESA_GL_VERSION", if (v == "（默认）") null else v) }
+                    selected = effective("MESA_GL_VERSION_OVERRIDE") ?: "（默认）",
+                    onSelect = { v -> setVar("MESA_GL_VERSION_OVERRIDE", if (v == "（默认）") null else v) }
                 )
             }
             Column(Modifier.weight(1f)) {
                 Text("GLSL版本:", fontSize = gsp(11.sp), color = themeFg())
                 GComboBox(
                     options = listOf("（默认）", "210", "310", "330", "430", "460"),
-                    selected = GuanliSupport.envValue(edit.env, "MESA_GLSL_VERSION") ?: "（默认）",
-                    onSelect = { v -> setEnvVar("MESA_GLSL_VERSION", if (v == "（默认）") null else v) }
+                    selected = effective("MESA_GLSL_VERSION_OVERRIDE") ?: "（默认）",
+                    onSelect = { v -> setVar("MESA_GLSL_VERSION_OVERRIDE", if (v == "（默认）") null else v) }
                 )
             }
             Column(Modifier.weight(1f)) {
                 Text("VKD3D特性:", fontSize = gsp(11.sp), color = themeFg())
                 GComboBox(
                     options = listOf("（默认）", "12_1", "12_2"),
-                    selected = GuanliSupport.envValue(edit.env, "VKD3D_FEATURE_LEVEL") ?: "（默认）",
-                    onSelect = { v -> setEnvVar("VKD3D_FEATURE_LEVEL", if (v == "（默认）") null else v) }
+                    selected = effective("VKD3D_FEATURE_LEVEL") ?: "（默认）",
+                    onSelect = { v -> setVar("VKD3D_FEATURE_LEVEL", if (v == "（默认）") null else v) }
                 )
             }
+        }
+        if (!hasOptEco) {
+            GNote("未检测到 /opt 生态 —— 保存时这些值将写入容器 env=（启动链注入生效）")
         }
     }
     // ---- MESA扩展配置（wineguanli select_mesa_extensions 三选项多选） ----
     GGroup("MESA扩展配置") {
-        val cur = GuanliSupport.envValue(edit.env, "MESA_EXTENSION_OVERRIDE")?.split(' ') ?: emptyList()
+        val cur = effective("MESA_EXTENSION_OVERRIDE")
+            ?.split(' ')?.filter { it.isNotBlank() } ?: emptyList()
         GSmallButton("点击选择MESA扩展", GuanliColors.blueFab, Modifier.fillMaxWidth()) {
             openMulti(
                 MultiSelectRequest(
@@ -2409,29 +2687,43 @@ private fun EnvVarsTab(
                         "-GL_EXT_texture_compression_s3tc"
                     ),
                     selected = cur,
-                    onOk = { sel -> setEnvVar("MESA_EXTENSION_OVERRIDE", sel.joinToString(" ").ifEmpty { null }) }
+                    onOk = { sel -> setVar("MESA_EXTENSION_OVERRIDE", sel.joinToString(" ").ifEmpty { null }) }
                 )
             )
         }
         GNote(cur.joinToString(" ").ifEmpty { "未选择" })
     }
-    // ---- MANGOHUD（启用 = mango key 非空；详细配置走 MANGOHUD 对话框） ----
+    // ---- MANGOHUD（wineguanli：启用勾选 + MANGOHUD/MANGOHUD_CONFIG 双变量） ----
     GGroup("MANGOHUD配置") {
-        GCheckRow("启用MANGOHUD", edit.mangohud.isNotBlank()) { on ->
-            onChange(edit.copy(mangohud = if (on) "fps,frametime,cpu_stats,gpu_stats" else ""))
+        val enabled = edit.mangohud.isNotBlank() || effective("MANGOHUD") == "1"
+        GCheckRow("启用MANGOHUD", enabled) { on ->
+            if (on) {
+                onEnvConfChange("MANGOHUD", "1")
+                // 无任何现成配置时给参考默认四项（wineguanli 同款）
+                if (effective("MANGOHUD_CONFIG").isNullOrBlank()) {
+                    onEnvConfChange("MANGOHUD_CONFIG", "fps,frametime,cpu_stats,gpu_stats")
+                }
+            } else {
+                onEnvConfChange("MANGOHUD", "0")
+                // 容器级 mangohud 字段优先级更高（applyTuningEnv 后置叠加），
+                // 不同步清空会出现"关不掉"—— 一并清理
+                onChange(edit.copy(mangohud = ""))
+            }
         }
-        GNote("当前配置: ${edit.mangohud.ifEmpty { "未配置" }}（高级设置页 → MANGOHUD配置 可详细定制）")
+        val curCfg = edit.mangohud.ifBlank { envConf["MANGOHUD_CONFIG"].orEmpty() }
+        GNote("当前配置: ${curCfg.ifEmpty { "未配置" }}")
+        GSmallButton("📊 配置MANGOHUD（详细）", GuanliColors.blueFab, Modifier.fillMaxWidth()) { onOpenMango() }
     }
     // ---- DXVK HUD（wineguanli select_dxvk_items） ----
     GGroup("DXVK HUD配置") {
-        val cur = GuanliSupport.envValue(edit.env, "DXVK_HUD")?.split(',') ?: emptyList()
+        val cur = effective("DXVK_HUD")?.split(',')?.filter { it.isNotBlank() } ?: emptyList()
         GSmallButton("选择DXVK监控项", GuanliColors.blueFab, Modifier.fillMaxWidth()) {
             openMulti(
                 MultiSelectRequest(
                     title = "DXVK监控项",
                     options = listOf("devinfo", "fps", "gpuload", "api", "version"),
                     selected = cur,
-                    onOk = { sel -> setEnvVar("DXVK_HUD", sel.joinToString(",").ifEmpty { null }) }
+                    onOk = { sel -> setVar("DXVK_HUD", sel.joinToString(",").ifEmpty { null }) }
                 )
             )
         }
@@ -2439,20 +2731,30 @@ private fun EnvVarsTab(
     }
     // ---- TU_DEBUG（wineguanli select_tu_debug） ----
     GGroup("TU_DEBUG配置") {
-        val cur = GuanliSupport.envValue(edit.env, "TU_DEBUG")?.split(',') ?: emptyList()
+        val cur = effective("TU_DEBUG")?.split(',')?.filter { it.isNotBlank() } ?: emptyList()
         GSmallButton("选择TU_DEBUG选项", GuanliColors.blueFab, Modifier.fillMaxWidth()) {
             openMulti(
                 MultiSelectRequest(
                     title = "TU_DEBUG选项",
                     options = listOf("nofsdt", "gmem", "sysmem", "noconform"),
                     selected = cur,
-                    onOk = { sel -> setEnvVar("TU_DEBUG", sel.joinToString(",").ifEmpty { null }) }
+                    onOk = { sel -> setVar("TU_DEBUG", sel.joinToString(",").ifEmpty { null }) }
                 )
             )
         }
         GNote(cur.joinToString(",").ifEmpty { "未选择" })
     }
-    GNote("以上全部落入容器 env=（启动链注入；DY 配置页可查看完整变量列表）")
+    // ---- 保存去向说明 + env.conf 其他变量可见（"读取配置文件"的直观证据） ----
+    GNote(
+        if (hasOptEco)
+            "保存写入 /opt/conf/env.conf（全局，下次启动 wine 生效；容器 env= 同名键已自动清理）"
+        else
+            "未检测到 /opt 生态：保存写入容器 env=（启动链 applyExtraEnv 注入生效）"
+    )
+    val others = envConf.keys.filter { it !in GuanliSupport.ENV_TAB_KEYS }
+    if (others.isNotEmpty()) {
+        GNote("env.conf 其他变量（本页不管理）：" + others.joinToString("，") { "$it=${envConf[it]}" }.take(220))
+    }
 }
 
 // ===========================================================================
@@ -2878,8 +3180,9 @@ private fun NewContainerDialog(
                 )
             }
             GField("语言:") {
-                // v3.3.2 恢复：新建容器即可选语言（跟随 /opt/locale.conf
-                // 为默认），保存进容器 lang=，启动链写入 LANG/LC_ALL。
+                // v3.3.2 恢复：新建容器即可选语言，保存进容器 lang=，
+                // 启动链写入 LANG/LC_ALL。v3.3.4：默认 = 简体中文
+                //（跟随 /opt/locale.conf 降为可选项）。
                 GComboBox(
                     options = ContainerLangs.DISPLAY,
                     selected = ContainerLangs.displayOf(lang),

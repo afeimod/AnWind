@@ -46,8 +46,14 @@ object ContainerManager {
     /** rootfs 内 wine 多版本安装根（/usr/opt/，槽位 wine / wine-<名>）。 */
     const val WINE_OPT_DIR = "$ROOTFS_ROOT/usr/opt"
 
-    /** 容器名约束：字母数字开头，仅字母/数字/点/下划线/连字符。 */
-    private val NAME_RE = Regex("^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+    /**
+     * 容器名约束（v3.3.4，用户问题 3："创建容器竟然不支持中文文本名"）：
+     * 任意 Unicode 字母/数字开头（含中文），后续字母/数字/点/下划线/连字符。
+     * \p{L}（字母）覆盖 CJK 统一表意文字，\p{N}（数字）覆盖全角数字 ——
+     * "游戏测试"、"856"、"wine9.2-x64" 均合法；路径穿越字符
+     * （/ \ : 空格 等）依旧被拒。
+     */
+    private val NAME_RE = Regex("^[\\p{L}\\p{N}][\\p{L}\\p{N}._-]{0,63}$")
 
     // ------------------------------------------------------------------
     // 容器枚举与读取
@@ -74,7 +80,7 @@ object ContainerManager {
     /** 容器名合法性校验，返回 null 表示合法，否则返回错误信息。 */
     fun validateName(name: String): String? = when {
         name.isBlank() -> "容器名不能为空"
-        !NAME_RE.matches(name) -> "容器名仅允许字母/数字/点/下划线/连字符（字母或数字开头）"
+        !NAME_RE.matches(name) -> "容器名仅允许字母/数字/中文/点/下划线/连字符（字母、数字或中文开头，最长 64 字符）"
         exists(name) -> "同名容器已存在"
         else -> null
     }

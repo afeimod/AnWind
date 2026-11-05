@@ -1,5 +1,70 @@
 # AnWind Bionic 修复包 v2（2026-09-19）
 
+> **v3.3.4（2026-11-06，App v2.38.29 / versionCode 92）**：更多设置真正读写 /opt/conf 配置文件（MESA 变量名修正 + env.conf/cores.conf 直读直写）+ DY/Box 配置按 wineguanli.py 重制（逐行控件，不再拍平进一个框）+ 界面字号放大（框体保持紧凑）+ 容器名支持中文 + 默认语言改简体中文（跟随 /opt/locale 降为选项）+ wineboot 构建链顺序对齐 startwine.sh（先解压注册再 taskmgr；arm64ec 跳过两个 xz 预置包）。
+>
+> ## ① 【用户诉求】"更多设置根本没有读取和更改配置文件，怎么改都没反应"（截图：更多设置·856 环境变量页全部"默认"）
+>
+> **双重根因**：① MESA 两个变量名写错 —— 旧版写 `MESA_GL_VERSION` /
+> `MESA_GLSL_VERSION`，Mesa 实际读的是 **`MESA_GL_VERSION_OVERRIDE` /
+> `MESA_GLSL_VERSION_OVERRIDE`**（wineguanli.py get_settings 用的就是后者），
+> 改了也永远没反应；② 旧版只落容器 env=，从不读写 /opt/conf/env.conf ——
+> 用户生态包的配置在 env.conf 里，界面却显示"默认"。
+> **修复**（`EnvVarsTab` 重写 + `MoreSettingsDialog` 三路落盘）：
+> - **读取**：显示值 = 容器 env= 覆盖 > /opt/conf/env.conf 当前值（参考
+>   load_current_settings 直接读 env.conf）；env.conf 的其他变量（本页不管
+>   理的）也在页尾列出 —— "读取配置文件"直观可见；
+> - **写回**：保存时按参考 save_advanced_settings 语义写 env.conf（非空
+>   replace-or-append，选"（默认）"= 删行）；CPU 核心页同步双写
+>   cores.conf（PRIMARY/SECONDARY_CORES）；**容器 env= 同名键（含旧错误
+>   键名）一并清理** —— 容器 env= 优先级最高，不清理则 /opt 改动永远被压着；
+> - 无 /opt 生态时自动回落合并进容器 env=（applyExtraEnv 注入），设置照样
+>   生效；MANGOHUD 组对齐参考（MANGOHUD=1/0 + MANGOHUD_CONFIG + 详细配置
+>   入口）。
+>
+> ## ② 【用户诉求】"wine容器界面字体太小，而且好多放在高级设置里的东西你全放在了一个框框里了，不好选啊，根据参考py来，比如box选项，dy配置选项等"
+>
+> **字体**：v3.2.21/v3.3.3 两轮整体收紧把字号也缩到 68%（13sp 标题实际渲染
+> ~8.8sp）。新增 `GuanliFontBoost=1.35` 字号补偿系数 —— LocalDensity 覆盖
+> 改为 `Density(density×GuanliUiK, fontScale×GuanliFontBoost)`，框体保持
+> 紧凑（0.72）而字号补回设计尺寸（≈0.97）；主窗与弹窗两层同步生效。
+> **DY 配置**（`DyConfigTab` 按 wineguanli DynarecEditor 逐面重制）：旧版把
+> BOX64_* 拍平成容器 env= 的纯文本行（KEY = VALUE + 删除），不好选也改不到
+> 点上。现改为：数据源 = **/opt/conf/custom.conf（定义表）+ dynarec_active.conf
+> （当前值）**（正是启动链 readOptConfs source 的那两份）；0/1 变量渲染
+> "启用"勾选、多值变量渲染候选值下拉；三预设（兼容/性能/平衡）+ 重置默认 +
+> 添加/删除变量（写 custom.conf）；应用 = 整文件重写 dynarec_active.conf，并
+> **自动清理各容器 env= 里的旧 BOX64_* 覆盖**（否则容器残留压着新配置，
+> 又是"没反应"）。
+>
+> ## ③ 【用户诉求】"创建容器竟然不支持中文文本名，肯定不行啊"
+>
+> `ContainerManager.NAME_RE` 从 `[A-Za-z0-9][A-Za-z0-9._-]{0,63}` 放宽为
+> **`[\p{L}\p{N}][\p{L}\p{N}._-]{0,63}`**（任意 Unicode 字母/数字开头，
+> 含中文；路径穿越字符仍拒绝）。快捷方式 id（ShortcutManager 只认安全字符）
+> 消毒为 ASCII，shortLabel/longLabel 保留中文名，桌面显示不受影响。
+>
+> ## ④ 【用户诉求】"默认不要跟随 opt/locale，默认简体中文即可，跟随 opt/locale 作为一个选项"
+>
+> `ContainerLangs.DEFAULT` 从 auto 改为 **zh_CN.UTF-8**，"跟随
+> /opt/locale.conf"降为下拉可选项；`buildBaseEnv` 三档判定：显式档直接用 →
+> auto 档读 /opt/locale.conf（无则兜底 zh_CN）→ 其余（缺键/非法值）一律
+> zh_CN，不再隐式跟随。配套：CJK 字体安装判定改用**实际生效语言**
+> （env["LANG"]）—— 修复 lang=auto + 中文生态下字体被跳过、中文全方块的问题。
+>
+> ## ⑤ 【用户诉求】"wineboot i 后运行 taskmgr 不是你那样啊，是先进行解压和注册再启动 taskmgr 啊，而且乱七八糟的，特别是会报无法访问的错误…arm64ec 架构的要跳过两个 xz 的解压，否则无法运行的"
+>
+> **顺序对齐 startwine.sh**：撤销 v3.2.29 的 taskmgr 前置保活（taskmgr 在
+> 半成品前缀上与 regedit 并发争注册表 = "无法访问"报错的来源；参考链路里
+> 解压/注册的每一步都是独立 wine 客户端，wineserver 按需拉起，无需保活）。
+> 新顺序：wineboot -u（手动入口同步 -i→-u）→ **解压 + 注册表导入 + 盘符 +
+> EmulateModeset + 现代化 + DXVK + 函数库** → **全部完成后才启动 taskmgr**
+> （`startwine taskmgr` 同款，作为"容器就绪"的可视信号保持运行并登记会话，
+> 可停止）。游戏会话不启动 taskmgr（游戏本身就是启动目标）。
+> **arm64ec 跳过两个 xz**：`bootstrapOptPrefix` 对 AARCH64/ARM64EC 跳过
+> drive_c.tar.xz / directx.tar.xz 预置解压与 install.bat（startfex.sh 事实：
+> arm64 路径本就没有这两步；x86 预置包解进 arm64 前缀会无法运行），fix-fonts
+> 与 dxvk、注册表三连照常。
+
 > **v3.3.3（2026-11-05，App v2.38.28 / versionCode 91）**：media 报错根治（noexec 导入空间误判）+ wineboot -u 对齐 startfex.sh + /opt 注册表 bionic 兼容规范化 + 容器编辑页 /opt conf 直读直写 + 界面按图三（linbox）比例紧凑化（本轮日志 wine-9.2 会话 + 截图逐项定位 + wineguanli.py / startfex.sh 参考移植）。
 >
 > ## ① 【用户诉求】"很多还是 media 报错，你还是没清理完善，根据 2.38.16 分支作为参考继续修复"

@@ -75,9 +75,17 @@ object WineSessionLauncher {
     fun runWineCmd(context: Context, container: ContainerData, wineCmd: String): String? =
         RootfsLauncher.runWineCmd(context, container, wineCmd)
 
-    /** 首次初始化前缀（wineboot -i，宿主二进制直连）。 */
+    /**
+     * 首次初始化前缀（手动"安装前缀"按钮入口）。
+     *
+     * v3.3.4（用户问题 5）：-i → -u —— 参考链路 startwine.sh / startfex.sh
+     * 均为 `wineboot -u`（前缀缺失时 -u 同样完成初始化，且语义就是"更新/
+     * 构建前缀"）；WineRegistry.initializePrefixIfNeeded 与 postPrefixBootChain
+     * 的重试分支也早已是 -u，此处统一。会话退出后由 postPrefixBootChain
+     * 继续解压/注册，最后启动 taskmgr（startwine taskmgr 同款）。
+     */
     fun initializePrefix(context: Context, container: ContainerData): String? =
-        runWineCmd(context, container, "wineboot -i")
+        runWineCmd(context, container, "wineboot -u")
 
     /** 打开 winecfg 配置面板。 */
     fun openWineCfg(context: Context, container: ContainerData): String? =

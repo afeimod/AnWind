@@ -1,5 +1,6 @@
 package com.anwind.apps.containers.launcher
 
+import com.anwind.apps.containers.ContainerBackend
 import com.anwind.apps.containers.ContainerData
 import java.io.File
 import java.util.concurrent.TimeUnit
@@ -858,9 +859,21 @@ object WineRegistry {
         val driveC = File(prefix, "drive_c")
         val windows = File(driveC, "windows")
 
-        // ① drive_c / directx 归档
-        extractOptArchive(pd, "drive_c", driveC, log)
-        extractOptArchive(pd, "directx", driveC, log)
+        // v3.3.4（用户问题 5："arm64ec架构的要跳过两个xz的解压，否则无法
+        // 运行的"）：参考链路事实 —— startfex.sh（arm64ec/FEX 路径）没有
+        // drive_c.tar.xz / directx.tar.xz 两步解压（只有 startwine.sh 的
+        // x86_64 路径有）；x86 预置包解进 arm64 前缀会把容器搞到无法运行。
+        // install.bat（Physx/7-zip/VC++ x86 运行库）同理跳过。
+        val arm64ec = resolved.arch == WineRuntime.Arch.AARCH64 ||
+            container.backend == ContainerBackend.ARM64EC
+
+        // ① drive_c / directx 归档（arm64ec 跳过）
+        if (arm64ec) {
+            log("arm64ec 架构：跳过 drive_c.tar.xz / directx.tar.xz 预置解压（startfex.sh 同款 —— x86 预置包会导致 arm64 前缀无法运行）")
+        } else {
+            extractOptArchive(pd, "drive_c", driveC, log)
+            extractOptArchive(pd, "directx", driveC, log)
+        }
 
         // ② 开始菜单快捷方式
         val startDir = File(pd, "start")
@@ -920,7 +933,11 @@ object WineRegistry {
         //     安装包不存在该文件时零动作；失败只记日志不阻断（与参考
         //     脚本容错语义一致）。
         val installBat = File(root, "apps/install.bat")
-        if (installBat.isFile) {
+        if (installBat.isFile && arm64ec) {
+            // v3.3.4：arm64ec 跳过 install.bat（startfex.sh 无此步 —— 全是
+            // x86 运行库安装器）
+            log("arm64ec 架构：跳过 install.bat 运行库安装（startfex.sh 同款）")
+        } else if (installBat.isFile) {
             log("安装运行库（install.bat：Physx/7-zip/VC++，640x480 虚拟桌面）……")
             runCatching {
                 val cmd = NativeShellExecutor.create()

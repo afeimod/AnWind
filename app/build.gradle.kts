@@ -231,8 +231,8 @@ android {
         // 必 ENOSYS —— 冒烟树补打补丁（与 aarch64 交付构建同源；沙箱实跑
         // 动态/静态双冒烟 ANWIND_SMOKE_OK 验证），glibc 形态 build-box64.yml
         // 同步应用（静态程序 shm 转发同样受益）。
-        versionCode = 91
-        versionName = "2.38.28"
+        versionCode = 92
+        versionName = "2.38.29"
         // v3.3.3（源码包 v3.3.3）：media 根治（noexec 导入空间误判修复）
         // + /opt conf 双向 + UI 紧凑化 —— ①stageNoexecExeIfNeeded 空间预检
         // 改查必然存在的 rootfs 根（旧版查尚不存在的 stageDir，usableSpace

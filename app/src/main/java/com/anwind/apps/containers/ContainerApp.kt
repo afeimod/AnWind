@@ -24,8 +24,10 @@ val ContainersApp = AppDef(
     // v3.3.3（用户问题 2）：默认尺寸 900×600 → 800×560 —— 用户反馈
     // "比例太大了，按照图三（linbox 容器管理器）这种比例重新做，包括窗口
     // 和字体"。三件套联动：窗口 800×560 + 字号缩放基准同步 800
-    // （GuanliFontBaseDp，默认窗下 fontScale=1）+ 全局收紧系数
-    // GuanliUiK 0.8 → 0.68（字体/框体整体 15% 线性收紧，对齐图三密度）。
+    // （GuanliFontBaseDp，默认窗下 fontScale=1）+ 全局收紧系数 GuanliUiK。
+    // v3.3.4（用户问题 2）：GuanliUiK 0.68 → 0.72（框体微放）+ 新增
+    // GuanliFontBoost=1.35 字号补偿（用户反馈"界面字体太小"—— 0.68 把
+    // 字号也缩到 68%，现框体保持紧凑而字号补回设计尺寸 ≈0.97）。
     defaultWidth = 800.dp,
     defaultHeight = 560.dp,
     pinnedToDesktop = true,

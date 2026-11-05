@@ -119,6 +119,25 @@ object GuanliSupport {
     fun envValue(env: String, key: String): String? =
         parseEnv(env).firstOrNull { it.first == key }?.second
 
+    /**
+     * v3.3.4（用户问题 1）：更多设置·环境变量页管理的键集 —— 与
+     * wineguanli.py AdvancedSettingsDialog.get_settings 的 env 集一致。
+     * 注意 MESA 两个键是 *_OVERRIDE（Mesa 官方变量名）—— 旧版误用
+     * MESA_GL_VERSION / MESA_GLSL_VERSION（Mesa 根本不读，"怎么改都没
+     * 反应"的直接根因之一），保存时一并从容器 env= 清除。
+     */
+    val ENV_TAB_KEYS: List<String> = listOf(
+        "MESA_GL_VERSION_OVERRIDE", "MESA_GLSL_VERSION_OVERRIDE", "VKD3D_FEATURE_LEVEL",
+        "MESA_EXTENSION_OVERRIDE", "MANGOHUD", "MANGOHUD_CONFIG", "DXVK_HUD", "TU_DEBUG"
+    )
+
+    /** 旧版误写的 MESA 键名（保存时清理，防止残留覆盖）。 */
+    val ENV_TAB_LEGACY_KEYS: List<String> = listOf("MESA_GL_VERSION", "MESA_GLSL_VERSION")
+
+    /** 从 env= 串里剔除一组键（返回清理后的串）。 */
+    fun removeEnvKeys(env: String, keys: Collection<String>): String =
+        serializeEnv(parseEnv(env).filter { it.first !in keys })
+
     // ------------------------------------------------------------------
     // /opt 生态（wineguanli.py load_driver_versions / load_box_versions）
     // ------------------------------------------------------------------
@@ -468,7 +487,12 @@ object GuanliSupport {
                     if (exePath.isNotBlank()) putExtra("anwind_run_exe", exePath)
                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 }
-                val info = android.content.pm.ShortcutInfo.Builder(context, "anwind-container-${container.name}")
+                // v3.3.4：容器名支持中文 —— ShortcutManager 的 id 只接受
+                // 安全字符集，中文名消毒为 ASCII（shortLabel/longLabel 保留
+                // 原名，桌面图标显示不受影响）
+                val safeId = container.name.replace(Regex("[^A-Za-z0-9._-]"), "_")
+                    .take(40).ifEmpty { "container" }
+                val info = android.content.pm.ShortcutInfo.Builder(context, "anwind-container-$safeId")
                     .setShortLabel(container.name.take(10))
                     .setLongLabel("运行 ${container.name}")
                     .setIcon(

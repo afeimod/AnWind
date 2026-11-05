@@ -51,7 +51,9 @@ object WineEnvironment {
         env["XDG_CACHE_HOME"] = "$RFS_ROOT/home/.cache"
         env["XDG_DATA_HOME"] = "$RFS_ROOT/home/.local/share"
 
-        // --- 语言（§3）：容器显式语言 > /opt/locale.conf > zh_CN.UTF-8
+        // --- 语言（§3）：容器显式语言 > auto 档读 /opt/locale.conf > zh_CN.UTF-8
+        //     （v3.3.4：默认档 = 简体中文；跟随 /opt/locale.conf 仅在显式
+        //      选择 auto 档时生效，作为选项保留）
         //     （v3.3.2 恢复 container.lang —— v3.2.29 曾移除语言选择项，
         //     用户反馈"语言设置你给去掉了？那个更改后可以更改启动配置
         //     语言"）。startwine.sh 参考链路 `export LC_ALL="$(cat
@@ -64,9 +66,18 @@ object WineEnvironment {
         //     本变量的值从此真正决定 wine 的 LCID/界面语言/ACP。
         //     conf/*.conf 若显式 export LANG/LC_ALL，由 applyOptConfEnv
         //     通用逻辑再覆盖；容器 env= 仍最高。
-        val lang = if (container.lang in ContainerLangs.CHOICES && container.lang != ContainerLangs.AUTO)
-            container.lang
-        else readOptLocale(wineDir) ?: "zh_CN.UTF-8"
+        // v3.3.4（用户问题 4："默认不要跟随 opt/locale，默认简体中文即可，
+        // 跟随 opt/locale 作为一个选项"）：三档判定 ——
+        //   显式语言档（简体中文/English/…）→ 直接用它；
+        //   auto（显式选择"跟随 /opt/locale.conf"）→ 读生态包 locale.conf，
+        //     无则兜底 zh_CN.UTF-8；
+        //   其余（缺 lang= 键的旧容器 / 非法值）→ 一律 zh_CN.UTF-8，
+        //     不再隐式跟随 /opt/locale.conf。
+        val lang = when {
+            container.lang == ContainerLangs.AUTO -> readOptLocale(wineDir) ?: "zh_CN.UTF-8"
+            container.lang in ContainerLangs.CHOICES -> container.lang
+            else -> "zh_CN.UTF-8"
+        }
         env["LANG"] = lang
         env["LC_ALL"] = lang
 

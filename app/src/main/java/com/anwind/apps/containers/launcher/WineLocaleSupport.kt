@@ -182,8 +182,13 @@ object WineLocaleSupport {
         if (!File(prefix, "system.reg").isFile) return   // 前缀未就绪，下次启动再装
         if (fontMarker(prefix).isFile) return
 
-        // 仅中文/日文/韩文容器安装（英文容器无需 CJK 字体）
-        val lang = container.lang.trim().lowercase()
+        // 仅中文/日文/韩文容器安装（英文容器无需 CJK 字体）。
+        // v3.3.4（用户问题 4 配套）：按启动链【实际生效语言】判定 ——
+        // env["LANG"] 由 buildBaseEnv 计算（显式档 > auto 档读
+        // /opt/locale.conf > zh_CN.UTF-8 兜底）。旧逻辑只看 container.lang
+        // 原始值：lang=auto 且 /opt 生态为中文时被误判为"非中文容器"而
+        // 跳过字体安装 → 中文全方块。现在 auto 档也能正确装字体。
+        val lang = (env["LANG"] ?: container.lang).trim().lowercase()
         val needJp = lang.startsWith("ja")
         val needKr = lang.startsWith("ko")
         if (!(lang.startsWith("zh") || needJp || needKr)) return

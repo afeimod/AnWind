@@ -163,25 +163,29 @@ enum class DisplayMode(val id: String, val label: String, val desc: String) {
  * /opt/locale.conf"（auto）→ 读生态包 locale.conf，无则兜底 zh_CN.UTF-8。
  */
 object ContainerLangs {
-    /** auto：不显式指定，跟随 /opt/locale.conf（生态包未装时兜底 zh_CN.UTF-8）。 */
+    /** auto："跟随 /opt/locale.conf"档（生态包未装时兜底 zh_CN.UTF-8）。
+     *  v3.3.4：跟随档从默认改为可选项（默认 = 简体中文）。 */
     const val AUTO = "auto"
 
+    // v3.3.4（用户问题 4）：简体中文提到首位（新默认档），跟随档紧随其后
     val CHOICES: List<String> = listOf(
-        AUTO, "zh_CN.UTF-8", "en_US.UTF-8", "zh_TW.UTF-8",
+        "zh_CN.UTF-8", AUTO, "en_US.UTF-8", "zh_TW.UTF-8",
         "ja_JP.UTF-8", "ko_KR.UTF-8"
     )
     val DISPLAY: List<String> = listOf(
-        "跟随 /opt/locale.conf", "简体中文", "English", "繁體中文", "日本語", "한국어"
+        "简体中文", "跟随 /opt/locale.conf", "English", "繁體中文", "日本語", "한국어"
     )
-    const val DEFAULT = AUTO
+    // v3.3.4（用户问题 4）：默认 = 简体中文，不再跟随 /opt/locale.conf；
+    // 跟随档（auto）降为可选项 —— 显式选了才读生态包 locale.conf。
+    const val DEFAULT = "zh_CN.UTF-8"
 
-    /** 存储值 → 下拉显示名（未知值回落第一项）。 */
+    /** 存储值 → 下拉显示名（未知值回落默认档简体中文）。 */
     fun displayOf(value: String): String =
         DISPLAY.getOrElse(CHOICES.indexOf(value)) { DISPLAY.first() }
 
-    /** 下拉显示名 → 存储值（未知项回落 auto）。 */
+    /** 下拉显示名 → 存储值（未知项回落简体中文）。 */
     fun valueOf(display: String): String =
-        CHOICES.getOrElse(DISPLAY.indexOf(display)) { AUTO }
+        CHOICES.getOrElse(DISPLAY.indexOf(display)) { DEFAULT }
 }
 
 // ---------------------------------------------------------------------------
@@ -308,9 +312,8 @@ data class ContainerData(
     val dxoverrides: String = "",
     /** 指定 wine 版本目录名（空 = 用全局 default_wine → /usr/opt/wine）。 */
     val wine: String = "",
-    /** 容器语言（v3.2.29 废弃：wine 语言唯一来源是 /opt/locale.conf（LC_ALL），
-     *  APK 不再内置语言配置；本字段仅保留兼容旧 container.conf 并供 CJK
-     *  字体族选择参考，默认简体中文）。 */
+    /** 容器语言（v3.3.4：默认简体中文 zh_CN.UTF-8；"跟随 /opt/locale.conf"
+     *  （auto）降为可选项，仅在显式选择时读取生态包 locale.conf）。 */
     val lang: String = ContainerLangs.DEFAULT,
     /** 容器音频模式（rootfs 自带 PulseAudio / 禁用）。 */
     val audio: ContainerAudio = ContainerAudio.PULSE,
