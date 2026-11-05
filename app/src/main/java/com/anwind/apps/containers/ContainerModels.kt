@@ -233,7 +233,9 @@ object ContainerFlags {
     const val INDEPENDENT = "independent"
     const val CLOSESERVICE = "closeservice"
 
-    /** v3.2.18：FEX 模式（wineguanli.py 高级启动选项；arm64ec 形态下切 fexcore 后端）。 */
+    /** v3.2.29 语义修正：FEX 模式（wineguanli.py 高级启动选项）—— arm64ec
+     *  wine 经 `HODLL=libwow64fex.dll` 让 x86_64/i386 PE 走 FEX 仿真 DLL
+     *  （startfex.sh 同款；旧注释的"切 fexcore 后端"从未接线，已废）。 */
     const val FEXMODE = "fexmode"
 
     /** 全部合法开关（UI 勾选组展示顺序）。 */
@@ -287,7 +289,9 @@ data class ContainerData(
     val dxoverrides: String = "",
     /** 指定 wine 版本目录名（空 = 用全局 default_wine → /usr/opt/wine）。 */
     val wine: String = "",
-    /** 容器语言（LANG/LC_ALL；默认简体中文，与 Termux 会话语言隔离）。 */
+    /** 容器语言（v3.2.29 废弃：wine 语言唯一来源是 /opt/locale.conf（LC_ALL），
+     *  APK 不再内置语言配置；本字段仅保留兼容旧 container.conf 并供 CJK
+     *  字体族选择参考，默认简体中文）。 */
     val lang: String = ContainerLangs.DEFAULT,
     /** 容器音频模式（rootfs 自带 PulseAudio / 禁用）。 */
     val audio: ContainerAudio = ContainerAudio.PULSE,

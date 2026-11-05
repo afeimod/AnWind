@@ -407,18 +407,6 @@ fun ContainerListContent(scope: WindowContentScope) {
                                 withContext(Dispatchers.Main) { refresh() }
                             }
                         },
-                        onSwitchLang = { c, lang ->
-                            cs.launch(Dispatchers.IO) {
-                                ContainerManager.update(c.copy(lang = lang))
-                                withContext(Dispatchers.Main) {
-                                    android.widget.Toast.makeText(
-                                        context, "容器 '${c.name}' 语言已切换（已保存）",
-                                        android.widget.Toast.LENGTH_SHORT
-                                    ).show()
-                                    refresh()
-                                }
-                            }
-                        },
                         minWidth = minW,
                         needHScroll = availW < minW,
                         onCreate = { showCreate = true }
@@ -659,7 +647,6 @@ private fun GuanliContainerPage(
     onMango: (ContainerData) -> Unit,
     onShortcut: (ContainerData) -> Unit,
     onSetDefault: (ContainerData) -> Unit,
-    onSwitchLang: (ContainerData, String) -> Unit,
     onCreate: () -> Unit,
     minWidth: Dp,
     needHScroll: Boolean
@@ -696,7 +683,6 @@ private fun GuanliContainerPage(
                     onRename = onRename,
                     onRemove = onRemove,
                     onShortcut = onShortcut,
-                    onSwitchLang = onSwitchLang
                 )
                 Spacer(Modifier.height(gdp(8.dp)))
                 // wineguanli.py create_left_panel：新建/删除/重命名 + 创建快捷方式
@@ -790,7 +776,6 @@ private fun LeftContainerListBox(
     onRename: (ContainerData) -> Unit,
     onRemove: (ContainerData) -> Unit,
     onShortcut: (ContainerData) -> Unit,
-    onSwitchLang: (ContainerData, String) -> Unit,
     // v3.2.20 修复：weight() 只在 Row/Column 内容作用域内可用（CI 实报 709:14
     // "Expression 'weight' cannot be invoked as a function"），本函数体没有
     // ColumnScope 接收者 —— 占满剩余高度的 weight 交由调用点（在 Column 内）
@@ -870,29 +855,18 @@ private fun LeftContainerListBox(
         }
     }
 
-    // 长按菜单（wineguanli.py show_container_context_menu 同款条目）
+    // 长按菜单（wineguanli.py show_container_context_menu 同款条目；
+    // v3.2.29：语言切换项移除 —— wine 语言完全由 /opt/locale.conf 决定）
     menuFor?.let { c ->
-        var langOpen by remember { mutableStateOf(false) }
         GDropdownMenu(expanded = true, onDismiss = { menuFor = null }) {
             GDropdownMenuItem("▶️ 运行容器") { menuFor = null; onRun(c) }
             GDropdownMenuItem("🔧 安装前缀") { menuFor = null; onWineboot(c) }
             GDropdownMenuItem("⚙️ 设置（选中并在右侧编辑）") { menuFor = null; onSelect(c.name) }
-            GDropdownMenuItem("🌐 切换语言…") { menuFor = null; langOpen = true }
             GDropdownMenuDivider()
             GDropdownMenuItem("🗑️ 删除") { menuFor = null; onRemove(c) }
             GDropdownMenuDivider()
             GDropdownMenuItem("✏️ 重命名") { menuFor = null; onRename(c) }
             GDropdownMenuItem("📄 创建快捷方式") { menuFor = null; onShortcut(c) }
-        }
-        if (langOpen) {
-            GDropdownMenu(expanded = true, onDismiss = { langOpen = false; menuFor = null }) {
-                ContainerLangs.CHOICES.zip(ContainerLangs.DISPLAY).forEach { (code, label) ->
-                    GDropdownMenuItem(label) {
-                        langOpen = false; menuFor = null
-                        onSwitchLang(c, code)
-                    }
-                }
-            }
         }
     }
 }
@@ -1137,15 +1111,7 @@ private fun BasicSettingsTab(
             }
         }
         GField("🌐 语言:") {
-            GComboBox(
-                options = ContainerLangs.DISPLAY,
-                selected = ContainerLangs.CHOICES.zip(ContainerLangs.DISPLAY)
-                    .firstOrNull { it.first == edit.lang }?.second ?: ContainerLangs.DISPLAY.first(),
-                onSelect = { label ->
-                    val idx = ContainerLangs.DISPLAY.indexOf(label)
-                    if (idx >= 0) onChange(edit.copy(lang = ContainerLangs.CHOICES[idx]))
-                }
-            )
+            GNote("由 rootfs/opt/locale.conf 决定（LC_ALL）—— v3.2.29 起 APK 不再内置语言配置")
         }
         GField("⏱️ 帧数限制:") {
             GComboBox(
@@ -1218,7 +1184,7 @@ private fun BasicSettingsTab(
                 ContainerFlags.CLOSESERVICE to "关闭service服务",
                 ContainerFlags.DEBUG to "强制DX11启动",
                 ContainerFlags.OPENGL to "OpenGL驱动",
-                ContainerFlags.FEXMODE to "FEX模式(仅arm64ec)",
+                ContainerFlags.FEXMODE to "FEX模式(HODLL=libwow64fex.dll)",
                 ContainerFlags.F5TASK to "F5任务管理器",
                 ContainerFlags.UNITY to "Unity单线程渲染"
             ),
@@ -1230,7 +1196,7 @@ private fun BasicSettingsTab(
             }
         )
         GNote(
-            "Unity单线程渲染 → BOX64_UNITYPLAYER=1；FEX模式 → 后端 fexcore；" +
+            "Unity单线程渲染 → BOX64_UNITYPLAYER=1；FEX模式 → HODLL=libwow64fex.dll（startfex.sh 同款，仅 arm64ec）；" +
                 "其余写入 container.conf（flags=），供 /opt 生态脚本消费"
         )
     }
@@ -2731,7 +2697,6 @@ private fun NewContainerDialog(
     var arch by remember { mutableStateOf("x86_64") }
     var wine by remember { mutableStateOf("") }
     var res by remember { mutableStateOf("全屏") }
-    var lang by remember { mutableStateOf(ContainerLangs.DISPLAY.first()) }
     var frame by remember { mutableStateOf("默认(不限制)") }
     var error by remember { mutableStateOf<String?>(null) }
 
@@ -2792,11 +2757,7 @@ private fun NewContainerDialog(
                 )
             }
             GField("语言:") {
-                GComboBox(
-                    options = ContainerLangs.DISPLAY,
-                    selected = lang,
-                    onSelect = { lang = it }
-                )
+                GNote("由 rootfs/opt/locale.conf 决定（LC_ALL）")
             }
             GField("帧数限制:") {
                 GComboBox(
@@ -2825,7 +2786,7 @@ private fun NewContainerDialog(
                         wine = wine,
                         screen = if (res == "全屏") "native" else res,
                         dmode = if (res == "全屏") DisplayMode.OFF else DisplayMode.D,
-                        lang = ContainerLangs.CHOICES[ContainerLangs.DISPLAY.indexOf(lang).coerceAtLeast(0)],
+                        lang = ContainerLangs.DEFAULT,
                         frame = when (frame) { "60" -> "60"; "120" -> "120"; else -> "0" }
                     )
                     val err = ContainerManager.create(data)
@@ -3491,10 +3452,14 @@ private fun PrefixBuildLogDialog(
     // 必须在窗口树位置（本函数体）先捕获，闭包带进弹窗层
     val dlgScale = LocalGuanliScale.current
     val dlgFontScale = LocalGuanliFontScale.current   // v3.2.23：字号系数随行
+    // v3.2.29：topEnd —— 日志窗靠右上角级联放置，不再盖住屏幕中央的
+    // X11 桌面；构建全程（mono/gecko 提示框等）可直接点击 X11 窗口，
+    // 修复“构建前缀日志显示后 X11 窗口无法点击”。
     WinDialog(
         title = "构建 Wine 前缀 · $containerName" + if (running) "（进行中…）" else "（已结束）",
         onDismiss = onDismiss,
-        width = 620.dp * GuanliUiK
+        width = 520.dp * GuanliUiK,
+        topEnd = true
     ) {
         GuanliDialogScale(dlgScale, dlgFontScale) {
         Column(
@@ -3503,6 +3468,7 @@ private fun PrefixBuildLogDialog(
                 .padding(horizontal = gdp(14.dp), vertical = gdp(10.dp))
                 .verticalScroll(rememberScrollState())
         ) {
+            GNote("💡 日志窗已靠右上角放置，不遮挡『X11 桌面』——构建期间的提示框请直接在 X11 桌面窗口中确认")
             Text(
                 text.ifEmpty { "（暂无输出——wineboot 启动后此处逐行显示；若长时间空白说明 wine 挂在启动早期）" },
                 fontSize = gsp(11.sp),

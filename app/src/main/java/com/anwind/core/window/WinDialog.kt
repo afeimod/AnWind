@@ -95,6 +95,10 @@ object WinDialogManager {
         var width by mutableStateOf(width0)
         var onDismiss by mutableStateOf({})
         var content by mutableStateOf<@Composable () -> Unit>({})
+        // v3.2.29：首帧定位策略（false = 居中级联；true = 右上角级联 ——
+        // 前缀构建日志这类“后台进度观察窗”不再盖住屏幕中央的 X11 桌面/
+        // wine 提示框，用户可在构建全程自由点击 X11 窗口）。
+        var topEnd by mutableStateOf(false)
         // 弹窗几何（px）。x<0 = 尚未定位（Host 首帧居中 + 级联）
         var x by mutableStateOf(-1)
         var y by mutableStateOf(-1)
@@ -108,14 +112,22 @@ object WinDialogManager {
     private var cascadeCount = 0
 
     /** 打开（或聚焦）一个弹窗；返回规格以便 WinDialog 回写动态字段。 */
-    fun show(id: String, title: String, iconAsset: String? = null, width: Dp = 420.dp): Spec {
+    fun show(
+        id: String,
+        title: String,
+        iconAsset: String? = null,
+        width: Dp = 420.dp,
+        topEnd: Boolean = false
+    ): Spec {
         val existing = _dialogs.firstOrNull { it.id == id }
         if (existing != null) {
             existing.title = title
+            existing.topEnd = topEnd
             existing.zIndex = ++zCounter
             return existing
         }
         val spec = Spec(id, title, iconAsset, width)
+        spec.topEnd = topEnd
         spec.zIndex = ++zCounter
         cascadeCount++
         _dialogs.add(spec)
@@ -159,6 +171,7 @@ fun WinDialog(
     onDismiss: () -> Unit,
     width: Dp = 420.dp,
     iconAsset: String? = null,
+    topEnd: Boolean = false,
     content: @Composable () -> Unit
 ) {
     val id = remember { "dlg-${java.util.UUID.randomUUID()}" }
@@ -168,10 +181,11 @@ fun WinDialog(
     val currentOnDismiss by rememberUpdatedState(onDismiss)
     val currentWidth by rememberUpdatedState(width)
     val currentIcon by rememberUpdatedState(iconAsset)
+    val currentTopEnd by rememberUpdatedState(topEnd)
     val currentContent by rememberUpdatedState<@Composable () -> Unit>(content)
 
     DisposableEffect(Unit) {
-        WinDialogManager.show(id, title, iconAsset, width)
+        WinDialogManager.show(id, title, iconAsset, width, topEnd)
         onDispose { WinDialogManager.dismiss(id) }
     }
     // 每次重组把最新字段回写进规格（快照字段驱动弹窗层刷新）
@@ -181,6 +195,7 @@ fun WinDialog(
             spec.onDismiss = currentOnDismiss
             spec.width = currentWidth
             spec.iconAsset = currentIcon
+            spec.topEnd = currentTopEnd
             spec.content = currentContent
         }
     }
@@ -200,13 +215,20 @@ fun WinDialogHost(workAreaModifier: Modifier = Modifier) {
         val workW = constraints.maxWidth
         val workH = constraints.maxHeight
 
-        // 首帧定位：水平居中 + 顶部 12% 起步 + 级联错开（同刻多弹窗不重叠）
+        // 首帧定位：居中 + 顶部 12% 起步 + 级联错开（同刻多弹窗不重叠）；
+        // v3.2.29：topEnd 规格 → 右上角起步（进度观察窗不盖 X11 桌面）
         dialogs.forEach { spec ->
             if (spec.x < 0 || spec.y < 0) {
                 val wpx = with(density) { spec.width.roundToPx() }
                 val cascade = (WinDialogManager.cascadeIndex() - 1).coerceAtLeast(0)
-                spec.x = ((workW - wpx) / 2 + cascade * 32).coerceIn(0, (workW - wpx).coerceAtLeast(0))
-                spec.y = (workH / 8 + cascade * 28).coerceIn(0, (workH / 2).coerceAtLeast(0))
+                if (spec.topEnd) {
+                    spec.x = (workW - wpx - with(density) { 12.dp.roundToPx() })
+                        .coerceIn(0, (workW - wpx).coerceAtLeast(0))
+                    spec.y = with(density) { 12.dp.roundToPx() } + cascade * 28
+                } else {
+                    spec.x = ((workW - wpx) / 2 + cascade * 32).coerceIn(0, (workW - wpx).coerceAtLeast(0))
+                    spec.y = (workH / 8 + cascade * 28).coerceIn(0, (workH / 2).coerceAtLeast(0))
+                }
             }
         }
 

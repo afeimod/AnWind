@@ -231,8 +231,8 @@ android {
         // 必 ENOSYS —— 冒烟树补打补丁（与 aarch64 交付构建同源；沙箱实跑
         // 动态/静态双冒烟 ANWIND_SMOKE_OK 验证），glibc 形态 build-box64.yml
         // 同步应用（静态程序 shm 转发同样受益）。
-        versionCode = 88
-        versionName = "2.38.25"
+        versionCode = 89
+        versionName = "2.38.26"
         // v2.38.24（源码包 v3.2.27）：DllOverrides 移除 + wineboot 后续链
         // + /opt conf source 语义（用户 v3.2.26 实测反馈）——
         // ①【用户强烈要求】APK 内置 DllOverrides 彻底移除（原 147 项表

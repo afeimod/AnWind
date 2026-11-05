@@ -50,15 +50,17 @@ object WineEnvironment {
         env["XDG_CACHE_HOME"] = "$RFS_ROOT/home/.cache"
         env["XDG_DATA_HOME"] = "$RFS_ROOT/home/.local/share"
 
-        // --- 语言 → 容器自己的（§3）---
-        // v3.2.28（用户问题："wine 语言总是英文"）：LANG 与 LC_ALL 同时
-        // 设置 —— startwine.sh 参考链路 `export LC_ALL="$(cat /opt/locale.conf)"`
-        // 即 LC_ALL 语义（wine 按 LC_ALL 决定界面语言与 ANSI 代码页）。
-        // App 原生启动链直接 exec 宿主二进制、无 bash 参与，bionic 无
-        // locale 数据也不会有 setlocale 噪音；终端会话的 LANG（en_US）
-        // 属 TermuxEnvironment，互不影响。/opt/locale.conf 存在时由
-        // applyOptConfEnv 以安装包声明值覆盖两者。
-        val lang = container.lang.trim().ifEmpty { "zh_CN.UTF-8" }
+        // --- 语言（§3）：**完全由 /opt 生态 conf 决定**（v3.2.29 用户指令
+        //     「把 apk 自带的都去掉，完全使用 conf 配置文件」）——
+        //     startwine.sh 参考链路 `export LC_ALL="$(cat /opt/locale.conf)"`。
+        //     APK 不再携带任何内置语言配置：container.lang 已不再参与
+        //     wine 环境（编辑页/长按菜单的语言选择项一并移除）；
+        //     LANG 与 LC_ALL 同取 rootfs/opt/locale.conf 首行，缺失时
+        //     兜底 zh_CN.UTF-8。App 原生启动链直接 exec 宿主二进制、
+        //     无 bash 参与，bionic 无 locale 数据也不会有 setlocale 噪音；
+        //     wine 按 LC_ALL 决定界面语言与 ANSI 代码页。conf/*.conf 若
+        //     显式 export LANG/LC_ALL，由 applyOptConfEnv 通用逻辑再覆盖。
+        val lang = readOptLocale(wineDir) ?: "zh_CN.UTF-8"
         env["LANG"] = lang
         env["LC_ALL"] = lang
 
@@ -330,9 +332,17 @@ object WineEnvironment {
      *
      * ② HODLL64/HODLL（仅 arm64ec 形态）：arm64ec 跑 x86_64/i386 程序
      *    靠仿真器 DLL —— 上游 official/proton 树默认是 xtajit64 桨（只报
-     *    不支持），hangover 树默认 wowbox64（需 box64 PE）。v3.1.4 起
-     *    wine 包自带 libarm64ecfex + libwow64fex（FEX），存在即默认启用；
-     *    用户 HODLL64/HODLL 覆盖优先（先探测用户值再落默认）。
+     *    不支持），hangover 树默认 wowbox64（需 box64 PE）。wine 包自带
+     *    libarm64ecfex + libwow64fex（FEX）：
+     *    - HODLL64=libarm64ecfex.dll —— arm64ec 运行必需（x64 仿真器
+     *      DLL），包内存在即注入；用户 HODLL64 覆盖优先。
+     *    - HODLL=libwow64fex.dll —— **FEX 模式开关**（v3.2.29 用户指令，
+     *      startfex.sh / wineguanli.py 勾选菜单同款）：仅当容器勾选
+     *      「FEX模式」时注入 —— arm64ec wine 既可直接跑（x86_64/i386
+     *      走 wine 自带 wow64），也可勾选 FEX 让它们经 FEX 仿真 DLL
+     *      运行（`HODLL=libwow64fex.dll wine …`）。旧版「文件存在即
+     *      无条件注入」使勾选项形同虚设，已废；用户 env= 显式 HODLL=
+     *      仍最高优先。
      *    【v3.2.10】official/proton 树已由 0010/0011 补丁移植了 HODLL/
      *    HODLL64 读取机制（对齐 hangover-11.16）：此前 vanilla 树根本不
      *    读这两个变量，xtajit(.64).dll 在 Linux 不存在 → 32 位 wow64 进程
@@ -344,7 +354,8 @@ object WineEnvironment {
         env: MutableMap<String, String>,
         arch: WineRuntime.Arch,
         wineDir: File,
-        userEnv: String = ""
+        userEnv: String = "",
+        fexMode: Boolean = false
     ) {
         env.putIfAbsent("WINEESYNC", "0")
         env.putIfAbsent("WINEFSYNC", "0")
@@ -365,7 +376,9 @@ object WineEnvironment {
         if (!hasUserHodll64 && File(peDir, "libarm64ecfex.dll").isFile) {
             env["HODLL64"] = "libarm64ecfex.dll"
         }
-        if (!hasUserHodll && File(peDir, "libwow64fex.dll").isFile) {
+        // HODLL=libwow64fex.dll 仅在容器勾选「FEX模式」时注入
+        //（startfex.sh 同款；未勾选 = arm64ec wine 直接跑）
+        if (!hasUserHodll && fexMode && File(peDir, "libwow64fex.dll").isFile) {
             env["HODLL"] = "libwow64fex.dll"
         }
     }
@@ -543,9 +556,15 @@ object WineEnvironment {
      *  - 固定顺序（startfex.sh 同款，v3.2.26 按用户要求**剔除 wine_path.conf**
      *    —— wine 目录由 AnWind 槽位体系管理，不读包内声明）：env / cores /
      *    path / dynarec_fixmpeg / dynarec_active；
-     *  - 其余 *.conf（dynarec_* 等）按名兜底（wine_path.conf 同样跳过）；
-     *  - 仅提取 `KEY=VALUE` / `export KEY=VALUE` 行（去注释/引号），
-     *    不执行 —— 配置文件无法注入任意代码，也碰不到容器隔离变量。
+     *  - 其余 *.conf（dynarec_* 等）按名兜底，但**排除两类非环境文件**：
+     *    wine_path.conf（槽位自管）与 custom.conf（v3.2.29 —— 它是 DY
+     *    取值定义表 `export BOX64_DYNAREC_BIGBLOCK=0,1,2,3`，逗号候选值
+     *    不是真值，sh source 语义下根本不加载它，旧版当环境导出是错的）；
+     *  - 仅提取 `KEY=VALUE` / `export KEY=VALUE` 行（行内注释/引号剥离），
+     *    不执行 —— 配置文件无法注入任意代码，也碰不到容器隔离变量；
+     *  - **同名键后写覆盖**（v3.2.29 修复）：sh 逐文件 source 时后载入的
+     *    文件覆盖先载入的（startfex.sh 顺序 path.conf 在 dynarec_active.conf
+     *    之前 → active 的值必须胜出；旧版 putIfAbsent 先写优先，方向反了）。
      *
      * @return 键值映射；无 /opt/conf 时为空 map。
      */
@@ -556,31 +575,92 @@ object WineEnvironment {
             "env.conf", "cores.conf", "path.conf",
             "dynarec_fixmpeg.conf", "dynarec_active.conf"
         )
+        // 非 KEY=VALUE 环境文件：wine_path.conf（槽位自管）+ custom.conf（DY 取值定义表）
+        val skip = setOf("wine_path.conf", "custom.conf")
         val files = LinkedHashMap<String, File>()
         fixed.forEach { name -> File(confDir, name).takeIf { it.isFile }?.let { files[name] = it } }
-        confDir.listFiles { f -> f.isFile && f.name.endsWith(".conf") && f.name != "wine_path.conf" }
+        confDir.listFiles { f -> f.isFile && f.name.endsWith(".conf") && f.name !in skip }
             ?.sortedBy { it.name }
             ?.forEach { files.putIfAbsent(it.name, it) }
         val out = LinkedHashMap<String, String>()
         files.values.forEach { f ->
             f.readLines().forEach { raw ->
-                var line = raw.trim()
-                if (line.isEmpty() || line.startsWith("#")) return@forEach
-                line = line.removePrefix("export ").trim()
-                val eq = line.indexOf('=')
-                if (eq <= 0) return@forEach
-                val key = line.substring(0, eq).trim()
-                if (!key.matches(Regex("[A-Za-z_][A-Za-z0-9_]*"))) return@forEach
-                var value = line.substring(eq + 1).trim()
-                if ((value.startsWith("\"") && value.endsWith("\"") && value.length >= 2) ||
-                    (value.startsWith("'") && value.endsWith("'") && value.length >= 2)
-                ) {
-                    value = value.substring(1, value.length - 1)
-                }
-                out.putIfAbsent(key, value)
+                val parsed = parseConfLine(raw) ?: return@forEach
+                out[parsed.first] = parsed.second   // 后写覆盖（sh source 语义）
             }
         }
         return out
+    }
+
+    /**
+     * 单行 KEY=VALUE 解析（v3.2.29）：export 前缀剥离 → 键名校验 →
+     * **行内注释剥离**（env.conf 的 `export WINEDLLOVERRIDES="dxgi=n,b"  # 如果使用DXVK`
+     * 旧版把注释全部吞进值里）→ 成对引号剥离。
+     */
+    internal fun parseConfLine(raw: String): Pair<String, String>? {
+        var line = raw.trim()
+        if (line.isEmpty() || line.startsWith("#")) return null
+        line = line.removePrefix("export ").trim()
+        val eq = line.indexOf('=')
+        if (eq <= 0) return null
+        val key = line.substring(0, eq).trim()
+        if (!key.matches(Regex("[A-Za-z_][A-Za-z0-9_]*"))) return null
+        return key to stripInlineComment(line.substring(eq + 1).trim())
+    }
+
+    /** 值的行内注释剥离（引号区段外的 ` #…` 截断）+ 成对引号剥离。 */
+    internal fun stripInlineComment(value: String): String {
+        val out = StringBuilder()
+        var quote: Char? = null
+        var i = 0
+        while (i < value.length) {
+            val c = value[i]
+            if (quote == null && (c == '"' || c == '\'')) {
+                quote = c; out.append(c); i++; continue
+            }
+            if (quote != null) {
+                if (c == quote) quote = null
+                out.append(c); i++; continue
+            }
+            if (c == '#' && (i == 0 || value[i - 1].isWhitespace())) break
+            out.append(c); i++
+        }
+        var v = out.toString().trim()
+        if (v.length >= 2 &&
+            ((v.startsWith("\"") && v.endsWith("\"")) || (v.startsWith("'") && v.endsWith("'")))
+        ) {
+            v = v.substring(1, v.length - 1).trim()
+        }
+        return v
+    }
+
+    /**
+     * sh `$VAR` / `${VAR}` 引用展开（v3.2.29）：path.conf 的
+     * `export LD_LIBRARY_PATH=…:$LD_LIBRARY_PATH` 旧版原样透传字符串
+     * `$LD_LIBRARY_PATH`，wine 拿到的是字面美元符。按 [scope]（当前
+     * 已构建的 env + conf 已解析值）展开；scope 中不存在的引用保持
+     * 字面（比 sh 的静默展开为空更可诊断）。
+     */
+    internal fun expandShellVars(value: String, scope: Map<String, String>): String {
+        if (!value.contains('$')) return value
+        val sb = StringBuilder(value.length + 32)
+        var i = 0
+        while (i < value.length) {
+            val c = value[i]
+            if (c != '$') { sb.append(c); i++; continue }
+            if (i + 1 >= value.length) { sb.append(c); break }
+            val braced = value[i + 1] == '{'
+            val nameStart = if (braced) i + 2 else i + 1
+            var j = nameStart
+            while (j < value.length && (value[j].isLetterOrDigit() || value[j] == '_')) j++
+            val name = value.substring(nameStart, j)
+            if (name.isEmpty()) { sb.append(c); i++; continue }
+            val closeOk = !braced || (j < value.length && value[j] == '}')
+            if (!closeOk) { sb.append(c); i++; continue }
+            sb.append(scope[name] ?: "$$name")
+            i = if (braced) j + 1 else j
+        }
+        return sb.toString()
     }
 
     /**
@@ -616,8 +696,9 @@ object WineEnvironment {
      *  - GLIBC_BIN 兜底导出（sh：`export GLIBC_BIN=/usr/local/bin`）——
      *    指向 rootfs 的 usr/local/bin，供 rootfs 脚本定位 box64/wineserver；
      *  * 容器 env=（applyExtraEnv，链路最后）仍可覆盖一切；
-     *  * locale.conf 覆盖基础 LANG（安装包的显式语言声明）并加导 LC_ALL
-     *    （wine 按 LC_ALL 决定 ANSI 代码页，CJK 程序必需）；
+     *  * locale.conf → LANG/LC_ALL 已上移 buildBaseEnv（v3.2.29：语言
+     *    唯一来源 /opt/locale.conf；conf/*.conf 显式 export 的 LANG/
+     *    LC_ALL 走下方通用覆盖逻辑）；
      *  * cores.conf 的 PRIMARY_CORES/SECONDARY_CORES 走通用导出；
      *    applyTuningEnv 在其后，容器 cores 配置始终优先。
      */
@@ -634,19 +715,9 @@ object WineEnvironment {
             return
         }
         val conf = readOptConfs(wineDir)
-        // locale.conf（优先于基础 LANG；容器 env= 仍可在链路最后覆盖）
-        val lc = readOptLocale(wineDir)
-        when {
-            lc == null ->
-                log("opt 生态: $root（无 locale.conf 或内容非法，语言维持容器配置）")
-            container.env.contains("LC_ALL=") || container.env.contains("LANG=") ->
-                log("opt locale.conf=$lc 被容器 env= 显式配置覆盖，不生效")
-            else -> {
-                env["LC_ALL"] = lc
-                env["LANG"] = lc
-                log("opt 生态: locale.conf 生效 → export LC_ALL=$lc LANG=$lc（wine 按 LC_ALL 决定 ANSI 代码页）")
-            }
-        }
+        // locale.conf → LANG/LC_ALL 已上移 buildBaseEnv（v3.2.29：语言
+        // 唯一来源 /opt/locale.conf；conf/*.conf 若显式 export LANG/
+        // LC_ALL，走下方通用 conf 覆盖逻辑，容器 env= 仍最高优先）。
         if (conf.isEmpty()) {
             if (File(root, "conf").isDirectory)
                 log("opt 生态: $root/conf 内无可解析的 KEY=VALUE 配置")
@@ -655,7 +726,12 @@ object WineEnvironment {
         val userEnv = container.env
         val applied = mutableListOf<String>()
         val blocked = mutableListOf<String>()
-        conf.forEach { (k, v) ->
+        // $VAR 展开作用域：当前 env 优先，conf 自身已解析值作第二来源
+        // （sh 逐文件 source 时先载入的变量对后载入的行可见 —— 同一语义）
+        val expandScope = LinkedHashMap<String, String>(env)
+        conf.forEach { (k, v) -> expandScope.putIfAbsent(k, v) }
+        conf.forEach { (k, rawV) ->
+            val v = expandShellVars(rawV, expandScope)
             when {
                 // 容器 env= 已显式设置的键跳过（最高优先）
                 userEnv.contains("$k=") -> {
