@@ -1,7 +1,0 @@
-MODULE    = wftm.exe
-IMPORTS   = winfusiontm
-
-EXTRADLLFLAGS = -mconsole -municode
-
-SOURCES = \
-	main.c

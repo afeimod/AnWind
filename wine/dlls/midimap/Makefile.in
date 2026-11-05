@@ -1,9 +1,0 @@
-MODULE    = midimap.dll
-UNIXLIB   = midimap.so
-IMPORTS   = winmm user32 advapi32
-UNIX_LIBS = $(PTHREAD_LIBS)
-
-SOURCES = \
-	midimap.c \
-	synth.c \
-	synth_unix.c
