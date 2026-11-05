@@ -1,0 +1,12 @@
+MODULE    = winfusiontm.dll
+UNIXLIB   = winfusiontm.so
+IMPORTLIB = winfusiontm
+IMPORTS   = kernel32 user32 shell32
+DELAYIMPORTS = psapi
+EXTRADEFS = $(WINFUSION_PE_CFLAGS)
+UNIX_CFLAGS = $(WINFUSION_TASKMGR_CFLAGS)
+UNIX_LIBS   = $(WINFUSION_TASKMGR_LIBS) $(PTHREAD_LIBS)
+
+SOURCES = \
+	main.c \
+	unixlib.c
