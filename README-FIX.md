@@ -1,5 +1,33 @@
 # AnWind Bionic 修复包 v2（2026-09-19）
 
+> **v3.3.5（2026-11-06，App v2.38.30 / versionCode 93）**：noexec 直读执行（游戏文件零拷贝）+ z: 盘直链内部 rootfs + 删除走廊硬守卫 + AppDefaults DllOverrides 剥除。
+>
+> ## ① 【用户诉求】“运行 exe 时把游戏文件全都复制到 rootfs/home/.anwind/games/<容器> 下了，内存可受不得，直接读取游戏文件不要复制”
+>
+> **根因**：v3.2.23 的 `stageNoexecExeIfNeeded` 在 exe 位于 noexec 存储（/storage/emulated 的 sdcardfs 恒 noexec、无法 remount）时把**整个游戏目录**复制进内部执行区 —— 大游戏（数十 GB）直接双倍吃光内部存储；media 变更还可能触发 GB 级重拷。
+>
+> **修复**（`RootfsLauncher.kt` 重写为 `directReadNoexecIfNeeded`，直读执行）：
+> - **数据件零拷贝直读**：media\ / data\ / 音视频等一切非 PE 文件、以及不含 PE 的整棵子目录，在执行区镜像里全部是符号链接指回 /storage/emulated/0 原件 —— wine 打开即直读（sdcardfs 的读取不受 noexec 影响，只有 PE 映像 mmap(PROT_EXEC) 不行）；游戏目录里新增 mod/补丁经根级增量补链（`reconcileMirrorRoot`）即时可见；
+> - **仅 PE 执行件落地**（exe/dll/sys/drv/ocx/cpl/scr）：noexec 上无法映射可执行段是内核硬约束，执行件通常只占几十~几百 MB，GB 级数据不再进内部存储；
+> - **执行区搬进容器目录**（`<容器>/games/<源目录名>`，与前缀平级）：删除/重命名容器自动处置（`clone()` 排除 games/ 不复制执行件），不再有容器外孤儿副本；**旧版导入区 rootfs/home/.anwind/games/<容器> 首次启动自动清理（删容器时也清理），立刻释放历史占用**；
+> - **安卓直读权限预检**：源目录不可读时大声指引授予「所有文件访问」权限（无读权限正是很多游戏 media 错误的源头）；指纹只统计 PE 件 —— media 增删不再触发重拷，命中零拷贝秒启。
+>
+> ## ② 【用户诉求】“z 盘不要直链 /storage/emulated/0/，z 盘直链内部 rootfs，否则删除容器可能会删除 /storage/emulated/0 下文件；用 d e 盘直链，好像有 download 和 exagear”
+>
+> **修复**（`WineRegistry.ensureDosdevices` + `SafeFileOps` + `ContainerManager`）：
+> - **z: → 内部 rootfs**（`/data/data/com.anwind/files/rootfs`）：旧 z:→宿主 / 经 /storage 即触达外部存储；wine 需要的 HOME、/opt、/usr 等本来就在 rootfs 内，外部存储统一走 d:/e:。已存在的旧链接（含 wineboot 默认的 z:→/）自动重指，用户自建目录不碰；
+> - **d: → /storage/emulated/0/Download、e: → /storage/emulated/0/exagear** 保持直读盘（目标目录存在且盘符缺失时补建，不覆盖用户已有映射）—— z: 收回后 wine 侧访问外部存储游戏文件的直读通道；
+> - **删除走廊硬守卫**：`SafeFileOps.deleteTree` 拒绝一切字面路径不在 `/data/data/com.anwind` 之内的删除目标（与 walkFileTree 不跟随符号链接叠加成双保险）—— **删容器绝无可能波及 /storage/emulated/0 下任何文件**；`remove()` 顺带清理旧版容器外导入区、`rename()` 同步搬移。
+>
+> ## ③ 【用户诉求】“arm64ec wine 构建时还是有 AppDefaults 的 DllOverrides 注册表打入，不应该有的”（截图：user.reg 里 s2_mp64_ship.exe / ShadowOfWar.exe / Spider-Man.exe 的 atiadlxx=builtin、TDUSC.exe / WRCG.exe 的 xinput1_3=native,builtin 等）
+>
+> **根因**：App 侧 v3.2.27 起 App 不写任何 DllOverrides，这些键随 WinFusion 风格生态包的 /opt/prefix/user.reg **原样导入**进前缀 —— 为个别游戏预置的加载序（atiadlxx=builtin / amd_ags_x64=disabled 等）对其它游戏是加载序污染源，错误的原生/内建选择直接诱发 media 错误。
+>
+> **修复**（`WineRegistry.kt` 双保险）：
+> - **导入侧剥段**：`normalizeRegForBionic` 在编码/头行规范化时同步剥除 `[Software\\Wine\\AppDefaults\\<exe>\\DllOverrides]` 整段（段体直到下一节头；AppDefaults 里非 DllOverrides 的键原样保留），规范化副本导入、/opt 源文件不动；
+> - **存量清洗**：`purgeAppDefaultsDllOverrides` 解析前缀 user.reg 枚举已打入的段与值名（含 `@=` 默认值），生成 `"值"=-` 删除注册表经 wine regedit /S 导入（与 v3.2.27 清洗同一通路，wineserver 一致性有保障），幂等标记 `.anwind-appdefaults-purged`；
+> - 用户经容器管理「函数库」功能手动写入的 CNC/Direct3D 覆盖（显式用户动作）不受影响。
+
 > **v3.3.4（2026-11-06，App v2.38.29 / versionCode 92）**：更多设置真正读写 /opt/conf 配置文件（MESA 变量名修正 + env.conf/cores.conf 直读直写）+ DY/Box 配置按 wineguanli.py 重制（逐行控件，不再拍平进一个框）+ 界面字号放大（框体保持紧凑）+ 容器名支持中文 + 默认语言改简体中文（跟随 /opt/locale 降为选项）+ wineboot 构建链顺序对齐 startwine.sh（先解压注册再 taskmgr；arm64ec 跳过两个 xz 预置包）。
 >
 > ## ① 【用户诉求】"更多设置根本没有读取和更改配置文件，怎么改都没反应"（截图：更多设置·856 环境变量页全部"默认"）

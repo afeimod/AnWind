@@ -27,13 +27,30 @@ import java.nio.file.attribute.BasicFileAttributes
 object SafeFileOps {
 
     /**
-     * 符号链接安全的递归删除。
+     * v3.3.5（用户红线：「一定要保证删除容器不会删除 /storage/emulated/0
+     * 下任何文件」）：删除走廊硬性限定在应用私有数据根内 —— 字面路径
+     * （normalize 只归一 ./.. 前缀，**不解析符号链接**）不在
+     * /data/data/com.anwind 之下的目标一律拒绝。walkFileTree 本就不
+     * 跟随符号链接（链接只删本身），叠加本守卫后，即使未来某处再引入
+     * “沿链接递归删除”的回归，外部存储也绝无被波及的可能 —— 双保险。
+     * （与 ContainerManager.ROOTFS_ROOT 同源 —— 应用私有数据根。）
+     */
+    private const val DELETION_SANDBOX = "/data/data/com.anwind"
+
+    /**
+     * 符号链接安全的递归删除（v3.3.5 起叠加删除走廊硬守卫）。
      *
      * @return true = 目标已不存在（删除完成或原本就不存在）；
      *         false = 尽力删除后仍有残留（权限不足等，单点失败不中断
      *         整体，与 deleteRecursively 的"尽力"语义一致但绝不穿越链接）。
      */
     fun deleteTree(target: File): Boolean {
+        // v3.3.5：删除走廊守卫 —— 字面路径不在应用私有数据根内的删除
+        // 一律拒绝（/storage、/sdcard、/data/media 等外部路径零波及）。
+        val literal = runCatching { target.absoluteFile.normalize().path }.getOrDefault(target.path)
+        if (!literal.startsWith("$DELETION_SANDBOX/")) {
+            return false
+        }
         val path = target.toPath()
         if (!Files.exists(path, java.nio.file.LinkOption.NOFOLLOW_LINKS) &&
             !Files.isSymbolicLink(path)
@@ -71,13 +88,20 @@ object SafeFileOps {
      * @return true 成功；false 任一文件复制失败（与 copyRecursively 语义
      *         对齐：整体尽力，失败以返回值上报）。
      */
-    fun copyTree(src: File, dst: File): Boolean {
+    fun copyTree(src: File, dst: File, excludeTopLevel: Set<String> = emptySet()): Boolean {
         var ok = true
         val srcPath = src.toPath()
         val dstPath = dst.toPath()
         try {
             Files.walkFileTree(srcPath, object : SimpleFileVisitor<Path>() {
                 override fun preVisitDirectory(dir: Path, attrs: BasicFileAttributes): FileVisitResult {
+                    // v3.3.5：顶层排除（如容器克隆排除 games/ 直读执行区
+                    // —— 派生数据不随克隆复制，首次启动自动重建）。
+                    val rel = srcPath.relativize(dir).toString()
+                    if (rel.isNotEmpty() && excludeTopLevel.isNotEmpty() &&
+                        rel.split('/').first() in excludeTopLevel) {
+                        return FileVisitResult.SKIP_SUBTREE
+                    }
                     val target = dstPath.resolve(srcPath.relativize(dir).toString())
                     runCatching { Files.createDirectories(target) }
                         .onFailure { ok = false }

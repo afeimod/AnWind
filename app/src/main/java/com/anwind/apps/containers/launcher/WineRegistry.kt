@@ -2,6 +2,7 @@ package com.anwind.apps.containers.launcher
 
 import com.anwind.apps.containers.ContainerBackend
 import com.anwind.apps.containers.ContainerData
+import com.anwind.apps.containers.ContainerManager
 import java.io.File
 import java.util.concurrent.TimeUnit
 
@@ -95,14 +96,14 @@ object WineRegistry {
     }
 
     /**
-     * 确保前缀的 dosdevices 盘符映射完整（v3.1 新增；v3.2.24 扩展）。
+     * 确保前缀的 dosdevices 盘符映射完整（v3.1 新增；v3.2.24 扩展；
+     * v3.3.5 z: 直链改内部 rootfs）。
      *
      * wineboot 建前缀时会创建 c: → ../drive_c 与 z: → /，但个别精简
      * 构建 / 异常中断的前缀会缺 z: —— 之后：
-     *  - 用户从 App 传入的 Unix 绝对路径（/storage/emulated/0/…）wine
-     *    自动按 Z: 盘换算，z: 缺失即整个宿主文件系统在 wine 内不可达；
-     *  - 游戏按绝对路径（Z:\\storage\\…）找 media 等资源时直接报
-     *    "找不到 media"。
+     *  - 用户从 App 传入的 Unix 绝对路径（rootfs 内部路径）wine 自动
+     *    按 Z: 盘换算，z: 缺失即 rootfs 文件系统在 wine 内不可达；
+     *  - 游戏按绝对路径（Z:\usr\…）找资源时报 "找不到 media"。
      *
      * v3.2.24（用户问题 3，对齐 startwine.sh / startfex.sh 的盘符矩阵）：
      *  - d: → /storage/emulated/0/Download（存在时）：参考链路的
@@ -112,10 +113,16 @@ object WineRegistry {
      *  - e: → /storage/emulated/0/exagear（存在时）：参考链路的 E 盘，
      *    老用户从 exagear 目录迁移数据时的习惯路径。
      *
-     * 幂等：仅在链接缺失时补建（z: → / 绝对符号链接；c: 缺失时指向
-     * 前缀内 drive_c，与 wine 默认布局一致；d:/e: 同样仅在目标目录
-     * 存在且链接缺失时建）。前缀尚未初始化（无 dosdevices 目录）时
-     * 跳过 —— 归 wineboot 管。
+     * v3.3.5（用户红线指令）：**z: 直链内部 rootfs，绝不再指向宿主根**
+     * —— 旧 z:→宿主根 经 /storage 即触达外部存储，任何一次沿链接的误删都是
+     * 灾难性的（“删容器删掉 /storage/emulated/0 下文件”的爆炸半径源头）；
+     * wine 需要的 HOME、/opt、/usr 等本来就在 rootfs 内，外部存储统一走
+     * d:/e: 直读盘。已存在的旧链接一律重指；用户自建目录不碰。
+     *
+     * 幂等：仅在链接缺失/指向错误时补建或重指（c: 缺失时指向
+     * 前缀内 drive_c，与 wine 默认布局一致；d:/e: 仅在目标目录存在且
+     * 盘符缺失时建 —— 不覆盖用户已有映射）。前缀尚未初始化（无
+     * dosdevices 目录）时跳过 —— 归 wineboot 管。
      */
     fun ensureDosdevices(container: ContainerData, log: (String) -> Unit = {}) {
         runCatching {
@@ -124,13 +131,22 @@ object WineRegistry {
             if (!dd.isDirectory) return
 
             val z = File(dd, "z:")
-            if (!z.exists()) {
-                try {
-                    android.system.Os.symlink("/", z.absolutePath)
-                    log("已补 dosdevices z: → /（/storage 等宿主路径经 Z: 盘可达）")
-                } catch (e: Exception) {
-                    log("警告: z: 盘补建失败（${e.message}）—— 宿主路径在 wine 内可能不可达")
-                }
+            // v3.3.5：z: → 内部 rootfs（用户红线：z 盘绝不直链
+            // /storage/emulated/0，否则删容器可能波及外部存储文件）。
+            val zTarget = ContainerManager.ROOTFS_ROOT
+            val zCur = runCatching { android.system.Os.readlink(z.absolutePath) }.getOrNull()
+            when {
+                zCur == zTarget -> Unit   // 已直链内部 rootfs
+                zCur != null -> runCatching {   // 旧链接（含 wineboot 默认的 z:→/）：重指
+                    z.delete()
+                    android.system.Os.symlink(zTarget, z.absolutePath)
+                    log("已重指 dosdevices z: → 内部 rootfs（旧: $zCur —— 外部存储只经 d:/e: 直读盘触达，杜绝删容器误伤 /storage）")
+                }.onFailure { log("警告: z: 盘重指失败（${it.message}）") }
+                !z.exists() -> runCatching {
+                    android.system.Os.symlink(zTarget, z.absolutePath)
+                    log("已补 dosdevices z: → 内部 rootfs（HOME、/opt 等 rootfs 路径经 Z: 可达；外部存储走 d:/e: 直读盘）")
+                }.onFailure { log("警告: z: 盘补建失败（${it.message}）") }
+                else -> log("提示: dosdevices z: 为用户自建目录/文件，保持不动")
             }
 
             val c = File(dd, "c:")
@@ -147,8 +163,13 @@ object WineRegistry {
 
             // v3.2.24（用户问题 3）：d:/e: 盘符（对齐 startwine.sh 的
             // ln -sf /storage/emulated/0/Download …dosdevices/d: 等）。
+            // v3.3.5：这两个盘是外部存储的**直读入口**（z: 改链内部
+            // rootfs 后，wine 侧访问 /storage/emulated/0 下游戏文件的
+            // 通道；noexec 直读执行模式的数据件同样经它们可达）。
             // 仅目标目录存在且盘符缺失时补建 —— 不覆盖用户已有映射
             //（用户可能把 d: 指到别处），目标不存在时跳过不留死链。
+            // 删除容器只删链接本身（SafeFileOps 删除走廊 + 不跟随链接
+            // 双保险，绝无可能波及 /storage/emulated/0 下文件）。
             listOf(
                 "d:" to "/storage/emulated/0/Download",
                 "e:" to "/storage/emulated/0/exagear"
@@ -759,21 +780,35 @@ object WineRegistry {
             }
             val unified = body.replace("\r\n", "\n").replace('\r', '\n')
             if (unified != body) actions.add("CRLF→LF")
-            val firstLine = unified.lineSequence().firstOrNull { it.isNotBlank() }?.trim().orEmpty()
+            // v3.3.5（用户诉求：「arm64ec wine 构建时还是有 AppDefaults 的
+            // DllOverrides 注册表打入，不应该有的」）：生态包 user.reg 为
+            // 若干游戏预置的 AppDefaults\\<exe>\\DllOverrides 段（设备截图
+            // 实证：s2_mp64_ship.exe / s2_sp64_ship.exe / ShadowOfWar.exe /
+            // Spider-Man.exe / starwarssquadrons.exe 的 atiadlxx=builtin /
+            // amd_ags_x64=disabled、TDUSC.exe / WRCG.exe 的
+            // xinput1_3=native,builtin）是加载序污染源 —— 错误的原生/
+            // 内建 DLL 选择直接诱发“很多游戏 media 错误”。导入前整段
+            // 剥除（AppDefaults 里非 DllOverrides 的键原样保留）；DLL
+            // 加载序的唯一权威 = wine 默认 + 用户显式 WINEDLLOVERRIDES。
+            val text = stripAppDefaultsDllOverrides(unified)?.let { (stripped, sections) ->
+                actions.add("剥除 AppDefaults\\\\DllOverrides $sections 段")
+                stripped
+            } ?: unified
+            val firstLine = text.lineSequence().firstOrNull { it.isNotBlank() }?.trim().orEmpty()
             val hasHeader = firstLine.startsWith("WINE REGISTRY") ||
                 firstLine.equals("REGEDIT4", ignoreCase = true) ||
                 firstLine.startsWith("Windows Registry Editor")
-            val finalText = if (hasHeader) unified else {
+            val finalText = if (hasHeader) text else {
                 // 首个键行的反斜杠形态：wine 原生格式键路径双反斜杠转义
                 //（[Software\\Wine\\...]），Windows 5.00 格式单反斜杠。
-                val firstKey = unified.lineSequence()
+                val firstKey = text.lineSequence()
                     .firstOrNull { it.trim().startsWith("[") }?.trim().orEmpty()
                 val wineStyle = firstKey.contains("\\\\")
                 actions.add(
                     if (wineStyle) "补 WINE REGISTRY Version 2 头行"
                     else "补 Windows Registry Editor Version 5.00 头行"
                 )
-                (if (wineStyle) "WINE REGISTRY Version 2\n\n" else "Windows Registry Editor Version 5.00\n\n") + unified
+                (if (wineStyle) "WINE REGISTRY Version 2\n\n" else "Windows Registry Editor Version 5.00\n\n") + text
             }
             if (actions.isEmpty()) return null
             workDir.mkdirs()
@@ -782,6 +817,116 @@ object WineRegistry {
             log("→ 规范化: ${src.name}（${actions.joinToString("、")}）—— 以副本导入，/opt 源文件未改")
             out
         }.getOrNull()
+    }
+
+    /**
+     * 剥除 reg 文本中的 [Software\\Wine\\AppDefaults\\<exe>\\DllOverrides]
+     * 段（含段头与段体，直到下一个 '[' 节头或文件结束；hex 多行续行
+     * 不以 '[' 开头，天然归入段体）。AppDefaults 的其它子键（Version /
+     * Direct3D 等）不动。
+     * @return null（无命中，原文本即最终文本）或 (剥后文本, 剥除段数)。
+     */
+    internal fun stripAppDefaultsDllOverrides(text: String): Pair<String, Int>? {
+        if (!text.contains("AppDefaults")) return null
+        val sb = StringBuilder(text.length)
+        var skipping = false
+        var removed = 0
+        text.lineSequence().forEach { line ->
+            if (line.startsWith("[")) {
+                val path = Regex("^\\[([^\\]]*)\\]").find(line)?.groupValues?.get(1).orEmpty()
+                skipping = path.contains("AppDefaults") && path.endsWith("DllOverrides")
+                if (skipping) removed++
+            }
+            if (!skipping) sb.append(line).append('\n')
+        }
+        return if (removed > 0) sb.toString() to removed else null
+    }
+
+    // ------------------------------------------------------------------
+    // v3.3.5（用户诉求：arm64ec 前缀不应存在 AppDefaults DllOverrides）
+    // ------------------------------------------------------------------
+
+    /** AppDefaults 清洗已完成的标记（容器前缀内，幂等）。 */
+    private fun appDefaultsPurgeMarker(prefix: File) = File(prefix, ".anwind-appdefaults-purged")
+
+    /**
+     * 清洗旧前缀里已被生态包 user.reg 打入的 AppDefaults\\<exe>\\DllOverrides
+     * 存量键值 —— 导入侧剥段（normalizeRegForBionic → strip…）只管未来，
+     * 存量用 wine regedit 的 `"值"=-` 删除语法清掉，恢复 wine 默认 DLL
+     * 加载序（空键壳无加载语义，保留无害）。解析前缀 user.reg 文本枚举
+     * 段与值名（含 `@=` 默认值），生成删除注册表经 regedit /S 导入 ——
+     * 与 v3.2.27 旧键清洗同一通路，wineserver 一致性有保障。幂等标记；
+     * 无命中直接落标记。
+     */
+    fun purgeAppDefaultsDllOverrides(
+        resolved: WineRuntime.Resolved,
+        container: ContainerData,
+        env: Map<String, String>,
+        log: (String) -> Unit = {}
+    ): Boolean {
+        val prefix = File(container.prefixPath)
+        if (appDefaultsPurgeMarker(prefix).isFile) return true
+        val userReg = File(prefix, "user.reg")
+        if (!userReg.isFile) return true
+        return try {
+            val sections = LinkedHashMap<String, MutableList<String>>()
+            var cur: String? = null
+            userReg.readLines().forEach { line ->
+                if (line.startsWith("[")) {
+                    val path = Regex("^\\[([^\\]]*)\\]").find(line)?.groupValues?.get(1).orEmpty()
+                    cur = if (path.contains("AppDefaults") && path.endsWith("DllOverrides")) path else null
+                    cur?.let { sections.getOrPut(it) { mutableListOf() } }
+                } else {
+                    val key = cur ?: return@forEach
+                    if (line.isBlank()) return@forEach
+                    val names = sections.getOrPut(key) { mutableListOf() }
+                    val vm = Regex("^\"(.*)\"=").find(line)
+                    when {
+                        vm != null -> names.add(vm.groupValues[1])
+                        line.startsWith("@=") -> names.add("@")
+                    }
+                }
+            }
+            if (sections.isEmpty()) {
+                runCatching { appDefaultsPurgeMarker(prefix).createNewFile() }
+                log("AppDefaults DllOverrides 清洗：无需清洗（user.reg 无游戏级 DLL 加载序）")
+                return true
+            }
+            val totalValues = sections.values.sumOf { it.size }
+            log("清洗 AppDefaults DllOverrides（${sections.keys.size} 个游戏键 / $totalValues 个值 —— 恢复 wine 默认加载序）……")
+            val sb = StringBuilder()
+            sb.append("WINE REGISTRY Version 2\n\n")
+            sections.forEach { (key, names) ->
+                sb.append('[').append(key).append("]\n")
+                names.forEach { n ->
+                    if (n == "@") sb.append("@=-\n")
+                    else sb.append('"').append(n).append("\"=-\n")
+                }
+                sb.append('\n')
+            }
+            val workDir = File(prefix, ".anwind-regtmp")
+            workDir.mkdirs()
+            val del = File(workDir, "purge-appdefaults.reg")
+            del.writeText(sb.toString())
+            val cmd = NativeShellExecutor.create()
+                .setCommand(*WineRuntime.wineCommand(resolved).toTypedArray(), "regedit", "/S", del.absolutePath)
+                .putEnv(env)
+                .putEnv("WINEPREFIX", container.prefixPath)
+                .setWorkingDir(WineEnvironment.RUNTIME_DIR)
+                .exec()
+            val code = cmd.waitFor()
+            if (code == 0) {
+                runCatching { appDefaultsPurgeMarker(prefix).createNewFile() }
+                log("清洗 AppDefaults DllOverrides 完成 ✓（键壳保留无碍；/opt/prefix 导入侧此后自动剥段）")
+                true
+            } else {
+                log("警告: AppDefaults 清洗 regedit 退出码 $code（下次启动重试）")
+                false
+            }
+        } catch (e: Exception) {
+            log("警告: AppDefaults 清洗异常: ${e.message}（下次启动重试）")
+            false
+        }
     }
 
     /**

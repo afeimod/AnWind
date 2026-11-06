@@ -231,8 +231,23 @@ android {
         // 必 ENOSYS —— 冒烟树补打补丁（与 aarch64 交付构建同源；沙箱实跑
         // 动态/静态双冒烟 ANWIND_SMOKE_OK 验证），glibc 形态 build-box64.yml
         // 同步应用（静态程序 shm 转发同样受益）。
-        versionCode = 92
-        versionName = "2.38.29"
+        // v3.3.5（源码包 v3.3.5，App v2.38.30 / versionCode 93）：
+        // ①noexec 直读执行：游戏数据件（media/data 等）经符号链接直读
+        //   /storage/emulated/0 原件（零拷贝），仅 exe/dll 等 PE 执行件
+        //   落地容器内 games/ 执行区（PROT_EXEC 内核硬约束）；执行区随
+        //   容器删除/重命名/克隆自动处置（克隆排除不复制）；旧版
+        //   rootfs/home/.anwind/games 整目录副本首次启动自动清理释放；
+        //   无外部存储读权限大声指引（安卓直读前提）。
+        // ②dosdevices z: 改直链内部 rootfs（旧 z:→/ 触达 /storage），
+        //   d:/e: 保持 Download/exagear 直读盘；SafeFileOps.deleteTree
+        //   增加 /data/data/com.anwind 删除走廊硬守卫 —— 删容器绝无
+        //   可能波及 /storage/emulated/0（walkFileTree 不跟随链接之外
+        //   的第二道保险）。
+        // ③/opt/prefix 注册表导入剥除 AppDefaults\<exe>\DllOverrides 段
+        //   （生态包预置的游戏级加载序是 media 错误污染源）+ 旧前缀存量
+        //   键值一次性 regedit 清洗（幂等标记）。
+        versionCode = 93
+        versionName = "2.38.30"
         // v3.3.3（源码包 v3.3.3）：media 根治（noexec 导入空间误判修复）
         // + /opt conf 双向 + UI 紧凑化 —— ①stageNoexecExeIfNeeded 空间预检
         // 改查必然存在的 rootfs 根（旧版查尚不存在的 stageDir，usableSpace
