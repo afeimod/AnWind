@@ -129,14 +129,41 @@ object RootfsLauncher {
      */
     fun runExe(context: Context, container: ContainerData, exe: String, args: String): String? {
         precheckRun(container)?.let { return it }
-        val wineArgs = buildList {
+        val base = buildList {
             add(exe)
             args.trim().takeIf { it.isNotEmpty() }?.let {
                 addAll(it.split(Regex("\\s+")))
             }
         }
+        // v3.3.9（用户问题 2）：高级启动选项按 startfex.sh / startwine.sh
+        // 语义**追加在 exe 之后**（additional_args）：强制DX11 → -dx11；
+        // OpenGL → --rendering-driver opengl3；Unity → -force-gfx-direct；
+        // 自定义参数（uargs）同位追加。与 base 内已有参数去重。
+        val wineArgs = base + launchAdditionalArgs(container, base)
         return submitLaunch(context, container, wineArgs, freshSession = true)
     }
+
+    /**
+     * v3.3.9：startfex.sh / startwine.sh 的 additional_args 段移植 ——
+     * 选项开启时在 exe 参数末尾追加（顺序与脚本一致：unity → opengl →
+     * dx11 → 用户自定义）。仅对 runExe（游戏/程序会话）生效，
+     * wineboot / wineserver 等宿主工具命令不追加。
+     */
+    private fun launchAdditionalArgs(container: ContainerData, base: List<String>): List<String> =
+        buildList {
+            if (container.hasFlag(com.anwind.apps.containers.ContainerFlags.UNITY) &&
+                base.none { it == "-force-gfx-direct" }
+            ) add("-force-gfx-direct")
+            if (container.hasFlag(com.anwind.apps.containers.ContainerFlags.OPENGL) &&
+                base.none { it == "--rendering-driver" }
+            ) { add("--rendering-driver"); add("opengl3") }
+            if (container.hasFlag(com.anwind.apps.containers.ContainerFlags.DX11) &&
+                base.none { it == "-dx11" }
+            ) add("-dx11")
+            container.uargs.trim().takeIf { it.isNotEmpty() }?.let {
+                addAll(it.split(Regex("\\s+")).filter { t -> t.isNotBlank() })
+            }
+        }
 
     /**
      * v3.3.8：运行前同步预检（rootfs 就绪 / wine 目录可解析）—— UI 按钮
@@ -534,32 +561,48 @@ object RootfsLauncher {
         lastLogs[key] = sink.text
 
         try {
-            // 0) v3.3.8（用户问题 4：dxvk/box/mesa 切换不解压根修）：运行会话
-            //    先解压选中的 /opt 驱动包 —— wineguanli.py run_container 的
-            //    extract_package 同款语义（tar -xf → /usr/local）。放启动链里
-            //    统一承接：底部运行按钮 / 运行对话框 / autorun 快捷方式 /
-            //    ExeRunChooser 全部路径自动覆盖，不再依赖 UI 逐处包裹
-            //    （旧版仅两处包裹，其余路径"切换了驱动但不重启容器永不生效"）。
-            //    槽位：turnip(/opt/tz) / zink(/opt/zink) / wined3d(/opt/vkord3d) /
-            //    dxvk(/opt/dxvk1 —— 旧版从不解压，这次一并接上)；
-            //    ""/默认/off/dxvk=auto 不解压。解压失败不阻断启动（日志可见）。
+            // 0) v3.3.9（用户问题 1：解压落点修正）：运行会话先解压选中的
+            //    /opt 驱动包（tar -xf → 各自正确的目标）：
+            //      - turnip(/opt/tz)、zink(/opt/zink) → rootfs/usr/lib
+            //        （path.conf 驱动位置：data/data/com.anwind/files/rootfs/usr/lib）；
+            //      - dxvk(/opt/dxvk1)、wined3d(/opt/vkord3d)、fexcore(/opt/dxvk1
+            //        同目录) → 对应容器 C 盘 windows（prefix/drive_c/windows）；
+            //      - box64/box86(/opt/box) → 高级设置 Box 配置页手动应用
+            //        （rootfs/usr/local/bin），不在此自动解压。
+            //    旧版全部解到 rootfs/usr/local 是错的。解压失败不阻断启动。
             if (freshSession) {
+                val prefixWin = File(container.prefixPath, "drive_c/windows")
                 listOf(
-                    container.turnip to "tz",
-                    container.zink to "zink",
-                    container.wined3d to "vkord3d",
-                    container.dxvk to "dxvk1"
-                ).forEach { (slot, dir) ->
+                    Triple("Turnip", container.turnip, File(ContainerManager.ROOTFS_ROOT, "usr/lib")),
+                    Triple("Zink", container.zink, File(ContainerManager.ROOTFS_ROOT, "usr/lib")),
+                    Triple("WineD3D", container.wined3d, prefixWin),
+                    Triple("DXVK", container.dxvk, prefixWin),
+                    Triple("FEXCore", container.fexcore, prefixWin)
+                ).forEach { (label, slot, dest) ->
                     if (slot.isNotBlank() && slot != "off" && slot != ContainerData.DXVK_AUTO) {
+                        val dir = when (label) {
+                            "Turnip" -> "tz"
+                            "Zink" -> "zink"
+                            "WineD3D" -> "vkord3d"
+                            else -> "dxvk1"      // DXVK 与 FEXCore 同目录
+                        }
                         val tar = GuanliSupport.scanOpt(dir).firstOrNull { it.display == slot }
                         if (tar == null) {
                             sink.stamp("⚠ 驱动槽位 $dir/$slot 未找到对应 tar 包（继续启动）")
                         } else {
-                            val err = GuanliSupport.extractIntoRootfsLocal(tar.path) { sink.stamp(it) }
+                            runCatching { dest.mkdirs() }
+                            val err = GuanliSupport.extractTarTo(tar.path, dest) { sink.stamp(it) }
                             if (err != null) {
                                 sink.stamp("⚠ 驱动 ${tar.display} 解压失败：$err（继续启动）")
                             } else {
-                                sink.stamp("驱动包 ${tar.display} 已解压 → rootfs/usr/local")
+                                sink.stamp("驱动包 ${tar.display}（$label）已解压 → ${dest.absolutePath}")
+                                // dxvk tar 槽位接管时作废 APK 内置注入指纹 ——
+                                // 切回 auto 档时强制重铺，防 stale DLL 残留
+                                if (label == "DXVK") {
+                                    runCatching {
+                                        File(File(container.prefixPath), "anwindmeta/.anwind-dxvk-applied").delete()
+                                    }
+                                }
                             }
                         }
                     }
@@ -842,12 +885,25 @@ object RootfsLauncher {
                 }
             }
 
-            // 10) dmode=f 的注册表蓝底清理（需前缀就绪；分辨率握手已在 7.5 提前完成）
-            if (dmode == "f" && resolution.isNotEmpty()) {
-                WineRegistry.clearBlueDesktop(resolved, container, env)
+            // 10) v3.3.9（用户问题 3）：独立窗口（-f）虚拟桌面 = **注册表**
+            //     控制（startwine.sh apply_virtual_desktop_settings 移植）：
+            //     -f + 分辨率 → 写 Explorer Desktops 注册表（wine 桌面常驻，
+            //     带wine界面）；其余模式（含全屏）→ 删两键（防旧 -f 残留
+            //     双窗口 + 清蓝底）。需前缀就绪；分辨率握手已在 7.5 提前完成。
+            if (!isHostToolCommand) {
+                val vdOn = dmode == DisplayMode.F.id && resolution.isNotEmpty()
+                WineRegistry.setVirtualDesktopRegistry(
+                    resolved, container, env,
+                    enable = vdOn, resolution = resolution
+                ) { sink.stamp(it) }
+            }
+            val vdNote = when (dmode) {
+                DisplayMode.F.id -> "虚拟桌面=注册表(-f)"
+                DisplayMode.D.id, DisplayMode.V.id -> "虚拟桌面=explorer 包桌"
+                else -> "无 wine 桌面（真全屏）"
             }
             if (resolution.isNotEmpty()) {
-                sink.stamp("显示模式 dmode=$dmode 分辨率=$resolution（X11 握手已写入）")
+                sink.stamp("显示模式 dmode=$dmode 分辨率=$resolution（X11 握手已写入；$vdNote）")
             } else if (dmode != DisplayMode.OFF.id) {
                 // v3.2.1（用户问题 3）：选了显示模式但没选分辨率（native）时
                 // 握手什么也不改 —— 如实告知，不再让用户对着“无效果”猜。
@@ -972,6 +1028,31 @@ object RootfsLauncher {
             }
 
             registerSession(key, WineSession(key, executor, sink))
+
+            // 13) v3.3.9（用户问题 2）：F5任务管理器随容器启动
+            //     （startfex.sh / startwine.sh 的 `-5,--f5taskmgr` 同款：
+            //     主程序拉起后附带启动 /opt/apps/f5taskmgr.exe；包不
+            //     存在时跳过并提示，失败不影响主会话）。
+            if (freshSession && container.hasFlag(com.anwind.apps.containers.ContainerFlags.F5TASK)) {
+                val f5 = File("${GuanliSupport.OPT_ROOT}/apps/f5taskmgr.exe")
+                if (f5.isFile) {
+                    runCatching {
+                        NativeShellExecutor.create()
+                            .setCommand(
+                                *(WineRuntime.wineCommand(resolved) + listOf(f5.absolutePath)).toTypedArray()
+                            )
+                            .putEnv(env)
+                            .setWorkingDir(WineEnvironment.RUNTIME_DIR)
+                            .exec()
+                    }.onSuccess {
+                        sink.stamp("F5任务管理器已随容器启动（${f5.path}）")
+                    }.onFailure {
+                        sink.stamp("⚠ F5任务管理器启动失败：${it.message}（不影响主程序）")
+                    }
+                } else {
+                    sink.stamp("⚠ F5任务管理器未找到（${f5.path}），跳过")
+                }
+            }
         } catch (e: Exception) {
             sink.stamp("启动失败：${e.message ?: e.javaClass.simpleName}")
             unregisterSession(key)
@@ -1146,11 +1227,17 @@ object RootfsLauncher {
             // v3.2.14（用户问题 3）：构建前缀时自动打入 APK 内置 DXVK
             // （assets/dxvk/dxvk-<ver>.tar.gz → C:\windows 的 system32/
             // syswow64，容器 dxvk=off 时跳过；幂等指纹，失败不阻断）。
+            // v3.3.9（用户问题 1）：dxvk 选了 /opt/dxvk1 tar 槽位时 APK
+            // 内置注入让位 —— tar 已在启动链步骤 0 解压到同一落点
+            // （容器 C 盘 windows），双重注入会互相覆盖。
+            val dxvkTarSlot = container.dxvk != ContainerData.DXVK_AUTO &&
+                container.dxvk != ContainerData.DXVK_OFF &&
+                GuanliSupport.scanOpt("dxvk1").any { it.display == container.dxvk }
             runCatching {
                 com.anwind.apps.terminal.termux.AnWindTzstAssets.applyDxvkToContainer(
                     context,
                     File(container.prefixPath),
-                    dxvkEnabled = container.dxvk != ContainerData.DXVK_OFF
+                    dxvkEnabled = container.dxvk != ContainerData.DXVK_OFF && !dxvkTarSlot
                 ) { sink.stamp(it) }
             }.onFailure {
                 sink.stamp("警告: DXVK 注入异常: ${it.message}（下次启动自动重试）")
@@ -1204,21 +1291,16 @@ object RootfsLauncher {
      * X11ResolutionLink FileObserver 消费）：d/v/f + 合法 WxH → 写
      * 分辨率；off / native / 非法值 → 写 native（跟随窗口）。
      *
-     * v3.3.8（用户问题 4：-f 无效修复）：dmode=f 且未配置分辨率
-     * （独立窗口+全屏）时不再空手而归 —— 取当前 X 屏幕尺寸作为锁定
-     * 分辨率（蓝底清理 + 握手都有值，-f 从此真正生效）。
+     * v3.3.9（用户问题 3）：-f 不再用当前屏幕尺寸兑底 —— 选了分辨率才
+     * 锁屏；-f 无分辨率 = 裸窗口 + 清虚拟桌面注册表（startwine.sh
+     * `-f` 不带分辨率 → force_resolution 为空 + 删 -d 注册表的同款）。
      *
      * @return (dmode, 生效分辨率) —— 分辨率为空表示跟随窗口
      */
     private fun applyDisplayMode(container: ContainerData): Pair<String, String> {
         val dmode = container.dmode.id
         val screen = container.screen.trim()
-        var resolution = if (Regex("^\\d+x\\d+$").matches(screen)) screen else ""
-        // v3.3.8：f 档无分辨率 → 用当前 X 屏幕尺寸（glibc-runner -f 与 -d
-        // 同源语义：握手始终有值，蓝底清理不再被空分辨率跳过）
-        if (resolution.isEmpty() && dmode == "f") {
-            resolution = currentXScreenResolution()
-        }
+        val resolution = if (Regex("^\\d+x\\d+$").matches(screen)) screen else ""
         val resFile = File("${ContainerManager.APP_PREFIX}/tmp/.anwind-x11-res")
         runCatching {
             resFile.parentFile?.mkdirs()
@@ -1241,25 +1323,22 @@ object RootfsLauncher {
      *   wine 9.19+ 是指向 loader 的符号链接 → 统一改走 wine loader：
      *   `[box64] bin/wine wineboot …`（loader 的 check_command_line 按
      *   argv[0] basename 分发到同名 .exe，官方机制，任何树都成立）；
-     * - dmode=v + WxH → `wine explorer /desktop=AnWind,WxH <args>`；
      *
-     * v3.3.8（用户问题 4：全屏与 -d/-f 真正生效）：对齐 glibc-runner
-     * 的 [W9]/[R2] 语义 —— **除 dmode=v（虚拟桌面）外不再包
-     * explorer /desktop**：
-     *   - dmode=off（全屏档）→ 裸窗口直出。X 屏幕 native 跟随窗口 /
-     *   WxH 握手锁定；游戏全屏时 wine 经 RandR 把 X 屏幕切成游戏
-     *   分辨率铺满 —— 旧版无条件包 VD，全屏永远隔着一层窗口
-     *   （“改为全屏依旧带窗口运行”根因）；
-     *   - dmode=d（固定分辨率）→ 裸窗口直出（glibc-runner [R2]：
-     *   -dWxH 不再用 explorer /desktop，VD 的黑边直接烧进画面）；
-     *   X 屏幕已由握手锁定 resolution，窗口化游戏由 X11FitClient
-     *   贴合/钉满兑底（它就是为此设计的）；
-     *   - dmode=f → 裸窗口直出 + 蓝底清理（语义不变，现在分辨率
-     *   空缺也由 applyDisplayMode 兑底）；
+     * v3.3.9（用户问题 3：分辨率回归修复）：选了分辨率就要带 wine 界面
+     * （虚拟桌面），只有全屏才是裸窗口 —— 对齐 startfex.sh / startwine.sh
+     * 的 resolution 段：
+     *   - dmode=d / v + WxH → `wine explorer /desktop=shell,WxH <args>`
+     *     （脚本 modern-wine 路径：`resolution=("explorer" "/desktop=shell,WxH")`
+     *     直接传递，wine 界面可见）；
+     *   - dmode=f + WxH → 裸命令行，虚拟桌面由**注册表**控制
+     *     （Explorer Desktops，见 WineRegistry.setVirtualDesktopRegistry
+     *     —— startwine.sh apply_virtual_desktop_settings 同款，不是命令行
+     *     传参那条路）；
+     *   - dmode=off（全屏）→ 裸窗口直出（无 wine 界面）；游戏全屏时
+     *     wine 经 RandR 把 X 屏幕切成游戏分辨率铺满；
      *   - wineboot（前缀构建）→ 仍包 explorer VD（mono/gecko 弹窗
-     *   可见可点，v3.2.0 行为保留）。
-     * 无 WM 下裸窗口堆 (0,0) 的场景由 X11FitClient 的钉满（把稳定
-     * 大窗口移到 (0,0) 并撑满）承接，不再用 VD 硬包。
+     *     可见可点，v3.2.0 行为保留）。
+     * 无 WM 下裸窗口堆 (0,0) 的场景由 X11FitClient 的钉满承接。
      */
     private fun buildCommand(
         resolved: WineRuntime.Resolved,
@@ -1286,16 +1365,14 @@ object RootfsLauncher {
             val vdRes = currentXScreenResolution()
             return cmd + listOf("explorer", "/desktop=AnWind,$vdRes") + wineArgs
         }
-        // dmode=v：wine 虚拟桌面（轩剑类 DDraw 老游戏必需）
-        if (dmode == "v" && resolution.isNotEmpty()) {
-            return cmd + listOf("explorer", "/desktop=AnWind,$resolution") + wineArgs
+        // v3.3.9：选了分辨率的 -d / -v → 命令行包 explorer 虚拟桌面
+        // （startwine.sh resolution=("explorer" "/desktop=shell,WxH") 同款）
+        if ((dmode == "d" || dmode == "v") && resolution.isNotEmpty()) {
+            return cmd + listOf("explorer", "/desktop=shell,$resolution") + wineArgs
         }
-        // v3.3.8：其余全部裸窗口直出（off=真全屏 / d=固定分辨率 /
-        // f=窗口直出）—— 不再包 explorer /desktop（详见方法 KDoc）。
+        // 其余裸窗口直出：off=真全屏（无 wine 界面）/ f=注册表虚拟桌面
+        // （命令行不包 —— Explorer Desktops 注册表已在前置步骤写入）。
         // explorer 自引用防重包（用户手动传 explorer /desktop 时透传）。
-        if (first == "explorer") {
-            return cmd + wineArgs
-        }
         return cmd + wineArgs
     }
 

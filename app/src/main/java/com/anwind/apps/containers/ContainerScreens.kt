@@ -38,6 +38,7 @@ import com.anwind.core.window.WindowContentScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 
 /**
  * AnWind Wine 容器 — 管理界面（v3.2.18 · wineguanli.py 完整重制）。
@@ -65,7 +66,7 @@ import kotlinx.coroutines.withContext
  *  - 基本设置：架构(x86_64/arm64ec → backend=box64/arm64ec)、Wine 版本
  *    (wine=)、分辨率(全屏→screen=native / WxH→screen=WxH)、语言(lang=)、
  *    帧数限制(frame=)、独立窗口+分辨率(dmode=f/d/off)、EXE 文件(exe=)、
- *    高级启动选项七勾选(flags= csv)
+ *    高级启动选项勾选(flags= csv) + 自定义启动参数(uargs=)
  *  - 图形驱动：Turnip/Zink/WineD3D(turnip=/zink=/wined3d=，/opt/tz、
  *    /opt/zink、/opt/vkord3d 扫描)、DXVK(dxvk=，默认=auto / 不使用=off /
  *    /opt/dxvk1 槽位)
@@ -1203,12 +1204,27 @@ private fun BasicSettingsTab(
     GGroup("窗口模式") {
         val independent = edit.flagSet.contains(ContainerFlags.INDEPENDENT)
         GCheckRow("🪟 独立窗口模式 (不支持proton)", independent) { on ->
+            // v3.3.9 修复（用户问题 3：勾选不了独立窗口）：旧版先 onChange 改
+            // flags、再用【旧 edit】调 applyResolution → 第二次 onChange 把
+            // 第一次写入的 flags 覆盖回去，勾选永远不生效。改为单次
+            // onChange 合并 flags + screen + dmode。
             val flags = edit.flagSet.toMutableSet()
             if (on) flags.add(ContainerFlags.INDEPENDENT) else flags.remove(ContainerFlags.INDEPENDENT)
-            onChange(edit.copy(flags = ContainerFlags.serialize(flags)))
-            applyResolution(edit, if (edit.screen == "native") "全屏" else edit.screen, onChange, on)
+            val screen = if (edit.screen == "native") "native" else edit.screen
+            val dmode = when {
+                on -> DisplayMode.F
+                screen == "native" -> DisplayMode.OFF
+                else -> DisplayMode.D
+            }
+            onChange(
+                edit.copy(
+                    flags = ContainerFlags.serialize(flags),
+                    screen = screen,
+                    dmode = dmode
+                )
+            )
         }
-        GNote("💡 独立窗口模式: 使用 -f 参数；非独立窗口使用 -d 参数")
+        GNote("💡 独立窗口: -f（注册表虚拟桌面，带 wine 界面）；非独立: -d（命令行虚拟桌面）；分辨率选全屏 = 无 wine 界面真全屏")
     }
 
     // wineguanli.py：EXE 文件组（留空则运行时再选）
@@ -1252,16 +1268,17 @@ private fun BasicSettingsTab(
         }
     }
 
-    // wineguanli.py：高级启动选项组（7 勾选，Qt 隐藏 IB）
+    // wineguanli.py：高级启动选项组（startfex.sh / startwine.sh 选项同款）
     GGroup("高级启动选项") {
         GCheckFlow(
             items = listOf(
-                ContainerFlags.CLOSESERVICE to "关闭service服务",
-                ContainerFlags.DEBUG to "强制DX11启动",
-                ContainerFlags.OPENGL to "OpenGL驱动",
+                ContainerFlags.DX11 to "强制DX11启动 (-dx11)",
+                ContainerFlags.OPENGL to "OpenGL驱动 (opengl3)",
+                ContainerFlags.UNITY to "Unity单线程渲染 (-force-gfx-direct)",
+                ContainerFlags.F5TASK to "F5任务管理器 (随容器启动)",
                 ContainerFlags.FEXMODE to "FEX模式(HODLL=libwow64fex.dll)",
-                ContainerFlags.F5TASK to "F5任务管理器",
-                ContainerFlags.UNITY to "Unity单线程渲染"
+                ContainerFlags.CLOSESERVICE to "关闭service服务",
+                ContainerFlags.DEBUG to "调试日志"
             ),
             checked = { it in edit.flagSet },
             onToggle = { flag, on ->
@@ -1270,9 +1287,23 @@ private fun BasicSettingsTab(
                 onChange(edit.copy(flags = ContainerFlags.serialize(flags)))
             }
         )
+        // v3.3.9（用户问题 2）：自定义启动参数框（追加在 exe 之后，
+        // startfex.sh additional_args 同位；空白切分）
+        GField("🧾 自定义启动参数（追加在 exe 之后）") {
+            OutlinedTextField(
+                value = edit.uargs,
+                onValueChange = { onChange(edit.copy(uargs = it)) },
+                placeholder = { Text("如 -windowed -nosound …（空白切分，追加在程序参数末尾）", fontSize = gsp(10.sp)) },
+                singleLine = true,
+                textStyle = androidx.compose.ui.text.TextStyle(fontSize = gsp(12.sp)),
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
         GNote(
-            "Unity单线程渲染 → BOX64_UNITYPLAYER=1；FEX模式 → HODLL=libwow64fex.dll（startfex.sh 同款，仅 arm64ec）；" +
-                "其余写入 container.conf（flags=），供 /opt 生态脚本消费"
+            "startfex.sh/startwine.sh 同款逻辑，参数一律追加在 exe 之后：强制DX11 → -dx11；" +
+                "OpenGL → --rendering-driver opengl3；Unity单线程 → -force-gfx-direct；" +
+                "F5任务管理器 → 随容器启动 /opt/apps/f5taskmgr.exe；FEX模式 → HODLL=libwow64fex.dll（仅 arm64ec）；" +
+                "调试日志 → AnWind 会话日志本就常显（标记槽位）"
         )
     }
 }
@@ -1313,12 +1344,15 @@ private fun GraphicsDriverTab(
     var zinkTars by remember { mutableStateOf<List<GuanliSupport.OptTar>>(emptyList()) }
     var dxvkTars by remember { mutableStateOf<List<GuanliSupport.OptTar>>(emptyList()) }
     var wined3dTars by remember { mutableStateOf<List<GuanliSupport.OptTar>>(emptyList()) }
+    var fexcoreTars by remember { mutableStateOf<List<GuanliSupport.OptTar>>(emptyList()) }
     LaunchedEffect(Unit) {
         withContext(Dispatchers.IO) {
             tzTars = GuanliSupport.scanOpt("tz")
             zinkTars = GuanliSupport.scanOpt("zink")
             dxvkTars = GuanliSupport.scanOpt("dxvk1")
             wined3dTars = GuanliSupport.scanOpt("vkord3d")
+            // v3.3.9（用户问题 1）：FEXCore 与 DXVK 同目录（/opt/dxvk1）
+            fexcoreTars = GuanliSupport.scanOpt("dxvk1")
         }
     }
 
@@ -1342,7 +1376,7 @@ private fun GraphicsDriverTab(
         DriverCombo(
             tars = dxvkTars,
             value = if (edit.dxvk == ContainerData.DXVK_AUTO) "" else if (edit.dxvk == ContainerData.DXVK_OFF) "off" else edit.dxvk,
-            dirNote = "默认=APK 内置资产自动注入；不使用=关闭注入；tar 槽位（rootfs/opt/dxvk1）运行前自动解压到 rootfs/usr/local（v3.3.8 起打通）",
+            dirNote = "默认=APK 内置资产自动注入；不使用=关闭注入；tar 槽位（rootfs/opt/dxvk1）运行前自动解压到容器 C 盘 windows（v3.3.9）",
             onSelect = { v ->
                 onChange(
                     edit.copy(
@@ -1363,10 +1397,19 @@ private fun GraphicsDriverTab(
             onSelect = { onChange(edit.copy(wined3d = it)) }
         )
     }
+    // v3.3.9（用户问题 1）：FEXCore 选项框 —— /opt/dxvk1 同目录，逻辑同
+    // DXVK/WineD3D，解压到对应容器 C 盘 windows
+    GGroup("FEXCore") {
+        DriverCombo(
+            tars = fexcoreTars, value = edit.fexcore,
+            dirNote = dirNote,
+            onSelect = { onChange(edit.copy(fexcore = it)) }
+        )
+    }
     GNote(
         "wineguanli.py 图形驱动页同款：Turnip(/opt/tz)、Zink(/opt/zink)、DXVK(/opt/dxvk1)、" +
-            "WineD3D(/opt/vkord3d)。运行容器时选中的包由启动链步骤 0 自动解压进 rootfs /usr/local" +
-            "（v3.3.8：所有运行入口统一覆盖，含运行对话框/autorun/文件管理器直接运行）"
+            "WineD3D(/opt/vkord3d)、FEXCore(/opt/dxvk1 同目录)。运行容器时选中的包由启动链步骤 0 自动解压：" +
+            "Turnip/Zink → rootfs/usr/lib（path.conf 驱动位置）；DXVK/WineD3D/FEXCore → 对应容器 C 盘 windows（v3.3.9）"
     )
 }
 
@@ -2155,17 +2198,21 @@ private fun BoxConfigTab() {
     GSmallButton("✅ 应用Box配置", GuanliColors.greenDeep, Modifier.fillMaxWidth()) {
         cs.launch(Dispatchers.IO) {
             val errs = mutableListOf<String>()
+            // v3.3.9（用户问题 1）：box 落点 = rootfs/usr/local/bin（旧版解到
+            // /usr/local 是错的）
+            val boxBin = File("${ContainerManager.ROOTFS_ROOT}/usr/local/bin")
             listOf("box" to box64Sel, "box86" to box86Sel).forEach { (dir, sel) ->
                 if (sel.isNotBlank()) {
+                    runCatching { boxBin.mkdirs() }
                     GuanliSupport.scanOpt(dir).firstOrNull { it.display == sel }?.let { tar ->
-                        GuanliSupport.extractIntoRootfsLocal(tar.path)?.let { errs.add(it) }
+                        GuanliSupport.extractTarTo(tar.path, boxBin)?.let { errs.add(it) }
                     }
                 }
             }
             withContext(Dispatchers.Main) {
                 if (errs.isEmpty()) {
                     android.widget.Toast.makeText(
-                        context, "✅ Box配置已应用（解压到 rootfs/usr/local）",
+                        context, "✅ Box配置已应用（解压到 rootfs/usr/local/bin）",
                         android.widget.Toast.LENGTH_SHORT
                     ).show()
                     refreshInfo()

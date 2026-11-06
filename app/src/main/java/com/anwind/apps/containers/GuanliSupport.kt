@@ -167,30 +167,32 @@ object GuanliSupport {
     }
 
     /**
-     * 解压 /opt 内 tar 包进 rootfs（wineguanli extract_package /
+     * 解压 /opt 内 tar 包到 rootfs 指定目录（wineguanli extract_package /
      * extract_box_file 同一动作：tar -xf <包> -C <目标> --overwrite）。
-     * 驱动类（turnip/zink/dxvk/wined3d）→ rootfs /usr/local/lib 落点由
-     * 包内布局决定；box 类 → /usr/local/bin。统一解到 /usr/local（与
-     * wineguanli 的 destDir 一致）。
+     *
+     * v3.3.9（用户问题 1）落点分流（此前全部解到 /usr/local 是错的）：
+     *  - turnip / zink → rootfs /usr/lib（path.conf 驱动位置）；
+     *  - dxvk / wined3d / fexcore → 对应容器 prefix/drive_c/windows；
+     *  - box64 / box86 → rootfs /usr/local/bin（高级设置 Box 配置页）。
+     *
      * @return null 成功；否则错误信息。
      */
-    fun extractIntoRootfsLocal(tarPath: String, log: (String) -> Unit = {}): String? {
+    fun extractTarTo(tarPath: String, destDir: File, log: (String) -> Unit = {}): String? {
         val f = File(tarPath)
         if (!f.isFile) return "包不存在：$tarPath"
         val tarBin = listOf(
             File("${ContainerManager.ROOTFS_ROOT}/usr/bin/tar"),
             File("${ContainerManager.APP_PREFIX}/bin/tar")
         ).firstOrNull { it.canExecute() } ?: return "rootfs 内未找到 tar（rootfs 未导入？）"
-        val dest = File("${ContainerManager.ROOTFS_ROOT}/usr/local")
         return try {
-            val p = ProcessBuilder(tarBin.absolutePath, "-xf", f.absolutePath, "-C", dest.absolutePath, "--overwrite")
+            val p = ProcessBuilder(tarBin.absolutePath, "-xf", f.absolutePath, "-C", destDir.absolutePath, "--overwrite")
                 .redirectErrorStream(true)
                 .start()
             val ok = p.waitFor(120, TimeUnit.SECONDS)
             val out = runCatching { p.inputStream.readBytes().decodeToString() }.getOrDefault("")
             if (!ok) { p.destroyForcibly(); return "解压超时（120s）" }
             if (p.exitValue() != 0) "解压失败：${out.take(300)}"
-            else { log("已解压 ${f.name} → rootfs/usr/local"); null }
+            else { log("已解压 ${f.name} → ${destDir.absolutePath}"); null }
         } catch (e: Exception) {
             "解压异常：${e.message}"
         }

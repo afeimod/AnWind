@@ -133,15 +133,15 @@ enum class GalliumDriver(val id: String, val label: String) {
  * 容器显示模式（container.conf 的 dmode= 键）。
  *
  * OFF  : 跟随 X11 窗口（native，桌面会话默认）
- * D    : 固定 X 屏幕分辨率（glibc-runner -d：游戏真实全屏渲染 + App 侧贴合拉伸）
+ * D    : 固定 X 屏幕分辨率（startwine -d：命令行 explorer /desktop=shell,WxH 虚拟桌面）
  * V    : wine 虚拟桌面（-v：explorer /desktop，DDraw 老游戏必需）
- * F    : 强制窗口直出（-f：清除注册表 wine 蓝底桌面 + 固定分辨率）
+ * F    : 独立窗口（-f：注册表虚拟桌面 user.reg Explorer Desktops；无分辨率=裸窗口+清蓝底）
  */
 enum class DisplayMode(val id: String, val label: String, val desc: String) {
     OFF("off", "跟随窗口", "X 屏幕跟随窗口尺寸（桌面/办公）"),
-    D("d", "固定分辨率 (-d)", "X 屏幕锁定指定分辨率，游戏真实全屏渲染"),
+    D("d", "固定分辨率 (-d)", "explorer /desktop=shell,WxH 命令行虚拟桌面（带 wine 界面）"),
     V("v", "虚拟桌面 (-v)", "wine explorer /desktop，DDraw 老游戏兼容"),
-    F("f", "窗口直出 (-f)", "强制窗口直出并清除 wine 蓝底桌面");
+    F("f", "独立窗口 (-f)", "注册表虚拟桌面（user.reg Explorer Desktops，带 wine 界面；无分辨率=裸窗口）");
 
     companion object {
         fun fromId(id: String?): DisplayMode =
@@ -256,13 +256,18 @@ object ContainerFlags {
     const val INDEPENDENT = "independent"
     const val CLOSESERVICE = "closeservice"
 
+    /** v3.3.9（用户问题 2）：强制 DX11 —— startfex.sh/startwine.sh 的
+     * `-x,--dx11` 同款：在 exe 之后追加 `-dx11` 参数（旧版误把 DEBUG
+     * 槽位标成“强制DX11启动”，从未追加过任何参数）。 */
+    const val DX11 = "dx11"
+
     /** v3.2.29 语义修正：FEX 模式（wineguanli.py 高级启动选项）—— arm64ec
      *  wine 经 `HODLL=libwow64fex.dll` 让 x86_64/i386 PE 走 FEX 仿真 DLL
      *  （startfex.sh 同款；旧注释的"切 fexcore 后端"从未接线，已废）。 */
     const val FEXMODE = "fexmode"
 
     /** 全部合法开关（UI 勾选组展示顺序）。 */
-    val ALL = listOf(UNITY, OPENGL, F5TASK, IB, DEBUG, INDEPENDENT, CLOSESERVICE, FEXMODE)
+    val ALL = listOf(UNITY, OPENGL, F5TASK, IB, DEBUG, INDEPENDENT, CLOSESERVICE, FEXMODE, DX11)
 
     fun parse(csv: String?): Set<String> =
         csv?.split(',', ';').orEmpty()
@@ -344,6 +349,13 @@ data class ContainerData(
     val zink: String = "",
     /** WineD3D 版本槽位（对接 /opt/vkord3d）。 */
     val wined3d: String = "",
+    /** v3.3.9：FEXCore 版本槽位（对接 /opt/dxvk1 —— 与 DXVK 同目录；
+     * 解压到对应容器 C 盘 windows）。 */
+    val fexcore: String = "",
+    /** v3.3.9（用户问题 2）：自定义启动参数（startfex.sh `-a/--args` 同款
+     * 定位 —— 追加在 exe 参数末尾，空白切分；区别：-a 是 wine 前置参数，
+     * 本字段是程序参数）。 */
+    val uargs: String = "",
     /** v3.2.18：默认运行的程序（wineguanli.py custom_exe_path；空 = 运行时再选）。 */
     val exe: String = ""
 ) {
@@ -390,6 +402,8 @@ data class ContainerData(
         "turnip" to turnip,
         "zink" to zink,
         "wined3d" to wined3d,
+        "fexcore" to fexcore,
+        "uargs" to uargs,
         "exe" to exe
     )
 
@@ -477,6 +491,8 @@ data class ContainerData(
                 turnip = kv["turnip"] ?: "",
                 zink = kv["zink"] ?: "",
                 wined3d = kv["wined3d"] ?: "",
+                fexcore = kv["fexcore"] ?: "",
+                uargs = kv["uargs"] ?: "",
                 exe = kv["exe"] ?: ""
             )
         }

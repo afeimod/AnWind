@@ -70,20 +70,53 @@ object WineRegistry {
     }
 
     /**
-     * dmode=f 的注册表蓝底桌面清理（对齐 glibc-runner -f / 脚本
-     * clear_wine_blue_desktop）：删除 wine 桌面注册项，强制窗口直出。
+     * v3.3.9（用户问题 3）：独立窗口模式（-f）的虚拟桌面**注册表**控制
+     * （startwine.sh / startfex.sh 的 apply_virtual_desktop_settings 移植）。
+     *
+     * -f 与 -d 的机制差异（对齐脚本语义）：
+     *  - -d（固定分辨率）→ 命令行 `explorer /desktop=shell,WxH`（每次
+     *    启动包一层，见 RootfsLauncher.buildCommand）；
+     *  - -f（独立窗口）→ **注册表**：HKCU\Software\Wine\Explorer
+     *    "Desktop"="Default" + HKCU\Software\Wine\Explorer\Desktops
+     *    "Default"="WxH" —— wine 桌面常驻，命令行不包 explorer。
+     *
+     * enable=false → 删两键（脚本 apply_virtual_desktop_settings 关闭
+     * 分支 + -f 清 -d 注册表防双窗口的同款动作；也是旧版"清蓝底"）。
+     *
+     * 幂等标记：<prefix>/drive_c/anwind/.anwind-vd-state（"on:WxH" /
+     * "off"）—— 状态未变时跳过 wine reg 启动开销（每次约 1~3s）。
+     * 标记缺失且目标为关闭时视为干净（新前缀无桌面键），零动作。
      */
-    fun clearBlueDesktop(
+    fun setVirtualDesktopRegistry(
         resolved: WineRuntime.Resolved,
         container: ContainerData,
-        env: Map<String, String>
+        env: Map<String, String>,
+        enable: Boolean,
+        resolution: String,
+        log: (String) -> Unit = {}
     ) {
-        val targets = listOf(
-            arrayOf("reg", "delete", "HKCU\\Software\\Wine\\Explorer", "/v", "Desktop", "/f"),
-            arrayOf("reg", "delete", "HKCU\\Software\\Wine\\Explorer\\Desktops", "/f")
-        )
-        for (args in targets) {
-            runCatching {
+        runCatching {
+            val prefix = File(container.prefixPath)
+            if (!File(prefix, "system.reg").isFile) return   // 前缀未就绪（下次启动补）
+            val mark = File(prefix, "drive_c/anwind/.anwind-vd-state")
+            val want = if (enable) "on:$resolution" else "off"
+            val prev = runCatching { mark.readText().trim() }.getOrDefault("")
+            if (prev == want) return                          // 已就位
+            if (!enable && prev.isEmpty()) return             // 从未开过 → 视为干净
+            val cmds = if (enable) listOf(
+                arrayOf(
+                    "reg", "add", "HKCU\\Software\\Wine\\Explorer",
+                    "/v", "Desktop", "/t", "REG_SZ", "/d", "Default", "/f"
+                ),
+                arrayOf(
+                    "reg", "add", "HKCU\\Software\\Wine\\Explorer\\Desktops",
+                    "/v", "Default", "/t", "REG_SZ", "/d", resolution, "/f"
+                )
+            ) else listOf(
+                arrayOf("reg", "delete", "HKCU\\Software\\Wine\\Explorer", "/v", "Desktop", "/f"),
+                arrayOf("reg", "delete", "HKCU\\Software\\Wine\\Explorer\\Desktops", "/f")
+            )
+            for (args in cmds) {
                 NativeShellExecutor.create()
                     .setCommand(*WineRuntime.wineCommand(resolved).toTypedArray(), *args)
                     .putEnv(env)
@@ -92,7 +125,15 @@ object WineRegistry {
                     .exec()
                     .waitFor(15, java.util.concurrent.TimeUnit.SECONDS)
             }
-        }
+            runCatching {
+                mark.parentFile?.mkdirs()
+                mark.writeText(want)
+            }
+            log(
+                if (enable) "独立窗口(-f)：虚拟桌面注册表已写入（Explorer Desktops Default=$resolution）"
+                else "虚拟桌面注册表已清除（关闭 wine 桌面/清蓝底）"
+            )
+        }.onFailure { log("⚠ 虚拟桌面注册表写入异常：${it.message}（下次启动重试）") }
     }
 
     /**
