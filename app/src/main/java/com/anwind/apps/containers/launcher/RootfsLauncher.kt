@@ -449,10 +449,12 @@ object RootfsLauncher {
                 }
             }
 
-            // ④ 原 exe 直接启动；老 wine 包（无 0011/0014 补丁）若仍报
-            //    noexec/media 错误，指引用新 CI 重装 wine 包。
+            // ④ 原 exe 直接启动；wine 缺 noexec 回退补丁（3.5 步已检出并
+            //    给过完整指引）时老包若仍报 noexec/media 错误，指引用新
+            //    CI 重装 wine 包（含 AnWind-noexec-fallback 标记的包零拷贝
+            //    直读即可用，本提示自动消失）。
             log("→ 以原路径启动: $exeFile")
-            log("→ 若游戏报 noexec/media 错误：请用含 0011/0014 补丁的新 CI 重装 wine 包（匿名内存回退）")
+            log("→ 若游戏报 noexec/media 错误：请用含 0011/0014 系列补丁的新 CI 重装 wine 包（匿名内存回退；arm64ec 原生执行必需）")
         }.onFailure {
             log("警告: 直读预检异常（${it.message ?: it.javaClass.simpleName}）—— 仍按原路径启动")
         }
@@ -540,6 +542,34 @@ object RootfsLauncher {
             // 3) 基础环境（隔离白名单）+ WINEPREFIX
             val env = LinkedHashMap(WineEnvironment.buildBaseEnv(container, resolved.wineDir))
             env["WINEPREFIX"] = container.prefixPath
+
+            // 3.5) v3.3.7 wine 补丁状态检测（noexec 回退 / locale）—— 存量
+            //      wine 包缺配方补丁时给出【可照做】的重装指引，不再让用户
+            //      对着 "Could not load required media" / 英文界面猜原因：
+            //       - arm64ec/hangover 原生执行 + 缺 noexec 回退 → media 报错
+            //         （x86_64+box64 翻译执行不依赖执行位，静默跳过不打扰）；
+            //       - 缺 locale 补丁 + 容器语言为中日韩 → 界面恒英文、ACP=1252。
+            //      检测机制：grep wine 包 ntdll unix .so 里的补丁标记串
+            //      （AnWind-noexec-fallback / AnWind-locale-lc-all，v3.3.7 起
+            //      全部相关补丁 WARN 格式串内嵌），结果按槽位 mtime 缓存。
+            val patchState = WinePatchDetector.stateOf(resolved.wineDir)
+            val nativeExecBackend = resolved.backend == ContainerBackend.ARM64EC ||
+                resolved.backend == ContainerBackend.HANGOVER
+            if (nativeExecBackend && !patchState.noexecFallback) {
+                sink.stamp("⚠ wine 包缺 noexec 回退补丁（对 arm64ec 原生执行是硬伤）")
+                WinePatchDetector.noexecGuidanceLines(resolved.wineDir).forEach { sink.stamp(it) }
+            } else if (patchState.noexecFallback) {
+                sink.stamp("wine 包含 noexec 回退补丁（AnWind-noexec-fallback ✓，外部存储零拷贝直读可用）")
+            }
+            val effectiveLang = (env["LANG"] ?: "").trim().lowercase()
+            if (!patchState.localeLcAll &&
+                (effectiveLang.startsWith("zh") || effectiveLang.startsWith("ja") || effectiveLang.startsWith("ko"))
+            ) {
+                sink.stamp("⚠ wine 包缺中文 locale 补丁（LC_ALL 直读未编入）")
+                WinePatchDetector.localeGuidanceLines(resolved.wineDir).forEach { sink.stamp(it) }
+            } else if (patchState.localeLcAll) {
+                sink.stamp("wine 包含 locale 补丁（AnWind-locale-lc-all ✓，LC_ALL 直接决定 wine 语言/代码页）")
+            }
 
             // 4) X11 就绪：打开桌面窗口 + 原生拉起 X 服务 + 显式等 socket
             //    （v3.1：X 服务由 app_process 直启，不经 sh/脚本；决策行

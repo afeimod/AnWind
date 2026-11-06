@@ -392,14 +392,32 @@ object ContainerManager {
         )
 
         // 4) wine 主程序（多版本：bionic 双形态 / 普通 Wine / Proton）
+        //    v3.3.7：逐槽位补丁体检 —— noexec 回退（AnWind-noexec-fallback，
+        //    arm64ec 原生执行在 /storage 上跑游戏的硬前提）与 locale 修复
+        //    （AnWind-locale-lc-all，中文界面 + ACP=936 的硬前提）。存量
+        //    旧包缺补丁时给出可照做的重装指引（启动链 3.5 步也会提示）。
         val wines = listWines()
         val wine = File("$ROOTFS_ROOT/usr/opt/wine/bin/wine")
+        val patchInfo = wines.mapNotNull { w ->
+            val st = com.anwind.apps.containers.launcher.WinePatchDetector.stateOf(File(w.dir))
+            val missing = mutableListOf<String>()
+            if (!st.noexecFallback) missing.add("noexec回退")
+            if (!st.localeLcAll) missing.add("中文locale")
+            if (missing.isEmpty()) null else "${w.name}（缺${missing.joinToString("+")}）"
+        }
         checks += DoctorCheck(
             ok = wine.isFile || wines.isNotEmpty(),
             title = "Wine 运行时（多版本）",
             detail = when {
                 wine.isFile && wines.size <= 1 -> "/usr/opt/wine 就绪"
-                wines.isNotEmpty() -> "已装 ${wines.size} 个版本（${wines.joinToString("、") { it.name }}），默认：${defaultWineName().ifEmpty { "wine" }}"
+                wines.isNotEmpty() -> buildString {
+                    append("已装 ${wines.size} 个版本（${wines.joinToString("、") { it.name }}），默认：${defaultWineName().ifEmpty { "wine" }}")
+                    if (patchInfo.isNotEmpty()) {
+                        append("；⚠ 旧包缺补丁：")
+                        append(patchInfo.joinToString("、"))
+                        append("——请用新 CI（build-wine-bionic）重装对应形态，否则 arm64ec 在外部存储上报 media 错误/界面恒英文")
+                    }
+                }
                 else -> "未安装 wine：终端 anwind-container install-wine <类别>（wine-catalog 查看 bionic/普通Wine/Proton 在线构建），或 App 端 Wine 选择器下方分类一键安装"
             }
         )

@@ -19,11 +19,17 @@
 #   LC_ALL=zh_CN.UTF-8 → "zh-CN" → locale.nls → LCID 0x0804 →
 #   PE 资源中文 + ACP=936。App 侧语言链（/opt/locale.conf → LANG/LC_ALL）
 #   从此真正生效。
+#
+# v3.3.7：补丁生效标记 —— WARN 里带 "AnWind-locale-lc-all" 字面量
+#   （env.c 已 include wine/debug.h + WINE_DEFAULT_DEBUG_CHANNEL(environ)，
+#   WARN 宏无条件把格式串编进 ntdll.so，运行期才按调试级别过滤）——
+#   App 侧 WinePatchDetector 靠 grep 这个串判断 wine 包是否含本补丁，
+#   未打补丁的 arm64ec 包（v3.3.6 前构建）据此给出明确重装指引。
 diff --git a/dlls/ntdll/unix/env.c b/dlls/ntdll/unix/env.c
 index 7193cce..bf7cfba 100644
 --- a/dlls/ntdll/unix/env.c
 +++ b/dlls/ntdll/unix/env.c
-@@ -713,9 +713,15 @@ static BOOL unix_to_win_locale( const char *unix_name, char *win_name )
+@@ -713,9 +713,19 @@ static BOOL unix_to_win_locale( const char *unix_name, char *win_name )
  {
      static const char sep[] = "_.@";
      const char *extra = NULL;
@@ -34,7 +40,11 @@ index 7193cce..bf7cfba 100644
      char *p, *country = NULL, *modifier = NULL;
  
 +#ifdef __ANDROID__
-+    if (env_locale && env_locale[0]) unix_name = env_locale;
++    if (env_locale && env_locale[0])
++    {
++        WARN( "AnWind-locale-lc-all: using LC_ALL=%s to override bionic setlocale\n", env_locale );
++        unix_name = env_locale;
++    }
 +#endif
      if (!unix_name || !unix_name[0] || !strcmp( unix_name, "C" ))
      {

@@ -218,6 +218,30 @@ pre_setup() {
     echo "    构建继续；若运行期异常请检查源码树内 *.rej 文件"
   fi
 
+  # v3.3.7：noexec 回退 + locale 补丁生效【硬校验】（与 hangover-wine
+  # 同款）。0011/0011b/0011c 三份按树形态互斥命中（9.x/10.x/11.x 的
+  # map_file_into_view 结构各不相同），校验最终源码必须带
+  # "AnWind-noexec-fallback" 标记 —— 全落空 = 产出 noexec 上 media
+  # 报错的裸奔包。locale 侧 0009 自 v3.3.2 存在，此处兜底校验
+  # "AnWind-locale-lc-all" 标记（v3.3.7 起带运行期检测锚点）。
+  if [[ -f dlls/ntdll/unix/virtual.c ]] \
+     && ! grep -q 'AnWind-noexec-fallback' dlls/ntdll/unix/virtual.c 2>/dev/null; then
+    echo "::error::noexec 回退补丁未生效（virtual.c 无 AnWind-noexec-fallback 标记）！"
+    echo "   该 wine 包在 noexec 存储（/storage/emulated/0）上会复现 \"Could not load required media\""
+    echo "   三份补丁按树形态互斥命中其一：0011(9.x) / 0011b(10.x) / 0011c(11.x)"
+    echo "   请核对源码树版本形态与补丁锚点是否匹配（*.rej 落在源码树内可查）"
+    return 1
+  fi
+  echo "noexec 回退补丁已生效（AnWind-noexec-fallback 标记在 virtual.c）"
+  if [[ -f dlls/ntdll/unix/env.c ]] \
+     && ! grep -q 'AnWind-locale-lc-all' dlls/ntdll/unix/env.c 2>/dev/null; then
+    echo "::error::locale 补丁未生效（env.c 无 AnWind-locale-lc-all 标记）！"
+    echo "   该 wine 包在 bionic 上界面恒英文、ACP 恒 1252（中文环境丢失）"
+    echo "   请核查补丁锚点：projects/wine/0009-android-locale-lc-all.patch"
+    return 1
+  fi
+  echo "locale 补丁已生效（AnWind-locale-lc-all 标记在 env.c，LC_ALL=zh_CN.UTF-8 → LCID 0x0804 / ACP 936）"
+
   # bionic POSIX shm 兼容注入（幂等）：
   # bionic 任何 API 级别都没有 shm_open/shm_unlink（bionic 官方文档
   # status.md 列为 "Missing functions ... explicitly disallowed by

@@ -265,8 +265,39 @@ android {
         // ④删除安全复核：deleteTree 不跟随链接 + 删除走廊双保险不变，
         //   删容器/rootfs 绝不波及 /storage/emulated/0（含新增的 rootfs
         //   storage/sdcard 入口链接）。
-        versionCode = 94
-        versionName = "2.38.31"
+        // v3.3.7（源码包 v3.3.7，App v2.38.32 / versionCode 95）：
+        // ①高级设置页结构修复（用户："高级设置只有个生效容器，还占用
+        //   特别大，缺失 wineguanli.py 里的所有高级设置内容"）：页头
+        //   "生效容器"选择器无 width → fillMaxWidth 占满整行（后面的说
+        //   明文字被挤到 0 宽不可见），且 sel==null 时 return@Column 掐
+        //   掉全部选项卡 —— 但 wineguanli.py 的高级设置页根本没有这个
+        //   选择器和门禁（DY/Box/Wine安装 是全局配置，MANGOHUD 才需要
+        //   容器）。现对齐参考：删页头与门禁，四选项卡（DY配置/Box配置/
+        //   Wine安装/MANGOHUD配置）恒渲染，容器选择器收进 MANGOHUD 选项
+        //   卡内部（紧凑定宽 200dp）。
+        // ②arm64ec 中文环境根因修复（用户："arm64ec 的 wine 丢失了中文
+        //   环境"）：hangover-wine 配方此前缺 0009-android-locale-lc-all
+        //   （x86_64 形态 v3.3.2 起就有）—— bionic setlocale 恒
+        //   "C.UTF-8" → wine 恒英文 + ACP=1252。补 0009b（同源移植，
+        //   wine-9.2/10.10/hangover-11.16 三树实测干净应用）。
+        // ③arm64ec noexec/media 根因修复（用户："还是 media 报错，根本
+        //   没解决 noexec 问题"）：hangover-wine 的 noexec 补丁只有 10.x/
+        //   11.x 两形态，wine-9.x 存量包（设备日志 wine-9.2 实证）全
+        //   hunk 失败 = 裸奔 —— wine 9.2 的 EPERM 分支对 MAP_SHARED 硬
+        //   失败，游戏 DEP-off 后数据文件映射必被拒（"Could not load
+        //   required media"；与 PE 件无关，落地 exe 也救不了）。补 0014c
+        //   （9.x 形态，brunodev85 wine-9.2-custom 同款）。
+        // ④补丁生效可检测：全部 noexec/locale 补丁 WARN 格式串内嵌标记
+        //   （AnWind-noexec-fallback / AnWind-locale-lc-all，无条件编进
+        //   ntdll.so）→ App 侧 WinePatchDetector（新增）grep 槽位 ntdll
+        //   unix .so 检测存量包补丁状态；启动链 3.5 步 + 体检逐槽位给出
+        //   可照做的重装指引（GitHub → Actions → build-wine-bionic →
+        //   Run workflow → 重装），不再让用户对着 media 报错/英文界面猜。
+        // ⑤两个 build.sh（wine + hangover-wine）补丁生效硬校验：virtual.c
+        //   无 noexec 标记 / env.c 无 locale 标记 → ::error:: 直接构建失
+        //   败 —— CI 不再可能产出缺补丁的裸奔 wine 包。
+        versionCode = 95
+        versionName = "2.38.32"
         // v3.3.3（源码包 v3.3.3）：media 根治（noexec 导入空间误判修复）
         // + /opt conf 双向 + UI 紧凑化 —— ①stageNoexecExeIfNeeded 空间预检
         // 改查必然存在的 rootfs 根（旧版查尚不存在的 stageDir，usableSpace

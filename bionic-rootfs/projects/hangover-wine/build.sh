@@ -299,6 +299,38 @@ pre_setup() {
     echo "    构建继续；若运行期异常请检查源码树内 *.rej 文件"
   fi
 
+  # v3.3.7：noexec 回退补丁生效【硬校验】。0014/0014b/0014c 三份按树
+  # 形态互斥命中（9.x/10.x/11.x 的 map_file_into_view 结构各不相同，
+  # 不匹配的 hunk 干净失败），此处校验最终源码必须带 "AnWind-noexec-
+  # fallback" 标记 —— 三份全落空 = 产出又是一个"noexec 上 media
+  # 报错"的裸奔包（用户 v3.3.6 实测：x86_64 修好了、arm64ec 的
+  # wine-9.2 旧包 0014/0014b 全 hunk 失败照样 media 报错）。
+  # 同串也是运行期检测锚点：App 侧 WinePatchDetector grep ntdll.so
+  # 里的该串判断存量 wine 包是否含回退。
+  if [[ -f dlls/ntdll/unix/virtual.c ]] \
+     && ! grep -q 'AnWind-noexec-fallback' dlls/ntdll/unix/virtual.c 2>/dev/null; then
+    echo "::error::noexec 回退补丁未生效（virtual.c 无 AnWind-noexec-fallback 标记）！"
+    echo "   该 wine 包在 noexec 存储（/storage/emulated/0）上会复现 \"Could not load required media\""
+    echo "   三份补丁按树形态互斥命中其一：0014(11.x) / 0014b(10.x) / 0014c(9.x)"
+    echo "   请核对源码树版本形态与补丁锚点是否匹配（*.rej 落在源码树内可查）"
+    return 1
+  fi
+  echo "noexec 回退补丁已生效（AnWind-noexec-fallback 标记在 virtual.c）"
+
+  # v3.3.7：locale 补丁生效【硬校验】（arm64ec 中文根因）。x86_64 形态
+  # 自 v3.3.2 有 0009（LC_ALL 直读），arm64ec 形态此前一直没带 ——
+  # bionic setlocale 恒 "C.UTF-8" → wine 恒英文 + ACP=1252（中文
+  # 路径/文件名乱码）。0009b 补 unix_to_win_locale 的 __ANDROID__
+  # LC_ALL 分支；同串 "AnWind-locale-lc-all" 供 App 侧检测存量包。
+  if [[ -f dlls/ntdll/unix/env.c ]] \
+     && ! grep -q 'AnWind-locale-lc-all' dlls/ntdll/unix/env.c 2>/dev/null; then
+    echo "::error::locale 补丁未生效（env.c 无 AnWind-locale-lc-all 标记）！"
+    echo "   该 wine 包在 bionic 上界面恒英文、ACP 恒 1252（中文环境丢失）"
+    echo "   请核查补丁锚点：projects/hangover-wine/0009b-android-locale-lc-all.patch"
+    return 1
+  fi
+  echo "locale 补丁已生效（AnWind-locale-lc-all 标记在 env.c，LC_ALL=zh_CN.UTF-8 → LCID 0x0804 / ACP 936）"
+
   # v3.2.9：0009 math.c arm64ec 补丁生效校验（wine ≤9.x 树的必然炸点）。
   # 0007 的"失败仅告警"哲学对 math.c 不适用：arm64ec 形态下补丁未生效
   # 时，make 首批 PE 编译（~28 分钟后）必炸于 dlls/crtdll/arm64ec-

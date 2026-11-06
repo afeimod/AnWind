@@ -1632,6 +1632,18 @@ private fun MoreConfigTab(
 // ===========================================================================
 // 高级设置页（wineguanli.py create_advanced_widget：4 选项卡）
 // ⚡ DY配置 / 📦 Box配置 / 🍷 Wine安装 / 📊 MANGOHUD配置
+//
+// v3.3.7（用户问题 1："高级设置只有个生效容器，还占用特别大，缺失
+// wineguanli.py 里的所有高级设置内容"）结构性修复：
+//  - 旧版页头"生效容器"选择器没传 width → GComboBox 默认 fillMaxWidth
+//    占满整行（"占用特别大"的实体），后面的说明文字被挤到 0 宽不可见；
+//  - sel==null（无容器/列表未加载）时 return@Column 直接掐掉全部四个
+//    选项卡 —— 但 wineguanli.py 的高级设置页（create_advanced_widget）
+//    **根本没有"生效容器"这个概念也没有任何门禁**：DY/Box/Wine安装
+//    是 /opt 全局配置，MANGOHUD 才需要选容器 —— 无容器时打开本页
+//    看到的就只剩那一条选择器（"只有个生效容器"）；
+//  - 现按参考逐面对齐：删页头选择器与门禁，四个选项卡恒渲染；容器
+//    选择器收进 MANGOHUD 选项卡内部（唯一需要它的地方，紧凑定宽）。
 // ===========================================================================
 
 @Composable
@@ -1642,45 +1654,10 @@ private fun GuanliAdvancedPage(
     onMango: (ContainerData) -> Unit,
     multiSelect: (MultiSelectRequest) -> Unit
 ) {
-    val context = LocalContext.current
     val cs = rememberCoroutineScope()
     var tab by remember { mutableStateOf(0) }
 
     Column(Modifier.fillMaxSize()) {
-        // 页头：生效容器选择（wineguanli 写全局 /opt/conf；AnWind 落到容器）
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .padding(horizontal = gdp(12.dp), vertical = gdp(6.dp)),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(
-                "生效容器:", fontSize = gsp(13.sp), color = themeFg(),
-                fontWeight = FontWeight.Medium
-            )
-            Spacer(Modifier.width(gdp(8.dp)))
-            if (containers.isEmpty()) {
-                Text("（无容器）", fontSize = gsp(13.sp), color = GuanliColors.info)
-            } else {
-                GComboBox(
-                    options = containers.map { it.name },
-                    selected = sel?.name ?: containers.first().name,
-                    onSelect = { }
-                )
-                Spacer(Modifier.width(gdp(10.dp)))
-                Text(
-                    "DY/Box 配置写 /opt/conf/*.conf（wineguanli.py 同款全局语义，启动链 source）；MANGOHUD 随所选容器",
-                    fontSize = gsp(10.sp), color = themeSec()
-                )
-            }
-        }
-        if (sel == null) {
-            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text("先创建一个容器再使用高级设置", fontSize = gsp(14.sp), color = GuanliColors.info)
-            }
-            return@Column
-        }
-
         ScrollableTabRow(
             selectedTabIndex = tab,
             edgePadding = gdp(0.dp),
@@ -1709,6 +1686,7 @@ private fun GuanliAdvancedPage(
                 1 -> BoxConfigTab()
                 2 -> WineInstallTab(onRefresh = onRefresh)
                 3 -> MangoHudTab(
+                    containers = containers,
                     sel = sel,
                     onMango = onMango,
                     onSetMango = { c, cfg ->
@@ -1742,7 +1720,9 @@ private fun GuanliAdvancedPage(
 
 @Composable
 private fun DyConfigTab(
-    sel: ContainerData,
+    // v3.3.7：DY 配置是 /opt/conf 全局项（wineguanli DynarecEditor 无容器概念），
+    // sel 仅用于提示文案 —— 可空（无容器时本页照常可用）
+    sel: ContainerData?,
     onSaved: () -> Unit
 ) {
     val context = LocalContext.current
@@ -1995,7 +1975,8 @@ private fun DyConfigTab(
     }
     GNote(
         "写入 /opt/conf/dynarec_active.conf（wineguanli.py 同款，启动链 source 生效，" +
-            "优先级高于 Box64 预设；当前容器 ${sel.name} 的 env= 旧 DY 覆盖已随应用自动清理）"
+            "优先级高于 Box64 预设；各容器 env= 里的旧 DY 覆盖已随应用自动清理" +
+            (sel?.let { "；当前容器 ${it.name}" } ?: "") + "）"
     )
 }
 
@@ -2287,7 +2268,11 @@ private fun WineInstallTab(onRefresh: () -> Unit) {
 
 @Composable
 private fun MangoHudTab(
-    sel: ContainerData,
+    // v3.3.7：容器选择器收进本选项卡（wineguanli create_mangohud_tab 本就
+    // 只依赖全局 MANGOHUD_CONFIG 语义；AnWind 的配置按容器存储，故在此
+    // 用紧凑定宽下拉选择 —— 不再占据整页页头）
+    containers: List<ContainerData>,
+    sel: ContainerData?,
     onMango: (ContainerData) -> Unit,
     onSetMango: (ContainerData, String) -> Unit
 ) {
@@ -2295,13 +2280,33 @@ private fun MangoHudTab(
         "MANGOHUD配置需要在环境变量中设置 MANGOHUD_CONFIG 变量\n" +
             "（AnWind：写入容器 mangohud=，启动时注入 MANGOHUD=1 + MANGOHUD_CONFIG）"
     )
-    GGroup("MANGOHUD配置（容器：${sel.name}）") {
+    if (containers.isEmpty()) {
+        GGroup("MANGOHUD配置") {
+            GNote("尚无容器 —— 先在『容器管理』页创建容器后，回到此处配置 MANGOHUD")
+        }
+        return
+    }
+    // 紧凑选择器：跟随主页选中项，也可在本页内切换
+    var mangoSelName by remember { mutableStateOf(sel?.name ?: containers.first().name) }
+    val mangoSel = containers.firstOrNull { it.name == mangoSelName } ?: containers.first()
+    GGroup("MANGOHUD配置（容器：${mangoSel.name}）") {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("生效容器:", fontSize = gsp(12.sp), color = themeFg())
+            Spacer(Modifier.width(gdp(8.dp)))
+            GComboBox(
+                options = containers.map { it.name },
+                selected = mangoSelName,
+                onSelect = { mangoSelName = it },
+                width = 200.dp
+            )
+        }
+        Spacer(Modifier.height(gdp(6.dp)))
         GSmallButton("⚙️ 配置MANGOHUD", GuanliColors.blueFab, Modifier.fillMaxWidth()) {
-            onMango(sel)
+            onMango(mangoSel)
         }
         Spacer(Modifier.height(gdp(6.dp)))
         Text(
-            "当前配置: ${sel.mangohud.ifEmpty { "未设置" }}",
+            "当前配置: ${mangoSel.mangohud.ifEmpty { "未设置" }}",
             fontSize = gsp(13.sp), color = themeFg(),
             modifier = Modifier
                 .fillMaxWidth()
@@ -2310,10 +2315,10 @@ private fun MangoHudTab(
                 .border(gdp(0.5.dp), themeSec().copy(alpha = 0.2f), RoundedCornerShape(gdp(5.dp)))
                 .padding(gdp(10.dp))
         )
-        if (sel.mangohud.isNotBlank()) {
+        if (mangoSel.mangohud.isNotBlank()) {
             Spacer(Modifier.height(gdp(6.dp)))
             GSmallButton("关闭 MANGOHUD", GuanliColors.grey, Modifier) {
-                onSetMango(sel, "")
+                onSetMango(mangoSel, "")
             }
         }
     }

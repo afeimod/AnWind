@@ -1,3 +1,10 @@
+# anwind: wine 10.x 树 noexec 回退补丁（arm64ec 形态）
+#   与 projects/wine/0011b 同源：EPERM 硬失败移除 + 共享映射软化 +
+#   执行段初始带执行位。v3.3.7 起 WARN 行内嵌 "AnWind-noexec-fallback"
+#   生效标记（App 侧 WinePatchDetector grep ntdll.so 检测）。
+#
+# 应用形态：hangover 10.0~10.18 树 / official 10.x 树。9.x/11.x 树上
+#   hunk 干净失败，由 0014c/0014 接管 —— 三份按树形态自动命中。
 diff -uNr a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
 --- a/dlls/ntdll/unix/virtual.c
 +++ b/dlls/ntdll/unix/virtual.c
@@ -10,14 +17,15 @@ diff -uNr a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
 -                if (prot & PROT_EXEC) ERR( "failed to set PROT_EXEC on file map, noexec filesystem?\n" );
 -                return STATUS_ACCESS_DENIED;
 -            }
+-            if (prot & PROT_EXEC) WARN( "failed to set PROT_EXEC on file map, noexec filesystem?\n" );
 +            /* AnWind: never hard-fail writable mappings here (Winlator's
 +             * wine-9.2-custom drops the same refusal) - the private read()
 +             * fallback below still gives the caller full data access. */
-             if (prot & PROT_EXEC) WARN( "failed to set PROT_EXEC on file map, noexec filesystem?\n" );
++            if (prot & PROT_EXEC) WARN( "failed to set PROT_EXEC on file map, noexec filesystem? [AnWind-noexec-fallback]\n" );
              break;
          default:
 @@ -2410,8 +2408,12 @@
- 
+
      if (vprot & VPROT_WRITE)
      {
 -        ERR( "unaligned shared mapping %p-%p not supported\n", map_addr, map_addr + map_size );
@@ -29,7 +37,7 @@ diff -uNr a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
 +        WARN( "shared mapping %p-%p not supported, falling back to private read\n",
 +              map_addr, map_addr + map_size );
      }
- 
+
      mprotect( map_addr, map_size, PROT_READ | PROT_WRITE );
 @@ -3173,7 +3175,8 @@
              end > ((st.st_size + sector_align) & ~sector_align) ||

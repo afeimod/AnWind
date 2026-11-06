@@ -1,5 +1,34 @@
 # AnWind Bionic 修复包 v2（2026-09-19）
 
+> **v3.3.7（2026-11-06，App v2.38.32 / versionCode 95）**：高级设置页结构修复（对齐 wineguanli.py）+ arm64ec 双根因修复（locale 补丁缺失 / wine-9.x noexec 补丁形态缺失）+ 补丁生效可检测（WinePatchDetector + CI 硬校验）。
+>
+> ## ① 【用户问题 1】“容器管理里的高级设置只有个生效容器，还占用特别大，缺失 wineguanli.py 里的所有高级设置内容”
+>
+> **根因（结构级，非渲染崩溃）**：`GuanliAdvancedPage` 页头的“生效容器”选择器 `GComboBox` **没传 width → 默认 `fillMaxWidth()` 占满整行**（同行后面的说明文字被挤到 0 宽不可见 → “占用特别大”的实体）；更关键的是 `sel == null`（无容器/列表未加载）时 `return@Column` **直接掐掉全部四个选项卡** —— 而 wineguanli.py 的高级设置页（`create_advanced_widget`）**根本没有“生效容器”这个概念也没有任何门禁**：DY 配置 / Box 配置 / Wine 安装是 `/opt` 全局配置（无容器也能用），只有 MANGOHUD 需要选容器 —— 无容器时打开本页看到的就只剩那一条选择器（“只有个生效容器”）。
+>
+> **修复**：删页头选择器与门禁，四个选项卡（⚡DY配置 / 📦Box配置 / 🍷Wine安装 / 📊MANGOHUD配置）**恒渲染**；容器选择器收进 MANGOHUD 选项卡内部（唯一需要它的地方，紧凑定宽 200dp，跟随主页选中项也可页内切换）。DY/Box/Wine 安装在无容器状态下照常可用（与 wineguanli.py 语义一致）。
+>
+> ## ② 【用户问题 2】“arm64ec 的 wine 不仅丢失了中文环境”
+>
+> **根因（配方补丁缺失，源码级定位）**：`0009-android-locale-lc-all.patch`（bionic 下 `unix_to_win_locale` 直读 LC_ALL → zh-CN → LCID 0x0804 → 界面中文 + ACP=936）自 v3.3.2 起就打在 **`projects/wine`（x86_64 形态）**上 —— 但 **`projects/hangover-wine`（arm64ec 形态）一直没带**。bionic setlocale 恒返回 `"C.UTF-8"`（bionic 只内置 C/POSIX/C.UTF-8）→ wine 把它解析成 win_name="C" → locale.nls 查表失败 → user_lcid 落空回落英语。所以用户看到：**x86_64 wine 中文正常、arm64ec wine 丢失中文环境** —— 同一份 App 语言链，两种 wine 包的差别。
+>
+> **修复**：补 `projects/hangover-wine/0009b-android-locale-lc-all.patch`（与 0009 同源；`unix_to_win_locale` 函数区段在 9.2~11.16 各代树逐字一致 —— 本机对 wine-9.2 / wine-10.10 / hangover-11.16 三棵源码树实测干净应用）。
+>
+> ## ③ 【用户问题 2 续】“还是 midea 报错，根本没解决 noexec 问题”
+>
+> **根因（补丁形态缺失）**：hangover-wine 的 noexec 回退补丁此前只有 `0014（11.x 树）/ 0014b（10.x 树）`两份 —— 但设备会话日志实证用户装的 arm64ec wine 是 **wine-9.2 时代包**（“wine-9.2-20261105”会话名）。本机对 wine-9.2 源码树实测：**0014 四个 hunk、0014b 三个 hunk 全部干净失败**（9.x 的 `map_file_into_view` 是另一套结构）—— 9.x 形态一直裸奔。
+>
+> wine 9.2 的失败机理（与 brunodev85 的 winlator wine-9.2-custom 对照核实）：`flags = MAP_FIXED | (WRITECOPY ? MAP_PRIVATE : MAP_SHARED)` —— 一切**不带 WRITECOPY**的映射（游戏对自家 media/数据文件的只读 SECTION 映射就是这种）都是 MAP_SHARED；游戏开 DEP-off 后 `force_exec_prot` 把所有可读映射强加执行位 → noexec 上 mmap EPERM → **EPERM 分支对 MAP_SHARED 硬失败** → `virtual_map_section` 失败 → "Could not load required media"。**注意：失败的是数据文件映射，与 PE 件无关 —— 落地 exe/dll 到内部存储也救不了它**（这正是 v3.3.5 PE 落地方案对 arm64ec 无效的原因，也反证真·零拷贝 + 补丁才是对的路）。
+>
+> **修复**：补 `projects/hangover-wine/0014c-fix-noexec-mmap-fallback-wine9x.patch`（brunodev85 同款：删 EPERM 分支对共享映射的硬失败，落入 wine 自带的匿名 mmap + pread + mprotect 回退）。现在 0014/0014b/0014c 三份按树形态互斥命中其一，9.x/10.x/11.x 全覆盖。
+>
+> ## ④ 补丁生效可检测（存量包对账 + CI 防裸奔）
+>
+> - **标记串**：全部 noexec/locale 补丁的 WARN 格式串内嵌 `AnWind-noexec-fallback` / `AnWind-locale-lc-all`（WARN 宏把格式串**无条件编进 ntdll.so**，运行期才按调试级别过滤）；
+> - **App 侧 `WinePatchDetector`（新增）**：grep wine 槽位 `lib/wine/**` 的 ntdll unix .so 检测标记，结果按槽位 mtime 缓存。**启动链 3.5 步**：arm64ec/hangover 后端 + 缺 noexec 回退 → 会话日志输出可照做的重装指引（GitHub → Actions → build-wine-bionic → Run workflow → 重装）；容器语言为中日韩 + 缺 locale 补丁 → 同样指引。**体检**逐槽位列出缺补丁的旧包；
+> - **CI 硬校验**（wine + hangover-wine 两个 build.sh）：补丁应用后 grep 源码标记 —— `virtual.c` 无 noexec 标记 / `env.c` 无 locale 标记 → `::error::` 直接构建失败。**CI 从此不可能产出缺补丁的裸奔 wine 包**；
+> - 生效路径：App（APK）立即生效；wine 补丁随**下一次 CI 构建 wine 包**生效（arm64ec 形态跑一次 build-wine-bionic 即可，新包含双标记，检测指引自动消失）。
+
 > **v3.3.6（2026-11-06，App v2.38.31 / versionCode 94）**：真·零拷贝（废除 PE 落地执行区）+ Z: 盘 rootfs 补齐 /storage、/sdcard 入口 + wine noexec 回退补丁（0011/0014 系列）+ noexec 机制勘误。
 >
 > ## ① 【用户定稿】“真·完全零拷贝 —— Winlator 和 MiceWine 都没有这种 PE 落地机制，都是直接从 /storage/emulated/0 跑游戏”
