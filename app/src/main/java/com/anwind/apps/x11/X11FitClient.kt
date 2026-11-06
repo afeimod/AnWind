@@ -484,7 +484,7 @@ object X11FitClient {
             val a = c.getWindowAttributes(id) ?: continue
             if (!a.mapped || a.overrideRedirect) continue
             val g = c.getGeometry(id) ?: continue
-            if (g.w < sw * 0.25 || g.h < sh * 0.25) continue  // 小窗口（对话框/任务栏类）不参与
+            if (g.w < swNow * 0.25 || g.h < shNow * 0.25) continue  // 小窗口（对话框/任务栏类）不参与
             val area = g.w.toLong() * g.h
             if (area > bestArea) {
                 secondArea = bestArea
@@ -495,7 +495,7 @@ object X11FitClient {
         }
         if (bestId == 0L) return null
         // fix17：除最大窗口（游戏）之外，还有 ≥70% root 的映射窗口 → 桌面环境
-        val desktop = secondArea * DESKTOP_AREA_DEN >= (sw.toLong() * sh) * DESKTOP_AREA_NUM
+        val desktop = secondArea * DESKTOP_AREA_DEN >= (swNow.toLong() * shNow) * DESKTOP_AREA_NUM
         return Win(bestId, bx, by, bw, bh, desktop)
     }
 

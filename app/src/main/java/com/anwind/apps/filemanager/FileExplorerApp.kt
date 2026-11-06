@@ -349,7 +349,10 @@ private fun FileExplorerContent(scope: WindowContentScope) {
 
     // ===== 导航 =====
     fun openFolder(target: File) {
-        if (!hasAllFilesAccess) { requestAllFilesAccess(); return }
+        // v3.3.8：C 盘（/data/data/com.anwind/files 应用内部存储）无需
+        // 所有文件权限即可浏览；其余外部路径维持权限门禁
+        val isAppInternalPath = target.absolutePath.startsWith("/data/data/com.anwind/")
+        if (!hasAllFilesAccess && !isAppInternalPath) { requestAllFilesAccess(); return }
         if (!target.exists() || !target.isDirectory) {
             Toast.makeText(context, "目录不存在: ${target.absolutePath}", Toast.LENGTH_SHORT).show()
             return
@@ -391,6 +394,14 @@ private fun FileExplorerContent(scope: WindowContentScope) {
     fun goUp() {
         if (isThisPcHome) return
         val current = currentRealDir ?: run { goHome(); return }
+        // v3.3.8：C/D/E 盘根目录的上一级 = 此电脑首页（盘符是顶级节点；
+        // 也避免从 C 盘退进 /data/data/com.anwind 应用沙箱内部目录）
+        val driveRoots = setOf(
+            "/data/data/com.anwind/files",
+            "/storage/emulated/0/Download",
+            "/storage/emulated/0/exagear"
+        )
+        if (current.absolutePath in driveRoots) { goHome(); return }
         // /storage/emulated/0 的父级不算可读目录；退到首页
         val parent = current.parentFile
         if (parent == null || !parent.canRead() || parent.absolutePath == "/storage/emulated") {

@@ -1979,7 +1979,7 @@ private fun DyConfigTab(
                     "$cur", fontSize = gsp(10.sp), color = themeSec(),
                     maxLines = 1,
                     modifier = Modifier.width(gdp(26.dp)),
-                    textAlign = androidx.compose.ui.text.TextAlign.End
+                    textAlign = androidx.compose.ui.text.style.TextAlign.End
                 )
                 // 控件：{0,1} → 启用勾选；多值 → 候选下拉（v3.3.8：150→96dp）
                 if (values.toSet() == setOf("0", "1")) {
