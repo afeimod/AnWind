@@ -139,10 +139,11 @@ object ContainerManager {
             WineSessionLauncher.stopContainerQuietly(name)
             if (!com.anwind.util.SafeFileOps.deleteTree(dir))
                 return "删除未完成（部分文件被占用/权限不足，可重试）"
-            // v3.3.5：清理本容器的旧版 noexec 整目录导入区
-            // （rootfs/home/.anwind/games/<容器>，v3.2.23~v3.3.4 布局）——
-            // 它在容器目录之外，不随删容器走，不清就是白吃内部存储的孤儿
-            // 副本；新直读执行区已在容器目录内（games/），随删随清。
+            // v3.3.6：清理本容器的历史 noexec 执行区残留（rootfs/
+            // home/.anwind/games/<容器>，v3.2.23~v3.3.4 整目录导入布局）
+            // —— 它在容器目录之外，不随删容器走，不清就是白吃内部存储的
+            // 孤儿副本（v3.3.6 起零拷贝直读不再产生任何执行区；v3.3.5 的
+            // <容器>/games/ 镜像区本就在容器目录内，随 deleteTree 一并清除）。
             runCatching {
                 val legacy = File(File(ContainerManager.ROOTFS_ROOT, "home/.anwind/games"), name)
                 if (legacy.exists()) com.anwind.util.SafeFileOps.deleteTree(legacy)
@@ -168,9 +169,9 @@ object ContainerManager {
         if (!srcDir.isDirectory) return "源容器不存在：$src"
         return try {
             val dstDir = File(CONTAINERS_ROOT, dst)
-            // v3.3.5：排除 games/ 直读执行区（noexec PE 镜像 + 数据件
-            // 链接 —— 派生数据，克隆容器首次启动游戏时自动重建；不排除
-            // 则每个克隆都要复制几百 MB 执行件）。
+            // v3.3.6：排除 games/（v3.3.5 遗留的 PE 镜像执行区 —— 派生
+            // 数据，v3.3.6 起零拷贝直读不再产生；旧容器里的遗留目录也不
+            // 值得复制进克隆，首次启动会自动清掉）。
             if (!com.anwind.util.SafeFileOps.copyTree(srcDir, dstDir, excludeTopLevel = setOf("games")))
                 return "克隆未完成（部分文件复制失败，可删除后重试）"
             val conf = File(dstDir, "container.conf")
@@ -225,8 +226,8 @@ object ContainerManager {
         return try {
             WineSessionLauncher.stopContainerQuietly(old)
             if (!oldDir.renameTo(newDir)) return "重命名失败（IO 错误）"
-            // v3.3.5：旧版导入区同步改名（新直读执行区 games/ 在容器目录
-            // 内，已随整目录 renameTo 自动跟随）。
+            // v3.3.6：旧版导入区同步改名（仅剩存量清理意义；v3.3.6 起
+            // 零拷贝直读，新容器不再有任何执行区）。
             runCatching {
                 val legacyRoot = File(ContainerManager.ROOTFS_ROOT, "home/.anwind/games")
                 val legacyOld = File(legacyRoot, old)

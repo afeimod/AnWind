@@ -246,8 +246,27 @@ android {
         // ③/opt/prefix 注册表导入剥除 AppDefaults\<exe>\DllOverrides 段
         //   （生态包预置的游戏级加载序是 media 错误污染源）+ 旧前缀存量
         //   键值一次性 regedit 清洗（幂等标记）。
-        versionCode = 93
-        versionName = "2.38.30"
+        // v3.3.6（源码包 v3.3.6，App v2.38.31 / versionCode 94）：
+        // ①【用户定稿】真·零拷贝：废除 v3.3.5 PE 件落地 games/ 执行区
+        //   （对齐 Winlator/MiceWine —— 二者均无 PE 落地机制，直接从
+        //   /storage/emulated/0 跑游戏）；exe 按原路径直接启动，不复制
+        //   任何文件；旧两代执行区残留（rootfs/home/.anwind/games、
+        //   <容器>/games）首次启动/删容器一次性清理释放。
+        // ②Z: 盘（内部 rootfs）补齐外部存储访问入口：rootfs/storage →
+        //   /storage、rootfs/sdcard → /storage/emulated/0（Z:\storage\…、
+        //   Z:\sdcard\… 直达外部存储任意目录；d:/e: 仍是主通道）；未被
+        //   盘符覆盖的 /storage|/sdcard Unix 路径自动改写为 Z: 形态再启动。
+        // ③wine noexec 回退补丁（bionic-rootfs）：projects/wine 0011/
+        //   0011b/0011c + projects/hangover-wine 0014/0014b —— 撤销
+        //   noexec 共享映射硬失败（brunodev85 wine-9.2-custom 同款），
+        //   11.x 恢复"执行段带执行位 mmap 失败 → 匿名页+pread 回退"，
+        //   PE 镜像从 noexec 存储零拷贝加载执行（native 与 FES/box64
+        //   形态全覆盖）。
+        // ④删除安全复核：deleteTree 不跟随链接 + 删除走廊双保险不变，
+        //   删容器/rootfs 绝不波及 /storage/emulated/0（含新增的 rootfs
+        //   storage/sdcard 入口链接）。
+        versionCode = 94
+        versionName = "2.38.31"
         // v3.3.3（源码包 v3.3.3）：media 根治（noexec 导入空间误判修复）
         // + /opt conf 双向 + UI 紧凑化 —— ①stageNoexecExeIfNeeded 空间预检
         // 改查必然存在的 rootfs 根（旧版查尚不存在的 stageDir，usableSpace

@@ -198,6 +198,63 @@ object WineRegistry {
                     log("已补 dosdevices x: → $driveX（startwine.sh 同款）")
                 }
             }.onFailure { log("警告: x: 盘补建失败（${it.message}）") }
+
+            // v3.3.6（用户指令）：Z: 盘（内部 rootfs）补齐外部存储访问入口
+            ensureRootfsStorageEntries(log)
+        }
+    }
+
+    /**
+     * v3.3.6（用户指令：「Z 盘如果缺少 /storage 或者 sdcard 等访问入口，
+     * 参考 Winlator 和 MiceWine 的 rootfs 正确逻辑补齐」）。
+     *
+     * 勘察结论：Winlator 的 z: 直链其 rootfs 根、外部存储只经 d:/e: 盘符
+     * 触达，rootfs 内**没有** /storage、/sdcard 入口；AnWind 按用户指令
+     * 补齐 —— rootfs 根下建两条符号链接：
+     *  - storage → /storage            （Z:\storage\emulated\0\… 与 Android
+     *                                    原生路径逐段一致，经它可达外部
+     *                                    存储**任意**目录，不止 Download/exagear）
+     *  - sdcard  → /storage/emulated/0 （经典 sdcard 别名：Z:\sdcard\Download\…）
+     * d:/e: 盘只覆盖 Download/exagear 两个目录；游戏放在外部存储其他目录
+     * 时，其 Unix 路径无法换算成盘符路径（wine 只认 dosdevices 可映射路径）
+     * —— 这两条入口正是它们进 wine 的通道（RootfsLauncher 会把此类路径
+     * 改写为 Z:\storage\… 形态再启动）。
+     *
+     * 删除安全性（用户红线）：链接本体在 rootfs 内部 —— SafeFileOps
+     * deleteTree（Files.walkFileTree 不带 FOLLOW_LINKS）删 rootfs/容器时
+     * 只删链接本身，**绝不穿透波及 /storage/emulated/0 下任何文件**；
+     * z: 盘直链内部 rootfs 的语义不变（外部存储的主通道仍是 d:/e:）。
+     *
+     * 幂等：链接缺失时补建、指错时重指；已存在的非链接内容（用户自建
+     * 目录/文件）一律不碰。
+     */
+    private fun ensureRootfsStorageEntries(log: (String) -> Unit) {
+        runCatching {
+            val root = File(ContainerManager.ROOTFS_ROOT)
+            if (!root.isDirectory) return
+            listOf(
+                "storage" to "/storage",
+                "sdcard" to "/storage/emulated/0"
+            ).forEach { (name, target) ->
+                val link = File(root, name)
+                val isLink = java.nio.file.Files.isSymbolicLink(link.toPath())
+                val cur = if (isLink) {
+                    runCatching { android.system.Os.readlink(link.absolutePath) }.getOrNull()
+                } else null
+                when {
+                    cur == target -> Unit   // 已就位
+                    isLink -> runCatching {   // 旧符号链接：重指
+                        java.nio.file.Files.deleteIfExists(link.toPath())
+                        android.system.Os.symlink(target, link.absolutePath)
+                        log("已重指 rootfs/$name → $target（Z:\\$name 外部存储访问入口）")
+                    }.onFailure { log("警告: rootfs/$name 重指失败（${it.message}）") }
+                    !link.exists() -> runCatching {
+                        android.system.Os.symlink(target, link.absolutePath)
+                        log("已补 rootfs/$name → $target（Z:\\$name 外部存储访问入口，v3.3.6）")
+                    }.onFailure { log("警告: rootfs/$name 补建失败（${it.message}）") }
+                    else -> log("提示: rootfs/$name 已存在且非链接（用户数据），保持不动")
+                }
+            }
         }
     }
 

@@ -1,6 +1,32 @@
 # AnWind Bionic 修复包 v2（2026-09-19）
 
-> **v3.3.5（2026-11-06，App v2.38.30 / versionCode 93）**：noexec 直读执行（游戏文件零拷贝）+ z: 盘直链内部 rootfs + 删除走廊硬守卫 + AppDefaults DllOverrides 剥除。
+> **v3.3.6（2026-11-06，App v2.38.31 / versionCode 94）**：真·零拷贝（废除 PE 落地执行区）+ Z: 盘 rootfs 补齐 /storage、/sdcard 入口 + wine noexec 回退补丁（0011/0014 系列）+ noexec 机制勘误。
+>
+> ## ① 【用户定稿】“真·完全零拷贝 —— Winlator 和 MiceWine 都没有这种 PE 落地机制，都是直接从 /storage/emulated/0 跑游戏”
+>
+> v3.3.5 的混合方案（数据件软链直读 + exe/dll PE 件落地容器 games/ 执行区）被用户否决。**本轮先做机制勘察再动代码**，全部结论经源码/实验逐项核实：
+>
+> - **Winlator 直跑机制（源码级）**：`WineUtils.createDosdevicesSymlinks` 建 `z:→../../../..（rootfs 根）`、`D:→/storage/emulated/0/Download`、`E:→/data/data/com.winlator/storage`，游戏经盘符路径直接启动，**全程无任何拷贝/落地机制**；其 rootfs.tzst 顶目只有 `bin/etc/home/lib/opt/tmp/usr/var`，**没有 /storage、/sdcard 入口**；
+> - **Winlator 为什么跑得动 noexec（wine 源码级）**：`brunodev85/wine-9.2-custom` 对 `dlls/ntdll/unix/virtual.c` 的 `map_file_into_view` 恰有一处定制 —— **删掉 noexec EPERM 分支里共享映射的硬失败**（`if (flags & MAP_SHARED) { ERR(...); return STATUS_ACCESS_DENIED; }` 整块移除），使一切 noexec 失败落入 wine 自带的通用回退：**匿名 mmap(RW) + pread() 读入 + mprotect(按需含执行位)** —— 匿名页加执行位不受 noexec 限制（本机内核实验：noexec 挂载上文件映射 mmap(RWX)/mprotect(+EXEC) 分别 EPERM/EACCES，**匿名页 mprotect(+EXEC) 照常可执行**）。wine-10.10-custom 未改此处（box64 形态下执行位是装饰性的：CPU 不直接执行映射内代码，box64 翻译执行仅需读权限）；
+> - **AnWind 补丁侧排查（用户问“是不是我的补丁破坏了 noexec”）**：`bionic-rootfs/projects/wine` 与 `projects/hangover-wine` 的全部补丁**均不触碰** `virtual.c`/loader 的 noexec/PROT_EXEC 逻辑（唯一 mmap 相关补丁是 box64 共享内存转发）—— **用户补丁无责**；此前的 noexec 失败是上游 wine 自身行为：9.x/10.x 对“共享可写 + 执行位”映射硬失败（游戏开 DEP-off（`SetProcessInformation(ProcessExecuteFlags)` → `force_exec_prot`）后所有可读映射被强加执行位，撞上 noexec 即整映射被拒 → `virtual_map_section ... failed` → "Could not load required media"）；11.x（含 hangover-11.16）则改为“先 RW 文件映射、事后 mprotect 加执行位” —— noexec 上该 mprotect 失败，原生执行的 PE 段不可执行。
+>
+> **修复**：
+> - **Kotlin 零拷贝**（`RootfsLauncher.kt`：`prepareNoexecDirectRead` 替代 `directReadNoexecIfNeeded`，PE 镜像函数群全部删除）：exe 在外部存储时**按原路径直接启动**，不复制任何文件；保留安卓直读权限预检（大声指引「所有文件访问」授权）；**旧两代执行区残留（v3.2.23~v3.3.4 整目录导入区、v3.3.5 `<容器>/games/` 镜像区）首次启动一次性清理释放**（`SafeFileOps.deleteTree` 不跟随链接，绝不波及原件），此后不再产生；`ContainerManager` 的 remove/clone/rename 注释与语义同步（克隆仍排除遗留 games/）；
+> - **wine noexec 回退补丁**（`bionic-rootfs`，构建时按树形态自动套用、`--forward` 容错）：`projects/wine/0011（9.x 形态，与 wine-9.2-custom 逐字同义）/0011b（10.x）/0011c（11.x）` + `projects/hangover-wine/0014（11.x）/0014b（10.x）` —— ① 撤销 noexec 共享映射硬失败（对齐 brunodev85）；② 11.x 恢复“执行段带执行位 mmap”（`map_image_into_view` 为 `IMAGE_SCN_MEM_EXECUTE` 段传 `VPROT_EXEC`，`map_file_into_view` 尊重之）→ noexec 上 mmap 失败自动落入匿名+pread 回退，**原生执行（arm64ec/FEX 形态）也能从 noexec 零拷贝加载执行**；③ 回退尾部共享映射拒绝软化为私有读拷贝（数据可达优先）。本机对 9.2/10.10/hangover-11.16 三形态源码实测：补丁干净应用、字母序叠加无冲突、最终代码语义正确；
+> - **生效提示**：wine 补丁随**下一次 CI 构建 wine 包**生效；存量 wine 包上零拷贝对多数游戏即刻可用（FES/box64 翻译执行不依赖执行位），若仍见 `noexec filesystem?` 硬错误（wine-9.2 会话日志特征）需重装含补丁的 wine 包 —— 启动日志已内置该指引行。
+>
+> ## ② 【用户指令】“Z 盘（内部 rootfs）如果缺少 /storage 或者 sdcard 等访问入口，参考 Winlator 和 MiceWine 的 rootfs 正确逻辑补齐”
+>
+> **勘察结论**：Winlator rootfs 无此类入口（外部存储仅经 d:/e: 盘符）—— 但其 d:/e: 也因此只能覆盖 Download 与内部存储两个目录；AnWind 按用户指令**补齐**（`WineRegistry.ensureRootfsStorageEntries`，随 `ensureDosdevices` 幂等执行）：rootfs 根下建 `storage → /storage`（`Z:\storage\emulated\0\…` 与 Android 原生路径逐段一致，**可达外部存储任意目录**）与 `sdcard → /storage/emulated/0`（经典别名 `Z:\sdcard\Download\…`）两条符号链接。
+>
+> - **配套路径改写**（`RootfsLauncher.normalizeStorageExePath`）：wine 只能启动可换算成 dosdevices 盘符的路径 —— 游戏放在外部存储**非** Download/exagear 目录时，其 Unix 路径（如 `/storage/emulated/0/Games/a.exe`）不被任何盘符覆盖；启动链自动改写为 `Z:\storage\emulated\0\Games\a.exe` 形态（同一份文件，零拷贝；工作目录随 dosdevices 解析，media 相对路径照常可达）；
+> - **删除安全（用户红线，复核）**：链接本体在 rootfs 内部 —— `SafeFileOps.deleteTree`（walkFileTree 不带 FOLLOW_LINKS）+ `/data/data/com.anwind` 删除走廊双保险，删容器/删 rootfs 只删链接本身，**绝不穿透波及 /storage/emulated/0 下任何文件**；z: 直链内部 rootfs 语义不变，外部存储主通道仍是 d:/e:。
+>
+> ## ③ v3.3.5 注释勘误（本轮实验核实后修正）
+>
+> v3.3.5 注释称“noexec 上 mmap(PROT_EXEC) 是内核硬约束、执行件必须落地内部 ext4” —— **不准确**：noexec 拦的是**文件映射**的执行位（mmap 带执行位 EPERM；先 RW 映射再 mprotect(+EXEC) 同样 EACCES），**匿名内存不受限**；wine 对失败映射有官方回退（匿名页 + pread + 再加执行位），Winlator 正是靠它（外加删共享硬失败）实现零拷贝直跑。`RootfsLauncher.isNoexecPath` 注释已按实验结论改写，相关机制说明同步修正。
+
+> **v3.3.5（2026-11-06，App v2.38.30 / versionCode 93）**：noexec 直读执行（游戏文件零拷贝）+ z: 盘直链内部 rootfs + 删除走廊硬守卫 + AppDefaults DllOverrides 剥除。〔注：本版的 PE 件落地 games/ 执行区方案已在 v3.3.6 废除〕
 >
 > ## ① 【用户诉求】“运行 exe 时把游戏文件全都复制到 rootfs/home/.anwind/games/<容器> 下了，内存可受不得，直接读取游戏文件不要复制”
 >

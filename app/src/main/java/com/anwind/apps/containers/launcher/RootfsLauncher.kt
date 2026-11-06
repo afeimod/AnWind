@@ -277,8 +277,10 @@ object RootfsLauncher {
     }
 
     // ------------------------------------------------------------------
-    // v3.3.5（用户诉求）：noexec 存储直读执行 —— 数据件零拷贝直读，
-    // 仅 PE 执行件落地容器内执行区（替换 v3.2.23 的整目录导入）
+    // v3.3.6（用户定稿）：noexec 存储**零拷贝**直读执行 —— 游戏 exe 按
+    // 原路径直接启动，不再有任何执行区/镜像机制（v3.2.23 整目录导入、
+    // v3.3.5 PE 件落地两代机制全部移除；对齐 Winlator / MiceWine ——
+    // 两者都直接从 /storage/emulated/0 跑游戏，没有 PE 落地机制）
     // ------------------------------------------------------------------
 
     /**
@@ -286,10 +288,18 @@ object RootfsLauncher {
      *
      * 读 /proc/self/mounts（本进程视角，含 sdcardfs/FUSE 项），取**最长
      * 前缀**挂载点的挂载选项判定 —— /storage/emulated/0 的 sdcardfs
-     * 在 Android 上恒为 noexec，应用无法 remount；mmap(PROT_EXEC) 需要
-     * 执行件落地内部 ext4/f2fs，但**读取（PROT_READ）不受影响** ——
-     * 数据件经符号链接直读原件即可。挂载点里的空格转义（\040 等）按
-     * kernel 语义还原。
+     * 在 Android 上恒为 noexec，应用无法 remount。挂载点里的空格转义
+     * （\040 等）按 kernel 语义还原。
+     *
+     * noexec 的确切语义（v3.3.6 内核实验 + wine 源码逐行核实，勘误
+     * v3.3.5 注释）：拦 execve() 与**文件映射**的执行位 —— 带执行位
+     * mmap 直接 EPERM，先 mmap RW 再 mprotect(+EXEC) 也 EACCES；
+     * **匿名内存不受限**（匿名页加执行位照常允许）；普通读写完全不受
+     * 影响。因此 wine 加载 noexec 上的 PE 镜像有一条官方回退路：带执行
+     * 位 mmap 失败 → 改用匿名页 + pread() 读入文件内容 + 再加执行位
+     * —— 这正是 Winlator 直跑外部存储游戏的机制（其 wine-9.2-custom
+     * 删掉了共享映射硬失败，bionic-rootfs 补丁 0011/0014 系列已把同款
+     * 回退补进全部构建形态）。
      */
     internal fun isNoexecPath(path: String): Boolean {
         return try {
@@ -317,65 +327,76 @@ object RootfsLauncher {
     private fun unescapeMountPath(s: String): String =
         s.replace("\\040", " ").replace("\\011", "\t").replace("\\134", "\\")
 
-    /** PE 可执行件扩展名（小写比较）——只有这些文件必须落地内部 ext4 才能被 mmap(PROT_EXEC)。 */
-    private val PE_EXTENSIONS = setOf("exe", "dll", "sys", "drv", "ocx", "cpl", "scr")
-
-    /** PE 可执行件判定（按扩展名，大小写不敏感）。 */
-    private fun isPeExecutable(name: String): Boolean {
-        val dot = name.lastIndexOf('.')
-        if (dot <= 0) return false
-        return name.substring(dot + 1).lowercase(Locale.ROOT) in PE_EXTENSIONS
-    }
-
-    /** 目录树内是否含 PE 执行件（读不了的目录保守按“含”处理 —— 走逐件镜像兑底）。 */
-    private fun dirContainsPe(dir: File): Boolean = try {
-        dir.walkTopDown().any { it.isFile && isPeExecutable(it.name) }
-    } catch (_: Exception) {
-        true
-    }
-
     /**
-     * PE 指纹（v3.3.5）：只统计 PE 执行件（数量 + 总字节 + 主 exe mtime）。
-     * 数据件经符号链接直读原始存储（实时生效），源目录 media 增删改不再
-     * 触发执行区重建 —— 旧版整目录指纹（文件数/总字节）动辄把 GB 级包体
-     * 重拷一遍的问题随之消失；PE 件变更（游戏更新换了 dll）才重建。
+     * /storage、/sdcard 下的 Unix 路径 → Z: 盘 DOS 路径（v3.3.6）。
+     *
+     * wine 只能启动能换算成 dosdevices 盘符的路径：d:/e: 只覆盖
+     * Download/exagear，游戏放在外部存储其他目录时 Unix 路径无法映射。
+     * Z: 盘直链内部 rootfs（ensureDosdevices），rootfs 内的 /storage 与
+     * /sdcard 入口（WineRegistry.ensureRootfsStorageEntries）让
+     * Z:\storage\emulated\0\… 与 Z:\sdcard\… 直达外部存储同名路径 ——
+     * 本函数把没被任何盘符覆盖的 /storage|/sdcard Unix 路径改写成
+     * Z: 形态（指向同一份文件，零拷贝）。
+     *
+     * @return DOS 路径（如 Z:\storage\emulated\0\Games\a.exe）；已能被
+     *         现有盘符覆盖（d:/e: 直链路径）、入口未就绪或不是
+     *         /storage|/sdcard 路径时返回 null（维持原样交 wine 处理）。
      */
-    private fun peFingerprint(dir: File, exe: File): String {
-        var count = 0L
-        var size = 0L
-        dir.walkTopDown().forEach { f ->
-            if (f.isFile && isPeExecutable(f.name)) { count++; size += f.length() }
+    internal fun normalizeStorageExePath(
+        unixPath: String,
+        container: ContainerData,
+        log: (String) -> Unit
+    ): String? {
+        if (!unixPath.startsWith("/storage/") && !unixPath.startsWith("/sdcard/")) return null
+
+        // 已被现有盘符覆盖 → 交给 wine 原生换算（d:/e: 直链路径原样可用）
+        val dd = File(File(container.prefixPath), "dosdevices")
+        if (dd.isDirectory) {
+            dd.listFiles().orEmpty().forEach { drive ->
+                if (drive.name.matches(Regex("^[a-z]:$"))) {
+                    val target = runCatching { android.system.Os.readlink(drive.absolutePath) }.getOrNull()
+                    if (target != null && target.startsWith("/") &&
+                        (unixPath == target || unixPath.startsWith("$target/"))
+                    ) return null
+                }
+            }
         }
-        return "$count-$size-${exe.lastModified()}"
+
+        // Z: 盘与 rootfs 入口就绪才改写（入口由 WineRegistry 在前缀链路建好）
+        val zLink = File(dd, "z:")
+        val zTarget = runCatching { android.system.Os.readlink(zLink.absolutePath) }.getOrNull()
+        if (zTarget != ContainerManager.ROOTFS_ROOT) return null
+        val prefix = if (unixPath.startsWith("/storage/")) {
+            if (!File(ContainerManager.ROOTFS_ROOT, "storage").exists()) return null
+            "/storage"
+        } else {
+            if (!File(ContainerManager.ROOTFS_ROOT, "sdcard").exists()) return null
+            "/sdcard"
+        }
+        val dos = "Z:" + unixPath.removePrefix(prefix).replace('/', '\\')
+        log("外部存储路径改写: $unixPath → $dos（Z: 盘 rootfs 入口直达，零拷贝）")
+        return dos
     }
 
     /**
-     * v3.3.5 重写（用户原话：「拷贝啥文件啊，wine 不是通过 ls 直链了
-     * /storage/emulated/0/ 吗，可以直接读啊」—— 旧版 v3.2.23 把整个游戏
-     * 目录复制进 rootfs/home/.anwind/games/<容器>/，大游戏直接双倍吃光
-     * 内部存储）。
+     * v3.3.6 定稿（用户原话：「真·完全零拷贝…Winlator 和 MiceWine 都是
+     * 直接从 /storage/emulated/0 跑游戏」—— v3.2.23 整目录导入与
+     * v3.3.5 PE 件落地两代机制全部废除）。
      *
-     * **直读执行**（exe 位于 noexec 存储时）：
-     *  - **数据件零拷贝直读** —— media\ / data\ / 音视频 / 包体等一切非
-     *    PE 文件、以及不含 PE 的整棵子目录，在执行区镜像里全部是**符号
-     *    链接**，指回 /storage/emulated/0 原件；wine 打开即直读（sdcardfs
-     *    的读取不受 noexec 影响 —— 只有 PE 映像 mmap(PROT_EXEC) 不行）。
-     *    d:/e: 盘符同样直链 Download/exagear（ensureDosdevices）；
-     *  - **仅 PE 执行件落地**（exe/dll/sys/drv/ocx/cpl/scr）—— noexec 挂载
-     *    无法 mmap 可执行段是内核硬约束，绕不开；但执行件通常只占几十~
-     *    几百 MB，GB 级游戏数据不再进内部存储；
-     *  - **执行区随容器生命周期**（<容器>/games/<源目录名>，与前缀平级）
-     *    —— 删除/重命名容器自动处置，不再在容器外残留孤儿副本；旧版
-     *    rootfs/home/.anwind/games/<容器> 首次启动自动清理，立刻释放历史
-     *    占用的内部存储；
-     *  - **安卓直读权限预检** —— 源目录不可读时大声指引授权（无外部
-     *    存储读权限正是“很多游戏 media 错误”的源头之一）。
-     *
-     * CWD 随镜像路径解析：游戏相对路径（media\x.jpg）经链接直读原件；
-     * 指纹只看 PE 件，命中零拷贝秒启，且每次命中做根级增量补链（用户
-     * 新丢进游戏根目录的 mod/补丁即时可见）。
+     * exe 位于外部存储（noexec）时**按原路径直接启动**，不复制任何文件：
+     *  - wine 经 d:/e: 盘（dosdevices 软链）与 Z: 盘 rootfs 入口
+     *    （Z:\storage、Z:\sdcard）直读游戏文件 —— 读取不受 noexec 影响；
+     *  - PE 可执行段由 wine 的匿名内存回退加载（带执行位 mmap 失败 →
+     *    匿名页 + pread + 再加执行位；见 [isNoexecPath] 注释与
+     *    bionic-rootfs 的 wine 补丁 0011/0014 系列）；
+     *  - **旧两代机制残留一次性清理**（v3.2.23~v3.3.4 整目录导入区
+     *    rootfs/home/.anwind/games/<容器>/、v3.3.5 PE 镜像区
+     *    <容器>/games/）—— 首次启动清掉、立刻释放内部存储，此后不再
+     *    产生（walkTopDown 统计只用于日志报数）；
+     *  - **安卓直读权限预检** —— 进程读不到源目录时大声指引授权（无
+     *    外部存储读权限正是“很多游戏 media 错误”的源头之一）。
      */
-    private fun directReadNoexecIfNeeded(
+    private fun prepareNoexecDirectRead(
         wineArgs: List<String>,
         container: ContainerData,
         log: (String) -> Unit
@@ -384,167 +405,58 @@ object RootfsLauncher {
         if (!exePath.startsWith("/")) return wineArgs
         val exeFile = File(exePath)
         if (!exeFile.isFile) return wineArgs
-        if (!isNoexecPath(exePath)) return wineArgs
+        val onExternalStorage = exePath.startsWith("/storage/") || exePath.startsWith("/sdcard/")
+        if (!onExternalStorage) return wineArgs
 
         val srcDir = exeFile.parentFile ?: return wineArgs
 
+        // ① Unix 路径 → Z: 盘 DOS 形态（没被 d:/e: 覆盖的外部存储路径）
+        val effectiveArgs = normalizeStorageExePath(exePath, container, log)?.let { dos ->
+            listOf(dos) + wineArgs.drop(1)
+        } ?: wineArgs
+
         runCatching {
-            // ① 安卓直读权限预检：进程读不到源目录 → 直读无从谈起。
+            // ② 安卓直读权限预检：进程读不到源目录 → wine 同样打不开游戏
+            //    文件（media/资源错误的第一根源）。大声指引，不阻断启动。
             if (!srcDir.canRead()) {
                 log("警告: 无外部存储读权限（$srcDir 不可读）—— 直读模式需要「所有文件访问」权限")
                 log("→ Android 设置 → 应用 → AnWind → 权限 → 允许管理所有文件，授权后重试")
-                log("→ 无权限时 wine 打不开游戏文件（media/资源错误正由此而来）；本次按原路径尝试")
-                return wineArgs
+                log("→ 无权限时 wine 打不开游戏文件（media/资源错误正由此而来）")
+            } else {
+                log("外部存储零拷贝直读: $srcDir（exe/dll/数据件全部原地直读，无任何复制；noexec=${isNoexecPath(exePath)}）")
             }
 
-            // ② 旧版（v3.2.23~v3.3.4）整目录导入区清理：GB 级历史副本
-            //    立刻释放；父目录空了顺手回收。
-            val legacyStage = File(
-                File(File(ContainerManager.ROOTFS_ROOT, "home/.anwind/games"), container.name),
-                srcDir.name
+            // ③ 旧两代执行区残留一次性清理（仅清容器/导入区目录本身，
+            //    SafeFileOps.deleteTree 不跟随符号链接，绝不波及
+            //    /storage/emulated/0 原件；父目录空了顺手回收）。
+            val legacyDirs = listOf(
+                File(File(File(ContainerManager.ROOTFS_ROOT, "home/.anwind/games"), container.name), srcDir.name),
+                File(File(File(ContainerManager.CONTAINERS_ROOT, container.name), "games"), srcDir.name)
             )
-            if (legacyStage.exists()) {
-                val legacyBytes = runCatching {
-                    legacyStage.walkTopDown().filter { it.isFile }.sumOf { it.length() }
-                }.getOrDefault(0L)
-                if (com.anwind.util.SafeFileOps.deleteTree(legacyStage)) {
-                    log("已清理旧版整目录导入区（${container.name}/${srcDir.name}，释放约 ${legacyBytes / 1024 / 1024}MB）")
-                    runCatching {
-                        legacyStage.parentFile
-                            ?.takeIf { it.isDirectory && it.list().orEmpty().isEmpty() }
-                            ?.delete()
-                    }
-                }
-            }
-
-            // ③ 执行区（容器目录内，随容器删除/重命名/克隆自动处置）
-            val stageDir = File(
-                File(File(ContainerManager.CONTAINERS_ROOT, container.name), "games"),
-                srcDir.name
-            )
-            val marker = File(stageDir, ".anwind-pe-stage-fp")
-            val stagedExe = File(stageDir, exeFile.name)
-
-            val needFp = peFingerprint(srcDir, exeFile)
-            if (marker.isFile && marker.readText() == needFp && stagedExe.isFile) {
-                reconcileMirrorRoot(srcDir, stageDir)
-                log("直读执行区命中（PE 指纹一致，零拷贝；数据件实时链接原始存储）")
-                log("→ $stagedExe")
-                return listOf(stagedExe.absolutePath) + wineArgs.drop(1)
-            }
-
-            // ④ 空间预检：只看 PE 件体量（不再按整目录估算）。可用空间
-            //    查必然存在的 rootfs 根（v3.3.3 实证：usableSpace 对不存在
-            //    路径返回 0）；≤0（无法判定）不硬拒，尽力分发。
-            var peBytes = 0L
-            srcDir.walkTopDown().forEach { if (it.isFile && isPeExecutable(it.name)) peBytes += it.length() }
-            val usable = File(ContainerManager.ROOTFS_ROOT).usableSpace
-            if (usable > 0 && usable - 64L * 1024 * 1024 < peBytes) {
-                log("警告: 内部存储空间不足（执行件需约 ${peBytes / 1024 / 1024}MB，可用 ${usable / 1024 / 1024}MB）—— 本次按原路径启动（noexec 上 PE 映射大概率失败）")
-                return wineArgs
-            }
-
-            log("noexec 存储直读模式：$srcDir")
-            log("→ 执行区 $stageDir（仅 exe/dll 等执行件约 ${peBytes / 1024 / 1024}MB 落地内部 ext4；media 等数据件经符号链接直读原始存储，零拷贝）")
-            if (stageDir.exists()) com.anwind.util.SafeFileOps.deleteTree(stageDir)
-            stageDir.mkdirs()
-            val stats = mirrorForDirectRead(srcDir, stageDir)
-            marker.writeText(needFp)
-            log("执行区就绪（复制 ${stats.first} 个执行件 ${stats.second / 1024 / 1024}MB，链接 ${stats.third} 项数据件直读）—— 以镜像 exe 启动")
-            return listOf(stagedExe.absolutePath) + wineArgs.drop(1)
-        }.onFailure { e ->
-            log("警告: 直读执行区构建失败（${e.message ?: e.javaClass.simpleName}）—— 本次按原路径启动")
-        }
-        return wineArgs
-    }
-
-    /**
-     * 镜像一个目录为「PE 复制 + 数据件链接」的直读执行区：
-     *  - 无 PE 子目录 → 目录级符号链接（一条链接直读整棵子树，实时）；
-     *  - 含 PE 子目录 → 递归镜像（进目录逐件分发）；
-     *  - PE 文件 → 复制（内部 ext4 可 exec）；
-     *  - 其余文件 → 符号链接直读原件。
-     * 单件失败不炸整体：链接建不成的数据件回退复制（可用性优先）。
-     * @return Triple(复制件数, 复制字节, 链接数)。
-     */
-    private fun mirrorForDirectRead(src: File, dst: File): Triple<Int, Long, Int> {
-        var copied = 0
-        var copiedBytes = 0L
-        var linked = 0
-        src.listFiles().orEmpty().forEach { entry ->
-            val target = File(dst, entry.name)
-            if (entry.isDirectory) {
-                if (!dirContainsPe(entry) && createSymlink(entry, target)) {
-                    linked++
-                    return@forEach
-                }
-                // 含 PE（或链接失败回退）：递归镜像
-                target.mkdirs()
-                val sub = mirrorForDirectRead(entry, target)
-                copied += sub.first; copiedBytes += sub.second; linked += sub.third
-            } else if (entry.isFile) {
-                if (isPeExecutable(entry.name) || !createSymlink(entry, target)) {
-                    target.parentFile?.mkdirs()
-                    entry.copyTo(target, overwrite = true)
-                    copied++; copiedBytes += entry.length()
-                } else {
-                    linked++
-                }
-            }
-        }
-        return Triple(copied, copiedBytes, linked)
-    }
-
-    /** 建符号链接（链接位已有内容 —— 含悬空链接 —— 先移除）。@return 是否成功。 */
-    private fun createSymlink(target: File, link: File): Boolean = try {
-        // File.exists() 对悬空链接返回 false（不跟随即“不存在”），
-        // Files.deleteIfExists 不跟随、悬空链接也照样删链接本身。
-        java.nio.file.Files.deleteIfExists(link.toPath())
-        android.system.Os.symlink(target.absolutePath, link.absolutePath)
-        true
-    } catch (_: Exception) {
-        false
-    }
-
-    /**
-     * 根级增量补链（指纹命中路径上执行，毫秒级）：镜像缺什么补什么
-     * （无 PE 子目录 → 目录链接；PE 子目录 → 整树镜像；文件 → PE 复制
-     * / 其余链接），用户往游戏根目录新丢的 mod/补丁/资料即时可见；
-     * 顺手清掉源已删除的根级 PE 副本。深层（PE 子目录内）变更由 PE
-     * 指纹变化触发整建覆盖。
-     */
-    private fun reconcileMirrorRoot(src: File, dst: File) {
-        runCatching {
-            src.listFiles().orEmpty().forEach { entry ->
-                val target = File(dst, entry.name)
-                val isLink = java.nio.file.Files.isSymbolicLink(target.toPath())
-                if (entry.isDirectory) {
-                    if (isLink || !target.isDirectory) {
-                        if (isLink) target.delete()
-                        else if (target.exists()) return@forEach   // 非目录异物：不碰
-                        if (dirContainsPe(entry)) {
-                            target.mkdirs()
-                            mirrorForDirectRead(entry, target)
-                        } else {
-                            createSymlink(entry, target)
+            legacyDirs.forEach { legacy ->
+                if (legacy.exists()) {
+                    val bytes = runCatching {
+                        legacy.walkTopDown().filter { it.isFile }.sumOf { it.length() }
+                    }.getOrDefault(0L)
+                    if (com.anwind.util.SafeFileOps.deleteTree(legacy)) {
+                        log("已清理旧版执行区残留 ${legacy.path}（释放约 ${bytes / 1024 / 1024}MB）")
+                        runCatching {
+                            legacy.parentFile
+                                ?.takeIf { it.isDirectory && it.list().orEmpty().isEmpty() }
+                                ?.delete()
                         }
                     }
-                } else if (entry.isFile) {
-                    if (isLink) {
-                        createSymlink(entry, target)   // 刷新链接（防悬空陈旧）
-                    } else if (!target.exists()) {
-                        if (isPeExecutable(entry.name)) entry.copyTo(target, overwrite = true)
-                        else createSymlink(entry, target)
-                    }
                 }
             }
-            // 根级失效 PE 副本清除（源已删）
-            dst.listFiles().orEmpty().forEach { m ->
-                if (m.isFile && isPeExecutable(m.name) && !File(src, m.name).isFile) {
-                    runCatching { m.delete() }
-                }
-            }
+
+            // ④ 原 exe 直接启动；老 wine 包（无 0011/0014 补丁）若仍报
+            //    noexec/media 错误，指引用新 CI 重装 wine 包。
+            log("→ 以原路径启动: $exeFile")
+            log("→ 若游戏报 noexec/media 错误：请用含 0011/0014 补丁的新 CI 重装 wine 包（匿名内存回退）")
+        }.onFailure {
+            log("警告: 直读预检异常（${it.message ?: it.javaClass.simpleName}）—— 仍按原路径启动")
         }
+        return effectiveArgs
     }
 
     // ------------------------------------------------------------------
@@ -876,16 +788,12 @@ object RootfsLauncher {
                 sink.stamp("启动已取消（会话在启动链中被停止或取代），不再拉起 wine")
                 return
             }
-            // v3.3.5（用户诉求：「拷贝啥文件啊，直接读就行」）：noexec 存储
-            // 直读执行 —— exe 位于 /storage/emulated 等 noexec 挂载时，
-            // wine 对 PE 映像的 mmap(PROT_EXEC) 会失败（内核硬约束，绕不开），
-            // **仅 exe/dll 等 PE 执行件**落地容器内执行区
-            // （<容器>/games/<源目录>）；media / data 等全部数据件经符号
-            // 链接**直读原始存储**（零拷贝、实时 —— sdcardfs 读取不受
-            // noexec 影响）。CWD 随镜像路径解析，相对资源经链接直读原件；
-            // 游戏目录更新（mod/补丁）根级自动补链可见。旧版整目录导入
-            // （rootfs/home/.anwind/games/<容器>）首次启动自动清理释放。
-            val effectiveArgs = directReadNoexecIfNeeded(wineArgs, container) { sink.stamp(it) }
+            // v3.3.6（用户定稿：真·零拷贝）：exe 位于 /storage/emulated 等
+            // 外部存储时**按原路径直接启动**，不复制任何文件 —— wine 经
+            // d:/e: 盘与 Z: 盘 rootfs 入口（Z:\storage、Z:\sdcard）直读游戏
+            // 文件；PE 可执行段由 wine 的匿名内存回退加载（wine 补丁
+            // 0011/0014 系列）。旧两代执行区残留在此一次性清理释放。
+            val effectiveArgs = prepareNoexecDirectRead(wineArgs, container) { sink.stamp(it) }
             val command = buildCommand(resolved, effectiveArgs, dmode, resolution)
             // v3.1：工作目录跟随 exe 所在目录（Unix 路径直取父目录 /
             // Windows 盘符路径经 dosdevices 映射）—— DX9 等大量游戏按
