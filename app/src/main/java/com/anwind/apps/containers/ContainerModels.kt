@@ -324,10 +324,12 @@ data class ContainerData(
     val frame: String = FRAME_DEFAULT,
     /** 主核心集（如 "0-3" 或 "0,1,2,3"）；空 = 不隔离，全核心。 */
     val cores: String = "",
-    /** DirectSound DLL 加载序（user.reg dsound）。 */
-    val dsound: String = "builtin,native",
-    /** DirectShow(quartz) DLL 加载序（user.reg quartz）。 */
-    val dshow: String = "builtin,native",
+    /** DirectSound DLL 加载序（user.reg dsound）。v3.3.8 三档：
+     *  "default" = 跟随 /opt/prefix 安装包（不写注册表）；
+     *  "builtin,native" / "native,builtin" = 显式覆盖（写入 DllOverrides）。 */
+    val dsound: String = DLL_DEFAULT,
+    /** DirectShow(quartz) DLL 加载序（user.reg quartz）。三档同 [dsound]。 */
+    val dshow: String = DLL_DEFAULT,
     /** DPI（user.reg LogPixels），60..240。 */
     val dpi: String = DPI_DEFAULT,
     /** Windows 版本（system.reg 三件套）：见 [WindowsVersions]。 */
@@ -405,6 +407,10 @@ data class ContainerData(
         /** v3.2.15：帧率限制/DPI 缺省值。 */
         const val FRAME_DEFAULT = "0"
         const val DPI_DEFAULT = "96"
+
+        /** v3.3.8：DLL 加载序缺省档（跟随安装包，不写注册表）。 */
+        const val DLL_DEFAULT = "default"
+        val DLL_CHOICES: List<String> = listOf(DLL_DEFAULT, "builtin,native", "native,builtin")
         val FRAME_CHOICES: List<String> = listOf("0", "60", "120")
         val DPI_CHOICES: List<Int> = listOf(72, 96, 120, 144, 192)
 
@@ -459,8 +465,11 @@ data class ContainerData(
                 // v3.2.15：wineguanli.py 重制键（缺键/非法值 → 缺省）
                 frame = kv["frame"]?.trim()?.takeIf { it in FRAME_CHOICES } ?: FRAME_DEFAULT,
                 cores = kv["cores"] ?: "",
-                dsound = kv["dsound"]?.takeIf { it == "native,builtin" } ?: "builtin,native",
-                dshow = kv["dshow"]?.takeIf { it == "native,builtin" } ?: "builtin,native",
+                // v3.3.8：DLL 三档（default=跟随安装包；旧值 builtin,native
+                // 为 v3.2.15-3.2.27 时代的默认 —— 归到跟随档，避免老容器
+                // 无声写入注册表覆盖安装包）
+                dsound = kv["dsound"]?.takeIf { it in DLL_CHOICES } ?: DLL_DEFAULT,
+                dshow = kv["dshow"]?.takeIf { it in DLL_CHOICES } ?: DLL_DEFAULT,
                 dpi = kv["dpi"]?.trim()?.toIntOrNull()?.coerceIn(60, 240)?.toString() ?: DPI_DEFAULT,
                 winver = kv["winver"]?.takeIf { v -> WindowsVersions.ALL.any { it.id == v } } ?: WindowsVersions.DEFAULT_ID,
                 mangohud = kv["mangohud"] ?: "",

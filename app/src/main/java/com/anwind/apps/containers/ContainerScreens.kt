@@ -261,7 +261,8 @@ fun ContainerListContent(scope: WindowContentScope) {
         autorunDone = true
         selectedName = autorun
         if (c.exe.isNotBlank()) {
-            withContext(Dispatchers.IO) {
+            // v3.3.8：驱动解压已统一进启动链步骤 0（此处直接启动）
+            cs.launch(Dispatchers.IO) {
                 val err = WineSessionLauncher.runExe(context, c, c.exe)
                 withContext(Dispatchers.Main) {
                     err?.let {
@@ -279,46 +280,19 @@ fun ContainerListContent(scope: WindowContentScope) {
         tick++
     }
 
-    // ---------- 运行类动作（先解压 /opt 驱动包，再走原生启动链） ----------
-    fun extractOptDriversThen(cont: ContainerData, andThen: () -> Unit) {
-        cs.launch(Dispatchers.IO) {
-            // wineguanli.py run_container：运行前确保 turnip/zink/dxvk/
-            // wined3d 选中的包已解压（extract_package → /usr/local）
-            listOf(
-                cont.turnip to "tz", cont.zink to "zink",
-                cont.wined3d to "vkord3d"
-            ).forEach { (slot, dir) ->
-                if (slot.isNotBlank() && slot != "off") {
-                    GuanliSupport.scanOpt(dir)
-                        .firstOrNull { it.display == slot }
-                        ?.let { tar ->
-                            val err = GuanliSupport.extractIntoRootfsLocal(tar.path)
-                            if (err != null) {
-                                withContext(Dispatchers.Main) {
-                                    android.widget.Toast.makeText(
-                                        context, "驱动 ${tar.display} 解压失败：$err",
-                                        android.widget.Toast.LENGTH_LONG
-                                    ).show()
-                                }
-                            }
-                        }
-                }
-            }
-            withContext(Dispatchers.Main) { andThen() }
-        }
-    }
-
+    // ---------- 运行类动作 ----------
+    // v3.3.8（用户问题 4）：/opt 驱动包解压统一移入 RootfsLauncher 启动链
+    // 步骤 0（freshSession 时执行）—— 所有运行入口（底部按钮/运行对话框/
+    // autorun/ExeRunChooser）自动覆盖，UI 不再逐处包裹（也避免双解压）。
     fun runContainer(cont: ContainerData) {
         if (cont.exe.isNotBlank()) {
-            extractOptDriversThen(cont) {
-                cs.launch(Dispatchers.IO) {
-                    val err = WineSessionLauncher.runExe(context, cont, cont.exe)
-                    withContext(Dispatchers.Main) {
-                        err?.let {
-                            android.widget.Toast.makeText(context, it, android.widget.Toast.LENGTH_LONG).show()
-                        }
-                        refresh()
+            cs.launch(Dispatchers.IO) {
+                val err = WineSessionLauncher.runExe(context, cont, cont.exe)
+                withContext(Dispatchers.Main) {
+                    err?.let {
+                        android.widget.Toast.makeText(context, it, android.widget.Toast.LENGTH_LONG).show()
                     }
+                    refresh()
                 }
             }
         } else {
@@ -327,15 +301,13 @@ fun ContainerListContent(scope: WindowContentScope) {
     }
 
     fun winebootContainer(cont: ContainerData) {
-        extractOptDriversThen(cont) {
-            cs.launch(Dispatchers.IO) {
-                val err = WineSessionLauncher.initializePrefix(context, cont)
-                withContext(Dispatchers.Main) {
-                    err?.let {
-                        android.widget.Toast.makeText(context, it, android.widget.Toast.LENGTH_LONG).show()
-                    }
-                    refresh()
+        cs.launch(Dispatchers.IO) {
+            val err = WineSessionLauncher.initializePrefix(context, cont)
+            withContext(Dispatchers.Main) {
+                err?.let {
+                    android.widget.Toast.makeText(context, it, android.widget.Toast.LENGTH_LONG).show()
                 }
+                refresh()
             }
         }
     }
@@ -471,6 +443,18 @@ fun ContainerListContent(scope: WindowContentScope) {
     showRunFor?.let { c ->
         RunContainerDialog(
             container = c,
+            // v3.3.8：驱动解压已统一进启动链步骤 0（此处直接启动）
+            onRunExe = { exe, args ->
+                cs.launch(Dispatchers.IO) {
+                    val err = WineSessionLauncher.runExe(context, c, exe, args)
+                    withContext(Dispatchers.Main) {
+                        err?.let {
+                            android.widget.Toast.makeText(context, it, android.widget.Toast.LENGTH_LONG).show()
+                        }
+                        refresh()
+                    }
+                }
+            },
             onDismiss = { showRunFor = null },
             onLaunched = { showRunFor = null; refresh() }
         )
@@ -681,10 +665,10 @@ private fun GuanliContainerPage(
                 .fillMaxSize()
                 .then(if (needHScroll) Modifier.horizontalScroll(rememberScrollState()) else Modifier)
         ) {
-            // ---------------- 左侧面板（280dp，wineguanli create_left_panel） ----------------
+            // ---------------- 左侧面板（v3.3.8 加宽 320dp：容器名不再截断） ----------------
             Column(
                 Modifier
-                    .width(gdp(280.dp))
+                    .width(gdp(320.dp))
                     .fillMaxHeight()
                     .padding(gdp(10.dp))
             ) {
@@ -731,12 +715,13 @@ private fun GuanliContainerPage(
             Spacer(Modifier.width(gdp(8.dp)))
 
             // ---------------- 右侧面板（wineguanli create_right_panel） ----------------
+            // v3.3.8：左面板 280→320 后右侧 716→696（总宽仍 ~1024 基准）
             if (sel != null) {
                 RightConfigPanel(
                     container = sel,
                     wines = wines,
                     running = running(sel.name),
-                    modifier = if (needHScroll) Modifier.width(gdp(716.dp)) else Modifier.weight(1f),
+                    modifier = if (needHScroll) Modifier.width(gdp(696.dp)) else Modifier.weight(1f),
                     onSaved = onRefresh,
                     onRun = { onRun(sel) },
                     onWineboot = { onWineboot(sel) },
@@ -750,7 +735,7 @@ private fun GuanliContainerPage(
             } else {
                 Column(
                     Modifier
-                        .then(if (needHScroll) Modifier.width(gdp(716.dp)) else Modifier.weight(1f))
+                        .then(if (needHScroll) Modifier.width(gdp(696.dp)) else Modifier.weight(1f))
                         .fillMaxHeight(),
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.Center
@@ -843,14 +828,15 @@ private fun LeftContainerListBox(
                         fontWeight = if (isSel) FontWeight.Bold else FontWeight.Medium,
                         color = themeFg(),
                         maxLines = 1, overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f, fill = false)
+                        // v3.3.8（用户问题 1）：去掉 fill=false —— 容器名占满
+                        // 除角标外的全部宽度，长名不再截断
+                        modifier = Modifier.weight(1f)
                     )
                     if (isDefault(c.name)) {
                         Text(" ★", fontSize = gsp(12.sp), color = GuanliColors.accent)
                     }
-                    Spacer(Modifier.weight(1f))
                     if (running(c.name)) {
-                        Text("● 运行中", fontSize = gsp(10.sp), color = Color(0xFF4CAF50))
+                        Text(" ●", fontSize = gsp(10.sp), color = Color(0xFF4CAF50))
                     }
                 }
                 Spacer(Modifier.height(gdp(2.dp)))
@@ -1162,13 +1148,13 @@ private fun BasicSettingsTab(
     // 配置"）。本组直接读写生态包 conf（wineguanli.py 同款 replace-or-
     // append 语义，路径与启动链 source 同源 —— 改的就是启动用的那份），
     // 下次启动 wine 即生效。
-    GGroup("⚙️ /opt 生态配置（全局，改完下次启动生效）") {
+    // v3.3.8（用户问题 1）：本组只保留 locale —— cores.conf / env.conf
+    // 移入「高级设置 → 🌐 生态配置」页（右侧不再拥挤，改读改写能力不变）。
+    GGroup("🌐 语言（/opt/locale.conf，全局）") {
         val optScope = rememberCoroutineScope()
         val optCtx = LocalContext.current
         var optRootLabel by remember { mutableStateOf("探测中…") }
         var optLocale by remember { mutableStateOf("") }
-        var optCores by remember { mutableStateOf("") }
-        var optEnv by remember { mutableStateOf("") }
         var optDetected by remember { mutableStateOf(false) }
 
         fun reloadOpt() {
@@ -1176,8 +1162,6 @@ private fun BasicSettingsTab(
             optDetected = r != null
             optRootLabel = r?.absolutePath ?: "未检测到 /opt 生态（请先安装生态包到 rootfs/opt）"
             optLocale = OptConfSupport.locale() ?: ""
-            optCores = OptConfSupport.primaryCores() ?: ""
-            optEnv = OptConfSupport.envEntries().joinToString("\n") { (k, v) -> "$k=$v" }
         }
         LaunchedEffect(Unit) {
             withContext(Dispatchers.IO) { reloadOpt() }
@@ -1187,7 +1171,7 @@ private fun BasicSettingsTab(
                 val err = withContext(Dispatchers.IO) { op() }
                 withContext(Dispatchers.IO) { reloadOpt() }
                 android.widget.Toast.makeText(
-                    optCtx, err ?: "已写入 /opt/conf（下次启动 wine 生效）",
+                    optCtx, err ?: "已写入 /opt/locale.conf（下次启动 wine 生效）",
                     android.widget.Toast.LENGTH_SHORT
                 ).show()
             }
@@ -1211,59 +1195,7 @@ private fun BasicSettingsTab(
                     }
                 }
             }
-            GField("🧩 cores.conf PRIMARY_CORES（CPU 核心绑定）:") {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    OutlinedTextField(
-                        value = optCores,
-                        onValueChange = { optCores = it },
-                        placeholder = { Text("如 0-3 / 0,4,5（空 = 全核心）", fontSize = gsp(10.sp)) },
-                        singleLine = true,
-                        textStyle = androidx.compose.ui.text.TextStyle(fontSize = gsp(12.sp)),
-                        modifier = Modifier.weight(1f)
-                    )
-                    Spacer(Modifier.width(gdp(6.dp)))
-                    GSmallButton("💾", GuanliColors.greenDeep, Modifier) {
-                        saveOpt { OptConfSupport.writePrimaryCores(optCores) }
-                    }
-                }
-            }
-            GField("🧪 env.conf 环境变量（每行 KEY=VALUE，对应 wineguanli 的环境变量页）:") {
-                OutlinedTextField(
-                    value = optEnv,
-                    onValueChange = { optEnv = it },
-                    placeholder = { Text("MESA_GL_VERSION_OVERRIDE=4.6\nDXVK_FRAME_RATE=60 …", fontSize = gsp(10.sp)) },
-                    textStyle = androidx.compose.ui.text.TextStyle(fontSize = gsp(11.sp)),
-                    modifier = Modifier.fillMaxWidth().height(gdp(96.dp))
-                )
-                Spacer(Modifier.height(gdp(4.dp)))
-                Row {
-                    GSmallButton("💾 保存全部", GuanliColors.greenDeep, Modifier) {
-                        saveOpt {
-                            // 解析编辑框 → 逐键写（replace-or-append）；
-                            // 被删除的行同步从 env.conf 移除。
-                            val pairs = optEnv.lines().mapNotNull { l ->
-                                val t = l.trim()
-                                if (t.isEmpty() || t.startsWith("#")) return@mapNotNull null
-                                val eq = t.indexOf('=')
-                                if (eq <= 0) return@mapNotNull null
-                                t.substring(0, eq).trim() to t.substring(eq + 1).trim()
-                            }
-                            val oldKeys = OptConfSupport.envEntries().map { it.first }.toSet()
-                            val newKeys = pairs.map { it.first }.toSet()
-                            (oldKeys - newKeys).forEach { OptConfSupport.removeEnvKey(it) }
-                            pairs.forEach { p ->
-                                val err = OptConfSupport.writeEnvKey(p.first, p.second)
-                                if (err != null) return@saveOpt err
-                            }
-                            null
-                        }
-                    }
-                    Spacer(Modifier.width(gdp(8.dp)))
-                    GSmallButton("↻ 重读", GuanliColors.accent, Modifier) {
-                        optScope.launch { withContext(Dispatchers.IO) { reloadOpt() } }
-                    }
-                }
-            }
+            GNote("cores.conf / env.conf 已移至「高级设置 → 🌐 生态配置」页")
         }
     }
 
@@ -1410,7 +1342,7 @@ private fun GraphicsDriverTab(
         DriverCombo(
             tars = dxvkTars,
             value = if (edit.dxvk == ContainerData.DXVK_AUTO) "" else if (edit.dxvk == ContainerData.DXVK_OFF) "off" else edit.dxvk,
-            dirNote = "默认=APK 内置资产自动注入；不使用=关闭注入；tar 槽位由 /opt 生态脚本消费（rootfs/opt/dxvk1）",
+            dirNote = "默认=APK 内置资产自动注入；不使用=关闭注入；tar 槽位（rootfs/opt/dxvk1）运行前自动解压到 rootfs/usr/local（v3.3.8 起打通）",
             onSelect = { v ->
                 onChange(
                     edit.copy(
@@ -1433,7 +1365,8 @@ private fun GraphicsDriverTab(
     }
     GNote(
         "wineguanli.py 图形驱动页同款：Turnip(/opt/tz)、Zink(/opt/zink)、DXVK(/opt/dxvk1)、" +
-            "WineD3D(/opt/vkord3d)。运行容器时选中的包自动解压进 rootfs /usr/local"
+            "WineD3D(/opt/vkord3d)。运行容器时选中的包由启动链步骤 0 自动解压进 rootfs /usr/local" +
+            "（v3.3.8：所有运行入口统一覆盖，含运行对话框/autorun/文件管理器直接运行）"
     )
 }
 
@@ -1519,12 +1452,49 @@ private fun LibraryTab(
     onChange: (ContainerData) -> Unit,
     onApplyNow: () -> Unit
 ) {
-    GGroup("DLL 加载序（由 /opt/prefix 安装包决定）") {
+    // v3.3.8（用户问题 4）：DLL 加载序恢复显示 —— winefuanli.py 同款
+    // dsound（DirectSound）/ dshow（DirectShow = quartz）三档下拉；
+    // 「跟随安装包」= 不写注册表（v3.2.27 默认行为，完全由
+    // rootfs/opt/prefix 安装包注册表决定），显式档才写 user.reg
+    // DllOverrides（wineguanli.py 同款语义，保存/立即应用时落地）。
+    GGroup("DLL 加载序（DirectSound / DirectShow）") {
+        GField("🔊 DirectSound (dsound):") {
+            GComboBox(
+                options = listOf("跟随安装包", "原生优先 (builtin,native)", "库优先 (native,builtin)"),
+                selected = when (edit.dsound) {
+                    "builtin,native" -> "原生优先 (builtin,native)"
+                    "native,builtin" -> "库优先 (native,builtin)"
+                    else -> "跟随安装包"
+                },
+                onSelect = { v ->
+                    onChange(edit.copy(dsound = when (v) {
+                        "原生优先 (builtin,native)" -> "builtin,native"
+                        "库优先 (native,builtin)" -> "native,builtin"
+                        else -> "default"
+                    }))
+                }
+            )
+        }
+        GField("🎬 DirectShow (quartz):") {
+            GComboBox(
+                options = listOf("跟随安装包", "原生优先 (builtin,native)", "库优先 (native,builtin)"),
+                selected = when (edit.dshow) {
+                    "builtin,native" -> "原生优先 (builtin,native)"
+                    "native,builtin" -> "库优先 (native,builtin)"
+                    else -> "跟随安装包"
+                },
+                onSelect = { v ->
+                    onChange(edit.copy(dshow = when (v) {
+                        "原生优先 (builtin,native)" -> "builtin,native"
+                        "库优先 (native,builtin)" -> "native,builtin"
+                        else -> "default"
+                    }))
+                }
+            )
+        }
         GNote(
-            "v3.2.27 起 App 不再写任何 DllOverrides —— DLL 加载序完全由\n" +
-                "rootfs/opt/prefix/ 安装包的 user.reg / system.reg 决定，\n" +
-                "与 startwine.sh 参考链路一致（避免内置覆盖表引发 media 错误）。\n" +
-                "如需自定义，请在容器 env= 里加 WINEDLLOVERRIDES 或重导 /opt/prefix 注册表"
+            "跟随安装包 = 不写注册表，完全按 rootfs/opt/prefix 安装包的 user.reg；\n" +
+                "显式档写入 HKCU\\Software\\Wine\\DllOverrides（保存后落地，重启容器生效）"
         )
     }
     GGroup("DPI设置 (屏幕缩放)") {
@@ -1565,11 +1535,11 @@ private fun LibraryTab(
     }
     GGroup("说明") {
         GNote(
-            "1. DLL 加载序（dsound/quartz 等）不再由 App 写入注册表 ——\n" +
-                "   完全按 rootfs/opt/prefix/ 安装包的注册表执行（v3.2.27）\n" +
+            "1. DLL 加载序（dsound/quartz）：跟随安装包 = 完全按 rootfs/opt/prefix\n" +
+                "   安装包注册表（v3.2.27 默认）；显式档写入 DllOverrides\n" +
                 "2. DPI设置控制Windows应用程序的显示缩放比例\n" +
                 "3. Windows版本设置会修改system.reg中的Windows版本信息\n" +
-                "4. 配置保存到容器（dpi/winver），启动链自动写入注册表"
+                "4. 配置保存到容器（dsound/dshow/dpi/winver），启动链自动写入注册表"
         )
     }
     // wineguanli.py：💾 立即应用设置
@@ -1664,7 +1634,9 @@ private fun GuanliAdvancedPage(
             containerColor = themeCard(),
             contentColor = themeFg()
         ) {
-            listOf("⚡ DY配置", "📦 Box配置", "🍷 Wine安装", "📊 MANGOHUD配置")
+            // v3.3.8（用户问题 1）：新增「🌐 生态配置」—— 容器编辑页 opt 组
+            // 只留 locale，cores.conf / env.conf 全部移入此处（读写能力不变）
+            listOf("⚡ DY配置", "📦 Box配置", "🍷 Wine安装", "📊 MANGOHUD配置", "🌐 生态配置")
                 .forEachIndexed { i, label ->
                     Tab(
                         selected = tab == i,
@@ -1696,8 +1668,151 @@ private fun GuanliAdvancedPage(
                         }
                     }
                 )
+                4 -> OptEcoConfigTab()
             }
         }
+    }
+}
+
+// ===========================================================================
+// 🌐 生态配置（v3.3.8 新增）：/opt/conf 的 cores.conf / env.conf 编辑页
+//
+// 用户问题 1："右侧 opt 配置菜单那里保留 locale 即可，其他的全在高级
+// 设置里，保证高级设置里正常读取和更改即可" —— 容器编辑页的
+// /opt 生态组瘦身为仅 locale，本页承接 cores.conf（CPU 核心绑定，
+// PRIMARY/SECONDARY 双键）与 env.conf（通用环境变量 KEY=VALUE）。
+// 读写仍经 [OptConfSupport]（路径与启动链 readOptConfs source 完全
+// 同源 —— 这里改的就是启动用的那份），保存后下次启动 wine 生效。
+// ===========================================================================
+
+@Composable
+private fun OptEcoConfigTab() {
+    val context = LocalContext.current
+    val cs = rememberCoroutineScope()
+
+    var loaded by remember { mutableStateOf(false) }
+    var detected by remember { mutableStateOf(false) }
+    var rootLabel by remember { mutableStateOf("探测中…") }
+    var cores by remember { mutableStateOf("") }
+    var envText by remember { mutableStateOf("") }
+    var busyMsg by remember { mutableStateOf<String?>(null) }
+
+    fun reload() {
+        loaded = true
+        val r = OptConfSupport.root()
+        detected = r != null
+        rootLabel = r?.absolutePath ?: "未检测到 /opt 生态（请先安装生态包到 rootfs/opt）"
+        cores = OptConfSupport.primaryCores() ?: ""
+        envText = OptConfSupport.envEntries().joinToString("\n") { (k, v) -> "$k=$v" }
+    }
+    LaunchedEffect(Unit) {
+        withContext(Dispatchers.IO) { reload() }
+    }
+
+    if (!loaded) {
+        Box(Modifier.fillMaxWidth().padding(gdp(24.dp)), contentAlignment = Alignment.Center) {
+            CircularProgressIndicator(modifier = Modifier.size(gdp(26.dp)), strokeWidth = gdp(2.5.dp))
+        }
+        return
+    }
+
+    GGroup("/opt 生态状态") {
+        GNote(rootLabel + "\n本页读写 /opt/conf 的 cores.conf 与 env.conf（启动链 source 的同一份，保存后下次启动生效）")
+    }
+
+    if (!detected) {
+        GGroup("cores.conf / env.conf（未生效）") {
+            GNote("未检测到 /opt 生态 —— 请先把生态包解到 rootfs/opt（conf/ + locale.conf + prefix/ + dxvk1/）后重进本页")
+        }
+        return
+    }
+
+    // ---- cores.conf：PRIMARY_CORES / SECONDARY_CORES 双键（保存时同步推导） ----
+    GGroup("🧩 cores.conf（CPU 核心绑定，全局）") {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            OutlinedTextField(
+                value = cores,
+                onValueChange = { cores = it },
+                placeholder = { Text("如 0-3 / 0,4,5（空 = 全核心）", fontSize = gsp(10.sp)) },
+                singleLine = true,
+                textStyle = androidx.compose.ui.text.TextStyle(fontSize = gsp(12.sp)),
+                modifier = Modifier.weight(1f)
+            )
+            Spacer(Modifier.width(gdp(6.dp)))
+            GSmallButton("💾 保存", GuanliColors.greenDeep, Modifier) {
+                cs.launch {
+                    val total = Runtime.getRuntime().availableProcessors()
+                    val primary = com.anwind.apps.containers.launcher.WineEnvironment.parseCoreSpec(cores)
+                        .filter { it in 0 until total }.toSortedSet()
+                    val secondary = (0 until total).filter { it !in primary }
+                    val err = withContext(Dispatchers.IO) {
+                        OptConfSupport.writeCores(
+                            com.anwind.apps.containers.launcher.WineEnvironment.formatCoreSpec(primary.toList()),
+                            com.anwind.apps.containers.launcher.WineEnvironment.formatCoreSpec(secondary)
+                        )
+                    }
+                    withContext(Dispatchers.IO) { reload() }
+                    busyMsg = err
+                    android.widget.Toast.makeText(
+                        context, err ?: "cores.conf 已写入（PRIMARY+SECONDARY 双键）",
+                        android.widget.Toast.LENGTH_SHORT
+                    ).show()
+                }
+            }
+        }
+        GNote("wineguanli save_advanced_settings 同款：保存时同时写 PRIMARY_CORES 与 SECONDARY_CORES 两行")
+    }
+
+    // ---- env.conf：通用 KEY=VALUE（每行一条，空值/删行 = 移除该键） ----
+    GGroup("🧪 env.conf 环境变量（全局，每行 KEY=VALUE）") {
+        OutlinedTextField(
+            value = envText,
+            onValueChange = { envText = it },
+            placeholder = { Text("MESA_GL_VERSION_OVERRIDE=4.6\nDXVK_FRAME_RATE=60 …", fontSize = gsp(10.sp)) },
+            textStyle = androidx.compose.ui.text.TextStyle(fontSize = gsp(11.sp)),
+            modifier = Modifier.fillMaxWidth().height(gdp(120.dp))
+        )
+        Spacer(Modifier.height(gdp(4.dp)))
+        Row {
+            GSmallButton("💾 保存全部", GuanliColors.greenDeep, Modifier) {
+                cs.launch {
+                    val err = withContext(Dispatchers.IO) {
+                        // 解析编辑框 → 逐键写（replace-or-append）；
+                        // 被删除的行同步从 env.conf 移除。
+                        val pairs = envText.lines().mapNotNull { l ->
+                            val t = l.trim()
+                            if (t.isEmpty() || t.startsWith("#")) return@mapNotNull null
+                            val eq = t.indexOf('=')
+                            if (eq <= 0) return@mapNotNull null
+                            t.substring(0, eq).trim() to t.substring(eq + 1).trim()
+                        }
+                        var firstErr: String? = null
+                        val oldKeys = OptConfSupport.envEntries().map { it.first }.toSet()
+                        val newKeys = pairs.map { it.first }.toSet()
+                        (oldKeys - newKeys).forEach { OptConfSupport.removeEnvKey(it) }
+                        for (p in pairs) {
+                            val e = OptConfSupport.writeEnvKey(p.first, p.second)
+                            if (e != null) { firstErr = e; return@withContext firstErr }
+                        }
+                        firstErr
+                    }
+                    withContext(Dispatchers.IO) { reload() }
+                    busyMsg = err
+                    android.widget.Toast.makeText(
+                        context, err ?: "env.conf 已写入（下次启动 wine 生效）",
+                        android.widget.Toast.LENGTH_SHORT
+                    ).show()
+                }
+            }
+            Spacer(Modifier.width(gdp(8.dp)))
+            GSmallButton("↻ 重读", GuanliColors.accent, Modifier) {
+                cs.launch { withContext(Dispatchers.IO) { reload() } }
+            }
+        }
+        if (busyMsg != null) {
+            Text(busyMsg ?: "", fontSize = gsp(11.sp), color = GuanliColors.red)
+        }
+        GNote("对应 wineguanli 环境变量页（MESA_*/VKD3D_*/MANGOHUD*/DXVK_HUD/TU_DEBUG 等）；容器 env= 优先级仍最高")
     }
 }
 
@@ -1806,7 +1921,7 @@ private fun DyConfigTab(
                     presetSel = name
                     applyPreset(name)   // wineguanli apply_preset：预设值整体替换
                 },
-                width = 200.dp
+                width = 168.dp
             )
             Spacer(Modifier.weight(1f))
             GSmallButton("重置默认", GuanliColors.grey, Modifier) {
@@ -1852,18 +1967,21 @@ private fun DyConfigTab(
                     .padding(horizontal = gdp(10.dp), vertical = gdp(6.dp)),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // 变量名（wineguanli：bold + 固定宽）
+                // 变量名（v3.3.8 用户问题 5：weight(1f) 自适应占满剩余宽度 ——
+                // 固定 230dp 在窄窗/缩放下截断长名；右侧控件同步收窄）
                 Text(
                     name, fontSize = gsp(12.sp), fontWeight = FontWeight.Bold, color = themeFg(),
                     maxLines = 1, overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.width(gdp(230.dp))
+                    modifier = Modifier.weight(1f, fill = true)
                 )
-                // 当前值（wineguanli："当前: X"）
+                // 当前值（wineguanli："当前: X"；v3.3.8 收窄 88→58dp，字号同步）
                 Text(
-                    "当前: $cur", fontSize = gsp(11.sp), color = themeSec(),
-                    modifier = Modifier.width(gdp(88.dp))
+                    "$cur", fontSize = gsp(10.sp), color = themeSec(),
+                    maxLines = 1,
+                    modifier = Modifier.width(gdp(26.dp)),
+                    textAlign = androidx.compose.ui.text.TextAlign.End
                 )
-                // 控件：{0,1} → 启用勾选；多值 → 候选下拉
+                // 控件：{0,1} → 启用勾选；多值 → 候选下拉（v3.3.8：150→96dp）
                 if (values.toSet() == setOf("0", "1")) {
                     GCheckRow("启用", cur == "1") { on ->
                         setVar(name, if (on) "1" else "0")
@@ -1873,11 +1991,11 @@ private fun DyConfigTab(
                         options = values,
                         selected = cur,
                         onSelect = { v -> setVar(name, v) },
-                        width = 150.dp
+                        width = 96.dp
                     )
                 }
-                Spacer(Modifier.weight(1f))
                 if (selectedVar == name) {
+                    Spacer(Modifier.width(gdp(8.dp)))
                     GSmallButton("删除变量", GuanliColors.redFab, Modifier) {
                         cs.launch(Dispatchers.IO) {
                             val err = OptConfSupport.removeDyVariable(name)
@@ -2451,12 +2569,42 @@ private fun MoreSettingsDialog(
                     1 -> {
                         // wineguanli.py create_library_tab（对话框版，全局语义 → 容器）
                         GGroup("函数库设置") {
-                            // v3.2.27：DLL 加载序（dsound/quartz）不再由 App 写注册表
-                            GNote(
-                                "DLL 加载序完全由 rootfs/opt/prefix/ 安装包注册表决定\n" +
-                                    "（v3.2.27 起 App 不写 DllOverrides，防 media 错误）；\n" +
-                                    "自定义请用容器 env= 的 WINEDLLOVERRIDES"
-                            )
+                            // v3.3.8（用户问题 4）：DLL 加载序恢复显示（dsound/quartz
+                            // 三档；「跟随安装包」不写注册表，显式档落地 DllOverrides）
+                            GField("DirectSound (dsound) 加载序") {
+                                GComboBox(
+                                    options = listOf("跟随安装包", "原生优先 (builtin,native)", "库优先 (native,builtin)"),
+                                    selected = when (edit.dsound) {
+                                        "builtin,native" -> "原生优先 (builtin,native)"
+                                        "native,builtin" -> "库优先 (native,builtin)"
+                                        else -> "跟随安装包"
+                                    },
+                                    onSelect = { v ->
+                                        edit = edit.copy(dsound = when (v) {
+                                            "原生优先 (builtin,native)" -> "builtin,native"
+                                            "库优先 (native,builtin)" -> "native,builtin"
+                                            else -> "default"
+                                        })
+                                    }
+                                )
+                            }
+                            GField("DirectShow (quartz) 加载序") {
+                                GComboBox(
+                                    options = listOf("跟随安装包", "原生优先 (builtin,native)", "库优先 (native,builtin)"),
+                                    selected = when (edit.dshow) {
+                                        "builtin,native" -> "原生优先 (builtin,native)"
+                                        "native,builtin" -> "库优先 (native,builtin)"
+                                        else -> "跟随安装包"
+                                    },
+                                    onSelect = { v ->
+                                        edit = edit.copy(dshow = when (v) {
+                                            "原生优先 (builtin,native)" -> "builtin,native"
+                                            "库优先 (native,builtin)" -> "native,builtin"
+                                            else -> "default"
+                                        })
+                                    }
+                                )
+                            }
                             GField("DPI (LogPixels)") {
                                 val dpi = edit.dpi.toIntOrNull() ?: 96
                                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -3375,6 +3523,8 @@ private fun ShortcutDialog(
 @Composable
 private fun RunContainerDialog(
     container: ContainerData,
+    // v3.3.8：带预检的运行入口（驱动解压已统一进 RootfsLauncher 启动链步骤 0）
+    onRunExe: (exe: String, args: String) -> Unit,
     onDismiss: () -> Unit,
     onLaunched: () -> Unit
 ) {
@@ -3460,8 +3610,13 @@ private fun RunContainerDialog(
             Spacer(Modifier.width(gdp(8.dp)))
             Button(
                 onClick = {
-                    val err = WineSessionLauncher.runExe(context, container, exe.trim(), args.trim())
-                    if (err == null) onLaunched() else msg = err
+                    // v3.3.8：经外层 onRunExe（带驱动解压）启动；同步错误预检
+                    // 仍走 runExe 的返回值语义（外层 Toast 展示）
+                    val pre = WineSessionLauncher.precheckRun(container)
+                    if (pre != null) { msg = pre } else {
+                        onRunExe(exe.trim(), args.trim())
+                        onLaunched()
+                    }
                 },
                 colors = ButtonDefaults.buttonColors(containerColor = GuanliColors.green)
             ) { Text("运行") }

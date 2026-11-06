@@ -57,8 +57,9 @@ import java.io.File
 
 val FileExplorerApp = AppDef(
     id = "file_explorer",
-    displayName = "文件资源管理器",
-    iconAsset = "app:file_explorer",
+    // v3.3.8（用户问题 2）：改名「此电脑」+ 电脑图标（原「文件资源管理器」）
+    displayName = "此电脑",
+    iconAsset = "app:this_pc",
     launchMode = LaunchMode.FLOATING,
     defaultWidth = 920.dp,
     defaultHeight = 620.dp,
@@ -406,6 +407,28 @@ private fun FileExplorerContent(scope: WindowContentScope) {
         tick++
     }
 
+    /**
+     * v3.3.8：面包屑路径 → 盘符映射（C/D/E + 外部存储兼容）。
+     * C 盘（/data/data/com.anwind/files）独立成段；D/E 盘显示专属段；
+     * 其余 /storage/emulated/0 下路径沿用「内部存储」。
+     */
+    fun breadcrumbOf(dir: File?): String {
+        if (dir == null || isThisPcHome) return "此电脑"
+        val p = dir.absolutePath
+        val internal = "/data/data/com.anwind/files"
+        val download = "/storage/emulated/0/Download"
+        val exagear = "/storage/emulated/0/exagear"
+        return when {
+            p == internal -> "此电脑 > 本地磁盘 (C:)"
+            p.startsWith("$internal/") -> "此电脑 > 本地磁盘 (C:) > " + p.removePrefix("$internal/")
+            p == download -> "此电脑 > 下载 (D:)"
+            p.startsWith("$download/") -> "此电脑 > 下载 (D:) > " + p.removePrefix("$download/")
+            p == exagear -> "此电脑 > exagear (E:)"
+            p.startsWith("$exagear/") -> "此电脑 > exagear (E:) > " + p.removePrefix("$exagear/")
+            else -> "此电脑 > 内部存储" + p.removePrefix("/storage/emulated/0")
+        }
+    }
+
     // ===== 布局 =====
     BoxWithConstraints(modifier = Modifier.fillMaxSize().background(theme.windowBackgroundColor)) {
         // 窄屏（手机竖屏）阈值：窗口宽度 < 600dp 时启用窄屏布局
@@ -453,12 +476,8 @@ private fun FileExplorerContent(scope: WindowContentScope) {
                         tint = theme.accentColor, modifier = Modifier.size(14.dp)
                     )
                     Spacer(Modifier.width(6.dp))
-                    val displayPath = if (isThisPcHome) {
-                        "此电脑"
-                    } else {
-                        "此电脑 > 内部存储" +
-                                (currentRealDir?.absolutePath?.removePrefix("/storage/emulated/0") ?: "")
-                    }
+                    // v3.3.8：面包屑按盘符映射（C/D/E/内部存储）
+                    val displayPath = breadcrumbOf(currentRealDir)
                     Text(
                         text = displayPath,
                         color = if (theme.isDark) Color.White else Color.Black,
@@ -570,14 +589,14 @@ private fun FileExplorerContent(scope: WindowContentScope) {
 
         // ===== 主体：左侧栏 + 文件区 =====
         Row(modifier = Modifier.weight(1f)) {
-            // ===== 左侧导航栏（窄屏可收起） =====
+            // ===== 左侧导航栏（窄屏可收起；v3.3.8：200→172dp + 行距收紧） =====
             if (showSidebar) {
             Column(
                 modifier = Modifier
-                    .width(if (isNarrow) 168.dp else 200.dp)
+                    .width(if (isNarrow) 150.dp else 172.dp)
                     .fillMaxHeight()
                     .background(theme.cardBackgroundColor)
-                    .padding(8.dp)
+                    .padding(6.dp)
                     .verticalScroll(rememberScrollState())
             ) {
                 NavSection("快速访问")
@@ -600,14 +619,42 @@ private fun FileExplorerContent(scope: WindowContentScope) {
                     openFolder(File(storageRoot, "DCIM"))
                 }
 
-                Spacer(Modifier.height(12.dp))
+                Spacer(Modifier.height(8.dp))
                 NavSection("设备")
                 SidebarItem("💻 此电脑", isThisPcHome, theme) { goHome() }
+                // v3.3.8：C/D/E 三盘直达
+                val internalFiles = remember { File("/data/data/com.anwind/files") }
+                val driveD = remember { File("/storage/emulated/0/Download") }
+                val driveE = remember { File("/storage/emulated/0/exagear") }
+                SidebarItem(
+                    "💾 本地磁盘 (C:)",
+                    !isThisPcHome && currentRealDir?.absolutePath == internalFiles.absolutePath,
+                    theme
+                ) { openFolder(internalFiles) }
+                SidebarItem(
+                    "⬇️ 下载 (D:)",
+                    !isThisPcHome && currentRealDir?.absolutePath == driveD.absolutePath,
+                    theme
+                ) {
+                    if (hasAllFilesAccess) openFolder(driveD) else requestAllFilesAccess()
+                }
+                SidebarItem(
+                    "🎮 exagear (E:)",
+                    !isThisPcHome && currentRealDir?.absolutePath == driveE.absolutePath,
+                    theme
+                ) {
+                    if (!hasAllFilesAccess) { requestAllFilesAccess() } else {
+                        if (!driveE.isDirectory) runCatching { driveE.mkdirs() }
+                        openFolder(driveE)
+                    }
+                }
                 SidebarItem(
                     "📱 内部存储",
                     !isThisPcHome && currentRealDir?.absolutePath == storageRoot.absolutePath,
                     theme
-                ) { openFolder(storageRoot) }
+                ) {
+                    if (hasAllFilesAccess) openFolder(storageRoot) else requestAllFilesAccess()
+                }
             }
             }
 
@@ -616,15 +663,22 @@ private fun FileExplorerContent(scope: WindowContentScope) {
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxHeight()
-                    .padding(12.dp)
+                    .padding(8.dp)
             ) {
-                if (!hasAllFilesAccess) {
+                // v3.3.8：权限门禁细化 —— C 盘（应用内部存储）与首页无需所有
+                // 文件权限；浏览外部存储路径（/storage/emulated/0 下）且未授权
+                // 时才拦截（首页内 D/E 盘点击时经 onRequestPermission 兜底）
+                val inInternalStore = currentRealDir?.absolutePath
+                    ?.startsWith("/data/data/com.anwind/files") == true
+                if (!hasAllFilesAccess && !inInternalStore && !isThisPcHome) {
                     PermissionRequiredState(theme) { requestAllFilesAccess() }
                 } else if (isThisPcHome) {
                     // ===== 此电脑 首页 =====
                     ThisPcHomeView(
                         storageRoot = storageRoot,
                         theme = theme,
+                        hasAllFilesAccess = hasAllFilesAccess,
+                        onRequestPermission = { requestAllFilesAccess() },
                         onOpenFolder = { openFolder(it) }
                     )
                 } else if (realItems.isEmpty()) {
@@ -723,29 +777,43 @@ private fun FileExplorerContent(scope: WindowContentScope) {
 }
 
 // ============================================================
-// 此电脑首页：5 个快捷文件夹 + 内部存储驱动器条目
+// 此电脑首页：5 个快捷文件夹 + C/D/E 三个驱动器
+//
+// v3.3.8（用户问题 2）：
+//  - C: → /data/data/com.anwind/files（应用内部存储，无需权限）；
+//  - D: → /storage/emulated/0/Download（外部下载目录）；
+//  - E: → /storage/emulated/0/exagear（外部 exagear 目录，不存在时提示）；
+//  - 快捷文件夹/驱动器行整体缩小（图标 56→40、间距收紧），
+//    "图片视频等占用太大"的紧凑诉求。
 // ============================================================
 @Composable
 private fun ThisPcHomeView(
     storageRoot: File,
     theme: com.anwind.core.theme.WinTheme,
+    hasAllFilesAccess: Boolean,
+    onRequestPermission: () -> Unit,
     onOpenFolder: (File) -> Unit
 ) {
     val scrollState = rememberScrollState()
+
+    // v3.3.8：C/D/E 盘定义（C = 应用内部存储；D/E = 外部存储子目录）
+    val internalFiles = remember { File("/data/data/com.anwind/files") }
+    val driveD = remember { File("/storage/emulated/0/Download") }
+    val driveE = remember { File("/storage/emulated/0/exagear") }
 
     Column(
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(scrollState)
     ) {
-        // ===== 文件夹区（窄屏可横向滑动，解决竖屏图标显示不全） =====
+        // ===== 文件夹区（窄屏可横向滑动，解决竖屏图标显示不全；v3.3.8 缩小） =====
         SectionHeader("文件夹 (5)")
-        Spacer(Modifier.height(6.dp))
+        Spacer(Modifier.height(4.dp))
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             val folders = listOf(
                 SpecialFolder("文档", "📄", File(storageRoot, "Documents")),
@@ -759,16 +827,42 @@ private fun ThisPcHomeView(
             }
         }
 
-        Spacer(Modifier.height(24.dp))
+        Spacer(Modifier.height(14.dp))
 
-        // ===== 设备和驱动器区 =====
+        // ===== 设备和驱动器区（v3.3.8：C/D/E 三盘） =====
         SectionHeader("设备和驱动器")
-        Spacer(Modifier.height(6.dp))
+        Spacer(Modifier.height(4.dp))
+        // C: 应用内部存储（无需所有文件权限，始终可浏览）
         DriveCell(
-            label = "内部存储 (C:)",
+            label = "本地磁盘 (C:)",
+            subtitle = "内部存储 · 应用数据",
             theme = theme,
-            storageRoot = storageRoot,
-            onClick = { onOpenFolder(storageRoot) }
+            root = internalFiles,
+            onClick = { onOpenFolder(internalFiles) }
+        )
+        // D: 外部 Download（需要所有文件权限）
+        DriveCell(
+            label = "下载 (D:)",
+            subtitle = "/storage/emulated/0/Download",
+            theme = theme,
+            root = driveD,
+            onClick = {
+                if (hasAllFilesAccess) onOpenFolder(driveD) else onRequestPermission()
+            }
+        )
+        // E: 外部 exagear（需要所有文件权限；不存在时提示）
+        DriveCell(
+            label = "exagear (E:)",
+            subtitle = "/storage/emulated/0/exagear",
+            theme = theme,
+            root = driveE,
+            onClick = {
+                if (!hasAllFilesAccess) { onRequestPermission(); return@DriveCell }
+                if (!driveE.isDirectory) {
+                    runCatching { driveE.mkdirs() }
+                }
+                onOpenFolder(driveE)
+            }
         )
     }
 }
@@ -792,30 +886,31 @@ private fun SpecialFolderCell(folder: SpecialFolder, theme: com.anwind.core.them
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         modifier = Modifier
-            .width(96.dp)
+            // v3.3.8：96→76dp（"图片视频等占用太大"→ 全部往上缩小）
+            .width(76.dp)
             .clip(RoundedCornerShape(6.dp))
             .clickable(onClick = onClick)
-            .padding(8.dp)
+            .padding(5.dp)
     ) {
-        // 文件夹图标（黄色 Win11 风格）
+        // 文件夹图标（黄色 Win11 风格；v3.3.8：56→38dp）
         Box(
             modifier = Modifier
-                .size(56.dp),
+                .size(38.dp),
             contentAlignment = Alignment.Center
         ) {
             Icon(
                 Icons.Default.Folder, null,
                 tint = Color(0xFFDCA84A),
-                modifier = Modifier.size(56.dp)
+                modifier = Modifier.size(38.dp)
             )
             // 在图标中央叠一个 emoji 标识（符合 Win11 的文件夹封面预览风格）
-            Text(text = folder.icon, fontSize = 18.sp)
+            Text(text = folder.icon, fontSize = 13.sp)
         }
-        Spacer(Modifier.height(6.dp))
+        Spacer(Modifier.height(3.dp))
         Text(
             text = folder.name,
             color = if (theme.isDark) Color.White else Color.Black,
-            fontSize = 11.sp,
+            fontSize = 10.sp,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
             textAlign = androidx.compose.ui.text.style.TextAlign.Center
@@ -823,23 +918,31 @@ private fun SpecialFolderCell(folder: SpecialFolder, theme: com.anwind.core.them
     }
 }
 
+/**
+ * 驱动器行（v3.3.8：C/D/E 通用版）。
+ * @param label 显示名（如 "本地磁盘 (C:)"）
+ * @param subtitle 副标题（路径说明）
+ * @param root 盘符根目录（容量统计与存在性检查；目录不存在时容量行
+ *        显示提示，仍可点击进入）
+ */
 @Composable
 private fun DriveCell(
     label: String,
+    subtitle: String,
     theme: com.anwind.core.theme.WinTheme,
-    storageRoot: File,
+    root: File,
     onClick: () -> Unit
 ) {
-    // 计算磁盘容量
-    val (totalGB, valAvailGB) = remember(storageRoot.absolutePath) {
-        runCatching {
-            val stat = StatFs(storageRoot.absolutePath)
-            val total = stat.totalBytes
-            val avail = stat.availableBytes
-            Pair(total / (1024L * 1024L * 1024L), avail / (1024L * 1024L * 1024L))
+    val exists = remember(root.absolutePath) { root.isDirectory }
+    // 计算磁盘容量（目录不存在 → 0）
+    val (totalGB, availGB) = remember(root.absolutePath, exists) {
+        if (!exists) Pair(0L, 0L)
+        else runCatching {
+            val stat = StatFs(root.absolutePath)
+            Pair(stat.totalBytes / (1024L * 1024L * 1024L), stat.availableBytes / (1024L * 1024L * 1024L))
         }.getOrDefault(Pair(0L, 0L))
     }
-    val usedGB = totalGB - valAvailGB
+    val usedGB = totalGB - availGB
     val usagePct = if (totalGB > 0) (usedGB.toFloat() / totalGB.toFloat()).coerceIn(0f, 1f) else 0f
 
     Row(
@@ -847,46 +950,65 @@ private fun DriveCell(
             .fillMaxWidth()
             .clip(RoundedCornerShape(6.dp))
             .clickable(onClick = onClick)
-            .padding(vertical = 8.dp, horizontal = 4.dp),
+            .padding(vertical = 5.dp, horizontal = 4.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        // 驱动器图标
+        // 驱动器图标（v3.3.8：48→36dp 缩小）
         Icon(
             Icons.Default.Storage, null,
             tint = if (theme.isDark) Color(0xFF9CC4E8) else Color(0xFF0078D4),
-            modifier = Modifier.size(48.dp)
+            modifier = Modifier.size(36.dp)
         )
-        Spacer(Modifier.width(12.dp))
+        Spacer(Modifier.width(10.dp))
         Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = label,
-                color = if (theme.isDark) Color.White else Color.Black,
-                fontSize = 13.sp,
-                fontWeight = FontWeight.Medium
-            )
-            Spacer(Modifier.height(6.dp))
-            // 容量条
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(6.dp)
-                    .clip(RoundedCornerShape(3.dp))
-                    .background(theme.cardBackgroundColor)
-            ) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth(usagePct)
-                        .fillMaxHeight()
-                        .clip(RoundedCornerShape(3.dp))
-                        .background(theme.accentColor)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = label,
+                    color = if (theme.isDark) Color.White else Color.Black,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Medium
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    text = subtitle,
+                    color = theme.secondaryTextColor,
+                    fontSize = 10.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
                 )
             }
             Spacer(Modifier.height(4.dp))
-            Text(
-                text = "$valAvailGB GB 可用（共 $totalGB GB）",
-                color = theme.secondaryTextColor,
-                fontSize = 11.sp
-            )
+            if (exists) {
+                // 容量条
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(5.dp)
+                        .clip(RoundedCornerShape(3.dp))
+                        .background(theme.cardBackgroundColor)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth(usagePct)
+                            .fillMaxHeight()
+                            .clip(RoundedCornerShape(3.dp))
+                            .background(theme.accentColor)
+                    )
+                }
+                Spacer(Modifier.height(3.dp))
+                Text(
+                    text = "$availGB GB 可用（共 $totalGB GB）",
+                    color = theme.secondaryTextColor,
+                    fontSize = 10.sp
+                )
+            } else {
+                Text(
+                    text = "目录不存在（点击进入时自动创建）",
+                    color = theme.secondaryTextColor,
+                    fontSize = 10.sp
+                )
+            }
         }
     }
 }
@@ -901,9 +1023,10 @@ private fun NavSection(title: String) {
     Text(
         title,
         color = theme.secondaryTextColor,
-        fontSize = 11.sp,
+        // v3.3.8：紧凑化（11→10sp，间距收紧）
+        fontSize = 10.sp,
         fontWeight = FontWeight.SemiBold,
-        modifier = Modifier.padding(start = 4.dp, bottom = 4.dp, top = 4.dp)
+        modifier = Modifier.padding(start = 4.dp, bottom = 2.dp, top = 2.dp)
     )
 }
 
@@ -939,12 +1062,13 @@ private fun SidebarItem(label: String, active: Boolean, theme: com.anwind.core.t
             .clip(RoundedCornerShape(4.dp))
             .clickable(onClick = onClick)
             .background(if (active) theme.accentColor.copy(alpha = 0.15f) else Color.Transparent)
-            .padding(horizontal = 10.dp, vertical = 8.dp)
+            // v3.3.8：紧凑化（8→5dp，「图片视频等分类占用太大」→ 往上缩小）
+            .padding(horizontal = 8.dp, vertical = 5.dp)
     ) {
         Text(
             label,
             color = if (active) theme.accentColor else (if (theme.isDark) Color.White else Color.Black),
-            fontSize = 12.sp,
+            fontSize = 11.sp,
             fontWeight = if (active) FontWeight.Medium else FontWeight.Normal,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis

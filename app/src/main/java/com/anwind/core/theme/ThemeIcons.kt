@@ -35,6 +35,8 @@ object ThemeIcons {
     private val genericFallbacks: Map<String, String> = mapOf(
         "browser" to "icons/browser.png",
         "file_explorer" to "icons/file_explorer.png",
+        // v3.3.8：此电脑（原文件资源管理器）—— 电脑显示器图标
+        "this_pc" to "icons/this_pc.png",
         "settings" to "icons/settings.png",
         "notepad" to "icons/notepad.png",
         "image_viewer" to "icons/image_viewer.png",

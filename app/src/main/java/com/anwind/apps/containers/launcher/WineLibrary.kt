@@ -19,6 +19,12 @@ import java.util.concurrent.TimeUnit
  *    CurrentVersion / ProductName / CurrentBuild 三件套（wineguanli.py
  *    版本映射表逐条移植，见 [WindowsVersions]）。
  *
+ * v3.3.8（用户问题 4：sound/quartz 的 DLL 配置恢复）：dsound / dshow
+ * 三档语义 —— "default"（跟随安装包，不写注册表，v3.2.27 行为）与
+ * 显式档（"builtin,native" / "native,builtin" → 写入
+ * HKCU\Software\Wine\DllOverrides；winefuanli.py 同款）。默认档零改动，
+ * 显式选择才落地。
+ *
  * 实现方式：单次 `wine regedit /s` 导入；wineguanli.py 的直接文本改写
  * 依赖其特定前缀编码（UTF-8），而 wine 原生前缀的 .reg 为 UTF-16LE ——
  * regedit 导入对两种形态都正确，且无需关心编码。
@@ -53,7 +59,8 @@ object WineLibrary {
             val prev = runCatching { mark.readText().trim() }.getOrDefault("")
             if (prev == fp) return true
         }
-        log("应用函数库设置（DPI=${container.dpi}/Windows=${WindowsVersions.fromId(container.winver).label}；DLL 加载序不写入 —— 完全遵循 /opt/prefix 安装包注册表）……")
+        log("应用函数库设置（DPI=${container.dpi}/Windows=${WindowsVersions.fromId(container.winver).label}" +
+            "；DLL: dsound=${container.dsound}/dshow=${container.dshow}）……")
         return try {
             val anwindDir = File(prefix, "drive_c/anwind")
             anwindDir.mkdirs()
@@ -71,7 +78,8 @@ object WineLibrary {
             val code = if (finished) runCatching { cmd.waitFor() }.getOrDefault(-1) else -1
             if (finished && code == 0) {
                 runCatching { mark.writeText(fp) }
-                log("函数库设置已写入注册表（DPI=${container.dpi} Windows=${WindowsVersions.fromId(container.winver).label}）")
+                log("函数库设置已写入注册表（DPI=${container.dpi} Windows=${WindowsVersions.fromId(container.winver).label}" +
+                    "；DLL: dsound=${container.dsound}/dshow=${container.dshow}）")
                 true
             } else {
                 log("警告: 函数库设置导入未确认成功（退出码=$code；下次启动自动重试）")
@@ -104,7 +112,10 @@ object WineLibrary {
     }
 
     /** 生成 regedit 导入文件（REGEDIT4 / ANSI-ASCII，wine regedit 原生支持）。
-     *  v3.2.27：不再包含 DllOverrides 键（用户要求完全按 /opt/prefix 注册表）。 */
+     *  v3.2.27：不再包含 DllOverrides 键（用户要求完全按 /opt/prefix 注册表）。
+     *  v3.3.8：dsound/dshow 显式档（非 default）时写入 DllOverrides
+     *  （winefuanli.py 的 sound/quartz 配置同款）；default 档不写。
+     *  从显式改回 default 时写入空串（恢复 wine 内置默认加载序）。 */
     private fun buildReg(c: ContainerData): String = buildString {
         val ver = WindowsVersions.fromId(c.winver)
         appendLine("REGEDIT4")
@@ -116,6 +127,15 @@ object WineLibrary {
         appendLine("\"CurrentVersion\"=\"${ver.currentVersion}\"")
         appendLine("\"ProductName\"=\"${ver.productName}\"")
         appendLine("\"CurrentBuild\"=\"${ver.currentBuild}\"")
+        // v3.3.8（用户问题 4）：显式 DLL 加载序（dsound=DirectSound /
+        // dshow=DirectShow 即 quartz）—— 任一键显式时整段写入；
+        // 回到 default 档的键写空串清除旧覆盖。
+        if (c.dsound != "default" || c.dshow != "default") {
+            appendLine()
+            appendLine("[HKEY_CURRENT_USER\\Software\\Wine\\DllOverrides]")
+            appendLine("\"dsound\"=\"${if (c.dsound != "default") c.dsound else ""}\"")
+            appendLine("\"quartz\"=\"${if (c.dshow != "default") c.dshow else ""}\"")
+        }
     }
 
     /** DPI 十六进制 8 位（wineguanli.py：hex(dpi)[2:].zfill(8)，如 96 → 00000060）。 */

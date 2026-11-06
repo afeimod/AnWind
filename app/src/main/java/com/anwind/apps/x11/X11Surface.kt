@@ -637,6 +637,10 @@ internal class SmartTouchBridge(private val context: Context, private val view: 
          */
         private const val MOTION_FLUSH_INTERVAL_MS = 16L
 
+        /** XI2 Touch 事件类型（对齐 InputEventSender 私有常量，公开 SDK 无此符号） */
+        private const val XI_TOUCH_BEGIN = 18
+        private const val XI_TOUCH_UPDATE = 19
+
         /** XI_TouchEnd（对齐 InputEventSender 私有常量，公开 SDK 无此符号） */
         private const val XI_TOUCH_END = 20
 
@@ -694,7 +698,7 @@ internal class SmartTouchBridge(private val context: Context, private val view: 
             // 仿真按钮 1 永久卡按，此后一切左键按下被 dix 丢弃（点击全
             // 失灵）；未激活的 TouchEnd 在 X 侧被丢弃，零副作用。
             closeAllTouches()
-            synchronized(dtLock) { dtCount = 0; dtDirty = false }
+            synchronized(dtLock) { java.util.Arrays.fill(dtIds, -1) }
             flushHandler.removeCallbacks(dtFlushRunnable); dtFlushPending = false
             // 切换方式时丢弃未冲刷的相对增量，防止旧模式残余在新模式生效
             dropPendingMoves()
@@ -704,13 +708,14 @@ internal class SmartTouchBridge(private val context: Context, private val view: 
         tapToMove = p.tapToMove.get()
     }
 
-    // 视图→X 坐标变换参数
-    private var surfaceW = 0
-    private var surfaceH = 0
-    private var screenW = 0
-    private var screenH = 0
-    private var scaleX = 1f
-    private var scaleY = 1f
+    // 视图→X 坐标变换参数（@Volatile：X11FitClient 的 root 尺寸监控线程
+    // 会在 wine RandR 改屏后跨线程调 updateScreenSize 写入；冲刷线程读）
+    @Volatile private var surfaceW = 0
+    @Volatile private var surfaceH = 0
+    @Volatile private var screenW = 0
+    @Volatile private var screenH = 0
+    @Volatile private var scaleX = 1f
+    @Volatile private var scaleY = 1f
 
     // 手势状态
     private var mode = Mode.IDLE
@@ -818,7 +823,7 @@ internal class SmartTouchBridge(private val context: Context, private val view: 
     /** 桥与视图分离（X11 窗口关闭/最小化）时清理手势痕迹与悬挂冲刷。 */
     fun onDetached() {
         dropPendingMoves()
-        synchronized(dtLock) { dtCount = 0; dtDirty = false }
+        synchronized(dtLock) { java.util.Arrays.fill(dtIds, -1) }
         flushHandler.removeCallbacks(dtFlushRunnable)
         dtFlushPending = false
         // 分离前补发孤儿按钮释放 + 冲掉可能遗留的 X 侧活跃触摸
@@ -955,6 +960,30 @@ internal class SmartTouchBridge(private val context: Context, private val view: 
         renderData.imageHeight = surfaceH
         renderData.screenWidth = screenW
         renderData.screenHeight = screenH
+        renderData.scale.set(scaleX, scaleY)
+    }
+
+    /**
+     * v3.3.8（用户问题 3：直接触摸滑动乱飘根修）：仅更新 X 屏幕尺寸并
+     * 重算视图→X 变换。
+     *
+     * 背景：X 屏幕尺寸不只随 Android 窗口变 —— wine 游戏全屏时经 RandR
+     * 把 X 屏切成游戏分辨率（Android 窗口/surface 不变，LorieView 的
+     * surfaceChanged 不会触发）。旧实现只在 surfaceChanged 里刷新变换，
+     * wine 改屏后 scaleX/scaleY 永久陈旧：直接模式下每条触摸的绝对坐标
+     * 都按旧屏幕比例映射 → 落点漂移，滑动越远偏得越多 —— "鼠标乱飘"
+     * 的直接根因。X11FitClient 的 root 尺寸监控发现真实屏幕变化后经本
+     * 方法同步（≤800ms），模拟/触控板/直接三种方式同步受益。
+     */
+    fun updateScreenSize(newW: Int, newH: Int) {
+        if (newW <= 0 || newH <= 0) return
+        if (newW == screenW && newH == screenH) return
+        screenW = newW
+        screenH = newH
+        scaleX = if (surfaceW > 0) newW.toFloat() / surfaceW else 1f
+        scaleY = if (surfaceH > 0) newH.toFloat() / surfaceH else 1f
+        renderData.screenWidth = newW
+        renderData.screenHeight = newH
         renderData.scale.set(scaleX, scaleY)
     }
 
@@ -1278,61 +1307,68 @@ internal class SmartTouchBridge(private val context: Context, private val view: 
         return true
     }
 
-    // ---- 直接触摸（TOUCH_DIRECT）MOVE 合并器 ----
+    // ---- 直接触摸（TOUCH_DIRECT）v3.3.8 重写 ----
     // 每 MOVE 事件逐指针直发 XI_TouchUpdate 在 120~240Hz 触摸下事件洪泛，
     // X server 输入线程被逐事件唤醒，wine 满载时抢占渲染时间片 → 滑屏
-    // 掉帧。改为"最新全量快照 + 16ms 节流"：MOVE 只更新快照（零 JNI），
-    // 后台线程按最小间隔把快照构造成一条 ACTION_MOVE 直发（触摸屏语义：
-    // 中间采样可丢，绝对坐标快照天然幂等）。DOWN/POINTER_DOWN/POINTER_UP/
-    // UP/CANCEL 是 touch 序列边界，必须即时直发不可合并。快照由 dtLock
-    // 保护（主线程手势收尾与冲刷线程并发排水，与相对合并器同款模式）。
+    // 掉帧。改为"最新坐标快照 + 16ms 节流"：MOVE 只更新快照（零 JNI），
+    // 后台线程按最小间隔把每个活跃槽位的最新坐标直发 TouchUpdate
+    //（触摸屏语义：中间采样可丢，绝对坐标快照天然幂等）。序列边界
+    //（DOWN/POINTER_DOWN/POINTER_UP/UP/CANCEL）即时直发不可合并。
+    //
+    // v3.3.8（用户问题 3：直接触摸滑动"鼠标乱飘"）三项根修：
+    //  1. 【变换新鲜度】X 屏幕尺寸被 wine RandR 改掉后（游戏全屏），
+    //     视图→X 变换不再陈旧 —— X11FitClient 每轮巡检 root 真实尺寸，
+    //     变化即经 updateScreenSize 同步（见其 KDoc）；
+    //  2. 【槽位 id】不再把 Android pointerId 直接当 X touch id 用
+    //     （pointerId 是任意整数，≥10 时旧路径 ArrayIndexOutOfBounds；
+    //     现在由桥自分配稳定槽位 0..9，配对 Begin/Update/End 自洽）；
+    //  3. 【先定位后触摸】TouchBegin 前先发一条绝对 pointer motion
+    //     （纯 motion 才携带坐标，v3.2.9 反汇编结论），仿真指针/光标
+    //     从手指位置开始 —— wine 的触摸翻译与 X 的 dix 触摸仿真两条
+    //     路径起点一致，不再从旧 sprite 位置"甩"过去。
     private val dtLock = Any()
-    private val dtIds = IntArray(10)
-    private val dtProps = Array(10) { MotionEvent.PointerProperties() }
-    private val dtCoords = Array(10) { MotionEvent.PointerCoords() }
-    /** UP/CANCEL 收尾用的残留槽位快照（锁内拷贝、锁外发 TouchEnd） */
-    private val dtCloseIds = IntArray(10)
-    private var dtCount = 0
-    private var dtDirty = false
-    private var dtDownTime = 0L
-    private var dtDeviceId = 0
-    private var dtSource = 0
+    /** 槽位 → Android pointerId（-1 = 空槽；槽位号即 X 侧 touch id，
+     *  全程稳定不压缩 —— 压缩会使后续指针的 X touch id 漂移，
+     *  TouchUpdate/End 配对错乱（v3.3.8 修正） */
+    private val dtIds = IntArray(10) { -1 }
+    /** 槽位最新视图坐标（冲刷时乘变换转 X 坐标） */
+    private val dtX = FloatArray(10)
+    private val dtY = FloatArray(10)
     @Volatile private var dtFlushPending = false
     private val dtFlushRunnable = Runnable { flushDirectMoves() }
+
+    /** 视图坐标 → X 屏幕坐标（钳位在屏幕内） */
+    private fun dtToX(vx: Float, vy: Float): IntArray {
+        val x = (vx * scaleX).toInt().coerceIn(0, (screenW - 1).coerceAtLeast(0))
+        val y = (vy * scaleY).toInt().coerceIn(0, (screenH - 1).coerceAtLeast(0))
+        return intArrayOf(x, y)
+    }
 
     private fun flushDirectMoves() {
         flushHandler.removeCallbacks(dtFlushRunnable)
         dtFlushPending = false
-        var snap: MotionEvent? = null
+        val xs = IntArray(10)
+        val ys = IntArray(10)
+        val active = BooleanArray(10)
         synchronized(dtLock) {
-            if (!dtDirty || dtCount == 0) return
-            dtDirty = false
-            snap = MotionEvent.obtain(
-                dtDownTime, android.os.SystemClock.uptimeMillis(),
-                MotionEvent.ACTION_MOVE, dtCount, dtProps, dtCoords,
-                0, 0, 1f, 1f, dtDeviceId, 0, dtSource, 0
-            )
+            var any = false
+            for (i in dtIds.indices) {
+                if (dtIds[i] != -1) {
+                    val p = dtToX(dtX[i], dtY[i])
+                    xs[i] = p[0]; ys[i] = p[1]
+                    active[i] = true
+                    any = true
+                }
+            }
+            if (!any) return
         }
-        try {
-            if (LorieView.connected()) keySender.sendTouchEvent(snap!!, renderData)
-        } finally {
-            snap!!.recycle()
-        }
-    }
-
-    /**
-     * direct 模式触摸序列边界（DOWN/POINTER_DOWN/POINTER_UP/UP/CANCEL）
-     * 入队输入线程发送。系统 MotionEvent 在 dispatch 返回后会被
-     * ViewRootImpl 回收复用，不能跨线程持有 —— obtain 一份副本入队，
-     * 输入线程用完回收（每手势 2~3 次小分配；MOVE 走零分配快照合并器）。
-     */
-    private fun postTouchEvent(event: MotionEvent) {
-        val copy = MotionEvent.obtain(event)
         postSend {
-            try {
-                if (LorieView.connected()) keySender.sendTouchEvent(copy, renderData)
-            } finally {
-                copy.recycle()
+            if (LorieView.connected()) {
+                for (slot in active.indices) {
+                    if (active[slot]) {
+                        view.sendTouchEvent(XI_TOUCH_UPDATE, slot, xs[slot], ys[slot])
+                    }
+                }
             }
         }
     }
@@ -1340,38 +1376,72 @@ internal class SmartTouchBridge(private val context: Context, private val view: 
     /**
      * 模式 3 —— 直接触摸（termux-x11 "Direct touch"）：
      * 原始多点触摸不经手势转换，按 XI2 Touch 事件直注 X（坐标经
-     * renderData 视图→X 屏幕变换）—— 触摸类游戏/应用获得真实多点触摸，
+     * 视图→X 屏幕变换）—— 触摸类游戏/应用获得真实多点触摸，
      * X server 同时向老程序模拟鼠标（xinput 保真，等效上游 NullInputStrategy）。
      */
     private fun onTouchDirect(event: MotionEvent): Boolean {
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
-                // 新手势起点：重置快照并记录构造参数（downTime/deviceId/source）
+                // 新手势起点：清空槽位表，第一指占 0 号槽
                 flushHandler.removeCallbacks(dtFlushRunnable); dtFlushPending = false
+                val id = event.getPointerId(0)
+                val vx = event.x; val vy = event.y
+                val p = dtToX(vx, vy)
                 synchronized(dtLock) {
-                    dtCount = 0; dtDirty = false
-                    dtDownTime = event.downTime
-                    dtDeviceId = event.deviceId
-                    dtSource = event.source
+                    java.util.Arrays.fill(dtIds, -1)
+                    dtIds[0] = id; dtX[0] = vx; dtY[0] = vy
                 }
-                postTouchEvent(event)
+                // v3.3.8：无 WM 多窗口堆叠时点击置前（模拟模式同款，fire-and-forget）
+                X11WindowOps.raiseAt(p[0], p[1])
+                val px = p[0]; val py = p[1]
+                postSend {
+                    if (LorieView.connected()) {
+                        // 先定位后触摸：纯 motion 携带坐标（按钮消息的坐标被
+                        // native 丢弃，v3.2.9 反汇编结论），仿真指针从手指处开始
+                        view.sendMouseEvent(px.toFloat(), py.toFloat(), InputStub.BUTTON_UNDEFINED, false, false)
+                        view.sendTouchEvent(XI_TOUCH_BEGIN, 0, px, py)
+                    }
+                }
+            }
+            MotionEvent.ACTION_POINTER_DOWN -> {
+                // 新指加入：分配第一个空槽（槽位号 = X touch id，稳定不复用
+                // 活跃槽）并即时直发 TouchBegin
+                val i = event.actionIndex
+                val id = event.getPointerId(i)
+                val vx = event.getX(i); val vy = event.getY(i)
+                val p = dtToX(vx, vy)
+                var slot = -1
+                synchronized(dtLock) {
+                    val exist = dtIds.indexOf(id)
+                    slot = when {
+                        // 已占槽（异常重入）覆盖坐标
+                        exist >= 0 -> exist
+                        // 第一个空槽
+                        else -> dtIds.indexOf(-1)
+                    }
+                    if (slot >= 0) {
+                        dtIds[slot] = id; dtX[slot] = vx; dtY[slot] = vy
+                    }
+                }
+                if (slot >= 0) {
+                    val s = slot; val px = p[0]; val py = p[1]
+                    postSend {
+                        if (LorieView.connected()) view.sendTouchEvent(XI_TOUCH_BEGIN, s, px, py)
+                    }
+                }
             }
             MotionEvent.ACTION_MOVE -> {
-                // 快照更新（零 JNI）：按 pointerId 槽位覆盖最新属性/坐标
+                // 坐标快照更新（零 JNI）：按 pointerId 找槽覆盖最新坐标
                 synchronized(dtLock) {
                     val n = event.pointerCount.coerceAtMost(dtIds.size)
                     for (i in 0 until n) {
                         val id = event.getPointerId(i)
-                        var slot = dtIds.indexOf(id)
-                        if (slot < 0 || slot >= dtCount) {
-                            if (dtCount >= dtIds.size) continue
-                            slot = dtCount++
-                            dtIds[slot] = id
+                        val slot = dtIds.indexOf(id)
+                        if (slot >= 0) {
+                            dtX[slot] = event.getX(i)
+                            dtY[slot] = event.getY(i)
                         }
-                        event.getPointerProperties(i, dtProps[slot])
-                        event.getPointerCoords(i, dtCoords[slot])
                     }
-                    dtDirty = true
                 }
                 if (!dtFlushPending) {
                     dtFlushPending = true
@@ -1379,54 +1449,48 @@ internal class SmartTouchBridge(private val context: Context, private val view: 
                 }
             }
             MotionEvent.ACTION_POINTER_UP -> {
-                // 该指 touch 序列结束：丢弃未冲刷快照（可能含已抬指旧
-                // 坐标）并把该指移出快照槽（交换压缩），再直发 TouchEnd
+                // 该指序列结束：槽位置空（不压缩 —— 槽位号即 X touch id，
+                // 压缩会让后续指针的 id 漂移），即时直发 TouchEnd
                 flushHandler.removeCallbacks(dtFlushRunnable); dtFlushPending = false
+                val id = event.getPointerId(event.actionIndex)
+                var slot = -1
                 synchronized(dtLock) {
-                    dtDirty = false
-                    val si = dtIds.indexOf(event.getPointerId(event.actionIndex))
-                    if (si >= 0 && si < dtCount) {
-                        for (j in si until dtCount - 1) {
-                            dtIds[j] = dtIds[j + 1]
-                            val tp = dtProps[j]; dtProps[j] = dtProps[j + 1]; dtProps[j + 1] = tp
-                            val tc = dtCoords[j]; dtCoords[j] = dtCoords[j + 1]; dtCoords[j + 1] = tc
-                        }
-                        dtCount--
+                    val si = dtIds.indexOf(id)
+                    if (si >= 0) {
+                        slot = si
+                        dtIds[si] = -1
                     }
                 }
-                // 子事件原样发送，X 侧按 actionIndex 结束对应指
-                postTouchEvent(event)
+                if (slot >= 0) {
+                    val s = slot
+                    postSend {
+                        if (LorieView.connected()) view.sendTouchEvent(XI_TOUCH_END, s, 0, 0)
+                    }
+                }
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                // UP 前先冲刷最新位置（不丢拖拽尾段）；CANCEL 只清态
+                // 全部抬起：清空槽位并补发 TouchEnd（X 侧丢弃未激活的
+                // TouchEnd，重复发送零副作用）
                 diagUps++
-                if (event.actionMasked == MotionEvent.ACTION_UP) postSend { flushDirectMoves() }
                 flushHandler.removeCallbacks(dtFlushRunnable); dtFlushPending = false
-                var leftover = 0
+                val endIds = IntArray(10)
+                var n = 0
                 synchronized(dtLock) {
-                    // 残留触摸槽位记入 leftover（多指异常直发 UP 时，
-                    // 其余手指的 X 侧触摸不能悬挂 —— 悬挂触摸的仿真按钮 1
-                    // 会永久卡按，此后一切左键点击全失灵）
-                    for (i in 0 until dtCount) dtCloseIds[i] = dtIds[i]
-                    leftover = dtCount
-                    dtCount = 0; dtDirty = false
+                    for (i in dtIds.indices) {
+                        if (dtIds[i] != -1) endIds[n++] = i
+                    }
+                    java.util.Arrays.fill(dtIds, -1)
                 }
-                postTouchEvent(event)
-                // 原始 UP/CANCEL 已按 actionIndex 结束对应指；其余槽位 +
-                // 重复的抬起指补发 TouchEnd（X 侧丢弃未激活的 TouchEnd，
-                // 零副作用）
-                for (i in 0 until leftover) {
-                    val id = dtCloseIds[i]
-                    postSend {
-                        if (LorieView.connected()) view.sendTouchEvent(XI_TOUCH_END, id, 0, 0)
+                val count = n
+                postSend {
+                    if (LorieView.connected()) {
+                        for (i in 0 until count) view.sendTouchEvent(XI_TOUCH_END, endIds[i], 0, 0)
                     }
                 }
             }
-            else -> postTouchEvent(event) // POINTER_DOWN 等
         }
         return true
     }
-
     /**
      * 模式 1 —— 触控板（termux-x11 "Trackpad"）：
      * 手指滑动 = 虚拟光标相对移动（scaleTouchpad 开启时位移按视图→X

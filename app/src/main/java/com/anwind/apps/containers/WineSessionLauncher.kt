@@ -76,6 +76,14 @@ object WineSessionLauncher {
         RootfsLauncher.runWineCmd(context, container, wineCmd)
 
     /**
+     * v3.3.8：运行前同步预检（rootfs 就绪 / wine 可解析）—— 供 UI 的
+     * 「运行」按钮先行给出错误（与 runExe 的同步段同一套检查，不启动）。
+     * @return null = 预检通过；非 null = 错误消息
+     */
+    fun precheckRun(container: ContainerData): String? =
+        RootfsLauncher.precheckRun(container)
+
+    /**
      * 首次初始化前缀（手动"安装前缀"按钮入口）。
      *
      * v3.3.4（用户问题 5）：-i → -u —— 参考链路 startwine.sh / startfex.sh

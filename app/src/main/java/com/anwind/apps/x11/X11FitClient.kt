@@ -298,7 +298,31 @@ object X11FitClient {
                 }
                 val c = conn!!
 
-                val game = findGameWindow(c, sw, sh)
+                // v3.3.8（用户问题 3：直接触摸乱飘根修）：每轮巡检 root 真实
+                // 尺寸 —— wine 游戏全屏时经 RandR 把 X 屏切成游戏分辨率，
+                // Android 窗口/surface 不变，LorieView 的 surfaceChanged 不会
+                // 触发，SmartTouchBridge 的视图→X 变换永久陈旧 → 直接模式下
+                // 每条触摸的绝对坐标按旧屏幕比例映射 → 滑动乱飘。这里发现
+                // 真实尺寸变化即同步：本地缓存 + 活跃触摸桥（三种触摸方式
+                // 同步受益）+ 落盘（下次启动链读到的就是新值）。
+                runCatching {
+                    val rootGeo = c.getGeometry(c.root)
+                    if (rootGeo != null && rootGeo.w >= 160 && rootGeo.h >= 120 &&
+                        (rootGeo.w != sw || rootGeo.h != sh)
+                    ) {
+                        Log.i(TAG, "X 屏幕真实尺寸已变化：${sw}x${sh} → ${rootGeo.w}x${rootGeo.h}" +
+                            "（wine RandR）—— 同步触摸变换与屏幕缓存")
+                        screenW = rootGeo.w
+                        screenH = rootGeo.h
+                        com.anwind.apps.x11.X11ResolutionLink.writeScreenSize(rootGeo.w, rootGeo.h)
+                        SmartTouchBridge.activeBridge?.updateScreenSize(rootGeo.w, rootGeo.h)
+                    }
+                }
+                // 本轮后续判断用最新值（同步发生在上方）
+                val swNow = screenW
+                val shNow = screenH
+
+                val game = findGameWindow(c, swNow, shNow)
                 if (game == null) {
                     // fix28：游戏窗口消失 → 稳定门观测作废（下一个新窗口从
                     // 第一轮观测重新起算，防止"同尺寸新窗口"被误判为稳定）
@@ -330,7 +354,7 @@ object X11FitClient {
                 // 真全屏游戏（wine RandR 切过屏幕）、GLR_VD 虚拟桌面都落在
                 // 这一支 —— 零动作，不与 wine 抢权。
                 val aligned = game.x == -L && game.y == -T
-                val rootMatch = clientW == sw && clientH == sh
+                val rootMatch = clientW == swNow && clientH == shNow
                 // fix28 稳定门：同窗口同尺寸连续两轮（≈1.6s）才视为"已稳定"
                 val stable = game.id == lastWinId && game.w == lastW && game.h == lastH
 
@@ -346,7 +370,7 @@ object X11FitClient {
                 // 新握手（resetSession）/ 关闭重开会话。
                 if (gaveUp) {
                     logT("giveup", "游戏持续对抗外部调整，自适应已放手" +
-                        "（X 屏保持 ${sw}x${sh}；新握手或重启会话可重置）")
+                        "（X 屏保持 ${swNow}x${shNow}；新握手或重启会话可重置）")
                     lastWinId = game.id; lastW = game.w; lastH = game.h
                     sleep(GIVEUP_POLL_MS); continue
                 }
@@ -356,7 +380,7 @@ object X11FitClient {
                 if (!aligned) c.moveWindow(game.id, -L, -T)
 
                 if (!rootMatch) {
-                    val shrink = clientW < sw || clientH < sh
+                    val shrink = clientW < swNow || clientH < shNow
                     val areaOk = !shrink || handshakeW <= 0 || handshakeH <= 0 ||
                         clientW.toLong() * clientH * MIN_FIT_AREA_DEN >=
                         handshakeW.toLong() * handshakeH
@@ -371,16 +395,16 @@ object X11FitClient {
                         // MAX_FIT_FIGHTS 轮被游戏改回 → 放手（旧版此处会跌入
                         // 贴合缩屏 —— proton 对抗下正是收缩级联的入口）。
                         if (pinFights < MAX_FIT_FIGHTS) {
-                            c.moveResizeWindow(game.id, -L, -T, sw + L + R, sh + T + B)
+                            c.moveResizeWindow(game.id, -L, -T, swNow + L + R, shNow + T + B)
                             pinFights++
                             Log.i(TAG, "自适应(撑满): 窗口 ${game.w}x${game.h}@(${game.x},${game.y}) " +
-                                "边框[$L,$R,$T,$B] → 客户区撑到 X 屏幕 ${sw}x${sh}" +
+                                "边框[$L,$R,$T,$B] → 客户区撑到 X 屏幕 ${swNow}x${shNow}" +
                                 " [对抗 $pinFights/$MAX_FIT_FIGHTS]")
                             sleep(1200)
                         } else {
                             gaveUp = true
                             Log.w(TAG, "自适应放弃(撑满): 窗口持续被游戏改回，" +
-                                "保持 X 屏幕 ${sw}x${sh} 不再调整（新握手或重启会话可重置）")
+                                "保持 X 屏幕 ${swNow}x${shNow} 不再调整（新握手或重启会话可重置）")
                             sleep(GIVEUP_POLL_MS)
                         }
                     } else if (stable && rootAdjusts < MAX_ROOT_ADJUSTS && areaOk) {
@@ -400,19 +424,19 @@ object X11FitClient {
                         // 把窗口缩回 ~96%（对 root 变化的反应）—— 绝不追着缩
                         // root，反手把窗口撑回覆盖整个 X 屏（root 不动），游戏
                         // /DXVK 收 WM_SIZE 后按屏幕分辨率重绘 → 铺满。
-                        c.moveResizeWindow(game.id, -L, -T, sw + L + R, sh + T + B)
+                        c.moveResizeWindow(game.id, -L, -T, swNow + L + R, shNow + T + B)
                         pinFights++
                         Log.i(TAG, "自适应(钉满): 窗口 ${game.w}x${game.h}@(${game.x},${game.y}) " +
-                            "贴合后被改回 → 窗口撑到 X 屏幕 ${sw}x${sh}（root 不动）" +
+                            "贴合后被改回 → 窗口撑到 X 屏幕 ${swNow}x${shNow}（root 不动）" +
                             " [对抗 $pinFights/$MAX_FIT_FIGHTS]")
                         sleep(1200)
                     } else if (stable && pinFights < MAX_FIT_FIGHTS) {
                         // fix28 钉满（兜底）：窗口稳定但不匹配（缩屏预算耗尽/
                         // 面积下限拦截），X 屏保持不动，窗口撑到 X 屏。
-                        c.moveResizeWindow(game.id, -L, -T, sw + L + R, sh + T + B)
+                        c.moveResizeWindow(game.id, -L, -T, swNow + L + R, shNow + T + B)
                         pinFights++
                         Log.i(TAG, "自适应(钉满): 窗口 ${game.w}x${game.h} 稳定但不匹配 " +
-                            "X 屏幕 ${sw}x${sh}（调整 ${rootAdjusts}/${MAX_ROOT_ADJUSTS}" +
+                            "X 屏幕 ${swNow}x${shNow}（调整 ${rootAdjusts}/${MAX_ROOT_ADJUSTS}" +
                             "${if (areaOk) "" else " ·面积下限"}）→ 窗口撑到 X 屏幕" +
                             " [对抗 $pinFights/$MAX_FIT_FIGHTS]")
                         sleep(1200)
@@ -421,7 +445,7 @@ object X11FitClient {
                         // 且无可用动作 —— 保持握手分辨率，完全不再调整。
                         gaveUp = true
                         Log.w(TAG, "自适应放弃: 窗口 ${game.w}x${game.h} 持续不匹配 X 屏幕 " +
-                            "${sw}x${sh}（贴合 ${rootAdjusts}/${MAX_ROOT_ADJUSTS} ·" +
+                            "${swNow}x${shNow}（贴合 ${rootAdjusts}/${MAX_ROOT_ADJUSTS} ·" +
                             " 钉满对抗 ${pinFights}/${MAX_FIT_FIGHTS}）—— 保持握手分辨率" +
                             "（新握手或重启会话可重置）")
                         sleep(GIVEUP_POLL_MS)
@@ -452,7 +476,7 @@ object X11FitClient {
     private class Win(val id: Long, val x: Int, val y: Int, val w: Int, val h: Int,
                       val desktopPresent: Boolean)
 
-    private fun findGameWindow(c: XConn, sw: Int, sh: Int): Win? {
+    private fun findGameWindow(c: XConn, swNow: Int, shNow: Int): Win? {
         val ids = c.queryTree(c.root)
         var bestId = 0L; var bx = 0; var by = 0; var bw = 0; var bh = 0
         var bestArea = 0L; var secondArea = 0L
