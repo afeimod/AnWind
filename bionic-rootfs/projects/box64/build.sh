@@ -6,31 +6,31 @@ buildSys="cmake"
 license="MIT"
 
 # ============================================================
-# v3.3.10（box64 构建修复，用户问题 3）：0001 补丁按版本条件生效
+# v3.3.16（box64-0.4.2 冒烟修复）：补丁基线下调 v0.4.4 → v0.4.2
 # ------------------------------------------------------------
-# 【事故回放】CI 日志 build-box64-aarch64.log：选定非 v0.4.4 的
-# revision（master 或旧版）时，0001-anwind-android-shmem-native.patch
-# 在 src/elfs/elfparser.c 的 hunk 失败（CMakeLists.txt 两 hunk 带偏移
-# 勉强过、elfparser 直接 FAIL）→ apply_patches 判构建阵亡。
-# 【修复策略】补丁基线 v0.4.4，两层防线：
-#   1. 版本前置判断（用户口径"0.4.4 以前的 box64 不能接受一些补丁，
-#      在选择时跳过"）：revision 解析出版本号 < 0.4.4 时直接
-#      doNotApplyPatch=1（整包跳过，日志明示）；
-#   2. patchOptional=1 兑底：其余 ref（master 漂移/未来新版）上 dry-run
-#      失败时由框架【警告跳过】而非中止（patchesSkipped 记录），
-#      install() 据实条件化 shm 冒烟断言 —— 跳过补丁的构建产物不再
-#      因缺 shm 符号被误判失败。
-# 补丁未生效的后果由用户自担（bionic 宿主 shm 链路断、Android RELR
-# 重定位静默跳过 → wineboot SIGSEGV 风险面），日志大字提示。
+# 【事故回放】CI 选 v0.4.2 构建：v3.3.10 的版本前置判断把
+# revision < v0.4.4 一律 doNotApplyPatch=1 跳过 0001 补丁 ——
+# 产物成为【未打补丁】降级形态（shm 断言跳过 + 大字警告），
+# 用户按提示"选 v0.4.4 及以上"才能拿完整特性。
+# 【实测勘误（本轮沙箱全量 dry-run 验证）】0001 补丁在：
+#   v0.4.4  ：全部 hunk 精确命中（基线）；
+#   v0.4.2  ：全部 hunk 命中（仅行号偏移），且 elfparser.c 的
+#             DT_RELR/RELRSZ/RELRENT case 结构与 v0.4.4 完全一致
+#             （逐行号核对）—— 补丁语义在 v0.4.2 上完整成立；
+#   v0.4.0  ：elfparser.c Hunk#1 FAILED（RELR case 上下文不同）
+#             —— 真实不可应用，维持跳过；
+#   master  ：全部 hunk 命中（漂移仅偏移）。
+# 故补丁基线下调为 v0.4.2（含），v0.4.0/v0.4.1 仍走整包跳过。
+# 其余防线不变：patchOptional=1 兜底未来版本/分支漂移。
 # ============================================================
 _patch_baseline_major=0
 _patch_baseline_minor=4
-_patch_baseline_patch=4
+_patch_baseline_patch=2
 _box64_ver_major="$(echo "${revision}" | sed -n 's/^[vV]\?\([0-9]\+\)\..*$/\1/p')"
 _box64_ver_minor="$(echo "${revision}" | sed -n 's/^[vV]\?[0-9]\+\.\([0-9]\+\).*/\1/p')"
 _box64_ver_patch="$(echo "${revision}" | sed -n 's/^[vV]\?[0-9]\+\.[0-9]\+\.\([0-9]\+\).*/\1/p')"
 if [[ -n "${_box64_ver_major}" ]]; then
-  # 解析出版本号（如 v0.4.4 / 0.4.6）：与基线 0.4.4 逐段比较
+  # 解析出版本号（如 v0.4.2 / 0.4.6）：与基线 0.4.2 逐段比较
   _box64_lt_baseline=0
   if (( _box64_ver_major < _patch_baseline_major )); then
     _box64_lt_baseline=1
@@ -43,10 +43,10 @@ if [[ -n "${_box64_ver_major}" ]]; then
     # v3.3.11：顶层 echo 必须 >&2 —— get_dep() 以 $(...) 捕获本文件 stdout
     # 作为依赖列表，裸 echo 会把 "[INFO]" 混进 deps，collect_dep 把它当
     # 包名报 "项目不存在 => [INFO]"（CI 实测，box64 相关构建全挂）
-    echo "[INFO] box64 revision=${revision} < v${_patch_baseline_major}.${_patch_baseline_minor}.${_patch_baseline_patch}（补丁基线）—— 0.4.4 以前的版本不接受 0001 补丁，按选择跳过" >&2
+    echo "[INFO] box64 revision=${revision} < v${_patch_baseline_major}.${_patch_baseline_minor}.${_patch_baseline_patch}（补丁基线）—— 0.4.2 以前的版本（v0.4.0/v0.4.1）不接受 0001 补丁，按选择跳过" >&2
     doNotApplyPatch=1
   else
-    echo "[INFO] box64 revision=${revision} >= 补丁基线 v0.4.4，正常应用 0001 补丁（漂移时 patchOptional 跳过）" >&2
+    echo "[INFO] box64 revision=${revision} >= 补丁基线 v0.4.2，正常应用 0001 补丁（漂移时 patchOptional 跳过）" >&2
     patchOptional=1
   fi
 else
@@ -338,7 +338,8 @@ install() {
     echo "    * NDK lld 的 Android 标签 RELR 重定位（DT_ANDROID_RELR）不识别"
     echo "      —— bionic wine ntdll 的 .data 自指针保持裸地址，wineboot 有"
     echo "      SIGSEGV 风险。"
-    echo "    如需完整特性：选 v0.4.4 及以上版本重新构建。"
+    echo "    如需完整特性：选 v0.4.2 及以上版本重新构建（v0.4.0/v0.4.1 的"
+    echo "    elfparser.c 结构与 0001 补丁不兼容，无法打补丁）。"
     echo "=============================================================="
   fi
   local _sym_ok=1

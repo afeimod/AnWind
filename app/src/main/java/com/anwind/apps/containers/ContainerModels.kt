@@ -69,22 +69,30 @@ enum class ContainerBackend(
 }
 
 // ---------------------------------------------------------------------------
-// Box64 动态重编译预设（对齐 anwind-wine 的 BOX64_DYNAREC_* 注入）
+// Box64 动态重编译预设（v3.3.16 对齐 WinNative Box64PresetManager 四档）
 // ---------------------------------------------------------------------------
 
 /**
- * Box64 DYNAREC 预设。
+ * Box64 DYNAREC 预设（WinNative Box64PresetManager.getEnvVars 同款四档，
+ * 变量值逐字对齐；标签按 AnWind 语言习惯命名）。
  *
- * PERFORMANCE    : 速度优先，适合多数游戏/应用
- * COMPATIBILITY  : 强内存序 + 安全野指针，适合崩溃的程序
+ * STABILITY      : 最稳档（wineboot/旧程序崩溃时选）—— 全安全开关
+ * COMPATIBILITY  : 兼容优先 —— 强内存序 + 安全 flags
+ * INTERMEDIATE   : 进阶（WinNative 原名）—— 大块 + CALLRET 优化开
+ * PERFORMANCE    : 性能优先 —— BIGBLOCK=3 + 全快路径，适合多数游戏
+ *
+ * 旧容器数据迁移：原两档 id（performance/compatibility）保留不变，
+ * fromId 对未知 id 的回退仍为 PERFORMANCE（与旧行为一致）。
  */
 enum class Box64Preset(
     val id: String,
     val label: String,
     val desc: String
 ) {
-    PERFORMANCE("performance", "性能优先", "STRONGMEM=0，速度快"),
-    COMPATIBILITY("compatibility", "兼容优先", "STRONGMEM=1，更稳定");
+    STABILITY("stability", "稳定优先", "SAFEFLAGS=2+STRONGMEM=2，最稳档"),
+    COMPATIBILITY("compatibility", "兼容优先", "SAFEFLAGS=2+STRONGMEM=1，更稳定"),
+    INTERMEDIATE("intermediate", "进阶", "BIGBLOCK=2+CALLRET=1，速度与兼容平衡"),
+    PERFORMANCE("performance", "性能优先", "BIGBLOCK=3+全快路径，适合多数游戏");
 
     companion object {
         fun fromId(id: String?): Box64Preset =

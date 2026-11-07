@@ -31,6 +31,7 @@ import androidx.compose.ui.unit.sp
 import com.anwind.apps.containers.launcher.OptConfSupport
 import com.anwind.apps.containers.launcher.RootfsLauncher
 import com.anwind.apps.containers.launcher.WineEnvironment
+import com.anwind.apps.containers.launcher.WrapperDriverSupport
 import com.anwind.core.theme.LocalWinTheme
 import com.anwind.core.window.WinConfirmDialog
 import com.anwind.core.window.WinDialog
@@ -1340,34 +1341,161 @@ private fun GraphicsDriverTab(
     onChange: (ContainerData) -> Unit
 ) {
     // wineguanli.py load_driver_versions：默认/不使用 + 目录内 tar 包
-    var tzTars by remember { mutableStateOf<List<GuanliSupport.OptTar>>(emptyList()) }
     var zinkTars by remember { mutableStateOf<List<GuanliSupport.OptTar>>(emptyList()) }
     var dxvkTars by remember { mutableStateOf<List<GuanliSupport.OptTar>>(emptyList()) }
     var wined3dTars by remember { mutableStateOf<List<GuanliSupport.OptTar>>(emptyList()) }
     var fexcoreTars by remember { mutableStateOf<List<GuanliSupport.OptTar>>(emptyList()) }
-    var wrapperTars by remember { mutableStateOf<List<GuanliSupport.OptTar>>(emptyList()) }
-    LaunchedEffect(Unit) {
+    // v3.3.16（WinNative DriverPackages 模型）：Vulkan 驱动 = 类型
+    //（turnip / wrapper）+ 版本（独立目录多驱动共存）+ ➕ yuzu 式安装
+    var installedDrivers by remember { mutableStateOf<List<WrapperDriverSupport.DriverEntry>>(emptyList()) }
+    var tzTars by remember { mutableStateOf<List<GuanliSupport.OptTar>>(emptyList()) }
+    var driversTick by remember { mutableIntStateOf(0) }
+    var installing by remember { mutableStateOf(false) }
+    val context = LocalContext.current
+    val cs = rememberCoroutineScope()
+
+    LaunchedEffect(Unit, driversTick) {
         withContext(Dispatchers.IO) {
-            tzTars = GuanliSupport.scanOpt("tz")
             zinkTars = GuanliSupport.scanOpt("zink")
             dxvkTars = GuanliSupport.scanOpt("dxvk1")
             wined3dTars = GuanliSupport.scanOpt("vkord3d")
-            // v3.3.10（用户问题 1）：FEXCore 独立目录 /opt/fexcore（逻辑同
-            // DXVK，解压到容器 C 盘 windows）
             fexcoreTars = GuanliSupport.scanOpt("fexcore")
-            // v3.3.10（用户问题 4）：Wrapper 驱动（WinNative/yuzu 同型
-            // 预编译 Turnip，/opt/wrapper）
-            wrapperTars = GuanliSupport.scanOpt("wrapper")
+            tzTars = GuanliSupport.scanOpt("tz")
+            installedDrivers = WrapperDriverSupport.listDrivers()
         }
+    }
+
+    // yuzu 式安装：文件管理器选 zip/tar 包 → 直接装进驱动库（独立目录，
+    // 装完立即出现在版本列表）—— WinNative promptInstallDriverFromFile 同款
+    DisposableEffect(driversTick) {
+        val unregister = com.anwind.apps.filemanager.FilePickBus.listen(
+            targetApp = "containers_driverinstall",
+            targetWindow = ""
+        ) { path ->
+            if (path.isNotBlank()) {
+                installing = true
+                cs.launch(Dispatchers.IO) {
+                    val err = runCatching {
+                        WrapperDriverSupport.install(path) { }
+                    }.getOrElse { "安装异常：${it.message}" }
+                    withContext(Dispatchers.Main) {
+                        installing = false
+                        driversTick++
+                        android.widget.Toast.makeText(
+                            context,
+                            err ?: "✅ 驱动已安装（$path）—— 在版本列表中选择即可启用",
+                            android.widget.Toast.LENGTH_LONG
+                        ).show()
+                    }
+                }
+            }
+        }
+        onDispose { unregister() }
     }
 
     val dirNote = "目录内未发现 tar 包。把驱动 tar.gz 放进 rootfs/opt/<目录> 后重进本页即可选择"
 
-    GGroup("Turnip 驱动") {
-        DriverCombo(
-            tars = tzTars, value = edit.turnip,
-            dirNote = dirNote,
-            onSelect = { onChange(edit.copy(turnip = it)) }
+    // ------------------------------------------------------------------
+    // Vulkan 驱动（v3.3.16：类型 + 版本，WinNative 同款并列选择）
+    // ------------------------------------------------------------------
+    GGroup("Vulkan 驱动（turnip / wrapper）") {
+        // 类型：从容器数据推导（wrapper 优先，其次 turnip tar，否则 Mesa 内置）
+        val vkType = when {
+            edit.wrapper.isNotBlank() && edit.wrapper != "off" -> "wrapper"
+            edit.turnip.isNotBlank() && edit.turnip != "off" -> "tz"
+            else -> "bundled"
+        }
+        GComboBox(
+            options = listOf(
+                "Turnip（Mesa 内置，推荐）",
+                "Wrapper 驱动（已安装）",
+                "Turnip 驱动包（/opt/tz）"
+            ),
+            selected = when (vkType) {
+                "wrapper" -> "Wrapper 驱动（已安装）"
+                "tz" -> "Turnip 驱动包（/opt/tz）"
+                else -> "Turnip（Mesa 内置，推荐）"
+            },
+            onSelect = { label ->
+                when {
+                    label.startsWith("Turnip（Mesa") ->
+                        onChange(edit.copy(wrapper = "", turnip = ""))
+                    label.startsWith("Wrapper") ->
+                        onChange(edit.copy(
+                            wrapper = installedDrivers.firstOrNull()?.slot ?: "",
+                            turnip = ""
+                        ))
+                    else ->
+                        onChange(edit.copy(
+                            turnip = tzTars.firstOrNull()?.display ?: "",
+                            wrapper = ""
+                        ))
+                }
+            }
+        )
+        when (vkType) {
+            "wrapper" -> {
+                if (installedDrivers.isEmpty()) {
+                    GNote("尚未安装任何 wrapper 驱动 —— 点下方 ➕ 从 zip/tar 包安装（yuzu 社区 / WinNative wrapper 包）")
+                } else {
+                    GComboBox(
+                        options = installedDrivers.map { it.slot },
+                        selected = edit.wrapper,
+                        onSelect = { onChange(edit.copy(wrapper = it, turnip = "")) }
+                    )
+                    installedDrivers.firstOrNull { it.slot == edit.wrapper }?.let { d ->
+                        GNote("库：${d.libraryName}（来源包 ${d.sourceFile}，目录 ${d.dir.name}/）")
+                    }
+                }
+            }
+            "tz" -> {
+                DriverCombo(
+                    tars = tzTars, value = edit.turnip,
+                    dirNote = "rootfs/opt/tz 内未发现 tar 包；也可直接用 ➕ 安装（推荐，装进独立驱动库）",
+                    onSelect = { onChange(edit.copy(turnip = it, wrapper = "")) }
+                )
+            }
+            else -> GNote("rootfs 自带 Mesa Turnip（freedreno ICD，msm/kgsl 双 KMD）—— 与 wrapper 并列共存，零冲突")
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(gdp(8.dp))) {
+            GSmallButton(
+                if (installing) "⏳ 安装中…" else "➕ 安装驱动（zip / tar）",
+                GuanliColors.blueFab, Modifier.weight(1f)
+            ) {
+                com.anwind.core.window.WindowManager.get().open(
+                    appId = "file_explorer",
+                    title = "选择驱动包",
+                    launchMode = com.anwind.core.window.LaunchMode.FLOATING,
+                    launchArgs = mapOf(
+                        "pickMode" to "text",
+                        "targetApp" to "containers_driverinstall",
+                        "targetWindow" to ""
+                    )
+                )
+            }
+            if (vkType == "wrapper" && edit.wrapper.isNotBlank()) {
+                GSmallButton("🗑 卸载", GuanliColors.red, Modifier.weight(1f)) {
+                    cs.launch(Dispatchers.IO) {
+                        val err = runCatching {
+                            WrapperDriverSupport.uninstall(edit.wrapper) { }
+                        }.getOrElse { "卸载异常：${it.message}" }
+                        withContext(Dispatchers.Main) {
+                            if (err == null) onChange(edit.copy(wrapper = ""))
+                            driversTick++
+                            android.widget.Toast.makeText(
+                                context, err ?: "✅ 已卸载（切回 Mesa 内置 Turnip）",
+                                android.widget.Toast.LENGTH_SHORT
+                            ).show()
+                        }
+                    }
+                }
+            }
+        }
+        GNote(
+            "v3.3.16 新机制（WinNative 同款）：每个驱动装在独立目录"
+                + "（usr/share/anwind-wrapper/drivers/<名>/），rootfs 任何文件不被覆盖 ——"
+                + " turnip 与 wrapper 并列选择、多版本共存、切换零文件读写；"
+                + " 支持 rootfs 布局包 / WinNative meta.json 包 / yuzu 裸包（zip 或 tar）"
         )
     }
     GGroup("Zink 驱动") {
@@ -1402,15 +1530,6 @@ private fun GraphicsDriverTab(
             onSelect = { onChange(edit.copy(wined3d = it)) }
         )
     }
-    // v3.3.10（用户问题 4）：Wrapper 驱动（WinNative/yuzu 同型预编译
-    // Turnip）槽位 —— 与 rootfs 自带 Mesa Turnip 共存可切
-    GGroup("Wrapper 驱动 (yuzu/WinNative 型 Turnip)") {
-        DriverCombo(
-            tars = wrapperTars, value = edit.wrapper,
-            dirNote = "把预编译 Turnip 驱动 tar（含 libvulkan_*.so，yuzu 社区/WinNative wrapper 包）放进 rootfs/opt/wrapper 后重进本页即可选择",
-            onSelect = { onChange(edit.copy(wrapper = it)) }
-        )
-    }
     // v3.3.10（用户问题 1）：FEXCore 选项框 —— /opt/fexcore 独立目录，
     // 逻辑同 DXVK/WineD3D，解压到对应容器 C 盘 windows
     GGroup("FEXCore") {
@@ -1421,12 +1540,11 @@ private fun GraphicsDriverTab(
         )
     }
     GNote(
-        "图形驱动槽位：Turnip(/opt/tz)、Zink(/opt/zink)、DXVK(/opt/dxvk1)、" +
-            "WineD3D(/opt/vkord3d)、FEXCore(/opt/fexcore)、Wrapper(/opt/wrapper)。运行容器时选中的包由启动链步骤 0 自动解压：" +
-            "Turnip/Zink → rootfs/usr/lib；DXVK/WineD3D/FEXCore → 对应容器 C 盘 windows；" +
-            "Wrapper → 按包内 rootfs 布局（usr/lib + usr/share）直接落位 rootfs/usr/，" +
-            "同名 Mesa so 自动备份可恢复，自生成 Vulkan ICD 清单（VK_ICD_FILENAMES 切换；" +
-            "GL 默认联动 zink 吃 wrapper 加速，选 off 自动卸载恢复 Mesa；比 Mesa Turnip 更流畅）"
+        "图形驱动槽位：Vulkan 驱动（turnip/wrapper，上方新机制）、Zink(/opt/zink)、DXVK(/opt/dxvk1)、" +
+            "WineD3D(/opt/vkord3d)、FEXCore(/opt/fexcore)。运行容器时：" +
+            "Vulkan 驱动 → VK_ICD_FILENAMES 指向独立目录 ICD（含用户 turnip 包，" +
+            "GL 自动联动 zink 吃驱动加速）；Zink → rootfs/usr/lib；" +
+            "DXVK/WineD3D/FEXCore → 对应容器 C 盘 windows"
     )
 }
 
@@ -2168,24 +2286,19 @@ private fun BoxConfigTab() {
     val cs = rememberCoroutineScope()
 
     var box64Tars by remember { mutableStateOf<List<GuanliSupport.OptTar>>(emptyList()) }
-    var box86Tars by remember { mutableStateOf<List<GuanliSupport.OptTar>>(emptyList()) }
     var box64Sel by remember { mutableStateOf("") }
-    var box86Sel by remember { mutableStateOf("") }
     var box64Info by remember { mutableStateOf("Box64: 检测中…") }
-    var box86Info by remember { mutableStateOf("Box86: 未检测到") }
 
     fun refreshInfo() {
         cs.launch(Dispatchers.IO) {
             val b64 = GuanliSupport.boxVersion("box64")
-            val b86 = GuanliSupport.boxVersion("box86")
-            withContext(Dispatchers.Main) { box64Info = b64; box86Info = b86 }
+            withContext(Dispatchers.Main) { box64Info = b64 }
         }
     }
 
     LaunchedEffect(Unit) {
         withContext(Dispatchers.IO) {
             box64Tars = GuanliSupport.scanOpt("box")
-            box86Tars = GuanliSupport.scanOpt("box86")
         }
         refreshInfo()
     }
@@ -2197,18 +2310,10 @@ private fun BoxConfigTab() {
             onSelect = { box64Sel = if (it == "默认") "" else it }
         )
         if (box64Tars.isEmpty()) GNote("rootfs/opt/box 内未发现 tar 包")
-    }
-    GGroup("Box86 版本") {
-        GComboBox(
-            options = listOf("默认") + box86Tars.map { it.display },
-            selected = box86Sel.ifEmpty { "默认" },
-            onSelect = { box86Sel = if (it == "默认") "" else it }
-        )
-        GNote("aarch64 设备一般用不到 box86（wineguanli.py 同款入口，无包时无操作）")
+        GNote("v3.3.16：选 v0.4.2 及以上版本可打全量补丁（内建 shm + Android RELR）；v0.4.0/v0.4.1 结构不兼容，CI 会自动跳过补丁")
     }
     GGroup("当前Box信息") {
         Text(box64Info, fontSize = gsp(12.sp), color = themeFg())
-        Text(box86Info, fontSize = gsp(12.sp), color = themeFg())
         Spacer(Modifier.height(gdp(4.dp)))
         GSmallButton("🔄 刷新信息", GuanliColors.grey, Modifier) { refreshInfo() }
     }
@@ -2216,14 +2321,14 @@ private fun BoxConfigTab() {
         cs.launch(Dispatchers.IO) {
             val errs = mutableListOf<String>()
             // v3.3.9（用户问题 1）：box 落点 = rootfs/usr/local/bin（旧版解到
-            // /usr/local 是错的）
+            // /usr/local 是错的）。
+            // v3.3.16：box86 选项移除（aarch64 设备用不到）；解压加
+            // --unlink-first（运行中的 box64 不阻塿覆盖，Text file busy 根治）
             val boxBin = File("${ContainerManager.ROOTFS_ROOT}/usr/local/bin")
-            listOf("box" to box64Sel, "box86" to box86Sel).forEach { (dir, sel) ->
-                if (sel.isNotBlank()) {
-                    runCatching { boxBin.mkdirs() }
-                    GuanliSupport.scanOpt(dir).firstOrNull { it.display == sel }?.let { tar ->
-                        GuanliSupport.extractTarTo(tar.path, boxBin)?.let { errs.add(it) }
-                    }
+            if (box64Sel.isNotBlank()) {
+                runCatching { boxBin.mkdirs() }
+                GuanliSupport.scanOpt("box").firstOrNull { it.display == box64Sel }?.let { tar ->
+                    GuanliSupport.extractTarTo(tar.path, boxBin)?.let { errs.add(it) }
                 }
             }
             withContext(Dispatchers.Main) {

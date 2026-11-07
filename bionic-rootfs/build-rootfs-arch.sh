@@ -524,12 +524,30 @@ get_src() {
   git)
     local _gitRetries=5
     local _gitTry
+    # v3.3.16：分支名别名回退 —— 不少上游把默认分支从 master 改名 main
+    #（mesa 26.x 起 gitlab 上已无 master，CI 实测 "fatal: Remote branch
+    # master not found in upstream origin" 重试 5 次全灭）。首次失败后对
+    # master↔main 做一次别名探测（git ls-remote --symref HEAD 读远端
+    # 默认分支），命中则改用远端默认分支继续，其余失败照常走重试。
+    local _rev="${revision}"
+    local _aliasProbed=0
     for ((_gitTry = 1; _gitTry <= _gitRetries; _gitTry++)); do
-      info "克隆 ${pjName} (第 ${_gitTry}/${_gitRetries} 次尝试)"
+      info "克隆 ${pjName}@${_rev} (第 ${_gitTry}/${_gitRetries} 次尝试)"
       # -c advice.detachedHead=false: 约12行 detached HEAD 提示对每个 git 包都会刷一遍
-      if git -c advice.detachedHead=false clone --recursive --depth=1 -b "${revision}" "${url}" $pjName; then
+      if git -c advice.detachedHead=false clone --recursive --depth=1 -b "${_rev}" "${url}" $pjName; then
         _gitTry=0
         break
+      fi
+      if [[ "${_aliasProbed}" == "0" && "${_rev}" == "master" ]]; then
+        local _def
+        _def="$(git ls-remote --symref "${url}" HEAD 2>/dev/null | sed -n 's|^ref: *refs/heads/\([^[:space:]]*\).*|\1|p' | head -n 1)"
+        if [[ -n "${_def}" && "${_def}" != "master" ]]; then
+          warn "远端无 ${_rev} 分支，检测到默认分支为 ${_def}（master→main 改名类上游），切换重试"
+          _rev="${_def}"
+          _aliasProbed=1
+          rm -rf $pjName
+          continue
+        fi
       fi
       if [[ $_gitTry -lt $_gitRetries ]]; then
         warn "源码克隆失败,5秒后重试..."
@@ -539,6 +557,12 @@ get_src() {
     done
     if [[ $_gitTry -ne 0 ]]; then
       err "源码克隆失败!" && exit 1
+    fi
+    # 分支名被别名回退改写时，同步 revision 变量（打包名/状态指纹/依赖
+    # 报告均引用 revision，保持一致，避免 "mesa-master" 包名长期固化）
+    if [[ "${_rev}" != "${revision}" ]]; then
+      warn "revision 由 ${revision} 修正为 ${_rev}（远端默认分支）"
+      revision="${_rev}"
     fi
     ;;
   tar)

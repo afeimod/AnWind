@@ -170,10 +170,27 @@ object GuanliSupport {
     }
 
     /**
-     * 解压 /opt 内 tar 包到 rootfs 指定目录（wineguanli extract_package /
-     * extract_box_file 同一动作：tar -xf <包> -C <目标> --overwrite）。
+     * 解压 tar 包到指定目录（wineguanli extract_package / extract_box_file
+     * 同一动作）。
      *
-     * v3.3.9（用户问题 1）落点分流（此前全部解到 /usr/local 是错的）：
+     * v3.3.16（用户实报两起解压失败，截图实证）双根因修复：
+     *
+     * ① "tar: xz: Cannot exec: Permission denied"（box64-0.4.0-1.tar.xz）：
+     *    rootfs 的 GNU tar 遇 .tar.xz 会 exec PATH 里的 xz 程序 ——
+     *    ProcessBuilder 默认继承 App 环境（PATH=/system/bin:…，不含
+     *    rootfs），xz 要么找不到、要么命中无执行权限的文件。修复：
+     *    给 tar 进程显式注入 PATH（rootfs usr/bin + usr/local/bin 打头），
+     *    并对 rootfs 的 tar/xz/gzip/bzip2 做一次 chmod +x（解包时权限位
+     *    丢失的兜底）；.tar.xz 而 rootfs 无 xz 时给出可操作的错误提示。
+     *
+     * ② "tar: box64: Cannot open: Text file busy"（box64 正被 wine 会话
+     *    使用时覆盖解压）：tar --overwrite 对已存在文件走 O_TRUNC，对
+     *    运行中的 ELF 直接 ETXTBSY。修复：--unlink-first —— 先 unlink
+     *    再写新文件；运行中的旧 box64 继续持有旧 inode 不受影响（Unix
+     *    语义），新会话即用新二进制。注意：--unlink-first 与 --overwrite
+     *    在 GNU tar 互斥（组合直接 exit 2，沙盒实测），单独用前者即可。
+     *
+     * v3.3.9 落点分流（此前全部解到 /usr/local 是错的）：
      *  - turnip / zink → rootfs /usr/lib（path.conf 驱动位置）；
      *  - dxvk / wined3d / fexcore → 对应容器 prefix/drive_c/windows；
      *  - box64 / box86 → rootfs /usr/local/bin（高级设置 Box 配置页）。
@@ -183,14 +200,33 @@ object GuanliSupport {
     fun extractTarTo(tarPath: String, destDir: File, log: (String) -> Unit = {}): String? {
         val f = File(tarPath)
         if (!f.isFile) return "包不存在：$tarPath"
+        val rfsUsrBin = File("${ContainerManager.ROOTFS_ROOT}/usr/bin")
+        val rfsUsrLocalBin = File("${ContainerManager.ROOTFS_ROOT}/usr/local/bin")
         val tarBin = listOf(
-            File("${ContainerManager.ROOTFS_ROOT}/usr/bin/tar"),
+            File(rfsUsrBin, "tar"),
             File("${ContainerManager.APP_PREFIX}/bin/tar")
         ).firstOrNull { it.canExecute() } ?: return "rootfs 内未找到 tar（rootfs 未导入？）"
+
+        // ① tar 调用的压缩程序（xz/gzip/bzip2）在 rootfs 内 —— PATH 必须
+        //    显式注入（App 进程的 PATH 不含 rootfs），且权限位兜底
+        val helperBins = listOf("xz", "gzip", "bzip2", "zstd").map { File(rfsUsrBin, it) } +
+            listOf(File(rfsUsrBin, "busybox"))
+        helperBins.forEach { hb ->
+            if (hb.isFile && !hb.canExecute()) runCatching { hb.setExecutable(true, false) }
+        }
+        if (f.name.endsWith(".tar.xz") && !File(rfsUsrBin, "xz").canExecute()) {
+            return "rootfs 缺 xz 解压程序（usr/bin/xz 不可用）—— 请改用 .tar.gz 格式的包"
+        }
+
+        val path = listOf(rfsUsrBin, rfsUsrLocalBin, File("/system/bin"))
+            .joinToString(":") { it.absolutePath }
         return try {
-            val p = ProcessBuilder(tarBin.absolutePath, "-xf", f.absolutePath, "-C", destDir.absolutePath, "--overwrite")
-                .redirectErrorStream(true)
-                .start()
+            val pb = ProcessBuilder(
+                tarBin.absolutePath, "-xf", f.absolutePath,
+                "-C", destDir.absolutePath, "--unlink-first"
+            ).redirectErrorStream(true)
+            pb.environment()["PATH"] = path
+            val p = pb.start()
             val ok = p.waitFor(120, TimeUnit.SECONDS)
             val out = runCatching { p.inputStream.readBytes().decodeToString() }.getOrDefault("")
             if (!ok) { p.destroyForcibly(); return "解压超时（120s）" }
@@ -242,11 +278,26 @@ object GuanliSupport {
             ).firstOrNull { it.canExecute() } ?: return "rootfs 内未找到 tar（rootfs 未导入？）"
             val dest = File(ContainerManager.WINE_OPT_DIR, name)
             if (dest.exists()) return "槽位已存在：$name（先删除旧版本）"
+            // v3.3.16：与 extractTarTo 同款 —— PATH 注入（rootfs usr/bin
+            // 打头）+ 压缩程序 chmod 兜底 + --unlink-first（ETXTBSY 根治）
+            val rfsUsrBin = File("${ContainerManager.ROOTFS_ROOT}/usr/bin")
+            listOf("xz", "gzip", "bzip2", "zstd").map { File(rfsUsrBin, it) }.forEach { hb ->
+                if (hb.isFile && !hb.canExecute()) runCatching { hb.setExecutable(true, false) }
+            }
+            if (f.name.endsWith(".tar.xz") && !File(rfsUsrBin, "xz").canExecute()) {
+                return "rootfs 缺 xz 解压程序（usr/bin/xz 不可用）—— 请改用 .tar.gz 格式的包"
+            }
             return try {
                 dest.mkdirs()
-                val p = ProcessBuilder(tarBin.absolutePath, "-xf", f.absolutePath, "-C", dest.absolutePath, "--strip-components=1")
-                    .redirectErrorStream(true)
-                    .start()
+                val pb = ProcessBuilder(
+                    tarBin.absolutePath, "-xf", f.absolutePath, "-C", dest.absolutePath,
+                    "--strip-components=1", "--unlink-first"
+                ).redirectErrorStream(true)
+                pb.environment()["PATH"] = listOf(
+                    rfsUsrBin, File("${ContainerManager.ROOTFS_ROOT}/usr/local/bin"),
+                    File("/system/bin")
+                ).joinToString(":") { it.absolutePath }
+                val p = pb.start()
                 val ok = p.waitFor(300, TimeUnit.SECONDS)
                 val out = runCatching { p.inputStream.readBytes().decodeToString() }.getOrDefault("")
                 if (!ok) {

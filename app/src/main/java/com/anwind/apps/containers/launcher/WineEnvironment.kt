@@ -271,7 +271,23 @@ object WineEnvironment {
                 "${glibcDir.absolutePath}:$existing"
             }
         }
+        // v3.3.16（用户要求对齐 WinNative 性能调用）：四档 DYNAREC 预设
+        // —— 变量值逐字对齐 WinNative Box64PresetManager.getEnvVars 的
+        // STABILITY / COMPATIBILITY / INTERMEDIATE / PERFORMANCE。
+        // 注：WinNative PERFORMANCE 的 SAFEFLAGS=1（非 0）与本仓 v3.2.17
+        // 的 wineboot SIGSEGV 教训（SAFEFLAGS=0 导致 flags 错乱）一致保留 1。
         when (container.preset) {
+            Box64Preset.STABILITY -> {
+                env["BOX64_DYNAREC_SAFEFLAGS"] = "2"
+                env["BOX64_DYNAREC_FASTNAN"] = "0"
+                env["BOX64_DYNAREC_FASTROUND"] = "0"
+                env["BOX64_DYNAREC_X87DOUBLE"] = "1"
+                env["BOX64_DYNAREC_BIGBLOCK"] = "0"
+                env["BOX64_DYNAREC_STRONGMEM"] = "2"
+                env["BOX64_DYNAREC_FORWARD"] = "128"
+                env["BOX64_DYNAREC_CALLRET"] = "0"
+                env["BOX64_DYNAREC_WAIT"] = "0"
+            }
             Box64Preset.COMPATIBILITY -> {
                 env["BOX64_DYNAREC_BIGBLOCK"] = "0"
                 env["BOX64_DYNAREC_SAFEFLAGS"] = "2"
@@ -279,9 +295,23 @@ object WineEnvironment {
                 env["BOX64_DYNAREC_FASTROUND"] = "0"
                 env["BOX64_DYNAREC_X87DOUBLE"] = "1"
                 env["BOX64_DYNAREC_STRONGMEM"] = "1"
+                env["BOX64_DYNAREC_FORWARD"] = "128"
+                env["BOX64_DYNAREC_CALLRET"] = "0"
+                env["BOX64_DYNAREC_WAIT"] = "1"
+            }
+            Box64Preset.INTERMEDIATE -> {
+                env["BOX64_DYNAREC_BIGBLOCK"] = "2"
+                env["BOX64_DYNAREC_SAFEFLAGS"] = "2"
+                env["BOX64_DYNAREC_FASTNAN"] = "1"
+                env["BOX64_DYNAREC_FASTROUND"] = "0"
+                env["BOX64_DYNAREC_X87DOUBLE"] = "1"
+                env["BOX64_DYNAREC_STRONGMEM"] = "0"
+                env["BOX64_DYNAREC_FORWARD"] = "256"
+                env["BOX64_DYNAREC_CALLRET"] = "1"
+                env["BOX64_DYNAREC_WAIT"] = "1"
             }
             Box64Preset.PERFORMANCE -> {
-                env["BOX64_DYNAREC_BIGBLOCK"] = "1"
+                env["BOX64_DYNAREC_BIGBLOCK"] = "3"
                 // v3.2.17（设备实报：wine9.2 x86_64 形态 wineboot -i 于 ntdll
                 // 早期初始化 SIGSEGV，退出码 139）：SAFEFLAGS 由 0 改 1。
                 // 上游 box64 USAGE.md（SAFEFLAGS 条目）：0 = "Treat CALL/RET
@@ -291,14 +321,16 @@ object WineEnvironment {
                 // 类未映射小地址段错误（崩溃现场实证：RAX=0x3f000928d8 带加载
                 // 基址的正确地址 与 R15=0x928d8 裸 vaddr 低 32 位完全一致 =
                 // 错误分支后 64 位寄存器高位丢失，典型 flags 错乱后遗症）。
-                // 1 是上游默认值，也是 Winlator wine 组合（BIGBLOCK=1/FASTNAN=1/
-                // FASTROUND=1/SAFEFLAGS=1/STRONGMEM=0）的实证底线；wineboot
-                // 前缀构建会话另由 RootfsLauncher 叠加最稳的 2。
+                // 1 是上游默认值，也是 Winlator/WinNative wine 组合的实证底线；
+                // wineboot 前缀构建会话另由 RootfsLauncher 叠加最稳的 2。
                 env["BOX64_DYNAREC_SAFEFLAGS"] = "1"
                 env["BOX64_DYNAREC_FASTNAN"] = "1"
                 env["BOX64_DYNAREC_FASTROUND"] = "1"
                 env["BOX64_DYNAREC_X87DOUBLE"] = "0"
                 env["BOX64_DYNAREC_STRONGMEM"] = "0"
+                env["BOX64_DYNAREC_FORWARD"] = "512"
+                env["BOX64_DYNAREC_CALLRET"] = "1"
+                env["BOX64_DYNAREC_WAIT"] = "1"
             }
         }
     }

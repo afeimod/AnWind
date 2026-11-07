@@ -18,7 +18,7 @@ on:
   workflow_dispatch:
     inputs:
       mesa_ref:
-        description: 'Mesa 版本（Git 标签，如 mesa-26.2.1）'
+        description: 'Mesa 版本（Git 标签如 mesa-26.2.1，或分支 main；上游默认分支已从 master 改名 main，选 master 会自动回退 main）'
         required: false
         default: 'mesa-26.2.1'
         type: string

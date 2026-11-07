@@ -577,8 +577,11 @@ object RootfsLauncher {
             //    旧版全部解到 rootfs/usr/local 是错的。解压失败不阻断启动。
             if (freshSession) {
                 val prefixWin = File(container.prefixPath, "drive_c/windows")
+                // v3.3.16：turnip 从“直接解压覆盖 rootfs/usr/lib”改为走
+                // 新驱动模型（独立目录 + ICD，与 wrapper 并列共存）——
+                // 仅保留 zink/dxvk/wined3d/fexcore 的直接解压（非 Vulkan
+                // ICD 体系，保持 v3.3.9 行为）
                 listOf(
-                    Triple("Turnip", container.turnip, File(ContainerManager.ROOTFS_ROOT, "usr/lib")),
                     Triple("Zink", container.zink, File(ContainerManager.ROOTFS_ROOT, "usr/lib")),
                     Triple("WineD3D", container.wined3d, prefixWin),
                     Triple("DXVK", container.dxvk, prefixWin),
@@ -586,7 +589,6 @@ object RootfsLauncher {
                 ).forEach { (label, slot, dest) ->
                     if (slot.isNotBlank() && slot != "off" && slot != ContainerData.DXVK_AUTO) {
                         val dir = when (label) {
-                            "Turnip" -> "tz"
                             "Zink" -> "zink"
                             "WineD3D" -> "vkord3d"
                             "FEXCore" -> "fexcore"   // v3.3.10：独立目录（非 dxvk1）
@@ -614,23 +616,27 @@ object RootfsLauncher {
                     }
                 }
 
-                // 0.5) v3.3.15（重写）：Wrapper 驱动（/opt/wrapper 槽位，用户驱动
-                //      包为 rootfs 布局 usr/lib+usr/share）—— 按包结构直接落位
-                //      rootfs/usr/（同名 Mesa so 备份、卸载可恢复）+ 自生成
-                //      ICD 清单（WinNative 同款宿主绝对路径）。槽位变化先卸载
-                //      旧驱动。环境变量注入（VK_ICD_FILENAMES + zink 联动）
-                //      在 applyGpuEnv 之后统一处理（6a）。
-                runCatching { WrapperDriverSupport.syncSlot(container.wrapper.ifBlank { null }) { sink.stamp(it) } }
-                    .onFailure { sink.stamp("⚠ Wrapper 槽位同步异常：${it.message}") }
-                if (container.wrapper.isNotBlank() && container.wrapper != "off") {
-                    val tar = GuanliSupport.scanOpt("wrapper").firstOrNull { it.display == container.wrapper }
-                    if (tar == null) {
-                        sink.stamp("⚠ Wrapper 驱动槽位 /opt/wrapper/${container.wrapper} 未找到对应 tar 包（继续启动）")
-                    } else {
-                        runCatching {
-                            WrapperDriverSupport.install(tar.display, tar.path) { sink.stamp(it) }
-                        }.onFailure {
-                            sink.stamp("⚠ Wrapper 驱动安装异常：${it.message}（继续启动，Vulkan 走 Mesa）")
+                // 0.5) v3.3.16（WinNative DriverPackages 模型）：Vulkan 驱动
+                //      （wrapper / 用户 turnip tar）装到【独立目录】
+                //      usr/share/anwind-wrapper/drivers/<slot>/（自带 ICD，
+                //      rootfs 任何文件不被覆盖，多版本共存）。
+                //      槽位未安装而 /opt 内有对应 tar 时自动安装（升级免
+                //      重选的兼容入口；UI ➕ 安装是主入口）。
+                //      环境变量注入（VK_ICD_FILENAMES + zink 联动）在 6a。
+                listOf(
+                    "wrapper" to container.wrapper,
+                    "tz" to container.turnip
+                ).forEach { (optDir, slot) ->
+                    if (slot.isNotBlank() && slot != "off" && WrapperDriverSupport.icdFor(slot) == null) {
+                        val tar = GuanliSupport.scanOpt(optDir).firstOrNull { it.display == slot }
+                        if (tar == null) {
+                            sink.stamp("⚠ Vulkan 驱动槽位 /opt/$optDir/$slot 未找到对应包且未安装（继续启动，走 Mesa 内置）")
+                        } else {
+                            val err = runCatching { WrapperDriverSupport.install(tar.path) { sink.stamp(it) } }
+                                .getOrElse { "安装异常：${it.message}" }
+                            if (err != null) {
+                                sink.stamp("⚠ Vulkan 驱动 ${tar.display} 安装失败：$err（继续启动，走 Mesa 内置）")
+                            }
                         }
                     }
                 }
@@ -725,30 +731,50 @@ object RootfsLauncher {
             // 6) GPU / Box64 环境叠加
             WineEnvironment.applyGpuEnv(env, container)
 
-            // 6a) v3.3.15：Wrapper 驱动激活 —— Vulkan 侧 VK_ICD_FILENAMES 指向
-            //     自生成 ICD 清单（rootfs 布局落位，WinNative 同款）；GL 侧：
-            //     容器 gallium 为 auto/空/zink 时联动 zink（GL over Vulkan
-            //     吃 wrapper 加速，WinNative XServerDisplayActivity 同款
+            // 6a) v3.3.16（WinNative 模型）：Vulkan 驱动激活 —— 容器 wrapper /
+            //     turnip（用户 tar）槽位中任一选中时，VK_ICD_FILENAMES 指向
+            //     其独立目录的自生成 ICD 清单，并把驱动目录前插
+            //     LD_LIBRARY_PATH（附属 .so 如 libc++_shared.so 的解析位）；
+            //     GL 侧：容器 gallium 为 auto/空/zink 时联动 zink（GL over
+            //     Vulkan 吃驱动加速，WinNative XServerDisplayActivity 同款
             //     MESA_LOADER_DRIVER_OVERRIDE=zink + GALLIUM_DRIVER=zink），
-            //     用户显式选了 freedreno/softpipe 等则尊重选择只换 Vulkan 侧。
-            if (container.wrapper.isNotBlank() && container.wrapper != "off") {
-                val icd = WrapperDriverSupport.icdFor(container.wrapper)
+            //     用户显式选了 freedreno/softpipe 等则尊重选择。
+            //     都未选 = Mesa 内置 Turnip（BUNDLED，loader 默认搜索，不注入）。
+            val activeVkSlot = when {
+                container.wrapper.isNotBlank() && container.wrapper != "off" ->
+                    "wrapper:${container.wrapper}"
+                container.turnip.isNotBlank() && container.turnip != "off" ->
+                    "turnip:${container.turnip}"
+                else -> null
+            }
+            if (activeVkSlot != null) {
+                val slotName = activeVkSlot.substringAfter(':')
+                val icd = WrapperDriverSupport.icdFor(slotName)
                 if (icd != null) {
                     env["VK_ICD_FILENAMES"] = icd.absolutePath
-                    sink.stamp("Wrapper 驱动激活：VK_ICD_FILENAMES → ${icd.absolutePath}")
+                    // 驱动目录前插 LD_LIBRARY_PATH（附属 .so 解析；wine 的
+                    // LD_LIBRARY_PATH 首段是 rootfs/usr/lib，驱动目录更优先）
+                    val driverDir = icd.parentFile
+                    val existingLd = env["LD_LIBRARY_PATH"]
+                    env["LD_LIBRARY_PATH"] = if (existingLd.isNullOrBlank()) {
+                        driverDir.absolutePath
+                    } else {
+                        "${driverDir.absolutePath}:$existingLd"
+                    }
+                    sink.stamp("Vulkan 驱动激活（$activeVkSlot）：VK_ICD_FILENAMES → ${icd.absolutePath}")
                     if (WrapperDriverSupport.shouldForceZink(container.gallium)) {
                         env["MESA_LOADER_DRIVER_OVERRIDE"] = "zink"
                         env["GALLIUM_DRIVER"] = "zink"
                         env.putIfAbsent("ZINK_DESCRIPTORS", "lazy")
                         env.putIfAbsent("ZINK_DEBUG", "compact")
                         env.putIfAbsent("TU_DEBUG", "noconform")
-                        sink.stamp("GL 联动 zink：GALLIUM_DRIVER=zink（GL over Vulkan → wrapper 驱动）")
+                        sink.stamp("GL 联动 zink：GALLIUM_DRIVER=zink（GL over Vulkan → 用户驱动）")
                     } else {
-                        sink.stamp("GL 保持 ${container.gallium}（用户显式选择，仅 Vulkan 侧走 wrapper）")
+                        sink.stamp("GL 保持 ${container.gallium}（用户显式选择，仅 Vulkan 侧走用户驱动）")
                     }
-                    sink.stamp("（off / 切换槽位时自动卸载恢复 rootfs 自带 Mesa Turnip）")
+                    sink.stamp("（切回 Mesa 内置 Turnip：图形驱动页选回默认即可，零文件读写）")
                 } else {
-                    sink.stamp("⚠ Wrapper 驱动 ${container.wrapper} 的 ICD 清单未就位（安装失败或包内无 libvulkan*.so），Vulkan 回退 Mesa")
+                    sink.stamp("⚠ Vulkan 驱动 $slotName 的 ICD 清单未就位（安装失败或包内无 libvulkan*.so），回退 Mesa 内置 Turnip")
                 }
             }
 

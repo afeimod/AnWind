@@ -5,6 +5,44 @@ arch="aarch64 x86_64"
 buildSys="meson"
 license="MIT"
 agreementTargetFile="${srcDir}/mesa/docs/license.rst"
+
+# ============================================================
+# v3.3.16（mesa 主线构建修复）：补丁漂移保护 + 版本兼容矩阵
+# ------------------------------------------------------------
+# 【事故回放】CI 选 master 构建 mesa：
+#   1) mesa 26.x 起上游默认分支已从 master 改名 main，
+#      "fatal: Remote branch master not found" 重试 5 次全灭
+#      （get_src 已加 master→main 别名回退根治）；
+#   2) 选 main（真正拿到源码后）：0014-turnip-ahb-weak-ref 的
+#      tu_device.cc Hunk#2 在 26.1-devel+ 已漂移（实测 lfdevs 镜像
+#      adreno-main = 26.1.0-devel：Hunk#2 FAILED），apply_patches
+#      无 patchOptional → 直接杀构建。
+# 【修复策略】patchOptional=1：0012/0013/0014 任一在选定 revision 上
+# dry-run 失败时【警告跳过】而非中止 —— 老版本（25.x）/ 漂移版本
+#（main/master/未来 tag）都能继续构建；跳过后果：
+#   * 0012 跳过：NDK 无 libsync.so，若该路径被引用则链接报
+#     undefined symbol: sync_merge（链接期硬错误，可诊断）；
+#   * 0013 跳过：wsi_display 的 pthread_cancel 在 bionic 不存在
+#     —— 仅 DRI3/Present 显示路径受影响（本构建 platforms=x11
+#     不编 wsi_common_display 的 vulkan 显示扩展时无感）；
+#   * 0014 跳过：turnip AHB 导入用强引用 AHardwareBuffer_getNativeHandle
+#     —— NDK libnativewindow 存根若无此符号则 turnip 链接失败
+#     （链接期硬错误，mesa-26.2.1 基线上已验证补丁必需）。
+# 链接期失败仍会让构建阵亡（ninja 非零退出）—— patchOptional 只
+# 挡住“补丁上下文漂移”这一种死法，不掩盖真编译错误。
+# ============================================================
+# 【x11dri3 支持检查结论（v3.3.16，用户问题 5）】全链路已通，无需开关：
+#   * mesa 26.x 起 meson.options 已【移除】-Ddri3 选项（勿再加 ——
+#     Unknown option 直接杀配置）：x11 平台下 meson.build 探测到
+#     libxcb-dri3 依赖即自动启用 DRI3（25.x 为默认 auto 同效果）；
+#   * libxcb 配方构建全扩展（libxcb-dri3.so / libxcb-present.so /
+#     libxcb-sync.so，SONAME 别名 .0 已建）；
+#   * libxshmfence 配方在链（DRI3 fence 协议依赖）；
+#   * X 服务端为 APK 内置 Termux:X11 的 Xwayland（原生 DRI3+Present）；
+#   * 运行侧无 LIBGL_ALWAYS_INDIRECT 一类强制间接渲染变量
+#     （LIBGL_ALWAYS_SOFTWARE 仅 softpipe/llvmpipe 软渲染档导出）。
+# ============================================================
+patchOptional=1
 args="
   --wrap-mode=nofallback
   -Dplatform-sdk-version=${api}
@@ -186,6 +224,8 @@ ANWIND_SHIM
     args+=" -Dgallium-drivers=softpipe -Dvulkan-drivers="
   fi
   if (( $api <= 29 )); then
+    # 0011 是 api<=29 的 emutls 符号表修复（老 API 才需要），单独按
+    # 源码状态幂等应用（见下方 dry-run 双向探测），不参与 patchOptional
     local _patchFile="${wsDir}/projects/mesa/0011-lld-undefined-version.diff"
     cd "${srcDir}/mesa"
     # 源码会在双架构构建间复用（prepare_src 状态指纹未变时不重新获取），
