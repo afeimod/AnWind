@@ -2323,7 +2323,7 @@ private fun BoxConfigTab() {
             // v3.3.9（用户问题 1）：box 落点 = rootfs/usr/local/bin（旧版解到
             // /usr/local 是错的）。
             // v3.3.16：box86 选项移除（aarch64 设备用不到）；解压加
-            // --unlink-first（运行中的 box64 不阻塿覆盖，Text file busy 根治）
+            // --unlink-first（运行中的 box64 不阻塞覆盖，Text file busy 根治）
             val boxBin = File("${ContainerManager.ROOTFS_ROOT}/usr/local/bin")
             if (box64Sel.isNotBlank()) {
                 runCatching { boxBin.mkdirs() }

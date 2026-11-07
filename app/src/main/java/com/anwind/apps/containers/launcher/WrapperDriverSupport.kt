@@ -46,8 +46,8 @@ import java.util.zip.ZipInputStream
  *
  * ## 支持的包形态（全部归一到独立目录）
  *
- *  1. rootfs 布局包（用户主要形态）：usr/lib/libvulkan*.so + 附属
- *     usr/lib/*.so + usr/share/…（share 侧内容一并收进 slot 目录，
+ *  1. rootfs 布局包（用户主要形态）：usr/lib 下全部 .so（libvulkan 开头的
+ *     驱动本体 + 附属 so）+ usr/share/…（share 侧内容一并收进 slot 目录，
  *     ICD 自生成，不信任包内 json 的 library_path）；
  *  2. WinNative meta.json 包：根级 meta.json 的 libraryName 指明驱动；
  *  3. yuzu 裸包：根级 libvulkan*.so（+ 同目录附属 .so）。

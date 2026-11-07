@@ -879,6 +879,17 @@ dependencies {
     implementation("androidx.appcompat:appcompat:1.6.1")
     implementation("androidx.preference:preference:1.1.1")
 
+    // ============================================================
+    // v3.3.17：GuanliSupport.extractTarJavaCompat（纯 Java tar.xz 解压
+    // 回退）直接引用 commons-compress 类。termux-x11 侧是 implementation
+    // （不传递到 :app），此处按同版本显式声明；运行期与 termux-x11 共用
+    // 同一份（APK 不增大）。rootfs 配方不含 xz 项目，设备侧 native tar
+    // 对 .tar.xz 必然失败（turnip 驱动包正是 tar.xz），纯 Java 回退是
+    // 唯一可靠路径。XZCompressorInputStream 需要 org.tukaani:xz。
+    // ============================================================
+    implementation("org.apache.commons:commons-compress:1.20")
+    implementation("org.tukaani:xz:1.7")
+
     // Document file (for local HTML access via SAF)
     implementation("androidx.documentfile:documentfile:1.0.1")
 

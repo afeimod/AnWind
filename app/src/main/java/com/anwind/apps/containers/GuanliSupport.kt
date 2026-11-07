@@ -195,6 +195,15 @@ object GuanliSupport {
      *  - dxvk / wined3d / fexcore → 对应容器 prefix/drive_c/windows；
      *  - box64 / box86 → rootfs /usr/local/bin（高级设置 Box 配置页）。
      *
+     * v3.3.17（用户实报：turnip 选 tar.xz 驱动包无法解压）：rootfs 配方
+     * 清单里【根本没有 xz 项目】（有 bzip2/zstd，无 xz）—— usr/bin/xz
+     * 不存在，native tar 遇 .tar.xz 必然失败，v3.3.16 的提前报错就是
+     * 用户遇到的实际路径。修复：新增【纯 Java 解压回退】
+     * [extractTarJavaCompat]（Commons Compress，App 内置依赖，不依赖
+     * 设备侧任何解压程序）：.tar.xz 且 rootfs 无 xz → 直接走 Java；
+     * native tar 进程失败（exit != 0）→ 再回退 Java 一次，两次都败才
+     * 报双错误。
+     *
      * @return null 成功；否则错误信息。
      */
     fun extractTarTo(tarPath: String, destDir: File, log: (String) -> Unit = {}): String? {
@@ -214,8 +223,15 @@ object GuanliSupport {
         helperBins.forEach { hb ->
             if (hb.isFile && !hb.canExecute()) runCatching { hb.setExecutable(true, false) }
         }
-        if (f.name.endsWith(".tar.xz") && !File(rfsUsrBin, "xz").canExecute()) {
-            return "rootfs 缺 xz 解压程序（usr/bin/xz 不可用）—— 请改用 .tar.gz 格式的包"
+        if (f.name.endsWith(".tar.xz", true) && !File(rfsUsrBin, "xz").canExecute()) {
+            // v3.3.17：rootfs 无 xz 时不再报错 —— 直接纯 Java 解压
+            //（rootfs 配方不含 xz 项目，这是 tar.xz 包的常态而非异常）
+            val jerr = extractTarJavaCompat(f, destDir, 0, log)
+            if (jerr == null) {
+                log("已解压 ${f.name} → ${destDir.absolutePath}（纯 Java XZ：rootfs 无 xz，v3.3.17）")
+                return null
+            }
+            return jerr
         }
 
         val path = listOf(rfsUsrBin, rfsUsrLocalBin, File("/system/bin"))
@@ -230,10 +246,102 @@ object GuanliSupport {
             val ok = p.waitFor(120, TimeUnit.SECONDS)
             val out = runCatching { p.inputStream.readBytes().decodeToString() }.getOrDefault("")
             if (!ok) { p.destroyForcibly(); return "解压超时（120s）" }
-            if (p.exitValue() != 0) "解压失败：${out.take(300)}"
+            if (p.exitValue() != 0) {
+                // v3.3.17：native 失败（xz exec 失败等环境故障）→ Java 回退一次
+                val jerr = extractTarJavaCompat(f, destDir, 0, log)
+                if (jerr == null) {
+                    log("已解压 ${f.name} → ${destDir.absolutePath}（native tar 失败后 Java 回退成功：${out.take(120)}）")
+                    return null
+                }
+                "解压失败：${out.take(300)}（Java 回退亦失败：$jerr）"
+            }
             else { log("已解压 ${f.name} → ${destDir.absolutePath}"); null }
         } catch (e: Exception) {
             "解压异常：${e.message}"
+        }
+    }
+
+    /**
+     * v3.3.17：纯 Java tar 解压回退（Commons Compress，App 内置依赖，
+     * 不依赖设备侧 tar/xz/gzip —— rootfs 配方不含 xz 项目，native 路径
+     * 对 .tar.xz 必然失败）。魔数自适应 xz / gzip / bzip2 / 纯 tar；
+     * 逐条目【先删后写】（Unix unlink 语义：运行中的 ELF 不 ETXTBSY、
+     * 被 mmap 的 so 不被 O_TRUNC 致使用方 SIGBUS）；保留 tar 原始权限位；
+     * 拒绝 .. 路径逃逸；支持 strip-components 语义（wine 安装包顶层目录
+     * 剥离）。
+     *
+     * @return null 成功；否则错误信息。
+     */
+    private fun extractTarJavaCompat(
+        src: File, destDir: File, stripComponents: Int, log: (String) -> Unit
+    ): String? {
+        return try {
+            destDir.mkdirs()
+            src.inputStream().buffered().use { raw ->
+                // 魔数判型（不信任文件名：xz=FD 37 7A 58 5A 00，gzip=1F 8B，
+                // bzip2=42 5A 68，其余按纯 tar）
+                raw.mark(64 * 1024)
+                val head = ByteArray(6)
+                var n = 0
+                while (n < head.size) {
+                    val r = raw.read(head, n, head.size - n)
+                    if (r < 0) break
+                    n += r
+                }
+                raw.reset()
+                val input: java.io.InputStream = when {
+                    n >= 6 && head[0] == 0xFD.toByte() && head[1] == 0x37.toByte() &&
+                        head[2] == 0x7A.toByte() && head[3] == 0x58.toByte() &&
+                        head[4] == 0x5A.toByte() && head[5] == 0x00.toByte() ->
+                        org.apache.commons.compress.compressors.xz.XZCompressorInputStream(raw)
+                    n >= 2 && head[0] == 0x1F.toByte() && head[1] == 0x8B.toByte() ->
+                        org.apache.commons.compress.compressors.gzip.GzipCompressorInputStream(raw)
+                    n >= 3 && head[0] == 0x42.toByte() && head[1] == 0x5A.toByte() &&
+                        head[2] == 0x68.toByte() ->
+                        org.apache.commons.compress.compressors.bzip2.BZip2CompressorInputStream(raw)
+                    else -> raw
+                }
+                org.apache.commons.compress.archivers.tar.TarArchiveInputStream(input).use { tar ->
+                    val canonicalDest = destDir.canonicalPath + File.separator
+                    while (true) {
+                        // commons-compress 1.20：getNextEntry() 返回基类 ArchiveEntry
+                        //（协变 TarArchiveEntry 是 1.21+），isSymbolicLink/linkName/mode
+                        // 是 TarArchiveEntry 特有 —— 必须用 getNextTarEntry()（沙盒实证）
+                        val entry = tar.nextTarEntry ?: break
+                        var name = entry.name.removePrefix("./").removePrefix("/")
+                        if (stripComponents > 0) {
+                            val parts = name.split('/')
+                            if (parts.size <= stripComponents) continue
+                            name = parts.drop(stripComponents).joinToString("/")
+                        }
+                        if (name.isNotEmpty() && !name.split('/').any { it == ".." }) {
+                            val target = File(destDir, name)
+                            if (!target.canonicalPath.startsWith(canonicalDest)) {
+                                log("跳过越界成员 ${entry.name}")
+                            } else if (entry.isDirectory) {
+                                target.mkdirs()
+                            } else if (entry.isSymbolicLink) {
+                                target.parentFile?.mkdirs()
+                                runCatching { target.delete() }
+                                runCatching {
+                                    android.system.Os.symlink(entry.linkName, target.absolutePath)
+                                }.onFailure { log("跳过符号链接 $name（${it.message}）") }
+                            } else {
+                                target.parentFile?.mkdirs()
+                                // unlink-first：写前先删（防 ETXTBSY / mmap SIGBUS）
+                                target.delete()
+                                target.outputStream().use { tar.copyTo(it) }
+                                runCatching {
+                                    android.system.Os.chmod(target.absolutePath, entry.mode and 0xFFF)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            null
+        } catch (e: Exception) {
+            "Java 解压失败：${e.message ?: e.javaClass.simpleName}"
         }
     }
 
@@ -284,8 +392,12 @@ object GuanliSupport {
             listOf("xz", "gzip", "bzip2", "zstd").map { File(rfsUsrBin, it) }.forEach { hb ->
                 if (hb.isFile && !hb.canExecute()) runCatching { hb.setExecutable(true, false) }
             }
-            if (f.name.endsWith(".tar.xz") && !File(rfsUsrBin, "xz").canExecute()) {
-                return "rootfs 缺 xz 解压程序（usr/bin/xz 不可用）—— 请改用 .tar.gz 格式的包"
+            // v3.3.17：rootfs 无 xz 时 .tar.xz 不再报错 —— 纯 Java 解压
+            //（strip=1 剥顶层 wine 目录，与 native --strip-components=1 同语义）
+            if (f.name.endsWith(".tar.xz", true) && !File(rfsUsrBin, "xz").canExecute()) {
+                val jerr = extractTarJavaCompat(f, dest, 1) { }
+                if (jerr != null) return jerr
+                return finishWineInstall(dest, name, arch)
             }
             return try {
                 dest.mkdirs()
@@ -305,25 +417,40 @@ object GuanliSupport {
                     return "解压超时（300s），已回滚"
                 }
                 if (p.exitValue() != 0) {
+                    // v3.3.17：native 失败（xz exec 失败等）→ Java 回退一次
+                    //（strip=1）再走布局检查，两次都败才报错
+                    val jerr = extractTarJavaCompat(f, dest, 1) { }
+                    if (jerr == null) {
+                        return finishWineInstall(dest, name, arch)
+                    }
                     com.anwind.util.SafeFileOps.deleteTree(dest)
-                    "安装失败（tar 退出码 ${p.exitValue()}：${out.take(200)}）—— 请确认包是 wine 目录树（bin/wine 在顶层）"
+                    "安装失败（tar 退出码 ${p.exitValue()}：${out.take(200)}；Java 回退亦失败：$jerr）—— 请确认包是 wine 目录树（bin/wine 在顶层）"
                 } else if (!File(dest, "bin/wine").isFile && !File(dest, "bin/wine64").isFile) {
                     com.anwind.util.SafeFileOps.deleteTree(dest)
                     "包布局不对：解压后未见 bin/wine（应选 wine 目录树的 tar）"
                 } else {
-                    File(dest, ".anwind-wine-info").writeText(
-                        buildString {
-                            appendLine("name=$name")
-                            appendLine("arch=$arch")
-                            appendLine("installed=${System.currentTimeMillis()}")
-                        }
-                    )
-                    null
+                    return finishWineInstall(dest, name, arch)
                 }
             } catch (e: Exception) {
                 com.anwind.util.SafeFileOps.deleteTree(dest)
                 "安装异常：${e.message}"
             }
+        }
+
+        /** v3.3.17：安装收尾（布局检查 + .anwind-wine-info），native 与 Java 解压路径共用。 */
+        private fun finishWineInstall(dest: File, name: String, arch: String): String? {
+            if (!File(dest, "bin/wine").isFile && !File(dest, "bin/wine64").isFile) {
+                com.anwind.util.SafeFileOps.deleteTree(dest)
+                return "包布局不对：解压后未见 bin/wine（应选 wine 目录树的 tar）"
+            }
+            File(dest, ".anwind-wine-info").writeText(
+                buildString {
+                    appendLine("name=$name")
+                    appendLine("arch=$arch")
+                    appendLine("installed=${System.currentTimeMillis()}")
+                }
+            )
+            return null
         }
 
         /** 下载 URL 到缓存文件（wineguanli install_from_url）。@return 文件或错误。 */
