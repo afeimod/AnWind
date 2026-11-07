@@ -821,8 +821,17 @@ get_dep() {
     err "项目不存在 => $1" >&2
     return 1
   fi
-  . "${wsDir}/empty.sh"
-  . "$_buildFile"
+  # v3.3.11（CI 修复）：本函数的 stdout 会被 $(...) 捕获为依赖列表，
+  # 因此 source 项目 build.sh 期间【任何顶层 stdout 输出都会混进 deps】
+  # —— box64 v3.3.10 顶层裸 echo "[INFO] ..." 曾使 collect_dep 把
+  # "[INFO]" 当作包名，报 "项目不存在 => [INFO]"，box64/bionic-rootfs
+  # 相关构建全部阵亡。防御：source 全程把 stdout 改道 stderr（诊断
+  # 信息照常进日志），组合命令结束后 stdout 自动恢复，deps 在组外
+  # 干净输出。build.sh 顶层的 return/exit 语义不受重定向影响。
+  {
+    . "${wsDir}/empty.sh"
+    . "$_buildFile"
+  } >&2
   echo "${deps[@]}"
 }
 

@@ -40,15 +40,18 @@ if [[ -n "${_box64_ver_major}" ]]; then
     _box64_lt_baseline=1
   fi
   if (( _box64_lt_baseline == 1 )); then
-    echo "[INFO] box64 revision=${revision} < v${_patch_baseline_major}.${_patch_baseline_minor}.${_patch_baseline_patch}（补丁基线）—— 0.4.4 以前的版本不接受 0001 补丁，按选择跳过"
+    # v3.3.11：顶层 echo 必须 >&2 —— get_dep() 以 $(...) 捕获本文件 stdout
+    # 作为依赖列表，裸 echo 会把 "[INFO]" 混进 deps，collect_dep 把它当
+    # 包名报 "项目不存在 => [INFO]"（CI 实测，box64 相关构建全挂）
+    echo "[INFO] box64 revision=${revision} < v${_patch_baseline_major}.${_patch_baseline_minor}.${_patch_baseline_patch}（补丁基线）—— 0.4.4 以前的版本不接受 0001 补丁，按选择跳过" >&2
     doNotApplyPatch=1
   else
-    echo "[INFO] box64 revision=${revision} >= 补丁基线 v0.4.4，正常应用 0001 补丁（漂移时 patchOptional 跳过）"
+    echo "[INFO] box64 revision=${revision} >= 补丁基线 v0.4.4，正常应用 0001 补丁（漂移时 patchOptional 跳过）" >&2
     patchOptional=1
   fi
 else
   # master / main / 分支名：无法解析版本 → patchOptional 兑底跳过
-  echo "[INFO] box64 revision=${revision} 非版本号（分支/漂移 ref）—— 补丁 dry-run 失败时将跳过（patchOptional=1）"
+  echo "[INFO] box64 revision=${revision} 非版本号（分支/漂移 ref）—— 补丁 dry-run 失败时将跳过（patchOptional=1）" >&2
   patchOptional=1
 fi
 
