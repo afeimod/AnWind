@@ -136,12 +136,27 @@ private fun FileExplorerContent(scope: WindowContentScope) {
     // exe/bat/msi/cmd/com 文件把【完整路径】经 FilePickBus 回传给发起窗口
     // 的程序路径输入框（直达 Download，无则内部存储根）
     val exePick = pickMode == "exe"
+    // v3.3.17（用户问题：装 wrapper 驱动提示选 txt/log）：驱动包选择模式 ——
+    // 容器管理「图形驱动 ➕ 安装驱动」专用。旧版复用 pickMode="text"（记事本
+    // 文本选择：直达 Documents、按文本扩展名过滤）→ 提示“请选择文本文件
+    // （txt/log/md…）”牛头不对马嘴。现改为独立模式：直达 Download，点击
+    // zip/tar/tar.gz/tar.xz/tar.bz2 驱动包回传（WrapperDriverSupport.install
+    // 支持的全部包形态）。
+    val driverPick = pickMode == "driver"
     // v3.2.14（用户问题 2）：自定义启动动画选择 —— 点击视频文件直接设为
     // app 启动动画（持久化到 SettingsStore；直达 Movies → Download）
     val bootVideoPick = pickMode == "boot_video"
     if (exePick) {
         LaunchedEffect(Unit) {
             val dir = listOf("Download", "AnWind").map { File(storageRoot, it) }
+                .firstOrNull { it.exists() && it.isDirectory } ?: storageRoot
+            currentRealDir = dir
+            isThisPcHome = false
+        }
+    } else if (driverPick) {
+        // v3.3.17：驱动包选择 —— 直达 Download（无则内部存储根），与 exe 选择同款起点
+        LaunchedEffect(Unit) {
+            val dir = listOf("Download").map { File(storageRoot, it) }
                 .firstOrNull { it.exists() && it.isDirectory } ?: storageRoot
             currentRealDir = dir
             isThisPcHome = false
@@ -532,7 +547,7 @@ private fun FileExplorerContent(scope: WindowContentScope) {
 
         // ===== v2.14 壁纸选择模式横幅（v2.17：兼容锁屏壁纸/锁屏视频壁纸；
         //       v2.19：新增云音乐 image/dir 选择模式） =====
-        if (wallpaperPick || lockWallpaperPick || lockWallpaperVideoPick || textPick || mediaPick || imagePick || dirPick || exePick || bootVideoPick) {
+        if (wallpaperPick || lockWallpaperPick || lockWallpaperVideoPick || textPick || mediaPick || imagePick || dirPick || exePick || bootVideoPick || driverPick) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -551,6 +566,7 @@ private fun FileExplorerContent(scope: WindowContentScope) {
                         imagePick -> Icons.Default.Image
                         exePick -> Icons.Default.Apps
                         bootVideoPick -> Icons.Default.Movie
+                        driverPick -> Icons.Default.Memory
                         dirPick -> Icons.Default.FolderOpen
                         else -> Icons.Default.PlayCircle
                     }, null,
@@ -568,6 +584,7 @@ private fun FileExplorerContent(scope: WindowContentScope) {
                         imagePick -> "点击任意图片文件，选为播放器自定义背景"
                         exePick -> "点击 exe / bat / msi / cmd / com 程序，回填到「运行」窗口的程序路径"
                         bootVideoPick -> "点击任意视频文件，设为 App 启动动画（下次启动生效）"
+                        driverPick -> "点击驱动包（zip / tar / tar.gz / tar.xz / tar.bz2），安装到独立驱动库"
                         dirPick -> "浏览到目标文件夹后，点右侧「选定此目录」回传给云音乐"
                         else -> "点击音频或视频文件进行播放"
                     },
@@ -706,6 +723,11 @@ private fun FileExplorerContent(scope: WindowContentScope) {
                             setLockWallpaperAndClose(file, isVideo = false)
                         } else if (lockWallpaperVideoPick && isVideoExtension(file.extension)) {
                             setLockWallpaperAndClose(file, isVideo = true)
+                        } else if (driverPick) {
+                            // v3.3.17：驱动包选择（容器管理「➕ 安装驱动」）——
+                            // 完整路径回传给发起窗口安装（旧版误用 textPick 提示选 txt/log）
+                            if (isDriverPackageFile(file.name)) pickAndClose(file)
+                            else Toast.makeText(context, "请选择驱动包（zip / tar / tar.gz / tar.xz / tar.bz2）", Toast.LENGTH_SHORT).show()
                         } else if (textPick) {
                             if (isTextExtension(file.extension)) pickAndClose(file)
                             else Toast.makeText(context, "请选择文本文件（txt/log/md/json/xml 等）", Toast.LENGTH_SHORT).show()
@@ -738,6 +760,10 @@ private fun FileExplorerContent(scope: WindowContentScope) {
                             setLockWallpaperAndClose(file, isVideo = false)
                         } else if (lockWallpaperVideoPick && isVideoExtension(file.extension)) {
                             setLockWallpaperAndClose(file, isVideo = true)
+                        } else if (driverPick) {
+                            // v3.3.17：驱动包选择（列表视图分支，与网格视图同逻辑）
+                            if (isDriverPackageFile(file.name)) pickAndClose(file)
+                            else Toast.makeText(context, "请选择驱动包（zip / tar / tar.gz / tar.xz / tar.bz2）", Toast.LENGTH_SHORT).show()
                         } else if (textPick) {
                             if (isTextExtension(file.extension)) pickAndClose(file)
                             else Toast.makeText(context, "请选择文本文件（txt/log/md/json/xml 等）", Toast.LENGTH_SHORT).show()
@@ -1313,6 +1339,17 @@ private fun isMediaExtension(ext: String): Boolean {
 /** Windows 可执行/脚本文件扩展名（v3.2.13：容器运行选择 + 双击调起容器选择框）。 */
 private fun isExecutableExtension(ext: String): Boolean =
     ext.lowercase() in setOf("exe", "msi", "bat", "cmd", "com", "scr", "lnk")
+
+/**
+ * 驱动包文件名（v3.3.17：容器管理「➕ 安装驱动」选择模式过滤用）。
+ * 按完整文件名匹配（file.extension 对 foo.tar.gz 只给 "gz"，无法判双后缀）；
+ * 与 WrapperDriverSupport.install 支持的包形态一一对应（zip + 四种 tar 压缩）。
+ */
+private fun isDriverPackageFile(name: String): Boolean {
+    val n = name.lowercase()
+    return n.endsWith(".zip") || n.endsWith(".tar") || n.endsWith(".tar.gz") ||
+        n.endsWith(".tar.xz") || n.endsWith(".tar.bz2")
+}
 
 /**
  * 打开真实文件：

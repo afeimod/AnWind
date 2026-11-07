@@ -1347,8 +1347,12 @@ private fun GraphicsDriverTab(
     var fexcoreTars by remember { mutableStateOf<List<GuanliSupport.OptTar>>(emptyList()) }
     // v3.3.16（WinNative DriverPackages 模型）：Vulkan 驱动 = 类型
     //（turnip / wrapper）+ 版本（独立目录多驱动共存）+ ➕ yuzu 式安装
+    // v3.3.17（用户问题：wrapper 选不了/无列表）：wrapper 版本列表改双源 ——
+    // 已装独立目录驱动 + rootfs/opt/wrapper tar 包（wineguanli.py 参考行为：
+    // 下拉自动扫描 /opt/wrapper，选中后运行前自动解压安装）。
     var installedDrivers by remember { mutableStateOf<List<WrapperDriverSupport.DriverEntry>>(emptyList()) }
     var tzTars by remember { mutableStateOf<List<GuanliSupport.OptTar>>(emptyList()) }
+    var wrapperTars by remember { mutableStateOf<List<GuanliSupport.OptTar>>(emptyList()) }
     var driversTick by remember { mutableIntStateOf(0) }
     var installing by remember { mutableStateOf(false) }
     val context = LocalContext.current
@@ -1361,6 +1365,10 @@ private fun GraphicsDriverTab(
             wined3dTars = GuanliSupport.scanOpt("vkord3d")
             fexcoreTars = GuanliSupport.scanOpt("fexcore")
             tzTars = GuanliSupport.scanOpt("tz")
+            // v3.3.17：wrapper 同步扫描 /opt/wrapper（参考 wineguanli.py：
+            // 图形驱动页的 Wrapper 下拉自动扫描 tar 包；RootfsLauncher 0.5 在
+            // 运行时对未安装的槽位自动安装）
+            wrapperTars = GuanliSupport.scanOpt("wrapper")
             installedDrivers = WrapperDriverSupport.listDrivers()
         }
     }
@@ -1421,8 +1429,12 @@ private fun GraphicsDriverTab(
                     label.startsWith("Turnip（Mesa") ->
                         onChange(edit.copy(wrapper = "", turnip = ""))
                     label.startsWith("Wrapper") ->
+                        // v3.3.17：类型切到 wrapper 时预选首个可用版本 ——
+                        // 优先已装驱动，其次 /opt/wrapper tar 包（旧版只看已装列表，
+                        // 未装且 /opt 无包时选中后下方空空如也 → “强制选择也没列表”）
                         onChange(edit.copy(
-                            wrapper = installedDrivers.firstOrNull()?.slot ?: "",
+                            wrapper = installedDrivers.firstOrNull()?.slot
+                                ?: wrapperTars.firstOrNull()?.display ?: "",
                             turnip = ""
                         ))
                     else ->
@@ -1435,16 +1447,38 @@ private fun GraphicsDriverTab(
         )
         when (vkType) {
             "wrapper" -> {
-                if (installedDrivers.isEmpty()) {
-                    GNote("尚未安装任何 wrapper 驱动 —— 点下方 ➕ 从 zip/tar 包安装（yuzu 社区 / WinNative wrapper 包）")
+                // v3.3.17：双源版本列表 —— 已装独立目录驱动（v3.3.16 模型，
+                // 即选即用）+ /opt/wrapper tar 包（wineguanli.py 参考行为：下拉
+                // 自动扫描，选中后 RootfsLauncher 0.5 在运行会话自动安装）。
+                // 同名去重：包安装后的 slot 名 == 包显示名，tar 项隐藏。
+                val wrapperOpts = buildList {
+                    add("默认（切回 Mesa 内置）" to "")
+                    installedDrivers.forEach { add(it.slot to it.slot) }
+                    wrapperTars.filter { t -> installedDrivers.none { it.slot == t.display } }
+                        .forEach { add("${it.display}（/opt/wrapper 包，运行时自动安装）" to it.display) }
+                }
+                if (wrapperOpts.size == 1) {
+                    GNote(
+                        "尚未安装任何 wrapper 驱动，rootfs/opt/wrapper 内也未发现 tar 包 ——\n" +
+                            "点下方 ➕ 从 zip/tar 包安装（yuzu 社区 / WinNative wrapper 包），\n" +
+                            "或把驱动包放进 rootfs/opt/wrapper 后重进本页即可选择"
+                    )
                 } else {
                     GComboBox(
-                        options = installedDrivers.map { it.slot },
-                        selected = edit.wrapper,
-                        onSelect = { onChange(edit.copy(wrapper = it, turnip = "")) }
+                        options = wrapperOpts.map { it.first },
+                        selected = wrapperOpts.firstOrNull { it.second == edit.wrapper }?.first
+                            ?: edit.wrapper.ifBlank { "默认（切回 Mesa 内置）" },
+                        onSelect = { label ->
+                            wrapperOpts.firstOrNull { it.first == label }?.second
+                                ?.let { onChange(edit.copy(wrapper = it, turnip = "")) }
+                        }
                     )
                     installedDrivers.firstOrNull { it.slot == edit.wrapper }?.let { d ->
                         GNote("库：${d.libraryName}（来源包 ${d.sourceFile}，目录 ${d.dir.name}/）")
+                    }
+                    if (edit.wrapper.isNotBlank() && installedDrivers.none { it.slot == edit.wrapper }
+                        && wrapperTars.any { it.display == edit.wrapper }) {
+                        GNote("${edit.wrapper}：运行时自动从 /opt/wrapper 安装到独立驱动库")
                     }
                 }
             }
@@ -1467,13 +1501,17 @@ private fun GraphicsDriverTab(
                     title = "选择驱动包",
                     launchMode = com.anwind.core.window.LaunchMode.FLOATING,
                     launchArgs = mapOf(
-                        "pickMode" to "text",
+                        // v3.3.17：driver = 驱动包专用选择模式（zip/tar 过滤 +
+                        // 直达 Download）。旧版误传 "text"（记事本文本选择）→
+                        // 提示选 txt/log。
+                        "pickMode" to "driver",
                         "targetApp" to "containers_driverinstall",
                         "targetWindow" to ""
                     )
                 )
             }
-            if (vkType == "wrapper" && edit.wrapper.isNotBlank()) {
+            if (vkType == "wrapper" && edit.wrapper.isNotBlank()
+                && installedDrivers.any { it.slot == edit.wrapper }) {
                 GSmallButton("🗑 卸载", GuanliColors.red, Modifier.weight(1f)) {
                     cs.launch(Dispatchers.IO) {
                         val err = runCatching {

@@ -16,6 +16,17 @@ import java.nio.ByteOrder
  *               根治 proton 会话"收缩级联"（用户实测：wine-9.2 的 -d/-f
  *               都能铺满，proton 的 -d/-f 都右/下黑边 —— 差异根因）。
  *
+ * v3.3.17（用户问题：X11 跟随窗口模式下游戏永远停在左上角、不拉伸全屏）——
+ *               fix28 决策环的两处结构缺陷根治：
+ *               1.【首见观测误触发放手】旧分支链：新窗口第一轮 stable=false、
+ *                 inFightWindow=false，四分支全不中 → 落入链尾"放手"分支置
+ *                 gaveUp=true（会话级永久）→ 任何会话的第一次观测必然触发，
+ *                 贴合/钉满从此永不执行 → 游戏窗口停在 wine 初始位 (0,0)，
+ *                 X 屏不缩、显示层无从拉伸。现插入"未稳定→仅记录等待"分支；
+ *               2.【窗口切换状态残留】开窗器→游戏两段式窗口：新窗口继承旧窗口
+ *                 的对抗/放手状态。现目标切换时复位（rootAdjusts 预算保留，
+ *                 收缩级联防护不受影响）。
+ *
  * fix28 定位的问题（2026-09-11 用户深采样 logcat 铁证，-d 与 -f 各一份）：
  *   proton 游戏自带"全屏管理器"：X 屏（root）每变化一次，它就把自己的
  *   窗口重设为"新 root 的 ~96%"（1280x720 root → 窗口 1232x693，恰为
@@ -331,6 +342,17 @@ object X11FitClient {
                     sleep(POLL_MS); continue
                 }
 
+                // v3.3.17：目标窗口切换（开窗器→游戏两段式/会话内换窗）——
+                // 对抗计数与放手状态属于"上一个窗口"，新窗口从零起算。
+                // rootAdjusts 预算保留（收缩级联防护不受影响）。
+                if (game.id != lastWinId && lastWinId != 0L) {
+                    if (pinFights != 0 || gaveUp) {
+                        Log.i(TAG, "自适应目标切换（0x${lastWinId.toString(16)} → 0x${game.id.toString(16)}）：对抗/放手状态复位")
+                    }
+                    pinFights = 0
+                    gaveUp = false
+                }
+
                 // fix17 桌面环境守卫：桌面会话里窗口化游戏是"桌面上的一扇窗"，
                 // 不能劫持整块屏幕；纯游戏会话（-d/裸会话）无桌面窗口不触发。
                 if (game.desktopPresent) {
@@ -407,8 +429,21 @@ object X11FitClient {
                                 "保持 X 屏幕 ${swNow}x${shNow} 不再调整（新握手或重启会话可重置）")
                             sleep(GIVEUP_POLL_MS)
                         }
-                    } else if (stable && rootAdjusts < MAX_ROOT_ADJUSTS && areaOk) {
-                        // 贴合策略（fix19 起默认；fix28 起须过稳定门+预算+下限）：
+                    } else if (!stable) {
+                        // v3.3.17（用户问题：跟随窗口模式游戏永远停在左上角不拉伸）：
+                        // 新窗口首见/尺寸变化中 —— 仅记录观测，等下一轮稳定门判定
+                        // （连续两轮同窗口同尺寸）再动作。旧代码无此分支：首见轮
+                        // stable=false、inFightWindow=false，四分支全不中 → 落入
+                        // 链尾"放手"分支置 gaveUp=true（会话级永久）→ 任何会话的
+                        // 第一次观测必然触发，贴合/钉满从此永不执行 → 游戏窗口
+                        // 停在 wine 初始位 (0,0)（无 WM 跟随窗口模式的左上角），
+                        // X 屏幕维持窗口尺寸不缩、显示层无从拉伸 —— "总是在左上
+                        // 角、没有拉伸全屏"的根因。
+                        logT("unstable", "窗口首见/尺寸变化中（${game.w}x${game.h}@(${game.x},${game.y})），等待稳定门（连续两轮一致）…")
+                        sleep(POLL_MS)
+                    } else if (rootAdjusts < MAX_ROOT_ADJUSTS && areaOk) {
+                        // 贴合策略（fix19 起默认；fix28 起须过稳定门+预算+下限；
+                        // v3.3.17 起稳定门由上方 !stable 分支前置保证）：
                         // 平移已在上方完成，X 屏幕贴成客户区尺寸，显示层拉伸
                         // 铺满 —— 老游戏（DirectDraw 固定分辨率）唯一可靠路径，
                         // wine-9.2 实测一次即收敛。
@@ -430,9 +465,10 @@ object X11FitClient {
                             "贴合后被改回 → 窗口撑到 X 屏幕 ${swNow}x${shNow}（root 不动）" +
                             " [对抗 $pinFights/$MAX_FIT_FIGHTS]")
                         sleep(1200)
-                    } else if (stable && pinFights < MAX_FIT_FIGHTS) {
+                    } else if (pinFights < MAX_FIT_FIGHTS) {
                         // fix28 钉满（兜底）：窗口稳定但不匹配（缩屏预算耗尽/
                         // 面积下限拦截），X 屏保持不动，窗口撑到 X 屏。
+                        //（v3.3.17：stable 条件由上方 !stable 分支前置保证）
                         c.moveResizeWindow(game.id, -L, -T, swNow + L + R, shNow + T + B)
                         pinFights++
                         Log.i(TAG, "自适应(钉满): 窗口 ${game.w}x${game.h} 稳定但不匹配 " +
@@ -441,8 +477,9 @@ object X11FitClient {
                             " [对抗 $pinFights/$MAX_FIT_FIGHTS]")
                         sleep(1200)
                     } else {
-                        // fix28 放手：稳定窗口钉满 4 轮仍被改回，或窗口持续变化
-                        // 且无可用动作 —— 保持握手分辨率，完全不再调整。
+                        // fix28 放手：稳定窗口钉满 4 轮仍被改回（v3.3.17：未稳定
+                        // 的窗口已由上方分支接管等待，"窗口持续变化"不再落入
+                        // 此处）—— 保持握手分辨率，完全不再调整。
                         gaveUp = true
                         Log.w(TAG, "自适应放弃: 窗口 ${game.w}x${game.h} 持续不匹配 X 屏幕 " +
                             "${swNow}x${shNow}（贴合 ${rootAdjusts}/${MAX_ROOT_ADJUSTS} ·" +

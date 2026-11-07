@@ -1175,6 +1175,62 @@ PCMBSF
   else
     echo "ℹ️ d3dx11_42 无需导入修复（非 proton_9.0 转发形态或已自带），跳过"
   fi
+
+  # e) v3.3.17：proton_9.0 arm64ec 第三批 EC 炸点（CI wine-build-log-arm64ec (1).zip
+  #    实证链条终点）：0007/0015/0016 修完后主 make 仍阵亡于
+  #    dlls/kernel32/arm64ec-windows/virtual.o（lstrcpyA 的 pushq/movq/
+  #    .seh_pushreg 连片 15 errors）；本地全树静态扫描另定位 wineboot 两处
+  #    （do_xgetbv x64 汇编 + __cpuidex/__cpuid x86 内建 —— 0005 的 xstate
+  #    空桩在 9.0 树 hunk 失败，本补丁一并根治）。全部 .patch.proton 后缀
+  #    避开主补丁循环，按内容特征条件套用 + --fuzz=0 逐字锚点；
+  #    proton_10.0+/hangover 树（已自带修复）自动跳过。
+  if [[ -f dlls/kernel32/virtual.c ]] \
+     && grep -q 'lstrcpyA_impl' dlls/kernel32/virtual.c 2>/dev/null; then
+    if grep -q '__arm64ec__' dlls/kernel32/virtual.c 2>/dev/null; then
+      echo "kernel32 lstrcpyA 已带 arm64ec 守卫（proton_10.0+ 形态），跳过"
+    else
+      echo "应用 kernel32 lstrcpyA arm64ec 修复（proton_9.0 树 EC 趟必炸点，CI 实证 virtual.o）"
+      if patch --silent --forward -p1 --fuzz=0 \
+           < "${wsDir}/projects/${pjName}/0019-fix-arm64ec-lstrcpya-wineboot-proton.patch.proton"; then
+        echo "已修复 lstrcpyA EC 编译（EC 走 #else 通用 C 实现，与 wine-9.2 上游形态一致）"
+      else
+        echo "⚠️ lstrcpyA/wineboot EC 补丁有 hunk 未应用（树差异，继续构建）"
+        echo "    若 arm64ec PE 编译报 virtual.o / wineboot.o 汇编或 __cpuid 隐式声明错误，请核查该补丁锚点"
+      fi
+    fi
+  fi
+  # wineboot 部分（与 virtual.c 同补丁文件，分开门控：proton_9.0 两文件特征独立）
+  if [[ -f programs/wineboot/wineboot.c ]] \
+     && grep -q 'do_xgetbv' programs/wineboot/wineboot.c 2>/dev/null \
+     && ! grep -q '__arm64ec__' programs/wineboot/wineboot.c 2>/dev/null; then
+    echo "应用 wineboot xstate/cpuid arm64ec 修复（proton_9.0 树 __cpuidex/__cpuid x86 内建 EC 趟炸点）"
+    if patch --silent --forward -p1 --fuzz=0 \
+         < "${wsDir}/projects/${pjName}/0019-fix-arm64ec-lstrcpya-wineboot-proton.patch.proton"; then
+      echo "已修复 wineboot EC 编译（EC 走 #else 空桩，wine-10 上游同款形态）"
+    else
+      echo "⚠️ wineboot EC 补丁未应用（可能 virtual.c 部分已应用而 wineboot 锚点漂移，继续构建）"
+      echo "    若 arm64ec PE 编译报 wineboot.o 的 __cpuid/__xgetbv 隐式声明或汇编错误，请核查该补丁锚点"
+    fi
+  fi
+  # 【硬校验】两处 EC 排除必须落位（--enable-archs=arm64ec 时）—— 防锚点漂移静默落空
+  if [[ "${args}" == *"--enable-archs=arm64ec,"* ]] \
+     && [[ -f dlls/kernel32/virtual.c ]] \
+     && grep -q 'lstrcpyA_impl' dlls/kernel32/virtual.c 2>/dev/null \
+     && ! grep -q '__arm64ec__' dlls/kernel32/virtual.c 2>/dev/null; then
+    echo "::error::0019 补丁未生效（kernel32/virtual.c 的 lstrcpyA x64 汇编仍无 arm64ec 排除）！"
+    echo "   arm64ec 编译趟必炸于 dlls/kernel32/arm64ec-windows/virtual.o（pushq/.seh_pushreg 连片 15 errors，CI 实证）"
+    echo "   请核查源码树形态与补丁锚点：projects/${pjName}/0019-fix-arm64ec-lstrcpya-wineboot-proton.patch.proton"
+    return 1
+  fi
+  if [[ "${args}" == *"--enable-archs=arm64ec,"* ]] \
+     && [[ -f programs/wineboot/wineboot.c ]] \
+     && grep -q 'do_xgetbv' programs/wineboot/wineboot.c 2>/dev/null \
+     && ! grep -q '__arm64ec__' programs/wineboot/wineboot.c 2>/dev/null; then
+    echo "::error::0019 补丁未生效（wineboot.c 的 do_xgetbv x64 汇编/__cpuid 内建仍无 arm64ec 排除）！"
+    echo "   arm64ec 编译趟必炸于 programs/wineboot/arm64ec-windows/wineboot.o（xgetbv/shlq 汇编 + __cpuidex 隐式声明）"
+    echo "   请核查源码树形态与补丁锚点：projects/${pjName}/0019-fix-arm64ec-lstrcpya-wineboot-proton.patch.proton"
+    return 1
+  fi
   CFLAGS="${CFLAGS/-Oz/}"
   CXXFLAGS="${CXXFLAGS/-Oz/}"
   CPPFLAGS="${CPPFLAGS/-Oz/}"
