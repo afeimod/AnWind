@@ -3,6 +3,7 @@ package com.anwind.core.desktop
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -466,15 +467,26 @@ private fun BuiltInTile(
             // 由 DesktopEnvironment 的全屏观察层接管（DesktopDragState
             // 总线 + root 坐标），此处不做 onDrag 跟踪（局部坐标无意义）。
             .pointerInput(app.id) {
-                androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress(
-                    onDragStart = {
+                // v3.3.12 修复：detectDragGesturesAfterLongPress 不能用
+                // 「包名.函数名()」全限定形式调用 —— 它是顶层 suspend 函数，
+                // 在 pointerInput 这类【带 receiver 的 lambda】（PointerInputScope）
+                // 作用域内，K2 编译器把 androidx.compose.* 前缀链优先按
+                // receiver 成员/表达式解析，无法回退为包前缀 → Unresolved
+                // reference，连带 onDragStart lambda 的隐式 it 也无法推断
+                //（CI 实测 469/477 行三连错）。
+                // 正确写法 = 先 import 再短名调用（与历史 DesktopIconGrid
+                // ae54254d 同 API 成功写法、VirtualKeyboardOverlay.kt 等
+                // 4 处 detectDragGestures 一致）；顶层作用域的
+                // LockScreenLayer 全限定调用不受影响（无 receiver）。
+                detectDragGesturesAfterLongPress(
+                    onDragStart = { offset ->
                         haptic.performHapticFeedback(
                             androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress
                         )
                         // root 坐标 = 瓦片局部 + 瓦片在 root 的偏移
                         DesktopDragState.begin(
                             app,
-                            it.x + tileOrigin.x, it.y + tileOrigin.y
+                            offset.x + tileOrigin.x, offset.y + tileOrigin.y
                         )
                         onDismiss()   // 拖出即关菜单（Windows 11 同款交互）
                     },
