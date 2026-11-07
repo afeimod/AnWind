@@ -1,5 +1,12 @@
 # AnWind Bionic 修复包 v2（2026-09-19）
 
+> **v3.3.10b（2026-11-07）**：v3.3.10 交付源 APK 编译错误修复（用户 CI 实报：`WrapperDriverSupport.kt:224:18 Unresolved reference: forEach` → `compileReleaseKotlin FAILED`）。
+>
+> **根因**：`installFromArchive` 驱动落位循环误写 `plan.forEach { (file, name) -> ... }` —— `plan` 的类型 `InstallPlan` 是 private data class（未实现 Iterable），stdlib 的 forEach 扩展无从解析。上一轮沙箱验证的 Kotlin 编译任务实际因沙箱内存不足在编译中途被杀（Gradle 任务开始行 ≠ 完成凭证，被误读为通过），本错误漏检。本轮以任务完整结束（BUILD SUCCESSFUL 摘要 + 0 个 `e:`）为通过标准重验。
+>
+> **修复**：`plan.forEach` → `plan.files.forEach`（遍历 `InstallPlan.files: List<Pair<File, String>>`，语义与原意一致，仅此一处）。全项目 145 个 .kt 经 `:app:compileReleaseKotlin`（2m44s）+ `:app:compileReleaseJavaWithJavac` 双闸门完整编译验证（Kotlin 1.9.25 / AGP 8.5.2 / Gradle 8.7 / JDK 21，0 错误）。App 版本不变（v2.38.33 / versionCode 96 —— 该代码从未在任一设备上运行过，无行为变化）。
+
+
 > **v3.3.10（2026-11-07，App v2.38.33 / versionCode 96）**：FEXCore 独立目录 + 桌面图标精简/菜单拖拽 + box64 按版本跳过补丁 + wine mf 补丁分档 + Wrapper 驱动（WinNative/yuzu 同型 Turnip）。
 >
 > ## ① 【用户问题 1】"fexcore 同目录理解错了，是 opt/fexcore，逻辑和 dxvk 一样"

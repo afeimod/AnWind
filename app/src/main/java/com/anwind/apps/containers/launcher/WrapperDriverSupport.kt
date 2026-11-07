@@ -221,7 +221,7 @@ object WrapperDriverSupport {
         // 落位：驱动 + 附属 .so（及 share 侧文件）平铺进 slot 目录
         var installed = 0
         runCatching {
-            plan.forEach { (file, name) ->
+            plan.files.forEach { (file, name) ->
                 val out = File(dest, name)
                 file.copyTo(out, overwrite = true)
                 installed++
