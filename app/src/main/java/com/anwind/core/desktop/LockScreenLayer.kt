@@ -350,9 +350,13 @@ private fun PinUnlockPanel(
     // 输入变化后即时校验：
     // - 达到 4-8 位时检查是否命中（hash 全等，前缀不会误触发）
     // - 满 8 位仍未命中：报错清空，避免用户停在满位无法继续
-    LaunchedEffect(input) {
+    // v3.3.14：key 加 pinHash —— 面板打开期间 pinHash 变化（如他处清除密码）
+    // 时闭包不会自动更新（原 key 只有 input），顺手消除陈旧捕获
+    LaunchedEffect(input, pinHash) {
         if (input.length >= 4) {
-            if (hashPin(input) == pinHash) {
+            // v3.3.14：双比对 —— 半角直比 + 全角别名（存量全角 hash 兼容，
+            // 见 hashPinFullwidthAlias 说明）
+            if (hashPin(input) == pinHash || hashPinFullwidthAlias(input) == pinHash) {
                 onVerified()
             } else if (input.length >= 8) {
                 error = true
@@ -431,15 +435,17 @@ private fun PinUnlockPanel(
                                         in '0'..'9' -> onDigit(key)
                                         '⌫' -> input = input.dropLast(1)
                                         '✓' -> {
-                                            // 手动确认：长度不足 4 位忽略
-                                            if (input.length >= 4) {
-                                                if (hashPin(input) == pinHash) {
-                                                    onVerified()
-                                                } else {
-                                                    error = true
-                                                    failed++
-                                                    input = ""
-                                                }
+                                            // 手动确认：长度不足 4 位轻抖提示
+                                            //（v3.3.14：原静默忽略，用户不知道为何没反应）
+                                            if (input.length < 4) {
+                                                error = true
+                                            } else if (hashPin(input) == pinHash
+                                                || hashPinFullwidthAlias(input) == pinHash) {
+                                                onVerified()
+                                            } else {
+                                                error = true
+                                                failed++
+                                                input = ""
                                             }
                                         }
                                     }
@@ -470,7 +476,7 @@ private fun PinUnlockPanel(
             Spacer(Modifier.height(2.dp))
             Text(
                 text = if (failed >= 3) L("忘记密码？点击此处清除密码并解锁")
-                else L("4-8 位数字密码"),
+                else L("4-8 位半角数字密码"),
                 color = if (failed >= 3) Color(0xFFFF6B6B)
                 else (if (theme.isDark) Color.White else Color.Black).copy(alpha = 0.45f),
                 fontSize = 11.sp,
@@ -493,6 +499,18 @@ internal fun hashPin(pin: String): String = runCatching {
     md.digest("anwind_lock:$pin".toByteArray())
         .joinToString("") { String.format("%02x", it) }
 }.getOrDefault("")
+
+/**
+ * v3.3.14：存量全角密码兼容 —— 历史版本设置端 isDigit() 放行过全角数字
+ * （U+FF10-FF19），存量 DataStore 里可能存着全角形态的 hash；锁屏面板
+ * 只能输半角，直接比对永远不匹配（用户实测“输入正确也解不开”）。
+ * 验证时把输入转全角再算一份 hash 一并比对，命中任一即放行 ——
+ * 存量用户无需“忘记密码”重设，下次改密码时设置端归一化为半角。
+ */
+private fun hashPinFullwidthAlias(pin: String): String {
+    val fw = pin.map { c -> if (c in '0'..'9') '０' + (c - '0') else c }.joinToString("")
+    return hashPin(fw)
+}
 
 // ============================================================
 // v2.17：锁屏视频壁纸（TextureView + MediaPlayer，cover 铺满 + 静音循环）

@@ -221,8 +221,14 @@ internal fun LockSettingsPage() {
         } else {
             OutlinedTextField(
                 value = pin1,
-                onValueChange = { if (it.length <= 8 && it.all { c -> c.isDigit() }) pin1 = it },
-                label = { Text(L("输入密码（4-8 位数字）"), fontSize = 11.sp) },
+                // v3.3.14 修复：只接受半角 ASCII 数字 —— Kotlin 的 Char.isDigit()
+                // 对全角数字 '０'-'９'（U+FF10-FF19）及阿拉伯/梵文等 Unicode
+                // 数字同样返回 true！中文输入法在 NumberPassword 键盘上可能
+                // 输入全角数字，密码框又显示 '•' 看不出差异 → hash 存成全角
+                // 版本，而锁屏面板是自制键盘只能输半角 → 永远无法匹配解锁
+                //（用户实测：设密码后无论输几位都解不开）。
+                onValueChange = { if (it.length <= 8 && it.all { c -> c in '0'..'9' }) pin1 = it },
+                label = { Text(L("输入密码（4-8 位半角数字）"), fontSize = 11.sp) },
                 singleLine = true,
                 visualTransformation = PasswordVisualTransformation(),
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
@@ -230,7 +236,7 @@ internal fun LockSettingsPage() {
                     .fillMaxWidth()
                     .keyboardAware(
                         value = { pin1 },
-                        onValue = { if (it.length <= 8 && it.all { c -> c.isDigit() }) pin1 = it },
+                        onValue = { if (it.length <= 8 && it.all { c -> c in '0'..'9' }) pin1 = it },
                         singleLine = true
                     ),
                 shape = RoundedCornerShape(6.dp)
@@ -238,7 +244,8 @@ internal fun LockSettingsPage() {
             Spacer(Modifier.height(8.dp))
             OutlinedTextField(
                 value = pin2,
-                onValueChange = { if (it.length <= 8 && it.all { c -> c.isDigit() }) pin2 = it },
+                // v3.3.14：同 pin1，半角 ASCII 白名单（拒绝全角 Unicode 数字）
+                onValueChange = { if (it.length <= 8 && it.all { c -> c in '0'..'9' }) pin2 = it },
                 label = { Text(L("确认密码"), fontSize = 11.sp) },
                 singleLine = true,
                 visualTransformation = PasswordVisualTransformation(),
@@ -247,7 +254,7 @@ internal fun LockSettingsPage() {
                     .fillMaxWidth()
                     .keyboardAware(
                         value = { pin2 },
-                        onValue = { if (it.length <= 8 && it.all { c -> c.isDigit() }) pin2 = it },
+                        onValue = { if (it.length <= 8 && it.all { c -> c in '0'..'9' }) pin2 = it },
                         singleLine = true
                     ),
                 shape = RoundedCornerShape(6.dp)
@@ -262,7 +269,14 @@ internal fun LockSettingsPage() {
                             pin1 != pin2 ->
                                 Toast.makeText(context, L10n.t("两次输入的密码不一致"), Toast.LENGTH_SHORT).show()
                             else -> {
-                                scope0.launch { app.settingsStore.setLockPinHash(hashPin(pin1)) }
+                                // v3.3.14：全角→半角归一化（双保险）—— 历史版本
+                                // isDigit() 放行过全角数字，且部分输入法在虚拟
+                                // 键盘/系统 IME 下可能提交全角；统一转半角后再
+                                // hash，确保与锁屏面板的半角键盘输入可匹配
+                                val pinNorm = pin1.map { c ->
+                                    if (c in '０'..'９') ('0' + (c - '０')) else c
+                                }.joinToString("")
+                                scope0.launch { app.settingsStore.setLockPinHash(hashPin(pinNorm)) }
                                 pinEditing = false
                                 pin1 = ""
                                 pin2 = ""

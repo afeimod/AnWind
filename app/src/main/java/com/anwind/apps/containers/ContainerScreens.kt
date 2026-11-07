@@ -1424,8 +1424,9 @@ private fun GraphicsDriverTab(
         "图形驱动槽位：Turnip(/opt/tz)、Zink(/opt/zink)、DXVK(/opt/dxvk1)、" +
             "WineD3D(/opt/vkord3d)、FEXCore(/opt/fexcore)、Wrapper(/opt/wrapper)。运行容器时选中的包由启动链步骤 0 自动解压：" +
             "Turnip/Zink → rootfs/usr/lib；DXVK/WineD3D/FEXCore → 对应容器 C 盘 windows；" +
-            "Wrapper → rootfs/usr/lib/anwind-wrapper/ 专属目录 + Vulkan ICD 清单（VK_ICD_FILENAMES 切换，" +
-            "与 rootfs 自带 Mesa 共存，比 Mesa Turnip 更流畅；配 Zink 一起用效果更佳）"
+            "Wrapper → 按包内 rootfs 布局（usr/lib + usr/share）直接落位 rootfs/usr/，" +
+            "同名 Mesa so 自动备份可恢复，自生成 Vulkan ICD 清单（VK_ICD_FILENAMES 切换；" +
+            "GL 默认联动 zink 吃 wrapper 加速，选 off 自动卸载恢复 Mesa；比 Mesa Turnip 更流畅）"
     )
 }
 

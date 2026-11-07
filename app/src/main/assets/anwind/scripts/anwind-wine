@@ -723,63 +723,53 @@ apply_gpu_env() {
     esac
 }
 
-# ---------- Wrapper 驱动（v3.3.10，WinNative/yuzu 同型 Turnip） ----------
+# ---------- Wrapper 驱动（v3.3.15 重写：rootfs 布局落位，WinNative 同款） ----------
 # 容器 conf 的 wrapper 键（App 图形驱动页 /opt/wrapper 槽位同款）：
-#   wrapper=<tar 显示名> → ICD 清单已就位（App 启动链或上次运行安装）→
-#   export VK_ICD_FILENAMES 切换 Vulkan 驱动；未就位 → 从
-#   /opt/wrapper/<名>.tar.{gz,xz,bz2} 安装（解压归一化到
-#   rootfs usr/lib/anwind-wrapper/<名>/ + 生成 ICD 清单 + libc++_shared
-#   依赖补全），失败告警回退 Mesa。off/空 → 不设（loader 默认扫
-#   share/vulkan/icd.d 的 Mesa freedreno 清单）。
+#   wrapper=<tar 显示名> → 驱动按【包内 rootfs 布局】直接落位（usr/lib 的
+#   .so → rootfs/usr/lib、usr/share → rootfs/usr/share），同名 Mesa so
+#   备份到 usr/share/anwind-wrapper/backup/<slot>/，清单记录在
+#   usr/share/anwind-wrapper/<slot>.manifest；ICD 清单一律自生成
+#   （library_path=宿主绝对路径，不信任包内 json 的容器内/相对路径）：
+#     usr/share/vulkan/icd.d/anwind-wrapper-<slot>.json
+#   激活：export VK_ICD_FILENAMES=<该 json>；GL 侧容器 gallium 为
+#   auto/空/zink 时联动 zink（GL over Vulkan 吃 wrapper 加速，WinNative
+#   同款 MESA_LOADER_DRIVER_OVERRIDE=zink）。
+#   槽位切换/off：按 manifest 卸载旧驱动（删文件+恢复备份），Mesa 回归。
+#   支持三种包形态：rootfs 布局（usr/...）/ WinNative meta.json（libraryName）
+#   / yuzu 裸包（根级 libvulkan*.so）—— 归一化后统一落位。
 apply_wrapper_driver() {
-    local _slot _dir _icd _tar
+    local _slot _dir _icd _tar _stage _mf _state
     _slot="$(conf_read "$CONT_CONF" wrapper "")"
-    [ -n "$_slot" ] && [ "$_slot" != "off" ] && [ "$_slot" != "auto" ] || return 0
-
     _dir="$(printf '%s' "$_slot" | tr -c 'A-Za-z0-9._+-' '-')"
     _icd="$RFS_USR/share/vulkan/icd.d/anwind-wrapper-$_dir.json"
+    _mf="$RFS_USR/share/anwind-wrapper/$_dir.manifest"
+    _state="$RFS_USR/share/anwind-wrapper/state"
+    _stage="$RFS_USR/tmp/anwind-wrapper-install-$_dir"
 
+    # 1) 槽位同步：state 记录的已装 slot 与当前键不一致 → 卸载旧的（恢复 Mesa）
+    if [ -f "$_state" ]; then
+        local _installed
+        _installed="$(cat "$_state" 2>/dev/null | tr -d ' \t\n')"
+        if [ -n "$_installed" ] && [ "$_installed" != "$_slot" ]; then
+            info "Wrapper 槽位切换: $_installed → ${_slot:-off}，卸载旧驱动恢复 Mesa"
+            wrapper_uninstall "$_installed"
+        fi
+    fi
+
+    # 2) off / 空：不注入任何变量（loader 默认扫 icd.d 的 Mesa freedreno 清单）
+    [ -n "$_slot" ] && [ "$_slot" != "off" ] && [ "$_slot" != "auto" ] || return 0
+
+    # 3) ICD 未就位 → 从 /opt/wrapper/<名>.tar.{gz,xz,bz2} 安装（App 侧未装时的兜底）
     if [ ! -f "$_icd" ] || ! grep -q '"library_path"' "$_icd" 2>/dev/null; then
         _tar=""
         for _ext in tar.gz tar.xz tar.bz2; do
             [ -f "$RFS_ROOT/opt/wrapper/$_slot.$_ext" ] && _tar="$RFS_ROOT/opt/wrapper/$_slot.$_ext" && break
         done
         if [ -n "$_tar" ]; then
-            local _stage="$RFS_USR/tmp/anwind-wrapper-$$_dir"
             rm -rf "$_stage" && mkdir -p "$_stage"
             if "$RFS_USR/bin/tar" -xf "$_tar" -C "$_stage" --overwrite 2>/dev/null \
                || tar -xf "$_tar" -C "$_stage" --overwrite 2>/dev/null; then
-                local _srcroot="$_stage"
-                local _dirs
-                _dirs="$(find "$_stage" -mindepth 1 -maxdepth 1 -type d ! -name '.*' | wc -l)"
-                if [ "$_dirs" = "1" ] && [ -z "$(find "$_stage" -mindepth 1 -maxdepth 1 -type f ! -name '.*' -print -quit)" ]; then
-                    _srcroot="$(find "$_stage" -mindepth 1 -maxdepth 1 -type d ! -name '.*' | head -n 1)"
-                fi
-                local _so
-                _so="$(find "$_srcroot" -maxdepth 1 -name 'libvulkan*.so' -type f | head -n 1)"
-                if [ -n "$_so" ]; then
-                    local _dest="$RFS_USR/lib/anwind-wrapper/$_dir"
-                    rm -rf "$_dest" && mkdir -p "$_dest"
-                    find "$_srcroot" -maxdepth 1 -name '*.so' -type f -exec cp -p {} "$_dest/" \;
-                    [ -f "$_srcroot/meta.json" ] && cp -p "$_srcroot/meta.json" "$_dest/" 2>/dev/null
-                    # 依赖补全：libc++_shared.so（NDK bionic 驱动普遍 DT_NEEDED）
-                    if [ ! -f "$_dest/libc++_shared.so" ] && [ -f "$RFS_USR/lib/libc++_shared.so" ]; then
-                        cp -p "$RFS_USR/lib/libc++_shared.so" "$_dest/"
-                    fi
-                    mkdir -p "$RFS_USR/share/vulkan/icd.d"
-                    cat > "$_icd" <<ICDEOF
-{
-    "file_format_version": "1.0.0",
-    "ICD": {
-        "api_version": "1.4.0",
-        "library_path": "$_dest/$(basename "$_so")"
-    }
-}
-ICDEOF
-                    info "Wrapper 驱动 $_slot 已安装 → $_dest（ICD: $_icd）"
-                else
-                    info "警告: Wrapper 驱动 $_slot 包内未找到 libvulkan*.so（跳过，Vulkan 走 Mesa）"
-                fi
+                wrapper_install_from_stage "$_slot" "$_stage"
             fi
             rm -rf "$_stage"
         else
@@ -787,10 +777,171 @@ ICDEOF
         fi
     fi
 
+    # 4) 激活：Vulkan 侧 VK_ICD_FILENAMES + GL 侧 zink 联动（auto/空/zink 档）
     if [ -f "$_icd" ]; then
         export VK_ICD_FILENAMES="$_icd"
-        info "Wrapper 驱动激活: VK_ICD_FILENAMES=$_icd（Mesa Turnip 本会话不加载）"
+        local _g
+        _g="$(conf_read "$CONT_CONF" gallium auto)"
+        case "$_g" in
+            auto|" "|""|zink)
+                export MESA_LOADER_DRIVER_OVERRIDE=zink
+                export GALLIUM_DRIVER=zink
+                export ZINK_DESCRIPTORS="${ZINK_DESCRIPTORS:-lazy}"
+                export ZINK_DEBUG="${ZINK_DEBUG:-compact}"
+                export TU_DEBUG="${TU_DEBUG:-noconform}"
+                info "Wrapper 驱动激活: VK_ICD_FILENAMES=$_icd + GL 联动 zink（GL over Vulkan → wrapper 驱动）"
+                ;;
+            *)
+                info "Wrapper 驱动激活: VK_ICD_FILENAMES=$_icd（GL 保持 $_g，仅 Vulkan 侧走 wrapper）"
+                ;;
+        esac
     fi
+}
+
+# 从 staging 目录安装 wrapper 驱动到 rootfs（rootfs 布局落位 + 备份 + manifest + 自生成 ICD）
+wrapper_install_from_stage() { # <slot> <staging目录>
+    local _slot="$1" _stage="$2"
+    local _dir _base _usrdir _so _dest _rel _bak _mf _icd
+    _dir="$(printf '%s' "$_slot" | tr -c 'A-Za-z0-9._+-' '-')"
+    _mf="$RFS_USR/share/anwind-wrapper/$_dir.manifest"
+    _icd="$RFS_USR/share/vulkan/icd.d/anwind-wrapper-$_dir.json"
+
+    _base="$_stage"
+    # 剥壳：唯一顶层目录且根级无文件 → 下钻一层
+    # 注意：usr 是 rootfs 布局本体（A 分支判据），不能剥；先判 A 再剥壳
+    if [ ! -d "$_stage/usr" ]; then
+        local _ndirs _nfiles _topdir
+        _ndirs="$(find "$_stage" -mindepth 1 -maxdepth 1 -type d ! -name '.*' | wc -l)"
+        _nfiles="$(find "$_stage" -mindepth 1 -maxdepth 1 -type f ! -name '.*' | wc -l)"
+        if [ "$_ndirs" = "1" ] && [ "$_nfiles" = "0" ]; then
+            _topdir="$(find "$_stage" -mindepth 1 -maxdepth 1 -type d ! -name '.*' | head -n 1)"
+            [ "$(basename "$_topdir")" != "usr" ] && _base="$_topdir"
+        fi
+    fi
+
+    mkdir -p "$RFS_USR/share/anwind-wrapper" "$RFS_USR/share/vulkan/icd.d"
+    : > "$_mf" 2>/dev/null
+
+    _so=""
+    # A) rootfs 布局包：usr/ 树全量落位（lib + share 一体）
+    if [ -d "$_base/usr" ]; then
+        find "$_base/usr" -type f | while read -r _f; do
+            # 注：${_f#pattern} 的模式内不能带引号（引号会被当作字面字符）
+            _rel="usr/$(printf '%s' "$_f" | sed "s|^$_base/usr/||")"
+            _dest="$RFS_ROOT/$_rel"
+            mkdir -p "$(dirname "$_dest")"
+            if [ -e "$_dest" ]; then
+                _bak="$RFS_USR/share/anwind-wrapper/backup/$_dir/$_rel"
+                mkdir -p "$(dirname "$_bak")"
+                cp -p "$_dest" "$_bak"
+                printf 'backup\t%s\n' "$_rel" >> "$_mf"
+            fi
+            cp -p "$_f" "$_dest"
+            printf 'file\t%s\n' "$_rel" >> "$_mf"
+        done
+        # 驱动 so：从 staging 的 usr/lib 找（落位后同路径）
+        local _soname
+        _soname="$(find "$_base/usr/lib" -maxdepth 1 -name 'libvulkan*.so' -type f 2>/dev/null | head -n 1 | xargs -r basename)"
+        [ -n "$_soname" ] && _so="$RFS_USR/lib/$_soname"
+    fi
+
+    # B) WinNative meta.json 包：libraryName 指定驱动 so + 同目录附属 so → usr/lib/
+    if [ -z "$_so" ] && [ -f "$_base/meta.json" ]; then
+        local _lib
+        _lib="$(sed -n 's/.*"libraryName"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$_base/meta.json" | head -n 1)"
+        if [ -n "$_lib" ] && [ -f "$_base/$_lib" ]; then
+            find "$_base" -maxdepth 1 -name '*.so' -type f | while read -r _f; do
+                _rel="usr/lib/$(basename "$_f")"
+                _dest="$RFS_ROOT/$_rel"
+                if [ -e "$_dest" ]; then
+                    _bak="$RFS_USR/share/anwind-wrapper/backup/$_dir/$_rel"
+                    mkdir -p "$(dirname "$_bak")"
+                    cp -p "$_dest" "$_bak"
+                    printf 'backup\t%s\n' "$_rel" >> "$_mf"
+                fi
+                cp -p "$_f" "$_dest"
+                printf 'file\t%s\n' "$_rel" >> "$_mf"
+            done
+            _so="$RFS_USR/lib/$_lib"
+        fi
+    fi
+
+    # C) yuzu 裸包：根级 libvulkan*.so + 附属 so → usr/lib/
+    if [ -z "$_so" ]; then
+        local _rootso
+        _rootso="$(find "$_base" -maxdepth 1 -name 'libvulkan*.so' -type f | head -n 1)"
+        if [ -n "$_rootso" ]; then
+            find "$_base" -maxdepth 1 -name '*.so' -type f | while read -r _f; do
+                _rel="usr/lib/$(basename "$_f")"
+                _dest="$RFS_ROOT/$_rel"
+                if [ -e "$_dest" ]; then
+                    _bak="$RFS_USR/share/anwind-wrapper/backup/$_dir/$_rel"
+                    mkdir -p "$(dirname "$_bak")"
+                    cp -p "$_dest" "$_bak"
+                    printf 'backup\t%s\n' "$_rel" >> "$_mf"
+                fi
+                cp -p "$_f" "$_dest"
+                printf 'file\t%s\n' "$_rel" >> "$_mf"
+            done
+            _so="$RFS_USR/lib/$(basename "$_rootso")"
+        fi
+    fi
+
+    if [ -z "$_so" ] || [ ! -f "$_so" ]; then
+        info "警告: Wrapper 驱动 $_slot 包内未找到 libvulkan*.so（跳过，Vulkan 走 Mesa）"
+        rm -f "$_mf"
+        return 1
+    fi
+
+    # 自生成 ICD（宿主绝对路径；不信任包内 json）
+    cat > "$_icd" <<ICDEOF
+{
+    "file_format_version": "1.0.0",
+    "ICD": {
+        "api_version": "1.4.0",
+        "library_path": "$_so"
+    }
+}
+ICDEOF
+    echo "$_slot" > "$RFS_USR/share/anwind-wrapper/state"
+    info "Wrapper 驱动 $_slot 已落位（rootfs 布局）→ $_so"
+    info "Vulkan ICD → $_icd（VK_ICD_FILENAMES 注入后生效）"
+}
+
+# 卸载 wrapper 驱动：按 manifest 删安装文件 + 恢复备份（Mesa 回归）
+# 注意：被覆盖的文件同时有 backup 与 file 两条记录 —— 卸载语义是【恢复】
+# （恢复本身已覆盖 wrapper 版本），file 分支必须跳过有 backup 的 rel，
+# 否则先恢复后删除会把刚恢复的 Mesa 原文件又删掉
+wrapper_uninstall() { # <slot>
+    local _slot="$1"
+    local _dir _mf _rel _kind _bak _dest _hasbak
+    _dir="$(printf '%s' "$_slot" | tr -c 'A-Za-z0-9._+-' '-')"
+    _mf="$RFS_USR/share/anwind-wrapper/$_dir.manifest"
+    [ -f "$_mf" ] || return 0
+    # 有 backup 记录的 rel 集合（这些文件走恢复，不走删除）
+    _hasbak="$(awk -F'\t' '$1=="backup" && $2!=""{print $2}' "$_mf")"
+    while IFS=$'\t' read -r _kind _rel; do
+        [ -n "$_rel" ] || continue
+        case "$_kind" in
+            file)
+                printf '%s\n' "$_hasbak" | grep -qxF "$_rel" \
+                    || rm -f "$RFS_ROOT/$_rel" 2>/dev/null
+                ;;
+            backup)
+                _bak="$RFS_USR/share/anwind-wrapper/backup/$_dir/$_rel"
+                if [ -f "$_bak" ]; then
+                    _dest="$RFS_ROOT/$_rel"
+                    mkdir -p "$(dirname "$_dest")"
+                    cp -p "$_bak" "$_dest"
+                fi
+                ;;
+        esac
+    done < "$_mf"
+    rm -f "$_mf" "$RFS_USR/share/vulkan/icd.d/anwind-wrapper-$_dir.json"
+    rm -rf "$RFS_USR/share/anwind-wrapper/backup/$_dir"
+    [ "$(cat "$RFS_USR/share/anwind-wrapper/state" 2>/dev/null | tr -d ' \t\n')" = "$_slot" ] \
+        && rm -f "$RFS_USR/share/anwind-wrapper/state" || true
+    info "Wrapper 驱动 $_slot 已卸载（原文件已恢复，Mesa 回归）"
 }
 
 # ---------- 用户附加环境 + DLL 覆盖 ----------

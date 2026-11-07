@@ -353,10 +353,11 @@ data class ContainerData(
      * DXVK —— 解压到对应容器 C 盘 windows，装 FEX 仿真器 PE DLL
      * libarm64ecfex.dll / libwow64fex.dll 等升级版）。 */
     val fexcore: String = "",
-    /** v3.3.10：Wrapper 驱动版本槽位（对接 /opt/wrapper —— WinNative/
-     * yuzu 同型预编译 Turnip（Adreno）驱动 tar；解压到 rootfs 独立目录
-     * usr/lib/anwind-wrapper/<name>/ 并生成专属 Vulkan ICD，经
-     * VK_ICD_FILENAMES 切换，与 rootfs 自带 Mesa Turnip 互不覆盖、共存可切）。 */
+    /** v3.3.15：Wrapper 驱动版本槽位（对接 /opt/wrapper —— 用户驱动包
+     * 为 rootfs 布局 usr/lib+usr/share 的预编译 Turnip/Adreno tar；按包
+     * 结构直接落位 rootfs/usr/，同名 Mesa so 自动备份、卸载可恢复，
+     * 自生成 Vulkan ICD 清单（宿主绝对路径）经 VK_ICD_FILENAMES 切换，
+     * GL 默认联动 zink 吃 wrapper 加速，off 自动卸载恢复 Mesa）。 */
     val wrapper: String = "",
     /** v3.3.9（用户问题 2）：自定义启动参数（startfex.sh `-a/--args` 同款
      * 定位 —— 追加在 exe 参数末尾，空白切分；区别：-a 是 wine 前置参数，
