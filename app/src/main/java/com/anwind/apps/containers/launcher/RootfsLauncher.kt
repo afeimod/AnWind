@@ -561,12 +561,16 @@ object RootfsLauncher {
         lastLogs[key] = sink.text
 
         try {
-            // 0) v3.3.9（用户问题 1：解压落点修正）：运行会话先解压选中的
-            //    /opt 驱动包（tar -xf → 各自正确的目标）：
+            // 0) v3.3.10：运行会话先解压选中的 /opt 驱动包（tar -xf →
+            //    各自正确的目标））：
             //      - turnip(/opt/tz)、zink(/opt/zink) → rootfs/usr/lib
             //        （path.conf 驱动位置：data/data/com.anwind/files/rootfs/usr/lib）；
-            //      - dxvk(/opt/dxvk1)、wined3d(/opt/vkord3d)、fexcore(/opt/dxvk1
-            //        同目录) → 对应容器 C 盘 windows（prefix/drive_c/windows）；
+            //      - dxvk(/opt/dxvk1)、wined3d(/opt/vkord3d)、fexcore(/opt/fexcore
+            //        独立目录，逻辑同 dxvk) → 对应容器 C 盘 windows
+            //        （prefix/drive_c/windows）；
+            //      - wrapper(/opt/wrapper，WinNative/yuzu 同型 Turnip) →
+            //        rootfs/usr/lib/anwind-wrapper/<name>/ + 专属 Vulkan ICD
+            //        清单（WrapperDriverSupport.install，与 Mesa 共存可切）；
             //      - box64/box86(/opt/box) → 高级设置 Box 配置页手动应用
             //        （rootfs/usr/local/bin），不在此自动解压。
             //    旧版全部解到 rootfs/usr/local 是错的。解压失败不阻断启动。
@@ -584,7 +588,8 @@ object RootfsLauncher {
                             "Turnip" -> "tz"
                             "Zink" -> "zink"
                             "WineD3D" -> "vkord3d"
-                            else -> "dxvk1"      // DXVK 与 FEXCore 同目录
+                            "FEXCore" -> "fexcore"   // v3.3.10：独立目录（非 dxvk1）
+                            else -> "dxvk1"            // DXVK
                         }
                         val tar = GuanliSupport.scanOpt(dir).firstOrNull { it.display == slot }
                         if (tar == null) {
@@ -604,6 +609,23 @@ object RootfsLauncher {
                                     }
                                 }
                             }
+                        }
+                    }
+                }
+
+                // 0.5) v3.3.10（用户问题 4）：Wrapper 驱动（WinNative/yuzu 同型
+                //      预编译 Turnip，/opt/wrapper 槽位）安装 —— 解压到独立
+                //      目录 + 生成专属 Vulkan ICD 清单 + 依赖补全。环境变量
+                //      注入（VK_ICD_FILENAMES）在 applyGpuEnv 之后统一处理。
+                if (container.wrapper.isNotBlank() && container.wrapper != "off") {
+                    val tar = GuanliSupport.scanOpt("wrapper").firstOrNull { it.display == container.wrapper }
+                    if (tar == null) {
+                        sink.stamp("⚠ Wrapper 驱动槽位 /opt/wrapper/${container.wrapper} 未找到对应 tar 包（继续启动）")
+                    } else {
+                        runCatching {
+                            WrapperDriverSupport.install(tar.display, tar.path) { sink.stamp(it) }
+                        }.onFailure {
+                            sink.stamp("⚠ Wrapper 驱动安装异常：${it.message}（继续启动，Vulkan 走 Mesa）")
                         }
                     }
                 }
@@ -697,6 +719,22 @@ object RootfsLauncher {
 
             // 6) GPU / Box64 环境叠加
             WineEnvironment.applyGpuEnv(env, container)
+
+            // 6a) v3.3.10（用户问题 4）：Wrapper 驱动激活 → VK_ICD_FILENAMES
+            //     指向专属 ICD 清单（标准 Vulkan loader 只加载清单指向的
+            //     驱动；清除该变量即回退 rootfs 自带 Mesa Turnip —— 两种
+            //     驱动共存、随容器切换）。步骤 0.5 已解压安装，此处仅注入。
+            if (container.wrapper.isNotBlank() && container.wrapper != "off") {
+                val icd = WrapperDriverSupport.icdFor(container.wrapper)
+                if (icd != null) {
+                    env["VK_ICD_FILENAMES"] = icd.absolutePath
+                    sink.stamp("Wrapper 驱动激活：VK_ICD_FILENAMES → ${icd.absolutePath}")
+                    sink.stamp("（rootfs 自带 Mesa Turnip 本会话不加载；清除 Wrapper 槽位即切回 Mesa）")
+                } else {
+                    sink.stamp("⚠ Wrapper 驱动 ${container.wrapper} 的 ICD 清单未就位（安装失败或包内无 libvulkan*.so），Vulkan 回退 Mesa")
+                }
+            }
+
             if (resolved.backend == ContainerBackend.BOX64 ||
                 resolved.backend == ContainerBackend.FEXCORE
             ) {

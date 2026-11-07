@@ -35,6 +35,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -52,7 +54,6 @@ import com.anwind.util.L
 import com.anwind.util.L10n
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-
 /**
  * 开始菜单：Win11 真实风格
  *
@@ -424,7 +425,7 @@ private fun StartMenuTab(label: String, active: Boolean, theme: WinTheme, onClic
     }
 }
 
-/** 内置应用瓦片 */
+/** 内置应用瓦片（v3.3.10：支持长按拖拽到桌面 —— DesktopDragState 总线） */
 @Composable
 private fun BuiltInTile(
     app: com.anwind.core.window.AppDef,
@@ -432,9 +433,18 @@ private fun BuiltInTile(
     wm: WindowManager,
     onDismiss: () -> Unit
 ) {
+    val haptic = androidx.compose.ui.platform.LocalHapticFeedback.current
+    val appCtx = remember { com.anwind.AnWindApp.get() }
+    val pinnedRaw by appCtx.settingsStore.desktopPinnedApps.collectAsState(initial = null)
+    // v3.3.10：瓦片在 root 坐标系的位置（拖拽起点的坐标换算用；
+    // 长按后立即松手、无 move 事件时，落位坐标由此兑底而非 (0,0)）
+    var tileOrigin by remember {
+        mutableStateOf(androidx.compose.ui.geometry.Offset.Zero)
+    }
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         modifier = Modifier
+            .onGloballyPositioned { tileOrigin = it.boundsInRoot().topLeft }
             .clip(RoundedCornerShape(6.dp))
             .clickable {
                 // v3.2.23（用户问题 3）：最小化窗口优先恢复（不再叠开重复窗）
@@ -446,6 +456,32 @@ private fun BuiltInTile(
                     initialHeight = app.defaultHeight.value.toInt()
                 )
                 onDismiss()
+            }
+            // v3.3.10（用户问题 2）：长按 400ms 后可拖拽出菜单 —— 拖出即
+            // 关闭开始菜单，影子跟手，桌面任意位置松手即固定到桌面。
+            // 用 AfterLongPress 与 LazyVerticalGrid 的滚动手势隔离
+            // （直接拖会与滚动冲突，长按后进入拖拽不会误触滚动）。
+            // 手势分工：瓦片只【发起】拖拽（begin + 关菜单）；菜单关闭后
+            // 本组件随组合销毁、手势协程即被取消 —— 后续跟手与松手落位
+            // 由 DesktopEnvironment 的全屏观察层接管（DesktopDragState
+            // 总线 + root 坐标），此处不做 onDrag 跟踪（局部坐标无意义）。
+            .pointerInput(app.id) {
+                androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress(
+                    onDragStart = {
+                        haptic.performHapticFeedback(
+                            androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress
+                        )
+                        // root 坐标 = 瓦片局部 + 瓦片在 root 的偏移
+                        DesktopDragState.begin(
+                            app,
+                            it.x + tileOrigin.x, it.y + tileOrigin.y
+                        )
+                        onDismiss()   // 拖出即关菜单（Windows 11 同款交互）
+                    },
+                    onDrag = { },
+                    onDragEnd = { },
+                    onDragCancel = { }
+                )
             }
             .padding(vertical = 8.dp, horizontal = 4.dp)
     ) {
@@ -467,6 +503,16 @@ private fun BuiltInTile(
             overflow = TextOverflow.Ellipsis,
             textAlign = TextAlign.Center
         )
+        // v3.3.10：已在桌面的应用加下划点标记（拖入桌面的反向提示）
+        if (DesktopPins.isPinned(pinnedRaw, app.id)) {
+            Box(
+                modifier = Modifier
+                    .padding(top = 2.dp)
+                    .size(4.dp)
+                    .clip(RoundedCornerShape(50))
+                    .background(theme.accentColor)
+            )
+        }
     }
 }
 

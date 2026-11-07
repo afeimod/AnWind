@@ -23,6 +23,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.PointerType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
@@ -34,6 +35,7 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.anwind.AnWindApp
+import kotlin.math.roundToInt
 import com.anwind.core.input.MouseController
 import com.anwind.core.input.MouseCursorOverlay
 import com.anwind.core.input.TrackpadGate
@@ -487,6 +489,71 @@ fun DesktopEnvironment(
 
         // ===== 8. 虚拟鼠标指针层（v2.13：Windows 风格指针 + 点击涟漪，最顶层） =====
         MouseCursorOverlay()
+
+        // ===== 8.7 开始菜单拖入桌面的拖拽层（v3.3.10，用户问题 2） =====
+        // 瓦片长按拖出 → 菜单关闭（瓦片手势协程随组件销毁而取消）→
+        // 本层全屏接管：跟踪手指位置（纯观察不消费事件）+ 渲染跟手影子
+        // + 松手触发 DesktopDragState.end() → DesktopIconGrid 的落位回调
+        // （固定集合 + Free 位置）。拖到任务栏区域（底部 12%）不算落位，
+        // 静默取消（同 Windows 语义：拖到任务栏 = 不固定）。
+        if (DesktopDragState.dragging != null) {
+            // 观察层：跟手 + 松手判定（不消费事件，不阻挡底层）
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .pointerInput(Unit) {
+                        awaitPointerEventScope {
+                            while (DesktopDragState.dragging != null) {
+                                val event = awaitPointerEvent()
+                                val pressed = event.changes.lastOrNull { it.pressed }
+                                val change = pressed ?: event.changes.lastOrNull()
+                                if (change != null) {
+                                    DesktopDragState.update(change.position.x, change.position.y)
+                                }
+                                if (event.changes.none { it.pressed }) {
+                                    // 手指抬起：底部 12% 为任务栏区 → 取消；
+                                    // 其余区域 → 落位（end 内部调 onDrop）
+                                    val h = size.height.toFloat()
+                                    if (DesktopDragState.y > h * 0.88f) {
+                                        DesktopDragState.cancel()
+                                    } else {
+                                        DesktopDragState.end()
+                                    }
+                                    break
+                                }
+                            }
+                        }
+                    }
+            )
+            // 影子层：应用图标 + 名称，半透明放大跟手（渲染在最上层）
+            DesktopDragState.dragging?.let { dragging ->
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = Modifier
+                        .offset {
+                            IntOffset(
+                                (DesktopDragState.x - 32.dp.toPx()).roundToInt(),
+                                (DesktopDragState.y - 40.dp.toPx()).roundToInt()
+                            )
+                        }
+                        .graphicsLayer {
+                            alpha = 0.85f
+                            scaleX = 1.15f
+                            scaleY = 1.15f
+                        }
+                ) {
+                    IconPainter(dragging.iconAsset, size = 56.dp)
+                    Text(
+                        text = dragging.displayName,
+                        color = Color.White,
+                        fontSize = 12.sp,
+                        fontWeight = androidx.compose.ui.text.font.FontWeight.Medium,
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                        modifier = Modifier.width(72.dp)
+                    )
+                }
+            }
+        }
 
         // ===== 8.5 自由窗口决策弹窗（v2.23.2） =====
         // 自由窗口（freeform）不可用时，从桌面/开始菜单启动手机应用不再

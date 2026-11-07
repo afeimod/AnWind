@@ -1,5 +1,51 @@
 # AnWind Bionic 修复包 v2（2026-09-19）
 
+> **v3.3.10（2026-11-07，App v2.38.33 / versionCode 96）**：FEXCore 独立目录 + 桌面图标精简/菜单拖拽 + box64 按版本跳过补丁 + wine mf 补丁分档 + Wrapper 驱动（WinNative/yuzu 同型 Turnip）。
+>
+> ## ① 【用户问题 1】"fexcore 同目录理解错了，是 opt/fexcore，逻辑和 dxvk 一样"
+>
+> **修正**：v3.3.9 曾把 FEXCore 的 tar 槽位放在 `/opt/dxvk1`（与 DXVK 同目录）。v3.3.10 起独立为 **`/opt/fexcore`**，管理逻辑与 DXVK 完全一致：扫描 `/opt/fexcore/*.tar.gz` → 运行时解压到对应容器 C 盘 `windows`（prefix/drive_c/windows，装 FEX 仿真器 PE DLL：libarm64ecfex.dll / libwow64fex.dll 升级版）。改动点：`RootfsLauncher` 启动链步骤 0 的槽位目录、`ContainerScreens` 图形驱动页扫描目录、`ContainerModels` 注释。
+>
+> ## ② 【用户问题 2】"桌面上的图标太多了，保留六件，其余收进左下角菜单；支持菜单图标自定义拖动到桌面"
+>
+> **桌面精简**：只保留 **此电脑 / 浏览器 / 终端 / X11 桌面 / 云音乐 / Wine 容器** 六件（`file_explorer/browser/terminal/x11/music/wine-containers`），其余九个内置应用（图片查看器/计算器/QQ游戏/时钟/媒体播放器/扫雷/记事本/设置/任务管理器）`pinnedToDesktop=false` —— 全部仍在左下角开始菜单（开始菜单本来就列全部应用）。
+>
+> **菜单拖拽到桌面**（Windows 11 同款交互）：
+> - **开始菜单瓦片长按 ~400ms 即可拖出** → 菜单自动关闭 → 半透明放大影子跟手 → 桌面任意位置松手即固定（拖到任务栏区域 = 取消）；
+> - 落位即所见：图标出现在松手位置（像素级 Free 位置持久化，与桌面图标 v5 自由摆放同一套坐标）；
+> - 固定集合持久化（`SettingsStore.desktopPinnedApps`），**桌面图标右键新增"从桌面移除"**（应用回到仅菜单可见，随时拖回）、**桌面右键新增"恢复默认图标"**（一键回六件套）；
+> - 实现链：`DesktopPins`（固定集合管理）+ `DesktopDragState`（跨组件拖拽总线：菜单瓦片发起 → DesktopEnvironment 全屏观察层接管跟踪 → DesktopIconGrid 落位回调）—— 菜单关闭会销毁瓦片手势协程，跟踪与松手判定由常驻的环境层完成，长按后立即松手也有正确落点（瓦片 root 坐标兜底）。
+>
+> ## ③ 【用户问题 3】"修复 box64 构建；0.4.4 以前的 box64 不能接受一些补丁，在选择时跳过；wine 构建添加 9.2 及 9.2-10.0 的 mf 补丁"
+>
+> **box64 构建修复**（用户上传的 build-box64-aarch64.log：`0001-anwind-android-shmem-native.patch` 在 `src/elfs/elfparser.c` Hunk #1 失败 → 整个 CI 阵亡）：
+> - **构建框架**（`build-rootfs-arch.sh` `apply_patches`）新增项目级标志 `patchOptional=1`：补丁 dry-run 失败时**警告跳过**而非 exit 1，并记录 `patchesApplied` / `patchesSkipped`；
+> - **box64 配方**：`revision` 版本解析 —— **< v0.4.4 直接 `doNotApplyPatch=1`（0.4.4 以前的版本不接受 0001 补丁，按选择跳过）**；≥ v0.4.4 正常应用 + `patchOptional=1` 兜底（master/未来版本 hunk 漂移时跳过而非阵亡）。沙箱已验证版本判断：v0.4.3/v0.3.9/v0.4.2 → 跳过；v0.4.4/v0.4.5/v0.5.0/master → 正常+兜底；
+> - **install() 冒烟断言条件化**：shm 四符号/.dynsym 导出/编译单元三项断言仅在补丁实际在链时执行（源码树 `ANW_EXPORT` 特征判定，兼容源码复用分支），补丁跳过时打大字警告说明后果（shm 断链 + Android RELR 静默跳过的 wineboot SIGSEGV 风险面）；DYNAREC/NOLOADADDR 断言照常保护；
+> - **CI 冒烟**（build-box64-bionic.yml）：补丁 dry-run 失败 → `::warning::` + 冒烟树跳过补丁继续构建，静态 shm 冒烟与 ANDROID RELR 冒烟（均依赖补丁）随之跳过，版本/动态实跑冒烟照常。
+>
+> **wine mf 补丁**（参考用户 wine-wow64-no.yml，两配方 wine + hangover-wine 同步）：
+> - **< 9.10（9.2 等）**→ `fix_wine9.2_mfplat.sh` AVI 档（`CLSID_AVIByteStreamHandler`，afeimod/linbox 原脚本原行为）；
+> - **≥ 9.10（9.10~10.0 及以上）**→ MPEG4 档（`CLSID_MPEG4ByteStreamHandlerPlugin`，wine_do_not_create_dxgi_manager2.patch 的等价实现）；
+> - 两档共通：`resolver_create_gstreamer_handler` → `resolver_create_default_handler`（bytestream handler 回退内置，GStreamer handler 在 Android/bionic 上常缺）+ **`MFCreateDXGIDeviceManager` 开头注入 `WINE_DO_NOT_CREATE_DXGI_DEVICE_MANAGER` 环境变量检查**（设非空 → E_NOTIMPL stub out —— mfplat 强建 DX manager 崩溃的标准规避）+ 补 `wine/mfinternal.h` 头；
+> - 载体为**内容锚点脚本**（sed+python 按函数名/CLSID 名匹配，无行号依赖）：上游 patch 的 hunk 行号随版本漂移必失败，脚本对 9.x/10.x/11.x 任何树通吃且幂等（沙箱已实测 AVI/MPEG4 双档 + 幂等重跑）；`revision` 剥前缀解析（hangover-11.16 / official-9.2 / proton-10.0 / custom-10.18 / 裸 9.2 全验证）；
+> - **生效硬校验**：`main.c` 无 `WINE_DO_NOT_CREATE_DXGI_DEVICE_MANAGER` → `::error::` 构建失败（防脚本静默落空）。
+>
+> ## ④ 【用户问题 4】"参考 WinNative 让 bionic 支持 wrapper 及 yuzu 同型驱动代替 Mesa（两种都要），补全依赖，加入容器管理图形驱动界面"
+>
+> **Wrapper 驱动槽位**（`/opt/wrapper`，WinNative DriverPackages 同款 ICD 机制）：
+> - **放包**：把 yuzu 社区 / WinNative 的预编译 Turnip 驱动 tar（含 `libvulkan_*.so`；WinNative 布局的 meta.json、单顶层目录壳、自带 ICD json 均自动兼容）放进 `rootfs/opt/wrapper/`；
+> - **安装**（启动链步骤 0.5 / CLI `apply_wrapper_driver`）：解压归一化到 **rootfs 独立目录 `usr/lib/anwind-wrapper/<名>/`**（不落 usr/lib —— 不覆盖 Mesa 的 libvulkan_freedreno.so，**两种驱动共存**）+ 自动生成专属 Vulkan ICD 清单 `usr/share/vulkan/icd.d/anwind-wrapper-<名>.json`（library_path 绝对指向驱动 .so）+ **依赖补全**（目录缺 `libc++_shared.so` 时从 rootfs/usr/lib 复制 —— NDK bionic 驱动普遍 DT_NEEDED 它；libc/libm/libdl/liblog/libandroid/libz 系统库免处理）；
+> - **切换**：启动环境注入 `VK_ICD_FILENAMES=<ICD 清单>` —— 标准 Vulkan loader 只加载清单指向的驱动；**清除 Wrapper 槽位 = 回 rootfs 自带 Mesa Turnip**（loader 默认扫 icd.d 的 freedreno 清单）。配 Zink（GALLIUM_DRIVER=zink）用效果更佳（GL on Vulkan 吃同一个驱动）；
+> - **UI**：容器编辑 → 图形驱动选项卡新增 **"Wrapper 驱动 (yuzu/WinNative 型 Turnip)"** 下拉（与 Turnip/Zink/DXVK/WineD3D/FEXCore 并列）；更多设置·环境变量页开放 `VK_ICD_FILENAMES` / `VK_DRIVER_FILES` 键（高级用户可手动覆盖）；
+> - **双端**：App 启动链（`WrapperDriverSupport` 新模块）与 rootfs 终端 `anwind-wine` CLI（`apply_wrapper_driver`，ICD 未就位时自动从 /opt/wrapper 安装）都支持；会话日志全程可见（安装落点/ICD 路径/激活状态/失败回退提示）。
+>
+> ---
+
+> **v3.3.9（2026-11-06）**：驱动解压落点/启动选项/分辨率虚拟桌面三组问题（详见 git log）。
+>
+> ---
+
 > **v3.3.7（2026-11-06，App v2.38.32 / versionCode 95）**：高级设置页结构修复（对齐 wineguanli.py）+ arm64ec 双根因修复（locale 补丁缺失 / wine-9.x noexec 补丁形态缺失）+ 补丁生效可检测（WinePatchDetector + CI 硬校验）。
 >
 > ## ① 【用户问题 1】“容器管理里的高级设置只有个生效容器，还占用特别大，缺失 wineguanli.py 里的所有高级设置内容”

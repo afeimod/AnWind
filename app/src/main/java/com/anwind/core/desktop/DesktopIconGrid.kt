@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -91,7 +92,13 @@ fun DesktopIconGrid(
 ) {
     val app = AnWindApp.get()
     val shortcuts by app.database.shortcutDao().observeAll().collectAsState(initial = emptyList())
-    val builtinApps = remember { AppRegistry.desktopApps() }
+    // v3.3.10（用户问题 2）：桌面固定应用集合（默认 6 件套；从开始菜单
+    // 拖入追加、右键移除），取代静态的 AppRegistry.desktopApps()
+    val pinnedAppsRaw by app.settingsStore.desktopPinnedApps.collectAsState(initial = null)
+    val builtinApps = remember(pinnedAppsRaw) {
+        val pinned = DesktopPins.parse(pinnedAppsRaw)
+        pinned.mapNotNull { id -> AppRegistry.get(id) }
+    }
     val iconSize by app.settingsStore.iconSize.collectAsState(initial = 48f)
     // v2.14：自定义图标顺序（未拖动过的图标自动布局时沿用）
     val iconOrder by app.settingsStore.desktopIconOrder.collectAsState(initial = "")
@@ -332,6 +339,30 @@ fun DesktopIconGrid(
             // 即时生效（不等 DataStore 回流）+ 持久化
             livePositions[item.id] = free
             persistPositions(positions + (item.id to free))
+        }
+
+        // ---- v3.3.10（用户问题 2）：开始菜单拖入落位（DesktopDragState 总线） ----
+        // 菜单瓦片长按拖出 → 影子跟手（DesktopEnvironment 顶层）→ 桌面松手：
+        // 此处把应用加入固定集合（DesktopPins.pin 持久化），并把松手坐标
+        // （root 坐标 ≈ 全屏网格坐标）固化为 Free 位置 —— 影子中心换算
+        // 到图标左上角（半单元格偏移），界面内钳制。首个 collectAsState
+        // 回流前用 live 层即时占位，图标即刻出现在松手处不闪跳。
+        DesktopDragState.onDrop = { appId, dropX, dropY ->
+            val itemId = "app_$appId"
+            val nx = (dropX - cellWpx / 2f)
+                .coerceIn(0f, (gridWpx - cellWpx).coerceAtLeast(0f))
+                .roundToInt()
+            val ny = (dropY - cellHpx / 2f)
+                .coerceIn(0f, (gridHpx - cellHpx).coerceAtLeast(0f))
+                .roundToInt()
+            val free = IconPos.Free(nx, ny)
+            livePositions[itemId] = free
+            persistPositions(positions + (itemId to free))
+            DesktopPins.pin(appId, scope)
+        }
+        // 网格离开组合时注销总线回调（防泄漏/跨会话残留）
+        DisposableEffect(Unit) {
+            onDispose { DesktopDragState.onDrop = null }
         }
 
         sortedItems.forEach { item ->

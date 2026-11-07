@@ -64,7 +64,7 @@ val SettingsApp = AppDef(
     defaultWidth = 880.dp,
     defaultHeight = 600.dp,
     pinnedToTaskbar = true,
-    pinnedToDesktop = true
+    pinnedToDesktop = false    // v3.3.10：桌面图标精简（保留在开始菜单）
 ) { scope ->
     SettingsContent(scope)
 }

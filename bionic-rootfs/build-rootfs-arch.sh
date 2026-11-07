@@ -646,7 +646,16 @@ prepare_src() {
 }
 
 # @patch
-
+#
+# 项目级可选标志（在项目 build.sh 顶层定义，apply_patches 读取）：
+#   patchOptional=1   补丁 dry-run 失败时【警告跳过】而非中止构建。
+#                     供"补丁有版本基线、按选定 revision 条件生效"的项目
+#                     使用（如 box64 0001 补丁基线 v0.4.4：选 <0.4.4 的旧版
+#                     或 master 漂移时跳过补丁继续构建，不让 CI 直接阵亡）。
+#                     跳过记录在全局变量 patchesSkipped（项目 install() 可
+#                     据此条件化与补丁强相关的冒烟断言）。
+#   patchesApplied    全局变量：本次实际应用成功的补丁文件名列表
+#   patchesSkipped    全局变量：patchOptional 生效后被跳过的补丁文件名列表
 apply_patches() {
   local _patchFiles
   local _patch
@@ -674,6 +683,10 @@ apply_patches() {
   fi
   cd "$_srcDir"
 
+  # v3.3.10：补丁应用/跳过状态记录（项目 install() 条件化冒烟用）
+  patchesApplied="${patchesApplied:-}"
+  patchesSkipped="${patchesSkipped:-}"
+
   local _patch _expanded
   for _patch in "${_patchFiles[@]}"; do
     if ! _expanded="$(expand_patch_placeholders < "$_patch")"; then
@@ -683,6 +696,13 @@ apply_patches() {
       info "测试通过=> $_patch"
       info "应用补丁=> $_patch"
       printf '%s\n' "$_expanded" | patch --no-backup-if-mismatch -N -p1 || { err "补丁应用失败=> $_patch" && exit 1; }
+      patchesApplied+=" $(basename "${_patch}")"
+    elif [[ "${patchOptional:-0}" == "1" ]]; then
+      # v3.3.10（box64 构建修复）：补丁基线与选定 revision 不匹配时跳过
+      # 而非中止 —— 旧版本（<基线）选型 / master 漂移均不再让构建阵亡
+      warn "补丁不适用于当前源码（dry-run 失败，patchOptional=1），跳过=> $_patch"
+      warn "  （该补丁有版本基线；选旧版/漂移版本时按选择跳过，相关特性随之缺失）"
+      patchesSkipped+=" $(basename "${_patch}")"
     else
       err "补丁应用失败=> $_patch" && exit 1
     fi

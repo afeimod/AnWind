@@ -27,7 +27,7 @@ val SysInfoApp = AppDef(
     launchMode = LaunchMode.FLOATING,
     defaultWidth = 480.dp,
     defaultHeight = 560.dp,
-    pinnedToDesktop = true
+    pinnedToDesktop = false    // v3.3.10：桌面图标精简（保留在开始菜单）
 ) { scope ->
     SysInfoContent(scope)
 }

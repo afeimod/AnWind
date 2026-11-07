@@ -299,6 +299,54 @@ pre_setup() {
     echo "    构建继续；若运行期异常请检查源码树内 *.rej 文件"
   fi
 
+  # v3.3.10（用户问题 3，参考用户 wine-wow64-no.yml）：mfplat 的 mf 补丁
+  # —— MFCreateDXGIDeviceManager 环境变量 stub（WINE_DO_NOT_CREATE_DXGI_
+  # DEVICE_MANAGER=1 → E_NOTIMPL，上游游戏/播放器 mfplat 强建 DX manager
+  # 崩溃的标准规避）+ bytestream handler 回退（GStreamer handler 在
+  # Android/bionic 上常缺）。按版本分档（用户 yml 同款语义）：
+  #   >= 9.10（含 10.x/11.x）→ fix_wine9.2_mfplat.sh MPEG4 档
+  #                             （CLSID_MPEG4ByteStreamHandlerPlugin，
+  #                              wine_do_not_create_dxgi_manager2.patch
+  #                              的等价内容锚点实现）；
+  #   <  9.10（9.2 等）      → fix_wine9.2_mfplat.sh AVI 档
+  #                             （CLSID_AVIByteStreamHandler，
+  #                              afeimod/linbox 原脚本原行为）。
+  # 载体统一为内容锚点脚本（sed+python，无行号依赖）：上游 patch 的
+  # 行号/hunk 形态随版本漂移，脚本按函数名/CLSID 名匹配，任何
+  # 9.x/10.x/11.x 树通吃且幂等。
+  # 生效硬校验（与 noexec/locale 同款哲学）：env 检查串必须出现在
+  # mfplat/main.c，缺失即失败（防脚本静默落空）。
+  if [[ -f dlls/mfplat/main.c ]]; then
+    _mf_ver="$(echo "${revision}" | sed -n 's/^[a-zA-Z_-]*\([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p')"
+    _mf_major="${_mf_ver%%.*}"
+    _mf_minor="${_mf_ver#*.}"
+    _mf_ge910=0
+    if [[ -n "${_mf_ver}" ]]; then
+      if (( ${_mf_major:-0} > 9 )) || (( ${_mf_major:-0} == 9 && ${_mf_minor:-0} >= 10 )); then
+        _mf_ge910=1
+      fi
+    fi
+    if (( _mf_ge910 == 1 )); then
+      echo "mf 补丁档位: revision=${revision} >= 9.10 → MPEG4（wine_do_not_create_dxgi_manager2 等价实现）"
+      bash "${wsDir}/projects/${pjName}/fix_wine9.2_mfplat.sh" MPEG4 \
+        || { echo "::error::mfplat 修复脚本执行失败"; return 1; }
+    else
+      echo "mf 补丁档位: revision=${revision} < 9.10 → AVI（fix_wine9.2_mfplat 原行为）"
+      bash "${wsDir}/projects/${pjName}/fix_wine9.2_mfplat.sh" AVI \
+        || { echo "::error::mfplat 修复脚本执行失败"; return 1; }
+    fi
+    # 【硬校验】env stub 必须在链
+    if ! grep -q 'WINE_DO_NOT_CREATE_DXGI_DEVICE_MANAGER' dlls/mfplat/main.c 2>/dev/null; then
+      echo "::error::mfplat 补丁未生效（main.c 无 WINE_DO_NOT_CREATE_DXGI_DEVICE_MANAGER 检查）！"
+      echo "   mfplat 强建 DX manager 的崩溃路径将无法规避（WINE_DO_NOT_CREATE_DXGI_DEVICE_MANAGER=1 失效）"
+      echo "   请核查 projects/hangover-wine/fix_wine9.2_mfplat.sh 的锚点（MFCreateDXGIDeviceManager 签名漂移？）"
+      return 1
+    fi
+    echo "mfplat 补丁已生效（WINE_DO_NOT_CREATE_DXGI_DEVICE_MANAGER=1 可 stub DX manager；bytestream handler 已回退内置）"
+  else
+    echo "ℹ️ 源码树无 dlls/mfplat/main.c，跳过 mf 补丁"
+  fi
+
   # v3.3.7：noexec 回退补丁生效【硬校验】。0014/0014b/0014c 三份按树
   # 形态互斥命中（9.x/10.x/11.x 的 map_file_into_view 结构各不相同，
   # 不匹配的 hunk 干净失败），此处校验最终源码必须带 "AnWind-noexec-

@@ -85,7 +85,7 @@ CONF_GLOBAL="$RFS_USR/etc/anwind/container.conf"
 X11_SOCK_DIR="$APP_PREFIX/tmp/.X11-unix"
 LOG_DIR="$CONT_ROOT/logs"
 
-version() { echo "anwind-wine 2.14.0 (v2.3 基线 + /opt 生态（槽位候选探测/全程大声日志/wine_path.conf 剔除）+ 前缀引导)"; }
+version() { echo "anwind-wine 2.15.0 (v2.14 + Wrapper 驱动 /opt/wrapper 槽位：ICD 清单 + VK_ICD_FILENAMES 切换，与 Mesa 共存)"; }
 
 # ---------- 纯日志（v2.12 唯一新增的执行代码） ----------
 # 仅当 App 会话传入 ANWIND_SESSION_LOG（可写文件路径）时生效；终端直跑
@@ -723,6 +723,76 @@ apply_gpu_env() {
     esac
 }
 
+# ---------- Wrapper 驱动（v3.3.10，WinNative/yuzu 同型 Turnip） ----------
+# 容器 conf 的 wrapper 键（App 图形驱动页 /opt/wrapper 槽位同款）：
+#   wrapper=<tar 显示名> → ICD 清单已就位（App 启动链或上次运行安装）→
+#   export VK_ICD_FILENAMES 切换 Vulkan 驱动；未就位 → 从
+#   /opt/wrapper/<名>.tar.{gz,xz,bz2} 安装（解压归一化到
+#   rootfs usr/lib/anwind-wrapper/<名>/ + 生成 ICD 清单 + libc++_shared
+#   依赖补全），失败告警回退 Mesa。off/空 → 不设（loader 默认扫
+#   share/vulkan/icd.d 的 Mesa freedreno 清单）。
+apply_wrapper_driver() {
+    local _slot _dir _icd _tar
+    _slot="$(conf_read "$CONT_CONF" wrapper "")"
+    [ -n "$_slot" ] && [ "$_slot" != "off" ] && [ "$_slot" != "auto" ] || return 0
+
+    _dir="$(printf '%s' "$_slot" | tr -c 'A-Za-z0-9._+-' '-')"
+    _icd="$RFS_USR/share/vulkan/icd.d/anwind-wrapper-$_dir.json"
+
+    if [ ! -f "$_icd" ] || ! grep -q '"library_path"' "$_icd" 2>/dev/null; then
+        _tar=""
+        for _ext in tar.gz tar.xz tar.bz2; do
+            [ -f "$RFS_ROOT/opt/wrapper/$_slot.$_ext" ] && _tar="$RFS_ROOT/opt/wrapper/$_slot.$_ext" && break
+        done
+        if [ -n "$_tar" ]; then
+            local _stage="$RFS_USR/tmp/anwind-wrapper-$$_dir"
+            rm -rf "$_stage" && mkdir -p "$_stage"
+            if "$RFS_USR/bin/tar" -xf "$_tar" -C "$_stage" --overwrite 2>/dev/null \
+               || tar -xf "$_tar" -C "$_stage" --overwrite 2>/dev/null; then
+                local _srcroot="$_stage"
+                local _dirs
+                _dirs="$(find "$_stage" -mindepth 1 -maxdepth 1 -type d ! -name '.*' | wc -l)"
+                if [ "$_dirs" = "1" ] && [ -z "$(find "$_stage" -mindepth 1 -maxdepth 1 -type f ! -name '.*' -print -quit)" ]; then
+                    _srcroot="$(find "$_stage" -mindepth 1 -maxdepth 1 -type d ! -name '.*' | head -n 1)"
+                fi
+                local _so
+                _so="$(find "$_srcroot" -maxdepth 1 -name 'libvulkan*.so' -type f | head -n 1)"
+                if [ -n "$_so" ]; then
+                    local _dest="$RFS_USR/lib/anwind-wrapper/$_dir"
+                    rm -rf "$_dest" && mkdir -p "$_dest"
+                    find "$_srcroot" -maxdepth 1 -name '*.so' -type f -exec cp -p {} "$_dest/" \;
+                    [ -f "$_srcroot/meta.json" ] && cp -p "$_srcroot/meta.json" "$_dest/" 2>/dev/null
+                    # 依赖补全：libc++_shared.so（NDK bionic 驱动普遍 DT_NEEDED）
+                    if [ ! -f "$_dest/libc++_shared.so" ] && [ -f "$RFS_USR/lib/libc++_shared.so" ]; then
+                        cp -p "$RFS_USR/lib/libc++_shared.so" "$_dest/"
+                    fi
+                    mkdir -p "$RFS_USR/share/vulkan/icd.d"
+                    cat > "$_icd" <<ICDEOF
+{
+    "file_format_version": "1.0.0",
+    "ICD": {
+        "api_version": "1.4.0",
+        "library_path": "$_dest/$(basename "$_so")"
+    }
+}
+ICDEOF
+                    info "Wrapper 驱动 $_slot 已安装 → $_dest（ICD: $_icd）"
+                else
+                    info "警告: Wrapper 驱动 $_slot 包内未找到 libvulkan*.so（跳过，Vulkan 走 Mesa）"
+                fi
+            fi
+            rm -rf "$_stage"
+        else
+            info "警告: /opt/wrapper/$_slot.tar.{gz,xz,bz2} 未找到（Vulkan 走 Mesa）"
+        fi
+    fi
+
+    if [ -f "$_icd" ]; then
+        export VK_ICD_FILENAMES="$_icd"
+        info "Wrapper 驱动激活: VK_ICD_FILENAMES=$_icd（Mesa Turnip 本会话不加载）"
+    fi
+}
+
 # ---------- 用户附加环境 + DLL 覆盖 ----------
 apply_extra_env() {
     local _extra
@@ -1182,6 +1252,7 @@ isolate_env
 apply_display_mode
 audio_setup
 apply_gpu_env
+apply_wrapper_driver
 apply_android_safe_env
 apply_opt_conf_env
 apply_extra_env

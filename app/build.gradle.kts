@@ -296,8 +296,25 @@ android {
         // ⑤两个 build.sh（wine + hangover-wine）补丁生效硬校验：virtual.c
         //   无 noexec 标记 / env.c 无 locale 标记 → ::error:: 直接构建失
         //   败 —— CI 不再可能产出缺补丁的裸奔 wine 包。
-        versionCode = 95
-        versionName = "2.38.32"
+        versionCode = 96
+        versionName = "2.38.33"
+        // v3.3.10（源码包 v3.3.10）：fexcore 独立目录 + 桌面图标精简/拖拽
+        //   + box64 按版本跳过补丁 + wine mf 补丁分档 + Wrapper 驱动
+        //   （WinNative/yuzu 同型 Turnip）——详见 README-FIX.md：
+        //   ①FEXCore 槽位目录 /opt/dxvk1 → /opt/fexcore（逻辑同 DXVK，
+        //     解压到容器 C 盘 windows）；②桌面仅保留此电脑/浏览器/终端/
+        //     X11/云音乐/Wine容器六件，其余收进开始菜单，菜单瓦片长按
+        //     可拖拽到桌面（DesktopPins + DesktopDragState 总线）；
+        //   ③box64 构建：revision < v0.4.4 直接跳过补丁（doNotApplyPatch），
+        //     其它 ref 漂移时 patchOptional 警告跳过而非 CI 阵亡（用户
+        //     上传的 aarch64 日志中 elfparser.c hunk 失败根因）；
+        //   ④wine/hangover-wine 两配方 mf 补丁分档（>=9.10 →
+        //     CLSID_MPEG4ByteStreamHandlerPlugin，<9.10 → CLSID_AVI-...
+        //     +WINE_DO_NOT_CREATE_DXGI_DEVICE_MANAGER stub，用户
+        //     wine-wow64-no.yml 同款语义）；⑤Wrapper 驱动槽位 /opt/wrapper
+        //     （yuzu/WinNative 预编译 Turnip：独立目录 + Vulkan ICD 清单
+        //     + VK_ICD_FILENAMES 切换，与 Mesa 共存可切，libc++_shared
+        //     依赖补全，App + anwind-wine CLI 双端）。
         // v3.3.3（源码包 v3.3.3）：media 根治（noexec 导入空间误判修复）
         // + /opt conf 双向 + UI 紧凑化 —— ①stageNoexecExeIfNeeded 空间预检
         // 改查必然存在的 rootfs 根（旧版查尚不存在的 stageDir，usableSpace

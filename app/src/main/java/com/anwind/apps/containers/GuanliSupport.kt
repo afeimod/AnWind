@@ -128,7 +128,10 @@ object GuanliSupport {
      */
     val ENV_TAB_KEYS: List<String> = listOf(
         "MESA_GL_VERSION_OVERRIDE", "MESA_GLSL_VERSION_OVERRIDE", "VKD3D_FEATURE_LEVEL",
-        "MESA_EXTENSION_OVERRIDE", "MANGOHUD", "MANGOHUD_CONFIG", "DXVK_HUD", "TU_DEBUG"
+        "MESA_EXTENSION_OVERRIDE", "MANGOHUD", "MANGOHUD_CONFIG", "DXVK_HUD", "TU_DEBUG",
+        // v3.3.10：Wrapper 驱动切换键（VK_ICD_FILENAMES；VK_DRIVER_FILES 是
+        // 新 loader 的别名，一并开放给高级用户）
+        "VK_ICD_FILENAMES", "VK_DRIVER_FILES"
     )
 
     /** 旧版误写的 MESA 键名（保存时清理，防止残留覆盖）。 */

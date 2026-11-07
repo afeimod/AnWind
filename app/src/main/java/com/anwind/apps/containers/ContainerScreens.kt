@@ -1345,14 +1345,19 @@ private fun GraphicsDriverTab(
     var dxvkTars by remember { mutableStateOf<List<GuanliSupport.OptTar>>(emptyList()) }
     var wined3dTars by remember { mutableStateOf<List<GuanliSupport.OptTar>>(emptyList()) }
     var fexcoreTars by remember { mutableStateOf<List<GuanliSupport.OptTar>>(emptyList()) }
+    var wrapperTars by remember { mutableStateOf<List<GuanliSupport.OptTar>>(emptyList()) }
     LaunchedEffect(Unit) {
         withContext(Dispatchers.IO) {
             tzTars = GuanliSupport.scanOpt("tz")
             zinkTars = GuanliSupport.scanOpt("zink")
             dxvkTars = GuanliSupport.scanOpt("dxvk1")
             wined3dTars = GuanliSupport.scanOpt("vkord3d")
-            // v3.3.9（用户问题 1）：FEXCore 与 DXVK 同目录（/opt/dxvk1）
-            fexcoreTars = GuanliSupport.scanOpt("dxvk1")
+            // v3.3.10（用户问题 1）：FEXCore 独立目录 /opt/fexcore（逻辑同
+            // DXVK，解压到容器 C 盘 windows）
+            fexcoreTars = GuanliSupport.scanOpt("fexcore")
+            // v3.3.10（用户问题 4）：Wrapper 驱动（WinNative/yuzu 同型
+            // 预编译 Turnip，/opt/wrapper）
+            wrapperTars = GuanliSupport.scanOpt("wrapper")
         }
     }
 
@@ -1397,8 +1402,17 @@ private fun GraphicsDriverTab(
             onSelect = { onChange(edit.copy(wined3d = it)) }
         )
     }
-    // v3.3.9（用户问题 1）：FEXCore 选项框 —— /opt/dxvk1 同目录，逻辑同
-    // DXVK/WineD3D，解压到对应容器 C 盘 windows
+    // v3.3.10（用户问题 4）：Wrapper 驱动（WinNative/yuzu 同型预编译
+    // Turnip）槽位 —— 与 rootfs 自带 Mesa Turnip 共存可切
+    GGroup("Wrapper 驱动 (yuzu/WinNative 型 Turnip)") {
+        DriverCombo(
+            tars = wrapperTars, value = edit.wrapper,
+            dirNote = "把预编译 Turnip 驱动 tar（含 libvulkan_*.so，yuzu 社区/WinNative wrapper 包）放进 rootfs/opt/wrapper 后重进本页即可选择",
+            onSelect = { onChange(edit.copy(wrapper = it)) }
+        )
+    }
+    // v3.3.10（用户问题 1）：FEXCore 选项框 —— /opt/fexcore 独立目录，
+    // 逻辑同 DXVK/WineD3D，解压到对应容器 C 盘 windows
     GGroup("FEXCore") {
         DriverCombo(
             tars = fexcoreTars, value = edit.fexcore,
@@ -1407,9 +1421,11 @@ private fun GraphicsDriverTab(
         )
     }
     GNote(
-        "wineguanli.py 图形驱动页同款：Turnip(/opt/tz)、Zink(/opt/zink)、DXVK(/opt/dxvk1)、" +
-            "WineD3D(/opt/vkord3d)、FEXCore(/opt/dxvk1 同目录)。运行容器时选中的包由启动链步骤 0 自动解压：" +
-            "Turnip/Zink → rootfs/usr/lib（path.conf 驱动位置）；DXVK/WineD3D/FEXCore → 对应容器 C 盘 windows（v3.3.9）"
+        "图形驱动槽位：Turnip(/opt/tz)、Zink(/opt/zink)、DXVK(/opt/dxvk1)、" +
+            "WineD3D(/opt/vkord3d)、FEXCore(/opt/fexcore)、Wrapper(/opt/wrapper)。运行容器时选中的包由启动链步骤 0 自动解压：" +
+            "Turnip/Zink → rootfs/usr/lib；DXVK/WineD3D/FEXCore → 对应容器 C 盘 windows；" +
+            "Wrapper → rootfs/usr/lib/anwind-wrapper/ 专属目录 + Vulkan ICD 清单（VK_ICD_FILENAMES 切换，" +
+            "与 rootfs 自带 Mesa 共存，比 Mesa Turnip 更流畅；配 Zink 一起用效果更佳）"
     )
 }
 

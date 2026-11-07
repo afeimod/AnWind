@@ -186,14 +186,26 @@ jobs:
           # 后本步才真正成为补丁的 "宿主侧回归测试"（原注释声明的意图）。
           # 沙箱已实测：补丁干净应用于 vanilla v0.4.4，静态冒烟
           # ANWIND_SMOKE_OK、ANDROID RELR 冒烟 ANWIND_RELR_OK。
-          echo "=== 冒烟[打补丁]: 应用 0001-anwind-android-shmem-native.patch ==="
+          #
+          # v3.3.10（box64 构建修复，用户问题 3）：补丁应用改为容错 ——
+          # 选定 ref 与补丁基线（v0.4.4）不匹配（<0.4.4 旧版 / master
+          # 漂移）时 dry-run 失败不再中止冒烟：打一行警告、冒烟树【不带
+          # 补丁】继续构建（与 aarch64 交付构建的"按选择跳过"同语义），
+          # shm/RELR 两个依赖补丁的断言随之跳过（补丁不在链必然失败，
+          # 硬卡只会把跳过补丁的合法构建全部堵死）；版本/实跑冒烟照常。
+          echo "=== 冒烟[打补丁]: 应用 0001-anwind-android-shmem-native.patch（不匹配时跳过） ==="
+          SMOKE_PATCH_APPLIED=0
           SMOKE_PATCH="${GITHUB_WORKSPACE}/bionic-rootfs/projects/box64/0001-anwind-android-shmem-native.patch"
           [[ -f "${SMOKE_PATCH}" ]] \
             || { echo "::error::交付树缺失 0001 补丁（前置检查失败）"; exit 1; }
-          patch -d "${SMOKE_SRC}" -p1 --dry-run < "${SMOKE_PATCH}" \
-            || { echo "::error::0001 补丁无法应用于上游 ${BOX64_REF}（hunk 漂移，先在交付树更新补丁再触发构建）"; exit 1; }
-          patch -d "${SMOKE_SRC}" -p1 -N --no-backup-if-mismatch < "${SMOKE_PATCH}"
-          echo "  [OK] 冒烟树已打 0001 补丁（shm syscall 转发与交付构建同源在链）"
+          if patch -d "${SMOKE_SRC}" -p1 --dry-run < "${SMOKE_PATCH}" >/dev/null 2>&1; then
+            patch -d "${SMOKE_SRC}" -p1 -N --no-backup-if-mismatch < "${SMOKE_PATCH}"
+            SMOKE_PATCH_APPLIED=1
+            echo "  [OK] 冒烟树已打 0001 补丁（shm syscall 转发与交付构建同源在链）"
+          else
+            echo "::warning::0001 补丁无法应用于 ${BOX64_REF}（hunk 漂移）—— 与交付构建同策略：冒烟树跳过补丁继续（shm/RELR 断言跳过）；如需完整特性请选 v0.4.4 及以上版本"
+            echo "  [--] 冒烟树未打 0001 补丁（revision=${BOX64_REF} 与补丁基线 v0.4.4 不匹配，按选择跳过）"
+          fi
 
           echo "=== 冒烟[宿主构建]: cmake 原生 x86_64（-DARM_DYNAREC=OFF：ARM dynarec 生成的是 aarch64 汇编，x86_64 汇编器必炸（mrs ctr_el0/dc cvau/ic ivau/isb sy 均为 aarch64 专属指令），只有 aarch64 宿主才可开；冒烟只验源码级编译链接与实跑链路，CI=ON 走提交版 wrapper） ==="
           SMOKEDIR="${SMOKE_SRC}/build"
@@ -230,6 +242,9 @@ jobs:
           gcc -O2 -o "${TESTDIR}/smoke" "${TESTDIR}/smoke.c"
           SMOKE_OUT="$("${SMOKE_BIN}" "${TESTDIR}/smoke" 2>&1 || true)"
           echo "${SMOKE_OUT}"
+          # 动态实跑断言：补丁未应用时 shm 路径在 glibc 宿主上仍走宿主
+          # libc（wrapper 桥接），ANWIND_SMOKE_OK 照常要求通过 —— 只有
+          # 补丁在链时静态链路才有意义，见上。
           echo "${SMOKE_OUT}" | grep -q "ANWIND_SMOKE_OK" \
             || { echo "::error::box64 执行 x86_64 测试程序失败（含 SysV shm 路径）—— 源码级损坏，禁止放行"; exit 1; }
 
@@ -237,13 +252,19 @@ jobs:
           # 转发，0001-anwind-android-shmem-native.patch 的宿主侧回归测试）。
           # vanilla v0.4.4 实测此路径 ENOSYS（"shmget: Function not
           # implemented"），补丁后必须通过。
-          echo "=== 冒烟[静态实跑]: 静态链接 x86_64 测试程序（syscall 层 shm 转发） ==="
-          gcc -O2 -static -o "${TESTDIR}/smoke_static" "${TESTDIR}/smoke.c" \
-            || { echo "::error::静态冒烟程序编译失败（runner 缺 glibc-static？）"; exit 1; }
-          SMOKE_STATIC_OUT="$("${SMOKE_BIN}" "${TESTDIR}/smoke_static" 2>&1 || true)"
-          echo "${SMOKE_STATIC_OUT}"
-          echo "${SMOKE_STATIC_OUT}" | grep -q "ANWIND_SMOKE_OK" \
-            || { echo "::error::box64 静态 x86_64 程序 shm syscall 失败 —— 0001 补丁的 x64syscall.c 转发未生效，禁止放行"; exit 1; }
+          # v3.3.10：补丁未应用（版本不匹配跳过）时静态 shm 路径必 ENOSYS
+          # —— 断言跳过（与交付构建同策略），只跑动态链路冒烟。
+          if [[ "${SMOKE_PATCH_APPLIED}" == "1" ]]; then
+            echo "=== 冒烟[静态实跑]: 静态链接 x86_64 测试程序（syscall 层 shm 转发） ==="
+            gcc -O2 -static -o "${TESTDIR}/smoke_static" "${TESTDIR}/smoke.c" \
+              || { echo "::error::静态冒烟程序编译失败（runner 缺 glibc-static？）"; exit 1; }
+            SMOKE_STATIC_OUT="$("${SMOKE_BIN}" "${TESTDIR}/smoke_static" 2>&1 || true)"
+            echo "${SMOKE_STATIC_OUT}"
+            echo "${SMOKE_STATIC_OUT}" | grep -q "ANWIND_SMOKE_OK" \
+              || { echo "::error::box64 静态 x86_64 程序 shm syscall 失败 —— 0001 补丁的 x64syscall.c 转发未生效，禁止放行"; exit 1; }
+          else
+            echo "  [--] 冒烟[静态实跑] 跳过（0001 补丁未在链，静态 shm 路径必 ENOSYS）"
+          fi
 
           # v3.2.20：ANDROID RELR 打包重定位回归测试（wineboot SIGSEGV 根因）。
           # NDK r29 lld 默认给 bionic 链接的 .so 发 Android 标签的 RELR 打包
@@ -258,6 +279,9 @@ jobs:
           # 0001 补丁的 elfparser 修复（DT_ANDROID_RELR* 标签别名）必须让
           # 此类 .so 正确重定位。无需 lld：gcc 生成标准 RELR .so 后用
           # python 把动态标签翻成 Android 风味，经 box64 实跑断言。
+          # v3.3.10：补丁未应用时 elfparser 不认 Android 标签（重定位静默
+          # 跳过）→ 断言必然失败，跳过（与交付构建同策略）。
+          if [[ "${SMOKE_PATCH_APPLIED}" == "1" ]]; then
           echo "=== 冒烟[ANDROID RELR]: 打包重定位（wine ntdll wineboot 同机制） ==="
           cat > "${TESTDIR}/relrtest.c" <<'EOF'
           struct list { struct list *next, *prev; };
@@ -318,6 +342,9 @@ jobs:
           echo "${RELR_OUT}"
           echo "${RELR_OUT}" | grep -q "ANWIND_RELR_OK" \
             || { echo "::error::box64 未应用 ANDROID RELR 打包重定位 —— 0001 补丁的 elfparser 修复未生效，禁止放行（bionic wine ntdll wineboot SIGSEGV 同根因）"; exit 1; }
+          else
+            echo "  [--] 冒烟[ANDROID RELR] 跳过（0001 补丁未在链，elfparser 不认 Android 标签必然失败）"
+          fi
 
           # v3.2.18：补丁文件本体必须在源码树里（冒烟用独立 clone，此步
           # 校验交付源码未丢失补丁 —— 与配方 install() 的符号校验互补）。

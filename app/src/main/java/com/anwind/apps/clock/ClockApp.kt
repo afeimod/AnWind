@@ -27,7 +27,7 @@ val ClockApp = AppDef(
     launchMode = LaunchMode.FLOATING,
     defaultWidth = 480.dp,
     defaultHeight = 320.dp,
-    pinnedToDesktop = true
+    pinnedToDesktop = false    // v3.3.10：桌面图标精简（保留在开始菜单）
 ) { scope ->
     ClockContent(scope)
 }

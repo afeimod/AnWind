@@ -54,7 +54,7 @@ val MinesweeperApp = AppDef(
     // v2.17：与初级 9x9 的目标窗口尺寸一致（msWindowSize），切换到中级/高级时自动扩展
     defaultWidth = 366.dp,
     defaultHeight = 488.dp,
-    pinnedToDesktop = true,
+    pinnedToDesktop = false    // v3.3.10：桌面图标精简（保留在开始菜单）,
     pinnedToTaskbar = true
 ) { scope ->
     MinesweeperContent(scope)

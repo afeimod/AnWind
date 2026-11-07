@@ -45,7 +45,7 @@ val NotepadApp = AppDef(
     launchMode = LaunchMode.FLOATING,
     defaultWidth = 620.dp,
     defaultHeight = 460.dp,
-    pinnedToDesktop = true
+    pinnedToDesktop = false    // v3.3.10：桌面图标精简（保留在开始菜单）
 ) { scope ->
     NotepadContent(scope)
 }

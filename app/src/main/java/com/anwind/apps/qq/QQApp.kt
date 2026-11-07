@@ -35,7 +35,7 @@ val QQApp = AppDef(
     defaultWidth = 380.dp,
     defaultHeight = 560.dp,
     pinnedToTaskbar = true,
-    pinnedToDesktop = true
+    pinnedToDesktop = false    // v3.3.10：桌面图标精简（保留在开始菜单）
 ) { scope ->
     QQRootContent(scope)
 }

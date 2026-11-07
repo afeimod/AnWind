@@ -13,6 +13,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Analytics
 import androidx.compose.material.icons.filled.CancelPresentation
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DriveFileRenameOutline
 import androidx.compose.material.icons.filled.ExpandMore
@@ -213,6 +214,18 @@ fun DesktopContextMenu(
                         }
                         onDismiss()
                     }
+                } else {
+                    // v3.3.10（用户问题 2）：内置应用图标右键【从桌面移除】——
+                    // 应用回到仅开始菜单可见（可在菜单里长按拖回桌面），
+                    // 图标位置记录随下次布局清理自动清空。
+                    ContextMenuDivider()
+                    ContextMenuEntry(
+                        id = "unpin", icon = Icons.Default.Close, label = L("从桌面移除"),
+                        hoveredId = hoveredId, itemRects = itemRects
+                    ) {
+                        DesktopPins.unpin(item.target, scope0)
+                        onDismiss()
+                    }
                 }
                 ContextMenuDivider()
                 ContextMenuEntry(
@@ -280,6 +293,15 @@ fun DesktopContextMenu(
                     hoveredId = hoveredId, itemRects = itemRects
                 ) {
                     onRefresh()
+                    onDismiss()
+                }
+
+                // ===== v3.3.10：恢复默认桌面图标（6 件套） =====
+                ContextMenuEntry(
+                    id = "resetPins", icon = Icons.Default.GridView, label = L("恢复默认图标"),
+                    hoveredId = hoveredId, itemRects = itemRects
+                ) {
+                    DesktopPins.resetToDefault(scope0)
                     onDismiss()
                 }
 

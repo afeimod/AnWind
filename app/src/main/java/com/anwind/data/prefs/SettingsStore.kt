@@ -184,6 +184,12 @@ class SettingsStore(private val context: Context) {
         // 开始菜单底部显示的用户名 / 头像 emoji（空 = 默认图标）
         val USER_NAME = stringPreferencesKey("user_name")
         val USER_AVATAR = stringPreferencesKey("user_avatar")
+
+        // === v3.3.10 桌面固定应用集合（用户问题 2） ===
+        // 逗号分隔的内置应用 id 集合（如 "browser,terminal,music"）；
+        // 空 = 默认集合（此电脑/浏览器/终端/X11/云音乐/Wine 容器）。
+        // 从开始菜单拖入 → 追加；桌面右键“从桌面移除” → 剔除。
+        val DESKTOP_PINNED_APPS = stringPreferencesKey("desktop_pinned_apps")
     }
 
     // === 基础设置 ===
@@ -222,6 +228,9 @@ class SettingsStore(private val context: Context) {
 
     // v3：桌面图标自由定位（Windows 式随意拖放）
     val desktopIconPositions: Flow<String> = context.appPrefs.data.map { it[Keys.DESKTOP_ICON_POSITIONS] ?: "" }
+
+    // === v3.3.10：桌面固定应用集合（默认 6 件套；用户从开始菜单拖入/右键移除） ===
+    val desktopPinnedApps: Flow<String> = context.appPrefs.data.map { it[Keys.DESKTOP_PINNED_APPS] ?: "" }
 
     // === v2.14：个性化 ===
     val appColorMode: Flow<String> = context.appPrefs.data.map { it[Keys.APP_COLOR_MODE] ?: "auto" }
@@ -402,6 +411,11 @@ class SettingsStore(private val context: Context) {
     // v3：保存桌面图标自由定位（"id:x,y;…"）
     suspend fun setDesktopIconPositions(positions: String) {
         context.appPrefs.edit { it[Keys.DESKTOP_ICON_POSITIONS] = positions }
+    }
+
+    // v3.3.10：保存桌面固定应用集合（"id1,id2,…"；空串 = 恢复默认集合）
+    suspend fun setDesktopPinnedApps(appIds: String) {
+        context.appPrefs.edit { it[Keys.DESKTOP_PINNED_APPS] = appIds }
     }
 
     // === v2.14：个性化 setter ===

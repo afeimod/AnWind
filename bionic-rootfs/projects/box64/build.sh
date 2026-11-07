@@ -6,6 +6,53 @@ buildSys="cmake"
 license="MIT"
 
 # ============================================================
+# v3.3.10（box64 构建修复，用户问题 3）：0001 补丁按版本条件生效
+# ------------------------------------------------------------
+# 【事故回放】CI 日志 build-box64-aarch64.log：选定非 v0.4.4 的
+# revision（master 或旧版）时，0001-anwind-android-shmem-native.patch
+# 在 src/elfs/elfparser.c 的 hunk 失败（CMakeLists.txt 两 hunk 带偏移
+# 勉强过、elfparser 直接 FAIL）→ apply_patches 判构建阵亡。
+# 【修复策略】补丁基线 v0.4.4，两层防线：
+#   1. 版本前置判断（用户口径"0.4.4 以前的 box64 不能接受一些补丁，
+#      在选择时跳过"）：revision 解析出版本号 < 0.4.4 时直接
+#      doNotApplyPatch=1（整包跳过，日志明示）；
+#   2. patchOptional=1 兑底：其余 ref（master 漂移/未来新版）上 dry-run
+#      失败时由框架【警告跳过】而非中止（patchesSkipped 记录），
+#      install() 据实条件化 shm 冒烟断言 —— 跳过补丁的构建产物不再
+#      因缺 shm 符号被误判失败。
+# 补丁未生效的后果由用户自担（bionic 宿主 shm 链路断、Android RELR
+# 重定位静默跳过 → wineboot SIGSEGV 风险面），日志大字提示。
+# ============================================================
+_patch_baseline_major=0
+_patch_baseline_minor=4
+_patch_baseline_patch=4
+_box64_ver_major="$(echo "${revision}" | sed -n 's/^[vV]\?\([0-9]\+\)\..*$/\1/p')"
+_box64_ver_minor="$(echo "${revision}" | sed -n 's/^[vV]\?[0-9]\+\.\([0-9]\+\).*/\1/p')"
+_box64_ver_patch="$(echo "${revision}" | sed -n 's/^[vV]\?[0-9]\+\.[0-9]\+\.\([0-9]\+\).*/\1/p')"
+if [[ -n "${_box64_ver_major}" ]]; then
+  # 解析出版本号（如 v0.4.4 / 0.4.6）：与基线 0.4.4 逐段比较
+  _box64_lt_baseline=0
+  if (( _box64_ver_major < _patch_baseline_major )); then
+    _box64_lt_baseline=1
+  elif (( _box64_ver_major == _patch_baseline_major )) && (( _box64_ver_minor < _patch_baseline_minor )); then
+    _box64_lt_baseline=1
+  elif (( _box64_ver_major == _patch_baseline_major )) && (( _box64_ver_minor == _patch_baseline_minor )) && (( ${_box64_ver_patch:-0} < _patch_baseline_patch )); then
+    _box64_lt_baseline=1
+  fi
+  if (( _box64_lt_baseline == 1 )); then
+    echo "[INFO] box64 revision=${revision} < v${_patch_baseline_major}.${_patch_baseline_minor}.${_patch_baseline_patch}（补丁基线）—— 0.4.4 以前的版本不接受 0001 补丁，按选择跳过"
+    doNotApplyPatch=1
+  else
+    echo "[INFO] box64 revision=${revision} >= 补丁基线 v0.4.4，正常应用 0001 补丁（漂移时 patchOptional 跳过）"
+    patchOptional=1
+  fi
+else
+  # master / main / 分支名：无法解析版本 → patchOptional 兑底跳过
+  echo "[INFO] box64 revision=${revision} 非版本号（分支/漂移 ref）—— 补丁 dry-run 失败时将跳过（patchOptional=1）"
+  patchOptional=1
+fi
+
+# ============================================================
 # AnWind bionic-box64（aarch64 / NDK bionic 链接）
 # ------------------------------------------------------------
 # 桌面 wine 容器的 x86_64 仿真核心（usr/local/bin/box64）。
@@ -264,31 +311,70 @@ install() {
   #      注册字符串（.rodata，strip 不受影响）
   #   d) NOLOADADDR 落地：链接命令不得残留 --image-base / -no-pie
   #      （v3.2.13 加 -DNOLOADADDR=ON 的配套自检，防上游 CMake 行为漂移）
+  #
+  # v3.3.10（box64 构建修复）：shm 断言组【仅在 0001 补丁实际在链时执行】。
+  # 补丁在链的判据 = 源码树存在补丁引入的 src/libtools/android_shmem.c
+  # 且含 ANW_EXPORT 特征（源码复用分支 patchesApplied 变量为空、不能作
+  # 依据；查源码树特征对"重新获取+跳过补丁/复用旧树+已打补丁"两种
+  # 路径都成立）。补丁被跳过（<0.4.4 旧版 / master 漂移）时：
+  #   * shm 四符号 / .dynsym 导出 / 注册字符串三项跳过（必然缺，
+  #     误判失败毫无意义），改打一行大字警告 —— 后果见头部说明；
+  #   * DYNAREC 核心（getDB/FreeDynablock）与 NOLOADADDR 断言照常执行
+  #     （不依赖补丁，架构完整性仍受保护）。
+  local _patch_in_tree=0
+  if [[ -f "${_src}/src/libtools/android_shmem.c" ]] \
+     && grep -q 'ANW_EXPORT' "${_src}/src/libtools/android_shmem.c" 2>/dev/null; then
+    _patch_in_tree=1
+  fi
+  if [[ "${_patch_in_tree}" == "0" ]]; then
+    echo "=============================================================="
+    echo "⚠️⚠️ 0001-anwind-android-shmem-native.patch 未在链（revision=${revision}"
+    echo "    低于补丁基线 v0.4.4 或 ref 漂移被跳过）—— 本产物为【未打补丁】形态："
+    echo "    * bionic 宿主上 shm 链路两条全断（静态程序 ENOSYS / 动态程序"
+    echo "      function not found）—— wine 需要 SysV shm 的路径会失败；"
+    echo "    * NDK lld 的 Android 标签 RELR 重定位（DT_ANDROID_RELR）不识别"
+    echo "      —— bionic wine ntdll 的 .data 自指针保持裸地址，wineboot 有"
+    echo "      SIGSEGV 风险。"
+    echo "    如需完整特性：选 v0.4.4 及以上版本重新构建。"
+    echo "=============================================================="
+  fi
   local _sym_ok=1
   for _sym in shmget shmat shmctl shmdt getDB FreeDynablock; do
+    if [[ "${_sym}" == shm* && "${_patch_in_tree}" == "0" ]]; then
+      continue   # 补丁不在链：shm 符号必缺，跳过（见上）
+    fi
     if ! nm "${_src}/build/box64" 2>/dev/null | grep -qw "${_sym}" \
        && ! readelf -Ws "${_src}/build/box64" 2>/dev/null | grep -qw "${_sym}"; then
       echo "错误: box64 符号表缺 ${_sym}（v3.2.18 内建 shm 实现 / DYNAREC 核心未链接 —— 0001 补丁没生效？）"
       _sym_ok=0
     fi
   done
-  if ! nm -D "${_src}/build/box64" 2>/dev/null | grep -qwE "shmget|my_shmget"; then
+  if [[ "${_patch_in_tree}" == "1" ]] \
+     && ! nm -D "${_src}/build/box64" 2>/dev/null | grep -qwE "shmget|my_shmget"; then
     echo "错误: shm 符号未进动态导出表（.dynsym），wrapped-libc 桥接将找不到 my_*"
     echo "  （v3.2.21 根因：上游 -fvisibility=hidden 隐藏符号永不入 .dynsym，且 my_* 无"
     echo "   静态引用会被 --gc-sections 回收 —— 查 0001 补丁 ANW_EXPORT 可见性修复是否在链）"
     _sym_ok=0
   fi
   local _shmem_ok=1
-  if [[ ! -f "${_src}/build/CMakeFiles/mainobj.dir/src/wrapped/wrappedandroidshmem.c.o" ]]; then
+  if [[ "${_patch_in_tree}" == "1" ]] \
+     && [[ ! -f "${_src}/build/CMakeFiles/mainobj.dir/src/wrapped/wrappedandroidshmem.c.o" ]]; then
     echo "错误: wrappedandroidshmem.c 编译单元不在链（-DANDROID=ON 未生效？）"
     _shmem_ok=0
   fi
   if ! strings "${_src}/build/box64" 2>/dev/null | grep -q "libandroid-shmem\.so"; then
+    # 上游 ANDROID 模式自带 wrappedandroidshmem 注册（不依赖 0001 补丁），照常硬校验
     echo "错误: 产物未注册 libandroid-shmem.so 包装（ANDROID 编译单元缺失）"
     _shmem_ok=0
   fi
   [[ "${_sym_ok}" == "1" && "${_shmem_ok}" == "1" ]] \
-    && echo "冒烟[1/2]: 内建 SysV shm（v3.2.21 默认可见性导出：shmget/shmat/shmctl/shmdt + my_* 均已入 .dynsym）+ DYNAREC 核心（getDB/FreeDynablock）✓" \
+    && echo "冒烟[1/2]: $(
+      if [[ "${_patch_in_tree}" == "1" ]]; then
+        echo "内建 SysV shm（v3.2.21 默认可见性导出：shmget/shmat/shmctl/shmdt + my_* 均已入 .dynsym）+ "
+      else
+        echo "（0001 补丁未在链，shm 断言跳过；见上方警告） "
+      fi
+    )DYNAREC 核心（getDB/FreeDynablock）✓" \
     || return 1
   if grep -q "image-base\|no-pie" "${_src}/build/CMakeFiles/box64.dir/link.txt" 2>/dev/null; then
     echo "错误: 链接命令残留 --image-base/-no-pie（NOLOADADDR 未生效）"

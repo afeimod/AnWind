@@ -15,7 +15,7 @@ MANGOHUD/多选/快捷方式对话框 —— wineguanli.py 的每一个界面在
 | 容器列表（双击运行/右键菜单/切换语言） | 左列列表：点击选中、长按弹菜单（运行/安装前缀/设置/切换语言/删除/重命名/快捷方式） |
 | 新建容器对话框（名称/架构/Wine版本/分辨率/语言/帧数限制） | NewContainerDialog 逐字段移植，创建后询问是否立即装前缀 |
 | 基本设置选项卡 | 容器名称/🏗️架构/Wine版本/🖥️分辨率(可自定义)/🌐语言/⏱️帧数限制/窗口模式/EXE文件(浏览回填)/高级启动选项七勾选 |
-| 图形驱动选项卡 | Turnip(/opt/tz)、Zink(/opt/zink)、DXVK(/opt/dxvk1)、WineD3D(/opt/vkord3d) 下拉自动扫描 tar 包；运行前自动解压选中包 |
+| 图形驱动选项卡 | Turnip(/opt/tz)、Zink(/opt/zink)、DXVK(/opt/dxvk1)、WineD3D(/opt/vkord3d)、FEXCore(/opt/fexcore)、Wrapper(/opt/wrapper) 下拉自动扫描 tar 包；运行前自动解压选中包 |
 | CPU 核心选项卡 | 真实核心数勾选网格 + 主/副核心信息 + 说明（cores=，PRIMARY_CORES/SECONDARY_CORES 注入） |
 | 函数库选项卡 | dsound/dshow 下拉 + DPI 滑块与五预设 + Windows 版本 + 说明 + 💾立即应用（regedit 写前缀） |
 | 更多配置选项卡 | 说明 + ⚙️打开更多设置 + 当前配置状态 + 🔄刷新 |
@@ -39,10 +39,15 @@ Box 配置页被扫描到（下拉自动出现），运行时自动解压：
 /opt/
 ├── box/                       # box64 tar 包（*.tar.gz/xz/bz2 → 解到 /usr/local/bin）
 ├── box86/                     # box86 tar 包（同上）
-├── tz/                        # Turnip 驱动 tar 包
-├── zink/                      # Zink 驱动 tar 包
+├── tz/                        # Turnip 驱动 tar 包（Mesa 型 → 解到 /usr/lib）
+├── zink/                      # Zink 驱动 tar 包（同上）
 ├── dxvk1/                     # DXVK tar 包（tar 槽位；APK 内置 assets/dxvk 是默认注入源）
-└── vkord3d/                   # WineD3D tar 包
+├── vkord3d/                   # WineD3D tar 包
+├── fexcore/                   # FEXCore tar 包（FEX 仿真器 PE DLL；逻辑同 DXVK → 容器 C 盘 windows）
+└── wrapper/                   # Wrapper 驱动 tar 包（yuzu/WinNative 同型预编译 Turnip：
+│                              #   含 libvulkan_*.so → 解到 usr/lib/anwind-wrapper/<名>/
+│                              #   + 专属 Vulkan ICD 清单，VK_ICD_FILENAMES 切换，
+│                              #   与 rootfs 自带 Mesa Turnip 共存可切）
 ```
 
 AnWind 原生容器前缀在 `rootfs/home/.anwind/containers/<名>/prefix`；
@@ -62,6 +67,8 @@ flags=unity,opengl    高级开关 csv：unity/opengl/f5task/ib/debug/independen
 turnip=               /opt/tz 选中的包名（空=默认，off=不使用）
 zink=                 /opt/zink 包名（同上）
 wined3d=              /opt/vkord3d 包名（同上）
+fexcore=              /opt/fexcore 包名（FEX 仿真器 PE DLL → 容器 C 盘 windows）
+wrapper=              /opt/wrapper 包名（预编译 Turnip：ICD 清单 + VK_ICD_FILENAMES 切换；空/off=Mesa）
 exe=                  默认运行的程序（wineguanli custom_exe_path；空=运行时再选）
 ```
 

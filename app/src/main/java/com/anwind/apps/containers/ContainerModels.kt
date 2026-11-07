@@ -349,9 +349,15 @@ data class ContainerData(
     val zink: String = "",
     /** WineD3D 版本槽位（对接 /opt/vkord3d）。 */
     val wined3d: String = "",
-    /** v3.3.9：FEXCore 版本槽位（对接 /opt/dxvk1 —— 与 DXVK 同目录；
-     * 解压到对应容器 C 盘 windows）。 */
+    /** v3.3.10：FEXCore 版本槽位（对接 /opt/fexcore 独立目录；逻辑同
+     * DXVK —— 解压到对应容器 C 盘 windows，装 FEX 仿真器 PE DLL
+     * libarm64ecfex.dll / libwow64fex.dll 等升级版）。 */
     val fexcore: String = "",
+    /** v3.3.10：Wrapper 驱动版本槽位（对接 /opt/wrapper —— WinNative/
+     * yuzu 同型预编译 Turnip（Adreno）驱动 tar；解压到 rootfs 独立目录
+     * usr/lib/anwind-wrapper/<name>/ 并生成专属 Vulkan ICD，经
+     * VK_ICD_FILENAMES 切换，与 rootfs 自带 Mesa Turnip 互不覆盖、共存可切）。 */
+    val wrapper: String = "",
     /** v3.3.9（用户问题 2）：自定义启动参数（startfex.sh `-a/--args` 同款
      * 定位 —— 追加在 exe 参数末尾，空白切分；区别：-a 是 wine 前置参数，
      * 本字段是程序参数）。 */
@@ -403,6 +409,7 @@ data class ContainerData(
         "zink" to zink,
         "wined3d" to wined3d,
         "fexcore" to fexcore,
+        "wrapper" to wrapper,
         "uargs" to uargs,
         "exe" to exe
     )
@@ -492,6 +499,7 @@ data class ContainerData(
                 zink = kv["zink"] ?: "",
                 wined3d = kv["wined3d"] ?: "",
                 fexcore = kv["fexcore"] ?: "",
+                wrapper = kv["wrapper"] ?: "",
                 uargs = kv["uargs"] ?: "",
                 exe = kv["exe"] ?: ""
             )

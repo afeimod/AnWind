@@ -26,7 +26,7 @@ val CalculatorApp = AppDef(
     launchMode = LaunchMode.FLOATING,
     defaultWidth = 340.dp,
     defaultHeight = 540.dp,
-    pinnedToDesktop = true
+    pinnedToDesktop = false    // v3.3.10：桌面图标精简（保留在开始菜单）
 ) { scope ->
     CalculatorContent(scope)
 }
