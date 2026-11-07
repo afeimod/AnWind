@@ -1054,6 +1054,127 @@ PCMBSF
   fi
 
 
+
+  # v3.3.9：proton_9.0 树 arm64ec 四连修复（CI wine-build-log-arm64ec
+  # 实测链条：crtdll file.o x64 内联汇编 → amd_ags_x64 同类 → 0011 断裂态
+  # → d3dx11_42 导入库解析）。全部 .patch.proton 后缀避开主补丁循环
+  # （official/hangover 树无对应代码，普通应用必然失败产生告警噪音），
+  # 按内容特征条件套用 + --fuzz=0 逐字锚点，proton_10.0+（已自带修复）/
+  # 其他树自动跳过。
+
+  # a) msvcrt/file.c 的 _isatty x64 汇编包装（Valve 私有 HACK cf08808609）
+  #    在 EC 编译趟激活 x86 AT&T 汇编（llvm-mingw arm64ec 同时预定义
+  #    __arm64ec__ 和 __x86_64__）。修法与 proton_10.0 官方一致：
+  #    #ifdef __x86_64__ → && !defined(__arm64ec__)，EC 回落通用 C 实现。
+  #    file.c 经 PARENTSRC 供 crtdll/msvcrt/msvcr70~120/ucrtbase 共用，
+  #    不修则 EC 趟首个阵亡点就是 crtdll/arm64ec-windows/file.o。
+  if [[ -f dlls/msvcrt/file.c ]] \
+     && grep -q '__ASM_GLOBAL_FUNC( _isatty' dlls/msvcrt/file.c; then
+    if sed -n '/_isatty (MSVCRT.@)/,/__ASM_GLOBAL_FUNC( _isatty/p' dlls/msvcrt/file.c \
+         | grep -q '__arm64ec__'; then
+      echo "msvcrt _isatty 已带 arm64ec 守卫（proton_10.0+ 形态），跳过"
+    else
+      echo "应用 msvcrt _isatty arm64ec 守卫（proton 树 x64 汇编包装，EC 趟必炸点）"
+      if patch --silent --forward -p1 --fuzz=0 \
+           < "${wsDir}/projects/${pjName}/0015-fix-arm64ec-isatty-proton.patch.proton"; then
+        echo "已修复 _isatty EC 编译（proton_10.0 同款守卫）"
+      else
+        echo "⚠️ _isatty 补丁未应用（树结构差异，继续构建）"
+        echo "    若后续 arm64ec PE 编译报 file.c 内联汇编错误，请核查该补丁锚点"
+      fi
+    fi
+  fi
+
+  # b) amd_ags_x64（proton 私有模块，官方树无）：9 个 x64 汇编跳板 +
+  #    spec 13 个 -arch=win64 条目。wine-9.0 makedep 无 arm64ec_x64
+  #    pragma（proton_10.0 靠它编 ARM64X 混合镜像），EC/aarch64 趟编不
+  #    出实现又按 spec 引用 → 双炸。修法：spec arch 收窄为 x86_64（x86_64
+  #    形态行为逐字节不变）+ 块守卫加 !__arm64ec__（arch 中性导出
+  #    CreateDevice/Init 等均在纯 C 区，不受影响）。
+  if [[ -f dlls/amd_ags_x64/amd_ags_x64.spec ]] \
+     && grep -q -- '-arch=win64 agsDriverExtensions_BeginUAVOverlap' dlls/amd_ags_x64/amd_ags_x64.spec; then
+    echo "应用 amd_ags_x64 arm64ec 修复（proton_9.0 树 x64 跳板收窄为 x86_64 专用）"
+    if patch --silent --forward -p1 --fuzz=0 \
+         < "${wsDir}/projects/${pjName}/0016-fix-arm64ec-amd-ags-proton.patch.proton"; then
+      echo "已修复 amd_ags_x64（EC/aarch64 趟不再编译 x64 汇编跳板）"
+    else
+      echo "⚠️ amd_ags_x64 补丁未应用（树结构差异，继续构建）"
+      echo "    若后续 arm64ec PE 编译报 amd_ags_x64_main.c 汇编错误，请核查该补丁锚点"
+    fi
+  elif [[ -f dlls/amd_ags_x64/amd_ags_x64.spec ]]; then
+    echo "ℹ️ amd_ags_x64 已是修复后形态（或 proton_10.0+ ARM64X 形态），跳过"
+  fi
+
+  # c) 0011 挂起管道断裂态补全（wine-9.0 形态树专属）。0011 的锚点只覆盖
+  #    wine-9.7/10 形态，在 9.0/9.2/proton_9.0 上部分落空 —— 且有两种
+  #    断裂形态（本地六树实测）：
+  #    形态一（proton_9.0/wine-9.0）：loader.c 的 GET_PTR 已落位但
+  #      pWow64SuspendLocalThread 声明缺失 → EC 编译趟未声明标识符直接炸；
+  #    形态二（wine-9.2）：loader.c 声明已落位（0011 hunk2 命中），但
+  #      signal_arm64.c 的 aarch64 版 RtlWow64SuspendThread 实现与
+  #      wow64/syscall.c 的 Wow64SuspendLocalThread 函数体缺失，而
+  #      ntdll.spec/wow64.spec 的导出已落位 → aarch64 ntdll 与 wow64.dll
+  #      链接必炸（导出未定义符号）。
+  #    门控 = 双断裂态检测（任一命中即补全）：ntdll.spec 已导出但
+  #    aarch64 实现缺失；或 wow64.spec 已转真导出但函数体缺失。
+  #    hangover-11.16 / wine-9.7 / proton_10.0（实现俱在）不触发。
+  #    --fuzz=0 逐字锚点 + 补丁内 loader/misc hunk 用最小上下文
+  #    （wine-9.0/9.2 两形态通吃），杜绝跨树 fuzz 误插（重复定义）。
+  #    硬校验四要素：loader 声明 + aarch64 实现 + EC 直通桩已有 +
+  #    wow64 转发函数，缺一即亮 ::error。
+  _susp_broken=0
+  if grep -q 'RtlWow64SuspendThread' dlls/ntdll/ntdll.spec 2>/dev/null \
+     && ! grep -q 'NTSTATUS WINAPI RtlWow64SuspendThread' dlls/ntdll/signal_arm64.c 2>/dev/null; then
+    _susp_broken=1
+  fi
+  if grep -q '^@ stdcall Wow64SuspendLocalThread' dlls/wow64/wow64.spec 2>/dev/null \
+     && ! grep -q 'NTSTATUS WINAPI Wow64SuspendLocalThread' dlls/wow64/syscall.c 2>/dev/null; then
+    _susp_broken=1
+  fi
+  if [[ "${_susp_broken}" == "1" ]]; then
+    echo "检测到 0011 挂起管道断裂态（spec 导出已落位而实现缺失）—— 补全 wine-9.0 形态缺失片段"
+    if patch --silent --forward -p1 --fuzz=0 \
+         < "${wsDir}/projects/${pjName}/0018-fix-arm64ec-suspend-complete-wine90.patch.proton"; then
+      echo "已补全挂起管道（loader 声明 + aarch64/EC 实现 + wow64 转发）"
+    else
+      echo "⚠️ 挂起管道补全补丁部分 hunk 未应用（已存在片段的正常跳过；继续构建）"
+    fi
+    if ! grep -q '(WINAPI \*pWow64SuspendLocalThread)( HANDLE thread, ULONG \*count )' dlls/ntdll/loader.c 2>/dev/null \
+       || ! grep -q 'NTSTATUS WINAPI RtlWow64SuspendThread' dlls/ntdll/signal_arm64.c 2>/dev/null \
+       || ! grep -q 'NTSTATUS WINAPI RtlWow64SuspendThread' dlls/ntdll/signal_arm64ec.c 2>/dev/null \
+       || ! grep -q 'NTSTATUS WINAPI Wow64SuspendLocalThread' dlls/wow64/syscall.c 2>/dev/null; then
+      echo "::error::挂起管道补全未生效（声明/实现仍有缺失）！"
+      echo "   后果: EC 编译趟 use of undeclared identifier / aarch64 ntdll、wow64 链接导出未定义"
+      echo "   请核查 projects/${pjName}/0018-fix-arm64ec-suspend-complete-wine90.patch.proton 锚点"
+      return 1
+    fi
+    echo "挂起管道四要素校验通过（loader 声明/aarch64 实现/EC 直通/wow64 转发）"
+  else
+    echo "ℹ️ 挂起管道无需补全（非断裂态或已完整），跳过"
+  fi
+
+  # d) d3dx11_42 转发导入修复（与 projects/wine 同源）：proton_9.0 的
+  #    IMPORTS = d3dcompiler d3dx11_43 无法解析到导入库（d3dx11_43 的
+  #    IMPORTLIB 是 d3dx11）→ i386/arm64ec PE 链接报
+  #    lld-link: could not open 'd3dx11_43.lib'。硬校验防静默落空。
+  if [[ -f dlls/d3dx11_42/Makefile.in ]] \
+     && grep -q '^IMPORTS = d3dcompiler d3dx11_43$' dlls/d3dx11_42/Makefile.in; then
+    echo "应用 d3dx11_42 转发导入修复（proton_9.0 树：IMPORTS 改用 d3dx11 导入库）"
+    if patch --silent --forward -p1 --fuzz=0 \
+         < "${wsDir}/projects/${pjName}/0017-fix-d3dx11-42-importlib-proton.patch.proton"; then
+      echo "已修复 d3dx11_42 导入（链接将使用 wine 自产 libd3dx11.a，与 proton_10.0 官方形态一致）"
+    else
+      echo "⚠️ d3dx11_42 导入修复补丁未应用（树差异，继续构建）"
+    fi
+    if grep -q '^IMPORTS = d3dcompiler d3dx11_43$' dlls/d3dx11_42/Makefile.in; then
+      echo "::error::d3dx11_42 导入修复未生效（Makefile.in 仍引用 d3dx11_43）！"
+      echo "   后果: i386/arm64ec PE 链接必报 lld-link: could not open 'd3dx11_43.lib'"
+      echo "   请核查 projects/${pjName}/0017-fix-d3dx11-42-importlib-proton.patch.proton 锚点"
+      return 1
+    fi
+  else
+    echo "ℹ️ d3dx11_42 无需导入修复（非 proton_9.0 转发形态或已自带），跳过"
+  fi
   CFLAGS="${CFLAGS/-Oz/}"
   CXXFLAGS="${CXXFLAGS/-Oz/}"
   CPPFLAGS="${CPPFLAGS/-Oz/}"

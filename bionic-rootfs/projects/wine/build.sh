@@ -702,6 +702,36 @@ PCMBSF
     fi
   fi
 
+
+  # v3.3.9：proton_9.0 树 d3dx11_42 转发导入修复（x86_64 形态 CI 实测炸点：
+  # lld-link: could not open 'd3dx11_43.lib' —— makedep 的 IMPORTS 解析回退
+  # -ld3dx11_43，PE 链接器找不到；Valve 官方构建靠 mingw-w64 系统 d3dx
+  # 导入库，本构建无）。修法与 proton_10.0 官方一致（IMPORTS 引用改为
+  # d3dx11_43 的 IMPORTLIB 名 d3dx11，链接改走 wine 自产
+  # dlls/d3dx11_43/<arch>-windows/libd3dx11.a 显式路径）。.patch.proton
+  # 后缀避开主补丁循环；仅当 Makefile.in 呈 proton_9.0 转发形态
+  # （IMPORTS = d3dcompiler d3dx11_43）时套用 —— official/hangover 树
+  # 是 PARENTSRC 完整构建形态、proton_10.0+ 已自带修复，均不命中。
+  # --fuzz=0：锚点逐字命中，杜绝跨树误插。硬校验：应用后必须不含
+  # d3dx11_43 导入引用（防 hunk 漂移静默落空）。
+  if [[ -f dlls/d3dx11_42/Makefile.in ]] \
+     && grep -q '^IMPORTS = d3dcompiler d3dx11_43$' dlls/d3dx11_42/Makefile.in; then
+    echo "应用 d3dx11_42 转发导入修复（proton_9.0 树：IMPORTS 改用 d3dx11 导入库）"
+    if patch --silent --forward -p1 --fuzz=0 \
+         < "${wsDir}/projects/${pjName}/0012-fix-d3dx11-42-importlib-proton.patch.proton"; then
+      echo "已修复 d3dx11_42 导入（链接将使用 wine 自产 libd3dx11.a，与 proton_10.0 官方形态一致）"
+    else
+      echo "⚠️ d3dx11_42 导入修复补丁未应用（树差异，继续构建）"
+    fi
+    if grep -q '^IMPORTS = d3dcompiler d3dx11_43$' dlls/d3dx11_42/Makefile.in; then
+      echo "::error::d3dx11_42 导入修复未生效（Makefile.in 仍引用 d3dx11_43）！"
+      echo "   后果: i386/x86_64 PE 链接必报 lld-link: could not open 'd3dx11_43.lib'"
+      echo "   请核查 projects/${pjName}/0012-fix-d3dx11-42-importlib-proton.patch.proton 锚点"
+      return 1
+    fi
+  else
+    echo "ℹ️ d3dx11_42 无需导入修复（非 proton_9.0 转发形态或已自带），跳过"
+  fi
   CFLAGS="${CFLAGS/-Oz/}"
   CXXFLAGS="${CXXFLAGS/-Oz/}"
   CPPFLAGS="${CPPFLAGS/-Oz/}"
