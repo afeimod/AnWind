@@ -490,7 +490,14 @@ private fun BuiltInTile(
                         )
                         onDismiss()   // 拖出即关菜单（Windows 11 同款交互）
                     },
-                    onDrag = { },
+                    // v3.3.13 修复：onDrag 的函数类型是两参数
+                    // (PointerInputChange, Offset) -> Unit —— Kotlin 规定
+                    // 无参数声明的 lambda 只能匹配 0 或 1 参数的函数类型，
+                    // 空 { } 必报 "Expected 2 parameters"。必须显式声明
+                    // 参数（不使用则用 _ 占位）。onDragEnd/onDragCancel 是
+                    // () -> Unit、onDragStart 是单参数 (Offset) -> Unit，
+                    // 空 { } / 显式单参数均合法，不受影响。
+                    onDrag = { _, _ -> },
                     onDragEnd = { },
                     onDragCancel = { }
                 )
