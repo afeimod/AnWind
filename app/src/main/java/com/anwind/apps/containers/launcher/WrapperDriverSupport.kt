@@ -386,17 +386,6 @@ object WrapperDriverSupport {
          * 目录必须【存在且可写】；激活时由 RootfsLauncher 创建。
          */
         val adrenotoolsTempDir: File? = null,
-        /**
-         * v3.3.24：wrapper 栈的文件重定向目录（ADRENOTOOLS_REDIRECT_DIR 指向）。
-         *
-         * wrapper-22 的 libvulkan_wrapper.so 读四件套，第四件 REDIRECT_DIR
-         * 由 libadrenotools 的 file_redirect_hook 层消费（vendor 文件替换）。
-         * 仅当 wrapper 栈 slot 目录下存在 redirect/ 子目录时非空 —— 设了但
-         * 目录不存在会让 libadrenotools 报错，不设则该 hook 层完全跳过
-         * （yuzu/裸 turnip 包零影响，带 vendor 文件替换的完整 adpkg 包
-         * 自动生效）。
-         */
-        val adrenotoolsRedirectDir: File? = null,
         /** 未闭环依赖（点名用；非空 = 不可用）。 */
         val missingDeps: List<String>,
         /** 平台/依赖预检全通过，可注入。 */
@@ -484,7 +473,6 @@ object WrapperDriverSupport {
             routedFromWrapperSlot = routedFrom,
             adrenotoolsHooksDir = if (useWrapper) useDir else null,
             adrenotoolsTempDir = if (useWrapper && adrenoDir != null) File(adrenoDir, "temp") else null,
-            adrenotoolsRedirectDir = if (useWrapper) File(useDir, "redirect").takeIf { it.isDirectory } else null,
             missingDeps = missing,
             usable = usable
         )

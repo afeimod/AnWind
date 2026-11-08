@@ -617,9 +617,6 @@ src_state_fingerprint() {
       "${revision}" "${doNotApplyPatch:-0}" "${prefix}" "${rootfsBase}" "${rootfsHome}"
     if declare -F custom_patch >/dev/null; then
       sha256sum "${wsDir}/projects/${pjName}/build.sh" || true
-      # v3.3.23：custom_patch 项目的补丁文件内容同样进指纹 —— 补丁变了
-      # 必须重新打（否则复用旧树，新补丁静默不生效）
-      [[ ${#_patches[@]} -gt 0 ]] && sha256sum "${_patches[@]}" || true
     else
       [[ ${#_patches[@]} -gt 0 ]] && sha256sum "${_patches[@]}" || true
       [[ -f "${wsDir}/patch-rules.conf" ]] && sha256sum "${wsDir}/patch-rules.conf" || true

@@ -329,13 +329,7 @@ object WineEnvironment {
                 env["BOX64_DYNAREC_X87DOUBLE"] = "0"
                 env["BOX64_DYNAREC_STRONGMEM"] = "0"
                 env["BOX64_DYNAREC_FORWARD"] = "512"
-                // v3.3.24：CALLRET 1 → 2，对齐上游 box64 v0.4.4 起的默认值
-                // （env.h：INTEGER(BOX64_DYNAREC_CALLRET, dynarec_callret, 2,…)）。
-                // 0.4.2 及更早默认 0，是"能用但特别慢"的主要构成项之一；
-                // 系统级 box64rc 的 [*] 段同值兜底（无预设的裸跑路径），
-                // per-app 规避段（如上游 rc 的 [zoom] CALLRET=0）优先级
-                // 更高不受影响。
-                env["BOX64_DYNAREC_CALLRET"] = "2"
+                env["BOX64_DYNAREC_CALLRET"] = "1"
                 env["BOX64_DYNAREC_WAIT"] = "1"
             }
         }

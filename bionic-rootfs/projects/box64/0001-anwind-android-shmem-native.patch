@@ -1,33 +1,100 @@
 From: AnWind <anwind@example.invalid>
-Subject: [PATCH] AnWind box64 bionic core: built-in SysV shm + wiring
+Subject: [PATCH] AnWind box64 bionic: built-in SysV shm + Android RELR + v0.4.2 static-exit fix
 
-AnWind box64 bionic core: built-in SysV shm + wiring (v0.3.0..master universal anchors)
+Four AnWind additions on top of upstream box64 (authored against v0.4.4,
+backports make it apply to v0.4.2 as well):
 
-WHY: bionic hosts have no shm* symbols (dynamic x86_64 binaries get
-"function not found", static ones ENOSYS via the raw syscall switch), and
-Android kernels usually ship without CONFIG_SYSVIPC. This file adds a
-memfd/ashmem-backed SysV shm implementation compiled into box64 and wires
-all three consumer paths (wrapped-libc GOM bridge, raw syscalls 29/30/31/67,
-direct bionic references).
+1. Native SysV shm for bionic hosts (v3.2.18, completed in v3.2.21):
+   - src/libtools/android_shmem.c: memfd-backed shmget/shmat/shmctl/shmdt
+     (+ my_* aliases), /dev/ashmem fallback. Compiled in only for ANDROID.
+   - wrappedlibc_private.h: shm* GO -> GOM on ANDROID, bridging x86_64
+     dynamic binaries (wine) to the built-in implementation.
+   - x64syscall.c: forward raw syscalls 29/30/31/67 (static binaries) to
+     libc (host) or the built-in emulation (ANDROID).
+   - CMakeLists.txt: compile android_shmem.c for ANDROID builds.
 
-Anchors are byte-identical in every release tag v0.3.0-v0.4.5 (per-tag
-verified; whitespace differences are absorbed by patch -l):
-  - CMakeLists.txt: ")" + "if(NOT STATICBUILD)" - unique 2-line combo
-  - src/core.c: "int emulate(x64emu_t* emu, elfheader_t* elf_header)" - unique
-  - src/emu/x64syscall.c: "#include <poll.h>" - unique; and the
-    "switch (s) {" + "case 0:  // sys_read" + "S_RAX = read(S_EDI, ..." 3-line
-    combo that only matches the MAIN syscall switch
-  - src/wrapped/wrappedlibc_private.h: the 4-line GO(shmat..shmget) block,
-    tail-anchored by "GOW(shutdown, iFii)"
+2. Android RELR packed-relocation support (v3.2.20) - the wineboot SIGSEGV fix:
+   - elfparser.c / elfparser32.c: recognize DT_ANDROID_RELR (0x6fffe000) /
+     DT_ANDROID_RELRSZ (0x6fffe001) / DT_ANDROID_RELRENT (0x6fffe003).
+     NDK r29 lld emits these by default for bionic-linked .so (same standard
+     RELR encoding, Android tag numbers). Without this, ALL packed
+     R_X86_64_RELATIVE relocations are silently skipped: the bionic wine
+     x86_64-unix/ntdll.so then keeps raw link-time self-pointers in .data
+     (virtual.c: static struct list reserved_areas = LIST_INIT(reserved_areas))
+     and dies with SIGSEGV in mmap_add_reserved_area (LIST_FOR_EACH reads
+     area->base at [unrelocated_ptr + 0x10]) on the very first wineboot -
+     device log: ntdll.so+0x770a8, R15=0x00000000000928d8 (raw),
+     RAX=0x0000003f000928d8 (correct relocated), access to 0x928e8.
+   - CMakeLists.txt: gate -Wno-pointer-type-mismatch (gcc-only) to GNU cc so
+     clang builds stop printing "unrecognized command-line option" noise.
 
-Applied with `patch -l --fuzz=0` (custom_patch in build.sh): a hunk whose
-anchors are missing fails the dry-run and the WHOLE FILE is skipped
-(patchOptional semantics) - it is never force-placed at a wrong offset.
+3. .dynsym export fix (v3.2.21) - the missing piece that kept the CI
+   "shm 符号未进动态导出表" warning alive and broke the wine shm bridge:
+   upstream compiles everything with -fvisibility=hidden
+   (CMakeLists: add_definitions(-std=gnu11 -funwind-tables
+   -fvisibility=hidden)).  A hidden symbol NEVER enters .dynsym - even
+   though the box64 link line already carries --export-dynamic (upstream
+   set_target_properties(box64 PROPERTIES ENABLE_EXPORTS ON) generates it
+   via CMake's CMAKE_EXE_EXPORTS_C_FLAG): hidden globals are demoted to
+   LOCAL in the output .symtab (llvm-nm prints lowercase 't'), so
+   library.c getSymbolInSymbolMaps' runtime bridge
+   dlsym(dlopen(NULL), "my_shmget") could never find them ("Warning,
+   function my_shmget not found" on every wine shm call).  On top of that
+   the my_* aliases have no static references at all, so --gc-sections
+   (in the NDK lld default flag set) discarded their sections entirely.
+   Fix: all eight entry points are now declared with
+   __attribute__((visibility("default"))) - the same mechanism upstream
+   uses for its EXPORT-ed my_* wrappers (e.g. my_XShmCreateImage).
+   Default-visibility globals are put into .dynsym by --export-dynamic
+   AND become garbage-collection roots, so both failure modes are closed.
+
+4. v3.3.17 backport for v0.4.2: static-binary exit fix (upstream v0.4.4
+   introduced box64_hasinterp / hasElfInterp).  On v0.4.2 the exit bridge
+   was pushed into RDX (the rtld_fini slot of the SysV process-entry ABI)
+   even for STATIC binaries; glibc's __libc_start_main registers it with
+   __cxa_atexit, and __run_exit_handlers CALLS atexit handlers BEFORE
+   RUN_HOOK(__libc_atexit) (_IO_cleanup, the stdio flush) - so the
+   emulation ended mid-exit: buffered stdout was never flushed (empty
+   output, exit code 128 = truncated bridge address).  Root-caused live:
+   RIP=0x3000008b == exit_bridge+11 (CC 'SC' + 8-byte NULL fn), vanilla
+   v0.4.2 reproduces with a plain static printf binary.  The backport
+   sets RDX=0 right before DynaRun when the main ELF has no PT_INTERP
+   (anwind_hasinterp), semantically what upstream v0.4.4 does inside
+   the block.  Anchored on DynaRun(emu) so the SAME hunk also applies
+   to v0.4.4+ trees where both lines simply run (idempotent, verified
+   clean apply + correct placement on v0.4.4).  This is what makes the
+   CI "smoke test [static live run]" pass on box64 v0.4.2.  Verified
+   in-sandbox: v0.4.2+patch+backport runs the static shm smoke to
+   ANWIND_SMOKE_OK 16963, exit 0, piped capture OK.
+
+   Also fixed here: the -Wno-pointer-type-mismatch gate was GNU-gated
+   (backwards - it is a CLANG warning flag; gcc printed "cc1: note:
+   unrecognized command-line option" noise in every CI host-smoke
+   build).  Now gated to Clang: NDK builds keep upstream behavior, the
+   gcc host smoke build stays clean (sandbox-verified: 0 cc1 notes).
+   Verified on the real NDK r29 aarch64 build:
+   nm -D build/box64 => T shmget/shmat/shmctl/shmdt/my_shmget/my_shmat/
+   my_shmctl/my_shmdt, and x64Syscall_linux's cases 29/30/31/67 call the
+   built-in implementation directly (disassembly-checked).
 ---
 diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 9eb7f3c..990c9c2 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
-@@ -490,2 +490,9 @@
+@@ -321,7 +321,9 @@ endif()
+ if(NOGIT)
+     add_definitions(-DNOGIT)
+ endif()
+-if(CI)
++if(CI AND CMAKE_C_COMPILER_ID MATCHES "Clang")
++    # AnWind: -Wno-pointer-type-mismatch is a CLANG flag; gcc does not know it
++    # (cc1 "unrecognized" note, seen live in CI host smoke) - clang-only gate.
+     add_definitions(-Wno-pointer-type-mismatch)
+ endif()
+ 
+@@ -488,6 +490,13 @@ set(ELFLOADER_SRC
+     "${BOX64_ROOT}/src/tools/pe_tools.c"
+     "${BOX64_ROOT}/src/wrapped/generated/wrapper.c"
  )
 +if(ANDROID)
 +    # AnWind: native SysV shm emulation (bionic has no shm*, and Android
@@ -37,15 +104,25 @@ diff --git a/CMakeLists.txt b/CMakeLists.txt
 +        )
 +endif()
  if(NOT STATICBUILD)
+     list(APPEND ELFLOADER_SRC
+         "${BOX64_ROOT}/src/mallochook.c"
 diff --git a/src/core.c b/src/core.c
---- a/src/core.c
-+++ b/src/core.c
-@@ -1573,3 +1573,26 @@
-+/* AnWind backport (pre-v0.4.4 only; upstream has box64_hasinterp since
-+ * v0.4.4): non-zero when the main emulated ELF has a PT_INTERP (dynamic
-+ * binary). See the static-exit patch (0005/0006) for why this matters. */
+index 3dfb57e..44afe8a 100644
+@@ -61,6 +61,10 @@
+ path_collection_t box64_addlibs = {0};
+ int box64_is32bits = 0;
+ int box64_isAddressSpace32 = 0;
++/* AnWind backport (v0.4.2 only; upstream has box64_hasinterp since v0.4.4):
++ * non-zero when the main emulated ELF has a PT_INTERP (dynamic binary).
++ * See the emulate() comment below for why this matters. */
 +int anwind_hasinterp = 0;
-+
+ int box64_rdtsc = 0;
+ uint8_t box64_rdtsc_shift = 0;
+ int box64_mapclean = 0;
+@@ -1516,8 +1520,26 @@
+     return 0;
+ }
+ 
 +/* AnWind backport of upstream v0.4.4 fix (upstream fn hasElfInterp in
 + * elfloader.c): 1 when the emulated ELF is dynamically linked. */
 +static int anwind_elf_has_interp(elfheader_t* head)
@@ -67,10 +144,84 @@ diff --git a/src/core.c b/src/core.c
  {
 +    anwind_hasinterp = anwind_elf_has_interp(elf_header);
      // get entrypoint
+     my_context->ep = GetEntryPoint(my_context->maplib, elf_header);
+ 
+@@ -1540,6 +1562,18 @@
+         Push64(emu, my_context->exit_bridge);  // push to pop it just after
+         SetRDX(emu, Pop64(emu));    // RDX is exit function
+     }
++    // AnWind backport of upstream v0.4.4 fix: for STATIC binaries (no
++    // PT_INTERP) RDX must be 0, not the exit bridge. The SysV process-entry
++    // ABI passes rtld_fini in RDX; glibc's __libc_start_main registers it
++    // with __cxa_atexit, and __run_exit_handlers calls atexit handlers
++    // BEFORE RUN_HOOK(__libc_atexit) (_IO_cleanup, the stdio flush). With
++    // the exit bridge in RDX the emulation ended inside the rtld_fini call:
++    // buffered stdout was never flushed (empty output) and the exit code
++    // became the truncated bridge address (128). Upstream v0.4.4 gates this
++    // on box64_hasinterp inside the block above; placing it right before
++    // DynaRun is semantically identical and keeps this hunk applicable to
++    // both v0.4.2 and v0.4.4+ trees (on v0.4.4+ both lines simply run).
++    if(!anwind_hasinterp) SetRDX(emu, 0);
+     DynaRun(emu);
+     // Get EAX
+     int ret = GetEAX(emu);
+diff --git a/src/elfs/elfparser.c b/src/elfs/elfparser.c
+index 37a2d37..8152388 100644
+--- a/src/elfs/elfparser.c
++++ b/src/elfs/elfparser.c
+@@ -288,12 +288,24 @@ elfheader_t* ParseElfHeader64(FILE* f, const char* name, int exec)
+                 h->relaent = val;
+                 break;
+             case DT_RELR:
++            case 0x6fffe000:
++                // AnWind: DT_ANDROID_RELR - Android/bionic flavored RELR packed
++                // relocations. NDK r29 lld emits these by default
++                // (--use-android-relr-tags) for bionic-linked .so: the SAME
++                // standard RELR encoding (address entries + bitmaps), only the
++                // dynamic tag numbers differ. Without this alias, all packed
++                // R_X86_64_RELATIVE relocs are silently skipped and any
++                // statically self-referencing .data symbol (wine virtual.c
++                // reserved_areas = LIST_INIT(reserved_areas) etc.) keeps its
++                // raw link-time address -> SIGSEGV on first dereference.
+                 h->relr = ptr;
+                 break;
+             case DT_RELRSZ:
++            case 0x6fffe001:  // DT_ANDROID_RELRSZ (see DT_ANDROID_RELR above)
+                 h->relrsz = val;
+                 break;
+             case DT_RELRENT:
++            case 0x6fffe003:  // DT_ANDROID_RELRENT (see DT_ANDROID_RELR above)
+                 h->relrent = val;
+                 break;
+             case DT_PLTGOT:
+diff --git a/src/elfs/elfparser32.c b/src/elfs/elfparser32.c
+index 3a3f66c..eff9f9a 100755
+--- a/src/elfs/elfparser32.c
++++ b/src/elfs/elfparser32.c
+@@ -213,12 +213,15 @@ elfheader_t* ParseElfHeader32(FILE* f, const char* name, int exec)
+                     h->relaent = val;
+                     break;
+                 case DT_RELR:
++                case 0x6fffe000:  // DT_ANDROID_RELR (AnWind: bionic RELR tags, same encoding)
+                     h->relr = ptr;
+                     break;
+                 case DT_RELRSZ:
++                case 0x6fffe001:  // DT_ANDROID_RELRSZ
+                     h->relrsz = val;
+                     break;
+                 case DT_RELRENT:
++                case 0x6fffe003:  // DT_ANDROID_RELRENT
+                     h->relrent = val;
+                     break;
+                 case DT_PLTGOT:
 diff --git a/src/emu/x64syscall.c b/src/emu/x64syscall.c
+index 3dfb57e..44afe8a 100644
 --- a/src/emu/x64syscall.c
 +++ b/src/emu/x64syscall.c
-@@ -23,1 +23,12 @@
+@@ -23,6 +23,17 @@
+ #include <poll.h>
+ #include <sys/epoll.h>
+ 
 +#ifdef ANDROID
 +// AnWind: bionic has no <sys/shm.h> implementations - these are the
 +// compiled-in emulated ones (src/libtools/android_shmem.c)
@@ -82,10 +233,14 @@ diff --git a/src/emu/x64syscall.c b/src/emu/x64syscall.c
 +#include <sys/ipc.h>
 +#include <sys/shm.h>
 +#endif
- #include <poll.h>
-@@ -600,3 +600,33 @@
-     switch (s) {
-+#if defined(__linux__)
+ #include "x64_signals.h"
+ #include "os.h"
+ #include "debug.h"
+@@ -1052,6 +1063,36 @@ void EXPORT x64Syscall_linux(x64emu_t *emu)
+             S_RAX = -ENOSYS;
+             #endif
+             break;
++        #if defined(__linux__)
 +        // AnWind: SysV shm syscalls were unsupported (ENOSYS) - forward them
 +        // to the libc implementation (on ANDROID that is the emulation
 +        // compiled into box64: src/libtools/android_shmem.c).  Reproduced with
@@ -114,33 +269,16 @@ diff --git a/src/emu/x64syscall.c b/src/emu/x64syscall.c
 +            if(S_RAX==-1)
 +                S_RAX = -errno;
 +            break;
-+#endif
-         case 0:  // sys_read
-             S_RAX = read(S_EDI, (void*)R_RSI, (size_t)R_RDX);
-diff --git a/src/wrapped/wrappedlibc_private.h b/src/wrapped/wrappedlibc_private.h
---- a/src/wrapped/wrappedlibc_private.h
-+++ b/src/wrapped/wrappedlibc_private.h
-@@ -1863,5 +1863,14 @@
-+#ifdef ANDROID
-+// AnWind: bionic libc has no SysV shm symbols - bridge to the native
-+// emulation compiled into box64 (my_* in src/libtools/android_shmem.c)
-+GOM(shmat, pFipi)
-+GOM(shmctl, iFiip)
-+GOM(shmdt, iFp)
-+GOM(shmget, iFiLi)
-+#else
- GO(shmat, pFipi)
- GO(shmctl, iFiip)
- GO(shmdt, iFp)
- GO(shmget, iFiLi)
-+#endif
- GOW(shutdown, iFii)
++        #endif
+         default:
+             printf_log(LOG_INFO, "Warning: Unsupported Syscall 0x%02Xh (%d)\n", s, s);
+             S_RAX = -ENOSYS;
 diff --git a/src/libtools/android_shmem.c b/src/libtools/android_shmem.c
 new file mode 100644
+index 0000000..224ba21
 --- /dev/null
 +++ b/src/libtools/android_shmem.c
-@@ -0,0 +1,402 @@
-+++ b/src/libtools/android_shmem.c
+@@ -0,0 +1,401 @@
 +/*****************************************************************************
 + * AnWind addition: native SysV shared-memory for bionic (ANDROID) builds.
 + *
@@ -542,3 +680,27 @@ new file mode 100644
 +ANW_EXPORT int my_shmdt(const void* shmaddr) { return shmdt(shmaddr); }
 +
 +#endif /* ANDROID */
+diff --git a/src/wrapped/wrappedlibc_private.h b/src/wrapped/wrappedlibc_private.h
+index c147d76..adc7025 100644
+--- a/src/wrapped/wrappedlibc_private.h
++++ b/src/wrapped/wrappedlibc_private.h
+@@ -1860,10 +1860,19 @@ GOW(sgetsgent_r, iFpppLp)
+ #endif
+ GO(sgetspent, pFp)
+ GOW(sgetspent_r, iFpppLp)
++#ifdef ANDROID
++// AnWind: bionic libc has no SysV shm symbols - bridge to the native
++// emulation compiled into box64 (my_* in src/libtools/android_shmem.c)
++GOM(shmat, pFipi)
++GOM(shmctl, iFiip)
++GOM(shmdt, iFp)
++GOM(shmget, iFiLi)
++#else
+ GO(shmat, pFipi)
+ GO(shmctl, iFiip)
+ GO(shmdt, iFp)
+ GO(shmget, iFiLi)
++#endif
+ GOW(shutdown, iFii)
+ GOWM(__sigaction, iFEipp)
+ GOWM(sigaction, iFEipp)
