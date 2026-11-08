@@ -299,6 +299,69 @@ pre_setup() {
     echo "    构建继续；若运行期异常请检查源码树内 *.rej 文件"
   fi
 
+  # v3.3.20（用户问题 3）：wine.inf 垃圾 AppDefaults 注册表剔除 —— proton 树
+  # 的 loader/wine.inf.in 带 31 条 Valve/Steam 游戏兼容 hack（ActOfWar/
+  # BlackOps3/DIRT5/ffxvi/RDR2 等的 atiadlxx=builtin、winxp/win7 Version、
+  # xinput/d3d8/vulkan-1 覆盖、SpeechSynth 禁用），wineboot 建前缀时全部
+  # 打进 user.reg —— 设备上前缀里凭空多出几十个无关游戏的注册表块。
+  # 官方 wine-11.0 / hangover-11.16 树的 wine.inf.in【零】AppDefaults 行
+  # （已实测核对），剔除后与官方树行为完全一致、无任何功能损失（这些
+  # 条目只服务于 Steam 上的具体游戏，Android 上全是死配置）。幂等：
+  # 官方/hangover 树无匹配行 = no-op。
+  strip_wineinf_appdefaults() {
+    local _inf="${srcDir}/${pjName}/loader/wine.inf.in"
+    [[ -f "$_inf" ]] || { echo "ℹ️ 无 loader/wine.inf.in（树结构差异），跳过 AppDefaults 剔除"; return 0; }
+    if ! grep -q '^HKCU,Software\\Wine\\AppDefaults\\' "$_inf"; then
+      echo "wine.inf 无游戏 AppDefaults hack（官方/hangover 树），跳过剔除"
+      return 0
+    fi
+    local _n
+    _n="$(grep -c '^HKCU,Software\\Wine\\AppDefaults\\' "$_inf")" || true
+    sed -i '/^HKCU,Software\\Wine\\AppDefaults\\/d' "$_inf" \
+      && echo "已剔除 wine.inf 的 ${_n} 条游戏 AppDefaults hack（proton 树专属垃圾注册表，官方树为零）"
+    # 硬校验：剔除后必须一条不剩（防 sed 特殊字符半途失效静默落空）
+    if grep -q '^HKCU,Software\\Wine\\AppDefaults\\' "$_inf"; then
+      echo "::error::wine.inf AppDefaults 剔除未生效（仍有残留行）！"
+      return 1
+    fi
+    return 0
+  }
+  strip_wineinf_appdefaults
+
+  # v3.3.20（用户问题 1）：proton_11.0 树 M_PERTURB bionic 兼容 —— Valve 在
+  # unix loader.c 的 start_main_thread 无条件调 mallopt( M_PERTURB, 0xff/0 )
+  #（加载期堆内存填充加固）。M_PERTURB 是 glibc malloc.h 专属宏，bionic 任何
+  # API 级别都没有 → CI proton_11.0 两架构均阵亡于：
+  #   dlls/ntdll/unix/loader.c:2454:14: error: use of undeclared identifier 'M_PERTURB'
+  # 修法：两处调用各自包 #ifdef M_PERTURB 守卫（glibc 构建行为逐字节不变；
+  # bionic 跳过该加固 —— 它只影响 freed-memory 毒化，无功能语义）。幂等：
+  # 旧树/官方树无此调用 = no-op。
+  fix_mallopt_perturb_bionic() {
+    local _f="${srcDir}/${pjName}/dlls/ntdll/unix/loader.c"
+    [[ -f "$_f" ]] || return 0
+    if ! grep -q 'mallopt( M_PERTURB' "$_f"; then
+      echo "ℹ️ loader.c 无 M_PERTURB 调用（非 proton_11 树），跳过 bionic 兼容守卫"
+      return 0
+    fi
+    if grep -q 'ANWIND_M_PERTURB_COMPAT' "$_f"; then
+      echo "M_PERTURB bionic 守卫已注入过，跳过"
+      return 0
+    fi
+    sed -i 's|^    mallopt( M_PERTURB, 0xff );|#ifdef M_PERTURB\n    mallopt( M_PERTURB, 0xff );\n#else\n    /* ANWIND_M_PERTURB_COMPAT: bionic 无 M_PERTURB（glibc malloc.h 专属参数），跳过内存填充加固 */\n#endif|' "$_f"
+    sed -i 's|^    mallopt( M_PERTURB, 0 );|#ifdef M_PERTURB\n    mallopt( M_PERTURB, 0 );\n#endif|' "$_f"
+    # 硬校验：每个 mallopt( M_PERTURB 调用必须各有 #ifdef 守卫（调用数 == 守卫数）
+    local _calls _guards
+    _calls="$(grep -c 'mallopt( M_PERTURB' "$_f")" || true
+    _guards="$(grep -c '^#ifdef M_PERTURB$' "$_f")" || true
+    if [[ "${_calls:-0}" -ne "${_guards:-0}" ]] || [[ "${_guards:-0}" -eq 0 ]]; then
+      echo "::error::M_PERTURB bionic 守卫注入未生效（mallopt 调用 ${_calls} 处 / 守卫 ${_guards} 处）！"
+      return 1
+    fi
+    echo "已注入 M_PERTURB bionic 守卫（proton_11 树 glibc 专属 mallopt 参数，bionic 编译根因）"
+    return 0
+  }
+  fix_mallopt_perturb_bionic
+
   # v3.3.10（用户问题 3，参考用户 wine-wow64-no.yml）：mfplat 的 mf 补丁
   # —— MFCreateDXGIDeviceManager 环境变量 stub（WINE_DO_NOT_CREATE_DXGI_
   # DEVICE_MANAGER=1 → E_NOTIMPL，上游游戏/播放器 mfplat 强建 DX manager
@@ -517,10 +580,17 @@ pre_setup() {
   # → C:\windows\syswow64 整目录无内容、x86 程序全不可用。0010 移植
   # hangover 的 HODLL 环境变量机制后本校验自然通过；hangover-11.16 自带
   # 机制（无 xtajit 字样）亦跳过。
+  # v3.3.20（CI proton_11.0 实证误报修复）：wine 11 起 get_cpu_dll_name
+  # 已把 I386-on-ARM64 的默认 CPU dll 硬编码为 libwow64fex.dll（hangover
+  # 机制上游化），xtajit64.dll 字样仅存于"选错 dll"的告警分支 —— 0010 的
+  # 目的（默认不找 xtajit）已由上游达成，补丁不适用、校验也不应触发。
+  # 判据追加：树已默认 libwow64fex（I386 分支三目 ARM64→libwow64fex）即视为
+  # 已修复形态，放行。
   if [[ "${args}" == *"--enable-archs=arm64ec,"* ]] \
      && [[ -f dlls/wow64/syscall.c ]] \
      && grep -q 'xtajit' dlls/wow64/syscall.c 2>/dev/null \
-     && ! grep -q 'HODLL' dlls/wow64/syscall.c 2>/dev/null; then
+     && ! grep -q 'HODLL' dlls/wow64/syscall.c 2>/dev/null \
+     && ! grep -q 'libwow64fex' dlls/wow64/syscall.c 2>/dev/null; then
     echo "::error::0010-fix-arm64ec-hodll-wow64 补丁未生效（wow64/syscall.c 仍按注册表找 xtajit.dll，无 HODLL 机制）！"
     echo "   32 位 wow64 进程必死于 load_64bit_module c0000135（找不到 CPU 仿真 dll）"
     echo "   后果：wineboot Wow64Install 段不执行 → syswow64 目录为空、x86 程序无法运行"

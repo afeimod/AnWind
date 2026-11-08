@@ -28,6 +28,9 @@
 #   install-dxvk <name> [文件|URL|版本] 向容器安装 DXVK（tzst/tar.gz;
 #                                 顶层 system32/syswow64 直解, x64/x32 自动重映射）
 #   install-vkd3d <name> [文件|URL|版本] 向容器安装 VKD3D-Proton（Vulkan D3D12）
+#   install-driver <zip|tar|URL> 安装 Vulkan 驱动包（yuzu zip / adpkg zip /
+#                                wrapper 栈 tar；独立目录多驱动共存）
+#   driver list/select/remove   Vulkan 驱动管理（查看/容器选择/卸载）
 #   doctor                        体检：X11 / 后端 / 音频 / 容器
 #
 # 显示：X11（AnWind 内置 X 服务，socket 在 App 侧 tmp/.X11-unix）。
@@ -158,11 +161,11 @@ cmd_set() {
         k="${kv%%=*}"; v="${kv#*=}"
         [ "$k" = "$kv" ] && die "参数格式: key=value（收到: $kv）"
         case "$k" in
-            backend|preset|screen|gallium|env|wine|dxoverrides)
+            backend|preset|screen|gallium|env|wine|dxoverrides|wrapper|turnip)
                 conf_write_kv "$_c" "$k" "$v"
                 msg "已设置 $name: $k=$v"
                 ;;
-            *) die "不允许修改的键: $k（可改: backend/preset/screen/gallium/env/wine/dxoverrides）" ;;
+            *) die "不允许修改的键: $k（可改: backend/preset/screen/gallium/env/wine/dxoverrides/wrapper/turnip）" ;;
         esac
     done
 }
@@ -192,11 +195,17 @@ cmd_clone() {
 cmd_remove() {
     local name="$1"
     [ -d "$CONT_ROOT/$name" ] || die "容器不存在: $name"
+    # v3.2.11（用户问题 1）：rm -rf 前的路径防御 —— 空名时 "$CONT_ROOT/" 即容器
+    # 根本身（-d 判真），rm -rf 会把所有容器连根删光；"."/".."/含分隔符同理。
+    # App 端 ContainerManager.remove 已同款加固，双端一致。
+    case "$name" in ""|"."|".."|*[!A-Za-z0-9._-]*|*/*)
+        die "拒绝删除：容器名非法（\"$name\"）" ;;
+    esac
     printf '确认删除容器 "%s"（含全部数据）? [y/N] ' "$name"
     local _a; read -r _a
     case "$_a" in y|Y|yes)
         "$AW_WINE" --container "$name" wineserver -k >/dev/null 2>&1 || true
-        rm -rf "$CONT_ROOT/$name"
+        rm -rf -- "$CONT_ROOT/$name"
         msg "已删除: $name"
         [ "$(conf_read "$CONF_GLOBAL" default_container "")" = "$name" ] \
             && sed -i '/^default_container=/d' "$CONF_GLOBAL" 2>/dev/null
@@ -536,6 +545,90 @@ cmd_install_vkd3d() {
     return 0
 }
 
+# ---------- Vulkan 驱动管理（v3.3.20：yuzu zip / adpkg zip / wrapper tar） ----------
+# 驱动库 = usr/share/anwind-wrapper/drivers/<slot>/（App 图形驱动页同款，
+# WinNative DriverPackages 独立目录模型）。安装实现委托 anwind-wine
+# --install-driver（zip/tar 通吃 + meta.json libraryName + ABI 门禁 +
+# 自生成 ICD/meta 全套语义），此处补 list/select/remove 管理面。
+DRIVERS_ROOT="$RFS_USR/share/anwind-wrapper/drivers"
+
+cmd_install_driver() {
+    local src="$1"
+    [ -n "$src" ] || die "用法: anwind-container install-driver <zip|tar(.gz/.xz/.bz2/.zst)|URL>"
+    exec "$AW_WINE" --install-driver "$src" "${2:-}"
+}
+
+cmd_driver() {
+    local sub="${1:-list}"
+    shift || true
+    case "$sub" in
+        list)
+            [ -d "$DRIVERS_ROOT" ] || { echo "（暂无已装驱动，install-driver 安装）"; return 0; }
+            local _d _n=0 _lib _ws _sel _selw
+            for _d in "$DRIVERS_ROOT"/*/; do
+                [ -f "$_d/meta.json" ] || continue
+                _n=$((_n+1))
+                _lib="$(sed -n 's/.*"libraryName"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$_d/meta.json" | head -n 1)"
+                _ws="$(sed -n 's/.*"wrapperStack"[[:space:]]*:[[:space:]]*\(true\|false\).*/\1/p' "$_d/meta.json" | head -n 1)"
+                printf "  %-40s %s  库=%s\n" "$(basename "$_d")" \
+                    "$([ "$_ws" = "true" ] && echo '[wrapper栈]' || echo '[turnip]')" "${_lib:-?}"
+            done
+            [ "$_n" = 0 ] && { echo "（暂无已装驱动，install-driver 安装）"; return 0; }
+            echo
+            echo "容器选择（driver select）查看/设置；App 图形驱动页同款槽位"
+            ;;
+        select)
+            local name="$1" slot="${2:-}"
+            [ -d "$CONT_ROOT/$name" ] || die "容器不存在: $name"
+            local _c="$CONT_ROOT/$name/container.conf"
+            if [ -z "$slot" ]; then
+                echo "wrapper=$(conf_read "$_c" wrapper "")  turnip=$(conf_read "$_c" turnip "")"
+                return 0
+            fi
+            if [ "$slot" = "off" ] || [ "$slot" = "-" ]; then
+                conf_write_kv "$_c" wrapper ""
+                conf_write_kv "$_c" turnip ""
+                msg "容器 $name: Vulkan 驱动切回 Mesa 内置 Turnip"
+                return 0
+            fi
+            [ -f "$DRIVERS_ROOT/$slot/icd.json" ] \
+                || die "驱动未安装: $slot（driver list 查看；install-driver 安装）"
+            # wrapper 栈槽位（含 libvulkan_wrapper.so）落 wrapper= 键，
+            # turnip 驱动落 turnip= 键（App 图形驱动页同款键位）
+            if [ -f "$DRIVERS_ROOT/$slot/libvulkan_wrapper.so" ]; then
+                conf_write_kv "$_c" wrapper "$slot"
+                conf_write_kv "$_c" turnip ""
+                msg "容器 $name: wrapper=$slot（wrapper 栈；配对/路由的 turnip 由激活链自动处理）"
+            else
+                conf_write_kv "$_c" turnip "$slot"
+                conf_write_kv "$_c" wrapper ""
+                msg "容器 $name: turnip=$slot（android 平台构建将自动经 wrapper 栈路由）"
+            fi
+            ;;
+        remove)
+            local slot="$1"
+            [ -n "$slot" ] || die "用法: anwind-container driver remove <slot>"
+            local _dir="$DRIVERS_ROOT/$slot"
+            [ -d "$_dir" ] || die "驱动未安装: $slot"
+            # WinNative removeDriver 同语义：引用该槽位的容器先重置回内置
+            local _cd _val _hit=0
+            for _cd in "$CONT_ROOT"/*/; do
+                [ -f "$_cd/container.conf" ] || continue
+                _val="$(conf_read "$_cd/container.conf" wrapper "")"
+                [ "$_val" = "$slot" ] && { conf_write_kv "$_cd/container.conf" wrapper ""; _hit=1; }
+                _val="$(conf_read "$_cd/container.conf" turnip "")"
+                [ "$_val" = "$slot" ] && { conf_write_kv "$_cd/container.conf" turnip ""; _hit=1; }
+            done
+            [ "$_hit" = 1 ] && msg "已把引用 $slot 的容器切回 Mesa 内置 Turnip"
+            rm -rf "$_dir"
+            msg "已卸载驱动: $slot"
+            ;;
+        *)
+            die "用法: anwind-container driver <list|select|remove> ..."
+            ;;
+    esac
+}
+
 # ---------- doctor ----------
 cmd_doctor() {
     echo "==== AnWind Wine 容器体检 ===="
@@ -660,6 +753,11 @@ anwind-container — AnWind Wine 容器管理（bionic rootfs / X11）
                                 32 位→syswow64; x64/x32 布局自动重映射）
   install-vkd3d <name> [文件|URL|ver]
                                 向容器安装 VKD3D-Proton（Vulkan D3D12）
+  install-driver <zip|tar|URL>  安装 Vulkan 驱动包（yuzu zip / adpkg zip /
+                                wrapper 栈 tar → 独立目录多驱动共存）
+  driver list                   列出已装 Vulkan 驱动（turnip / wrapper 栈）
+  driver select <容器> [槽位|off] 查看/设置容器的 Vulkan 驱动
+  driver remove <槽位>          卸载驱动（引用它的容器自动切回 Mesa 内置）
   doctor                        体检：X11 / 后端 / 音频 / 容器
 
 显示: X11（AnWind 内置 X 服务，socket 在 App 侧 tmp/.X11-unix）
@@ -687,6 +785,8 @@ case "$CMD" in
     install-box64) cmd_install_box64 "$@" ;;
     install-dxvk)  cmd_install_dxvk "$@" ;;
     install-vkd3d) cmd_install_vkd3d "$@" ;;
+    install-driver) cmd_install_driver "$@" ;;
+    driver)        cmd_driver "$@" ;;
     doctor)        cmd_doctor ;;
     help|--help|-h) usage ;;
     *) die "未知命令: $CMD（help 查看用法）" ;;

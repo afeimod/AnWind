@@ -367,6 +367,25 @@ object WrapperDriverSupport {
         val adrenotoolsDriverName: String?,
         /** 被路由到的 wrapper 栈 slot（本槽直挂时 null）。 */
         val routedFromWrapperSlot: String?,
+        /**
+         * v3.3.20：wrapper 栈的 hook 库目录（ADRENOTOOLS_HOOKS_PATH 指向）。
+         *
+         * wrapper 生态的 libvulkan_wrapper.so（用户提供的 wrapper-22 等）经
+         * env 读取四件套：ADRENOTOOLS_DRIVER_PATH / DRIVER_NAME /
+         * HOOKS_PATH / REDIRECT_DIR，其中 HOOKS_PATH 是 libmain_hook.so /
+         * libhook_impl.so 所在目录 —— 没有它 adrenotools 初始化必报
+         * "Couldn't preload the hook implementation"，wrapper dlopen 后
+         * 零 ICD 生效（即用户“切换 wrapper 依旧无法使用”的运行期根因）。
+         * wrapper 栈模式下 = wrapper slot 目录；直挂模式 null。
+         */
+        val adrenotoolsHooksDir: File? = null,
+        /**
+         * v3.3.20：adrenotools 临时目录（patched .so 落盘位）。
+         *
+         * wrapper 内部拼 `<driverPath>/temp`（WinNative vulkan.c 同款），
+         * 目录必须【存在且可写】；激活时由 RootfsLauncher 创建。
+         */
+        val adrenotoolsTempDir: File? = null,
         /** 未闭环依赖（点名用；非空 = 不可用）。 */
         val missingDeps: List<String>,
         /** 平台/依赖预检全通过，可注入。 */
@@ -452,6 +471,8 @@ object WrapperDriverSupport {
             adrenotoolsDriverDir = adrenoDir,
             adrenotoolsDriverName = adrenoName,
             routedFromWrapperSlot = routedFrom,
+            adrenotoolsHooksDir = if (useWrapper) useDir else null,
+            adrenotoolsTempDir = if (useWrapper && adrenoDir != null) File(adrenoDir, "temp") else null,
             missingDeps = missing,
             usable = usable
         )
@@ -657,9 +678,20 @@ object WrapperDriverSupport {
         return planFlatLayout(root)
     }
 
-    /** 从 lib 目录文件里挑 turnip 驱动本体（libvulkan* 且非 wrapper）。 */
+    /**
+     * 从 lib 目录文件里挑 turnip 驱动本体。
+     *
+     * v3.3.20（用户实测反馈修复）：识别面扩大 —— 旧版只认 `libvulkan*.so`，
+     * 而 yuzu 生态/WinNative 测试包存在 `vulkan.<name>.so` 命名（用户提供的
+     * turnip_mrpurple_T28-toasted.adpkg.zip 的 libraryName 就是
+     * `vulkan.purple.so`；WinNative DriverPackagesTest 也用 `vulkan.adreno.so`）。
+     * 现在 `libvulkan*.so` 与 `vulkan.*.so` 双形态都认（wrapper 除外）。
+     */
     private fun pickDriverSo(names: List<String>): String? =
-        names.firstOrNull { it.startsWith("libvulkan") && it.endsWith(".so") && it != WRAPPER_SO }
+        names.firstOrNull {
+            (it.startsWith("libvulkan") || it.startsWith("vulkan.")) &&
+                it.endsWith(".so") && it != WRAPPER_SO
+        }
 
     /** A) rootfs 布局包：usr/lib 的全部 .so + usr/share/vulkan 的 json。 */
     private fun planRootfsLayout(base: File): InstallPlan? {
@@ -695,7 +727,12 @@ object WrapperDriverSupport {
                 val m = Regex("\"libraryName\"\\s*:\\s*\"([^\"]+)\"")
                     .find(meta.readText())?.groupValues?.get(1)
                 if (!m.isNullOrBlank() && File(base, m).isFile) {
-                    val files = mutableListOf(File(m).let { it to it.name })
+                    // v3.3.20（用户实测反馈修复）：致命 bug —— 旧版首条目
+                    // `File(m)` 按【进程 CWD】解析而非 staging 目录，meta.json
+                    // 包（yuzu zip / adpkg zip）必在 copyTo 抛 FileNotFoundException
+                    // → 全部报“驱动落位失败”，即用户“无法安装 yuzu 类驱动”
+                    // 的直接根因。改为 File(base, m)。
+                    val files = mutableListOf(File(base, m).let { it to it.name })
                     base.listFiles { f -> f.isFile && f.name.endsWith(".so") }
                         .orEmpty().forEach { f -> if (f.name != m) files.add(f to f.name) }
                     val driverSo = if (m == WRAPPER_SO) pickDriverSo(soNames) else m

@@ -1473,8 +1473,12 @@ private fun GraphicsDriverTab(
                             turnip = ""
                         ))
                     else ->
+                        // v3.3.20：切到 turnip 类型时预选首个可用版本 —— 优先
+                        // 已装 turnip 槽位（➕ zip 安装），其次 /opt/tz tar 包
+                        //（与 wrapper 分支同款双源预选）
                         onChange(edit.copy(
-                            turnip = tzTars.firstOrNull()?.display ?: "",
+                            turnip = installedDrivers.firstOrNull { !it.wrapperStack }?.slot
+                                ?: tzTars.firstOrNull()?.display ?: "",
                             wrapper = ""
                         ))
                 }
@@ -1518,11 +1522,41 @@ private fun GraphicsDriverTab(
                 }
             }
             "tz" -> {
-                DriverCombo(
-                    tars = tzTars, value = edit.turnip,
-                    dirNote = "rootfs/opt/tz 内未发现 tar 包；也可直接用 ➕ 安装（推荐，装进独立驱动库）",
-                    onSelect = { onChange(edit.copy(turnip = it, wrapper = "")) }
-                )
+                // v3.3.20（用户实测反馈修复）：已装 turnip 槽位（➕ zip 安装的
+                // yuzu/adpkg 包）此前【选不了】—— 本下拉只扫 /opt/tz 的 tar，
+                // 装完的独立目录槽位根本不在列表里（即"装了也没法用"的 UI 根因）。
+                // 现在与 wrapper 分支同款双源：已装槽位优先 + /opt/tz tar 包。
+                val tzOpts = buildList {
+                    add("默认（切回 Mesa 内置）" to "")
+                    installedDrivers.filter { !it.wrapperStack }
+                        .forEach { add(it.slot to it.slot) }
+                    tzTars.filter { t -> installedDrivers.none { it.slot == t.display } }
+                        .forEach { add("${it.display}（/opt/tz 包，运行时自动安装）" to it.display) }
+                }
+                if (tzOpts.size == 1) {
+                    DriverCombo(
+                        tars = tzTars, value = edit.turnip,
+                        dirNote = "rootfs/opt/tz 内未发现 tar 包；也可直接用 ➕ 安装（推荐，装进独立驱动库）",
+                        onSelect = { onChange(edit.copy(turnip = it, wrapper = "")) }
+                    )
+                } else {
+                    GComboBox(
+                        options = tzOpts.map { it.first },
+                        selected = tzOpts.firstOrNull { it.second == edit.turnip }?.first
+                            ?: edit.turnip.ifBlank { "默认（切回 Mesa 内置）" },
+                        onSelect = { label ->
+                            tzOpts.firstOrNull { it.first == label }?.second
+                                ?.let { onChange(edit.copy(turnip = it, wrapper = "")) }
+                        }
+                    )
+                    installedDrivers.firstOrNull { it.slot == edit.turnip && !it.wrapperStack }?.let { d ->
+                        GNote("库：${d.libraryName}（来源包 ${d.sourceFile}，目录 ${d.dir.name}/）")
+                    }
+                    if (edit.turnip.isNotBlank() && installedDrivers.none { it.slot == edit.turnip }
+                        && tzTars.any { it.display == edit.turnip }) {
+                        GNote("${edit.turnip}：运行时自动从 /opt/tz 安装到独立驱动库")
+                    }
+                }
             }
             else -> GNote("rootfs 自带 Mesa Turnip（freedreno ICD，msm/kgsl 双 KMD）—— 与 wrapper 并列共存，零冲突")
         }
@@ -1545,15 +1579,20 @@ private fun GraphicsDriverTab(
                     )
                 )
             }
-            if (vkType == "wrapper" && edit.wrapper.isNotBlank()
-                && installedDrivers.any { it.slot == edit.wrapper }) {
+            // v3.3.20：卸载按钮对 wrapper 与 turnip 槽位都开放（旧版仅 wrapper）
+            val activeVkSlot = when {
+                edit.wrapper.isNotBlank() && edit.wrapper != "off" -> edit.wrapper
+                edit.turnip.isNotBlank() && edit.turnip != "off" -> edit.turnip
+                else -> ""
+            }
+            if (activeVkSlot.isNotBlank() && installedDrivers.any { it.slot == activeVkSlot }) {
                 GSmallButton("🗑 卸载", GuanliColors.red, Modifier.weight(1f)) {
                     cs.launch(Dispatchers.IO) {
                         val err = runCatching {
-                            WrapperDriverSupport.uninstall(edit.wrapper) { }
+                            WrapperDriverSupport.uninstall(activeVkSlot) { }
                         }.getOrElse { "卸载异常：${it.message}" }
                         withContext(Dispatchers.Main) {
-                            if (err == null) onChange(edit.copy(wrapper = ""))
+                            if (err == null) onChange(edit.copy(wrapper = "", turnip = ""))
                             driversTick++
                             android.widget.Toast.makeText(
                                 context, err ?: "✅ 已卸载（切回 Mesa 内置 Turnip）",

@@ -42,8 +42,8 @@
 # 【互斥】锚点为 0007c（cstub）+ 0007（cproxy x64 守卫）应用后的
 # proton_9.0/wine-9.x 形态；wine-10+ 树 cproxy/cstub 已重写 → hunk
 # 全不命中 → 静默跳过。
---- a/dlls/rpcrt4/cstub.c	2026-11-08 04:09:17.197974290 +0000
-+++ b/dlls/rpcrt4/cstub.c	2026-11-08 04:09:17.201974301 +0000
+--- a/dlls/rpcrt4/cstub.c       2026-11-08 04:09:17.197974290 +0000
++++ b/dlls/rpcrt4/cstub.c       2026-11-08 04:09:17.201974301 +0000
 @@ -146,13 +146,92 @@
      ".long 8*("#num")\n\t"
  
@@ -139,7 +139,7 @@
 +#define THUNK_ENTRY_SIZE 0  /* EC：vtable 用函数指针填充，无偏移算术 */
  
 -#elif defined(__arm__)
-+#elif defined(__arm__)#elif defined(__arm__)
++#elif defined(__arm__)
  
  #define THUNK_ENTRY_SIZE 12
  #define THUNK_ENTRY(num) \
@@ -233,8 +233,8 @@
      }
  };
  
---- a/dlls/rpcrt4/cproxy.c	2026-11-08 04:09:17.197974290 +0000
-+++ b/dlls/rpcrt4/cproxy.c	2026-11-08 04:09:17.201974301 +0000
+--- a/dlls/rpcrt4/cproxy.c      2026-11-08 04:09:17.197974290 +0000
++++ b/dlls/rpcrt4/cproxy.c      2026-11-08 04:09:17.201974301 +0000
 @@ -193,7 +193,188 @@
      "mov w16,#("#num")\n\t" \
      "b " __ASM_NAME("call_stubless_func") "\n\t"

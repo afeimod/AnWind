@@ -218,6 +218,64 @@ pre_setup() {
     echo "    构建继续；若运行期异常请检查源码树内 *.rej 文件"
   fi
 
+  # v3.3.20（用户问题 3）：wine.inf 垃圾 AppDefaults 注册表剔除（与
+  # hangover-wine 配方同款）—— proton 树的 loader/wine.inf.in 带 31 条
+  # Valve/Steam 游戏兼容 hack（ActOfWar/BlackOps3/DIRT5/ffxvi/RDR2 等的
+  # atiadlxx=builtin、winxp/win7 Version、xinput/d3d8/vulkan-1 覆盖、
+  # SpeechSynth 禁用），wineboot 建前缀时全部打进 user.reg。官方
+  # wine-11.0 / hangover-11.16 树零 AppDefaults 行（实测核对），剔除后
+  # 与官方树一致、无功能损失。幂等：官方/hangover 树无匹配行 = no-op。
+  strip_wineinf_appdefaults() {
+    local _inf="${srcDir}/${pjName}/loader/wine.inf.in"
+    [[ -f "$_inf" ]] || { echo "ℹ️ 无 loader/wine.inf.in（树结构差异），跳过 AppDefaults 剔除"; return 0; }
+    if ! grep -q '^HKCU,Software\\Wine\\AppDefaults\\' "$_inf"; then
+      echo "wine.inf 无游戏 AppDefaults hack（官方/hangover 树），跳过剔除"
+      return 0
+    fi
+    local _n
+    _n="$(grep -c '^HKCU,Software\\Wine\\AppDefaults\\' "$_inf")" || true
+    sed -i '/^HKCU,Software\\Wine\\AppDefaults\\/d' "$_inf" \
+      && echo "已剔除 wine.inf 的 ${_n} 条游戏 AppDefaults hack（proton 树专属垃圾注册表，官方树为零）"
+    if grep -q '^HKCU,Software\\Wine\\AppDefaults\\' "$_inf"; then
+      echo "::error::wine.inf AppDefaults 剔除未生效（仍有残留行）！"
+      return 1
+    fi
+    return 0
+  }
+  strip_wineinf_appdefaults
+
+  # v3.3.20（用户问题 1）：proton_11.0 树 M_PERTURB bionic 兼容（与
+  # hangover-wine 配方同款）。CI proton_11.0 x86_64 阵亡于：
+  #   dlls/ntdll/unix/loader.c:2454:14: error: use of undeclared identifier 'M_PERTURB'
+  # M_PERTURB 为 glibc malloc.h 专属，bionic 无 → 两处 mallopt 调用各包
+  # #ifdef M_PERTURB 守卫（glibc 行为不变，bionic 跳过内存填充加固）。
+  # 幂等：旧树/官方树无此调用 = no-op。
+  fix_mallopt_perturb_bionic() {
+    local _f="${srcDir}/${pjName}/dlls/ntdll/unix/loader.c"
+    [[ -f "$_f" ]] || return 0
+    if ! grep -q 'mallopt( M_PERTURB' "$_f"; then
+      echo "ℹ️ loader.c 无 M_PERTURB 调用（非 proton_11 树），跳过 bionic 兼容守卫"
+      return 0
+    fi
+    if grep -q 'ANWIND_M_PERTURB_COMPAT' "$_f"; then
+      echo "M_PERTURB bionic 守卫已注入过，跳过"
+      return 0
+    fi
+    sed -i 's|^    mallopt( M_PERTURB, 0xff );|#ifdef M_PERTURB\n    mallopt( M_PERTURB, 0xff );\n#else\n    /* ANWIND_M_PERTURB_COMPAT: bionic 无 M_PERTURB（glibc malloc.h 专属参数），跳过内存填充加固 */\n#endif|' "$_f"
+    sed -i 's|^    mallopt( M_PERTURB, 0 );|#ifdef M_PERTURB\n    mallopt( M_PERTURB, 0 );\n#endif|' "$_f"
+    # 硬校验：每个 mallopt( M_PERTURB 调用必须各有 #ifdef 守卫（调用数 == 守卫数）
+    local _calls _guards
+    _calls="$(grep -c 'mallopt( M_PERTURB' "$_f")" || true
+    _guards="$(grep -c '^#ifdef M_PERTURB$' "$_f")" || true
+    if [[ "${_calls:-0}" -ne "${_guards:-0}" ]] || [[ "${_guards:-0}" -eq 0 ]]; then
+      echo "::error::M_PERTURB bionic 守卫注入未生效（mallopt 调用 ${_calls} 处 / 守卫 ${_guards} 处）！"
+      return 1
+    fi
+    echo "已注入 M_PERTURB bionic 守卫（proton_11 树 glibc 专属 mallopt 参数，bionic 编译根因）"
+    return 0
+  }
+  fix_mallopt_perturb_bionic
+
   # v3.3.10（用户问题 3，参考用户 wine-wow64-no.yml）：mfplat 的 mf 补丁
   # —— 与 hangover-wine 配方同款（MFCreateDXGIDeviceManager 的
   # WINE_DO_NOT_CREATE_DXGI_DEVICE_MANAGER=1 stub + bytestream handler

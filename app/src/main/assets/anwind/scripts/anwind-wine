@@ -85,7 +85,7 @@ CONF_GLOBAL="$RFS_USR/etc/anwind/container.conf"
 X11_SOCK_DIR="$APP_PREFIX/tmp/.X11-unix"
 LOG_DIR="$CONT_ROOT/logs"
 
-version() { echo "anwind-wine 2.16.0 (v3.3.16 Vulkan 驱动模型：turnip/wrapper 独立目录共存 + VK_ICD_FILENAMES 切换，WinNative 同款)"; }
+version() { echo "anwind-wine 2.17.0 (v3.3.20 WinNative 全语义：yuzu/adpkg zip 安装 + wrapper 栈 ADRENOTOOLS 四件套激活 + android 驱动自动路由 + AppDefaults 垃圾注册表清除)"; }
 
 # ---------- 纯日志（v2.12 唯一新增的执行代码） ----------
 # 仅当 App 会话传入 ANWIND_SESSION_LOG（可写文件路径）时生效；终端直跑
@@ -113,6 +113,9 @@ anwind-wine v2.3 — AnWind 容器 Wine 启动器（bionic rootfs / X11 · 环�
   anwind-wine [--container <name>] <wine 参数...>
   anwind-wine --debug <wine 参数...> 诊断模式（+seh/+module/vulkan/wgl 错误全开，排障用）
   anwind-wine --list-backends        查看可用后端（box64/hangover/fexcore/native）
+  anwind-wine --install-driver <zip|tar|URL> [槽位名]
+                                      安装 Vulkan 驱动包（yuzu zip / adpkg zip /
+                                      wrapper 栈 tar；同 App 图形驱动页 ➕）
   anwind-wine --version
 
 说明:
@@ -723,115 +726,158 @@ apply_gpu_env() {
     esac
 }
 
-# ---------- Vulkan 用户驱动（v3.3.16 WinNative 模型：独立目录多驱动共存） ----------
+# ---------- Vulkan 用户驱动（v3.3.20 WinNative DriverPackages 全语义） ----------
 # 容器 conf 的 wrapper / turnip 键（App 图形驱动页"Vulkan 驱动"同款）：
 #   wrapper=<slot>  → usr/share/anwind-wrapper/drivers/<slot>/icd.json
-#   turnip=<tar名>  → 同一驱动库（/opt/tz 的 tar 由启动链或此处兜底安装）
+#   turnip=<tar名>  → 同一驱动库（/opt/wrapper、/opt/tz 的 zip/tar 由
+#                     此处兜底安装）
 # 都未选 = Mesa 内置 Turnip（loader 默认搜索 rootfs 的 icd.d，不注入）。
-# 每个驱动一个独立目录（.so + 自生成 ICD），rootfs 任何文件不被覆盖 ——
-# turnip 与 wrapper 并列选择、多版本共存、切换零文件读写
-# （WinNative DriverPackages.java 同语义）。
-# 激活 = VK_ICD_FILENAMES + LD_LIBRARY_PATH 前插驱动目录（附属 .so
-# 解析位）+ GL 侧 zink 联动（auto/空/zink 档）。
-apply_vk_driver() {
-    local _slot _dir _icd _tar _ext _srcdir
-    _slot="$(conf_read "$CONT_CONF" wrapper "")"
-    [ -n "$_slot" ] && [ "$_slot" != "off" ] && [ "$_slot" != "auto" ] \
-        || _slot="$(conf_read "$CONT_CONF" turnip "")"
-    [ -n "$_slot" ] && [ "$_slot" != "off" ] && [ "$_slot" != "auto" ] || return 0
-    _dir="$(printf '%s' "$_slot" | tr -c 'A-Za-z0-9._+-' '-')"
-    _icd="$RFS_USR/share/anwind-wrapper/drivers/$_dir/icd.json"
+# 每个驱动一个独立目录（.so + 自生成 ICD + meta），rootfs 任何文件不被
+# 覆盖 —— turnip 与 wrapper 并列选择、多版本共存、切换零文件读写。
+#
+# v3.3.20（用户实测反馈："切换 wrapper 依旧无法使用，也无法安装 yuzu 类
+# 驱动"—— 两处根因修复，对齐 WinNative DriverPackages + setDriverById）：
+#  1) 安装：yuzu/adpkg 的 zip 包此前【完全无法装】（兜底安装只认 tar，
+#     meta.json 的 libraryName 定位也缺）—— 现在 zip（unzip/busybox/
+#     bsdtar 三级回退）与 tar(.gz/.xz/.bz2/.zst) 通吃，meta.json 的
+#     libraryName 优先（vulkan.purple.so 这类 adpkg 命名也认）；
+#  2) 激活：wrapper 栈（libvulkan_wrapper.so）此前只注入
+#     VK_ICD_FILENAMES —— wrapper 生态的 .so 从 env 读四件套
+#     （ADRENOTOOLS_DRIVER_PATH/NAME/HOOKS_PATH/REDIRECT_DIR），
+#     缺 HOOKS_PATH 时 adrenotools 报 "Couldn't preload the hook
+#     implementation"、hook 链建立失败 → wrapper dlopen 后零 ICD 生效
+#     （DXVK 报 VK_KHR_surface not supported 黑屏）。现在：
+#     * wrapper 栈模式：ICD→wrapper，同包/路由的 turnip 走
+#       ADRENOTOOLS_DRIVER_PATH/NAME，hooks 目录随 ADRENOTOOLS_HOOKS_PATH
+#       注入（libmain_hook.so 所在的 wrapper slot 目录），temp 目录预建；
+#     * android 平台裸 turnip（无 libxcb = 无 X11 WSI，yuzu/Adrenotools
+#       型构建）：自动找已装 wrapper 栈槽位路由（ICD 换 wrapper 的，
+#       turnip 经 adrenotools 注入），与 App 侧 activationFor 同语义；
+#     * glibc 构建（依赖 libc.so.6）：bionic 原生 wine 无法加载，安装期
+#       拒装、激活期跳过（App identifyElf 同款判定，tr+grep 启发式实现）。
+# 激活 = VK_ICD_FILENAMES + LD_LIBRARY_PATH 前插驱动目录（+ GL zink 联动）。
+DRIVERS_ROOT="$RFS_USR/share/anwind-wrapper/drivers"
 
-    # 兜底安装：slot 未安装而 /opt/wrapper 或 /opt/tz 有对应包 → 装进
-    # 独立目录（App UI ➕ 安装是主入口，此处保证旧容器/终端路径可用）
-    if [ ! -f "$_icd" ]; then
-        _tar=""
-        for _srcdir in wrapper tz; do
-            for _ext in tar.gz tar.xz tar.bz2; do
-                if [ -f "$RFS_ROOT/opt/$_srcdir/$_slot.$_ext" ]; then
-                    _tar="$RFS_ROOT/opt/$_srcdir/$_slot.$_ext"
-                    break 2
-                fi
-            done
-        done
-        if [ -n "$_tar" ]; then
-            vk_driver_install_from_tar "$_slot" "$_tar" "$_dir"
-        else
-            info "警告: Vulkan 驱动 $_slot 未安装且 /opt 内无对应包（Vulkan 走 Mesa 内置）"
-            return 0
-        fi
-    fi
-    [ -f "$_icd" ] || return 0
-
-    # 激活：Vulkan 侧 ICD + 附属库目录；GL 侧 auto/空/zink 联动 zink
-    export VK_ICD_FILENAMES="$_icd"
-    export LD_LIBRARY_PATH="$RFS_USR/share/anwind-wrapper/drivers/$_dir${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-    local _g
-    _g="$(conf_read "$CONT_CONF" gallium auto)"
-    case "$_g" in
-        auto|" "|""|zink)
-            export MESA_LOADER_DRIVER_OVERRIDE=zink
-            export GALLIUM_DRIVER=zink
-            export ZINK_DESCRIPTORS="${ZINK_DESCRIPTORS:-lazy}"
-            export ZINK_DEBUG="${ZINK_DEBUG:-compact}"
-            export TU_DEBUG="${TU_DEBUG:-noconform}"
-            info "Vulkan 驱动激活: $_slot（VK_ICD_FILENAMES + GL 联动 zink）"
-            ;;
-        *)
-            info "Vulkan 驱动激活: $_slot（GL 保持 $_g，仅 Vulkan 侧走用户驱动）"
-            ;;
-    esac
+vk_slot_dirname() { # <slot> → 安全目录名（App safeSlotName 同款）
+    local _d
+    _d="$(printf '%s' "$1" | sed -e 's/\.\(zip\|tar\|tar\.\(gz\|xz\|bz2\|zst\)\)$//' \
+        -e 's/[^A-Za-z0-9._+-]/-/g')"
+    _d="${_d#"${_d%%[!.-]*}"}"   # 去头部 .-
+    _d="${_d%"${_d##*[!.-]}"}"   # 去尾部 .-
+    [ -n "$_d" ] || _d="driver"
+    printf '%s' "$_d" | head -c 64
 }
 
-# 从 tar 包装驱动到独立目录（支持 rootfs 布局 / meta.json / yuzu 裸包）
-vk_driver_install_from_tar() { # <slot> <tar> <dir>
-    local _slot="$1" _tar="$2" _dir="$3"
+# ELF ABI 启发式（App identifyElf 的 shell 等价）：.dynstr 的 NUL 分隔
+# 字符串里精确匹配 —— libc.so.6=glibc / libc.so=bionic；两者同现或同缺
+# = unknown。激活/安装双闸（glibc 在 bionic 原生 wine 进程 dlopen 必败）。
+vk_so_abi() { # <so文件> → bionic|glibc|unknown
+    local _f="$1" _b=0 _g=0
+    [ -f "$_f" ] || { echo "unknown"; return; }
+    if tr '\0' '\n' < "$_f" 2>/dev/null | grep -qx 'libc.so.6'; then _g=1; fi
+    if tr '\0' '\n' < "$_f" 2>/dev/null | grep -qx 'libc.so'; then _b=1; fi
+    if [ "$_g" = 1 ] && [ "$_b" = 0 ]; then echo "glibc"; return; fi
+    if [ "$_b" = 1 ] && [ "$_g" = 0 ]; then echo "bionic"; return; fi
+    echo "unknown"
+}
+
+# X11 WSI 启发式：DT_NEEDED 无 libxcb 系 = android 平台构建（需 wrapper 路由）
+vk_so_has_x11wsi() { # <so文件> → 0/1
+    tr '\0' '\n' < "$1" 2>/dev/null | grep -q '^libxcb' && return 0
+    return 1
+}
+
+vk_driver_install() { # <slot> <zip|tar包> <dir名> —— 装进独立目录
+    local _slot="$1" _pkg="$2" _dir="$3"
     local _stage="$RFS_USR/tmp/anwind-driver-install-$_dir"
-    local _base _so _lib _f _ndirs _nfiles _topdir _dest
+    local _base _so _lib _f _dest _abi
     rm -rf "$_stage" && mkdir -p "$_stage"
-    # tar 的压缩程序（xz/gzip/bzip2）在 rootfs 内：PATH 前插 rootfs bin
-    # （App 侧调用时 PATH 不含 rootfs；--unlink-first 防目标被占用）
+    # 解压工具在 rootfs 内：PATH 前插 rootfs bin（tar 的压缩程序同理）
     local _opath="${PATH:-/system/bin}"
     export PATH="$RFS_USR/bin:$RFS_USR/local/bin:$_opath"
-    if ! tar -xf "$_tar" -C "$_stage" --unlink-first 2>/dev/null; then
-        export PATH="$_opath"
-        info "警告: 驱动包 $_tar 解压失败（Vulkan 走 Mesa 内置）"
-        rm -rf "$_stage"
-        return 1
-    fi
+    case "$_pkg" in
+        *.zip)
+            if command -v unzip >/dev/null 2>&1; then
+                unzip -q -o "$_pkg" -d "$_stage" >/dev/null 2>&1 || {
+                    export PATH="$_opath"; rm -rf "$_stage"
+                    info "警告: 驱动包 $_pkg 解压失败（Vulkan 走 Mesa 内置）"; return 1; }
+            elif command -v busybox >/dev/null 2>&1 && busybox unzip --help >/dev/null 2>&1; then
+                busybox unzip -q -o "$_pkg" -d "$_stage" >/dev/null 2>&1 || {
+                    export PATH="$_opath"; rm -rf "$_stage"
+                    info "警告: 驱动包 $_pkg 解压失败（Vulkan 走 Mesa 内置）"; return 1; }
+            elif command -v bsdtar >/dev/null 2>&1; then
+                bsdtar -xf "$_pkg" -C "$_stage" >/dev/null 2>&1 || {
+                    export PATH="$_opath"; rm -rf "$_stage"
+                    info "警告: 驱动包 $_pkg 解压失败（Vulkan 走 Mesa 内置）"; return 1; }
+            else
+                export PATH="$_opath"; rm -rf "$_stage"
+                info "警告: 无 unzip/bsdtar，无法解压 zip 驱动包（pkg install unzip，或用 App 图形驱动页安装）"
+                return 1
+            fi
+            ;;
+        *)
+            if ! tar -xf "$_pkg" -C "$_stage" --unlink-first 2>/dev/null; then
+                export PATH="$_opath"; rm -rf "$_stage"
+                info "警告: 驱动包 $_pkg 解压失败（Vulkan 走 Mesa 内置）"
+                return 1
+            fi
+            ;;
+    esac
     export PATH="$_opath"
 
     _base="$_stage"
     # 剥壳：唯一顶层目录且根级无文件 → 下钻一层（usr 是布局本体不剥）
     if [ ! -d "$_stage/usr" ]; then
-        _ndirs="$(find "$_stage" -mindepth 1 -maxdepth 1 -type d ! -name '.*' | wc -l)"
-        _nfiles="$(find "$_stage" -mindepth 1 -maxdepth 1 -type f ! -name '.*' | wc -l)"
+        local _ndirs _nfiles _topdir
+        _ndirs="$(find "$_stage" -mindepth 1 -maxdepth 1 -type d ! -name '.*' 2>/dev/null | wc -l)"
+        _nfiles="$(find "$_stage" -mindepth 1 -maxdepth 1 -type f ! -name '.*' 2>/dev/null | wc -l)"
         if [ "$_ndirs" = "1" ] && [ "$_nfiles" = "0" ]; then
-            _topdir="$(find "$_stage" -mindepth 1 -maxdepth 1 -type d ! -name '.*' | head -n 1)"
+            _topdir="$(find "$_stage" -mindepth 1 -maxdepth 1 -type d ! -name '.*' 2>/dev/null | head -n 1)"
             [ "$(basename "$_topdir")" != "usr" ] && _base="$_topdir"
         fi
     fi
 
-    # 定位驱动 so：A) rootfs 布局 usr/lib；B) meta.json libraryName；C) 根级裸包
+    # 定位驱动 so：A) rootfs 布局 usr/lib；B) meta.json libraryName
+    #（v3.3.20：yuzu/adpkg zip 的首选路径，vulkan.purple.so 命名也认）；
+    # C) 根级裸包（libvulkan*.so / vulkan.*.so / wrapper 栈）
     _so=""
     if [ -d "$_base/usr/lib" ]; then
-        _so="$(find "$_base/usr/lib" -maxdepth 1 -name 'libvulkan*.so' -type f 2>/dev/null | head -n 1)"
+        _so="$(find "$_base/usr/lib" -maxdepth 1 -name 'libvulkan_wrapper.so' -type f 2>/dev/null | head -n 1)"
+        [ -z "$_so" ] && _so="$(find "$_base/usr/lib" -maxdepth 1 -name 'libvulkan*.so' -type f 2>/dev/null | head -n 1)"
+        [ -z "$_so" ] && _so="$(find "$_base/usr/lib" -maxdepth 1 -name 'vulkan.*.so' -type f 2>/dev/null | head -n 1)"
     fi
     if [ -z "$_so" ] && [ -f "$_base/meta.json" ]; then
         _lib="$(sed -n 's/.*"libraryName"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$_base/meta.json" | head -n 1)"
         [ -n "$_lib" ] && [ -f "$_base/$_lib" ] && _so="$_base/$_lib"
     fi
     if [ -z "$_so" ]; then
-        _so="$(find "$_base" -maxdepth 1 -name 'libvulkan*.so' -type f 2>/dev/null | head -n 1)"
+        _so="$(find "$_base" -maxdepth 1 -name 'libvulkan_wrapper.so' -type f 2>/dev/null | head -n 1)"
+        [ -z "$_so" ] && _so="$(find "$_base" -maxdepth 1 -name 'libvulkan*.so' -type f 2>/dev/null | head -n 1)"
+        [ -z "$_so" ] && _so="$(find "$_base" -maxdepth 1 -name 'vulkan.*.so' -type f 2>/dev/null | head -n 1)"
     fi
     if [ -z "$_so" ]; then
-        info "警告: 驱动包 $_tar 内未找到 libvulkan*.so（Vulkan 走 Mesa 内置）"
+        info "警告: 驱动包 $_pkg 内未找到 Vulkan 驱动库（libvulkan*.so / vulkan.*.so / libvulkan_wrapper.so）"
         rm -rf "$_stage"
         return 1
     fi
 
+    # ABI 门禁（App identifyElf 同语义）：glibc 构建在 bionic 原生 wine
+    # 进程 dlopen 必败（libc.so.6 无处可寻）→ 拒装，不再产出"选了必黑屏"的槽位
+    _abi="$(vk_so_abi "$_so")"
+    if [ "$_abi" = "glibc" ]; then
+        rm -rf "$_stage"
+        info "警告: 驱动 $_slot 为 glibc 构建（DT_NEEDED 含 libc.so.6），bionic 原生 wine 无法加载 —— 拒绝安装"
+        info "  出路: ① bionic 构建的 turnip 包 ② 或含 libvulkan_wrapper.so 的 wrapper 栈包（bionic 驱动经 adrenotools 路由）"
+        return 1
+    fi
+    if [ "$_abi" = "unknown" ]; then
+        rm -rf "$_stage"
+        info "警告: 无法识别驱动 $_slot 的 ABI（依赖表既无 libc.so 也无 libc.so.6）—— 拒绝安装"
+        return 1
+    fi
+
     # 落位独立目录：驱动 so + 附属 .so（+ rootfs 布局的 share/vulkan json）
-    _dest="$RFS_USR/share/anwind-wrapper/drivers/$_dir"
+    _dest="$DRIVERS_ROOT/$_dir"
     rm -rf "$_dest" && mkdir -p "$_dest"
     if [ -d "$_base/usr/lib" ]; then
         find "$_base/usr/lib" -maxdepth 1 -name '*.so' -type f -exec cp -p {} "$_dest/" \; 2>/dev/null
@@ -842,6 +888,15 @@ vk_driver_install_from_tar() { # <slot> <tar> <dir>
     fi
 
     # 自生成 ICD（宿主绝对路径，不信任包内 json）+ meta
+    local _iswrapper=0 _drvlib=""
+    [ "$(basename "$_so")" = "libvulkan_wrapper.so" ] && _iswrapper=1
+    if [ "$_iswrapper" = "0" ]; then
+        _drvlib="$(basename "$_so")"
+    elif [ -f "$_base/meta.json" ]; then
+        # wrapper 栈包内可能配对 turnip 本体（meta 的 driverLibrary；本 shell
+        # 兜底安装路径仅 rootfs 布局包会出现，扁平包一般纯 wrapper）
+        _drvlib=""
+    fi
     cat > "$_dest/icd.json" <<ICDEOF
 {
     "file_format_version": "1.0.0",
@@ -851,12 +906,121 @@ vk_driver_install_from_tar() { # <slot> <tar> <dir>
     }
 }
 ICDEOF
-    printf '{\n    "name": "%s",\n    "libraryName": "%s",\n    "sourceFile": "%s",\n    "installedAt": %s\n}\n' \
-        "$_slot" "$(basename "$_so")" "$(basename "$_tar")" "$(date +%s 2>/dev/null || echo 0)" \
+    printf '{\n    "name": "%s",\n    "libraryName": "%s",\n    "driverLibrary": "%s",\n    "platform": "bionic",\n    "wrapperStack": %s,\n    "sourceFile": "%s",\n    "installedAt": %s\n}\n' \
+        "$_slot" "$(basename "$_so")" "$_drvlib" "$_iswrapper" "$(basename "$_pkg")" "$(date +%s 2>/dev/null || echo 0)" \
         > "$_dest/meta.json"
     rm -rf "$_stage"
-    info "Vulkan 驱动 $_slot 已安装 → $_dest（独立目录，Mesa 不受影响）"
+    info "Vulkan 驱动 $_slot 已安装 → $_dest（独立目录，Mesa 不受影响；$([ "$_iswrapper" = 1 ] && echo wrapper 栈 || echo turnip 直挂)）"
     return 0
+}
+
+apply_vk_driver() {
+    local _slot _dir _icd _tar _f _srcdir _lib _basename _abi
+    _slot="$(conf_read "$CONT_CONF" wrapper "")"
+    [ -n "$_slot" ] && [ "$_slot" != "off" ] && [ "$_slot" != "auto" ] \
+        || _slot="$(conf_read "$CONT_CONF" turnip "")"
+    [ -n "$_slot" ] && [ "$_slot" != "off" ] && [ "$_slot" != "auto" ] || return 0
+    _dir="$(vk_slot_dirname "$_slot")"
+    local _dirfull="$DRIVERS_ROOT/$_dir"
+    _icd="$_dirfull/icd.json"
+
+    # 兜底安装：slot 未安装而 /opt/wrapper、/opt/tz 有对应 zip/tar 包 →
+    # 装进独立目录（App 图形驱动页 ➕ 是主入口，此处保证终端/旧容器可用）
+    if [ ! -f "$_icd" ]; then
+        _tar=""
+        for _srcdir in wrapper tz; do
+            for _f in "$RFS_ROOT/opt/$_srcdir/$_slot."*; do
+                [ -f "$_f" ] || continue
+                _tar="$_f"; break 2
+            done
+        done
+        if [ -n "$_tar" ]; then
+            vk_driver_install "$_slot" "$_tar" "$_dir" || return 0
+        else
+            info "警告: Vulkan 驱动 $_slot 未安装且 /opt 内无对应包（Vulkan 走 Mesa 内置）"
+            return 0
+        fi
+    fi
+    [ -f "$_icd" ] || return 0
+
+    # ICD 目标库（自生成 ICD 为绝对路径；相对路径按 slot 目录解析）
+    _lib="$(sed -n 's/.*"library_path"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$_icd" | head -n 1)"
+    [ -n "$_lib" ] || return 0
+    case "$_lib" in
+        /*) ;;
+        *) _lib="$DRIVERS_ROOT/$_dir/$_lib" ;;
+    esac
+    [ -f "$_lib" ] || return 0
+    _basename="$(basename "$_lib")"
+
+    # ABI 复核（防手改 ICD / 旧槽位）
+    _abi="$(vk_so_abi "$_lib")"
+    if [ "$_abi" = "glibc" ]; then
+        info "警告: Vulkan 驱动 $_slot 为 glibc 构建（bionic 原生 wine 无法加载），回退 Mesa 内置"
+        return 0
+    fi
+
+    if [ "$_basename" = "libvulkan_wrapper.so" ]; then
+        # ---- wrapper 栈模式（WinNative setDriverById + wrapper_icd 同款）----
+        # ICD→libvulkan_wrapper.so；turnip 本体（同包 meta.driverLibrary）
+        # 经 ADRENOTOOLS_* 注入；hooks 目录（libmain_hook.so 等所在）=
+        # wrapper slot 目录；temp 目录为 adrenotools patched .so 落盘位
+        #（wrapper 内部拼 <driverPath>/temp，WinNative vulkan.c 同款）
+        local _drv=""
+        _drv="$(sed -n 's/.*"driverLibrary"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$DRIVERS_ROOT/$_dir/meta.json" 2>/dev/null | head -n 1)"
+        export VK_ICD_FILENAMES="$_icd"
+        export LD_LIBRARY_PATH="$_dirfull${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+        export ADRENOTOOLS_HOOKS_PATH="$_dirfull"
+        if [ -n "$_drv" ] && [ -f "$_dirfull/$_drv" ]; then
+            export ADRENOTOOLS_DRIVER_PATH="$_dirfull"
+            export ADRENOTOOLS_DRIVER_NAME="$_drv"
+            mkdir -p "$_dirfull/temp" 2>/dev/null || true
+            info "Vulkan 驱动激活: $_slot（wrapper 栈 + adrenotools 加载 $_drv，hooks=$_dirfull；X11 WSI 由 wrapper 提供）"
+        else
+            info "Vulkan 驱动激活: $_slot（wrapper 栈，未配对 turnip 本体 → wrapper 走系统 GPU 驱动，hooks=$_dirfull）"
+        fi
+    elif vk_so_has_x11wsi "$_lib"; then
+        # ---- X11 平台构建（libxcb 直挂）：DXVK 交换链可直接创建 ----
+        export VK_ICD_FILENAMES="$_icd"
+        export LD_LIBRARY_PATH="$_dirfull${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+        info "Vulkan 驱动激活: $_slot（X11 平台构建直挂，bionic ✓）"
+    else
+        # ---- android 平台裸 turnip（yuzu/Adrenotools 型，无 X11 WSI）----
+        # 直挂必黑屏（VK_KHR_surface 不支持）—— 找已装 wrapper 栈槽位路由
+        #（App activationFor 同语义）：ICD 换 wrapper 的，turnip 走
+        # ADRENOTOOLS_*，X11 WSI 由 wrapper 的 xcb 侧提供
+        local _wdir="" _w
+        for _w in "$DRIVERS_ROOT"/*/; do
+            [ -f "$_w/libvulkan_wrapper.so" ] && [ -f "$_w/icd.json" ] && { _wdir="${_w%/}"; break; }
+        done
+        if [ -n "$_wdir" ]; then
+            export VK_ICD_FILENAMES="$_wdir/icd.json"
+            export LD_LIBRARY_PATH="$_dirfull:$_wdir${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+            export ADRENOTOOLS_DRIVER_PATH="$_dirfull"
+            export ADRENOTOOLS_DRIVER_NAME="$_basename"
+            export ADRENOTOOLS_HOOKS_PATH="$_wdir"
+            mkdir -p "$_dirfull/temp" 2>/dev/null || true
+            info "Vulkan 驱动激活: $_slot（android 平台构建 → 经 $(basename "$_wdir") 的 wrapper 栈路由 + adrenotools 加载 $_basename；X11 WSI 由 wrapper 提供）"
+        else
+            export VK_ICD_FILENAMES="$_icd"
+            export LD_LIBRARY_PATH="$_dirfull${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+            info "警告: Vulkan 驱动 $_slot 为 android 平台构建（无 X11 WSI）且未装 wrapper 栈 —— DXVK 交换链可能失败"
+            info "  出路: 装一个含 libvulkan_wrapper.so 的 wrapper 栈包（自动路由）或换 X11 平台构建包"
+            info "Vulkan 驱动激活: $_slot（直挂，无路由）"
+        fi
+    fi
+    # GL 侧 zink 联动（auto/空/zink 档）
+    local _g
+    _g="$(conf_read "$CONT_CONF" gallium auto)"
+    case "$_g" in
+        auto|" "|""|zink)
+            export MESA_LOADER_DRIVER_OVERRIDE=zink
+            export GALLIUM_DRIVER=zink
+            export ZINK_DESCRIPTORS="${ZINK_DESCRIPTORS:-lazy}"
+            export ZINK_DEBUG="${ZINK_DEBUG:-compact}"
+            export TU_DEBUG="${TU_DEBUG:-noconform}"
+            ;;
+    esac
 }
 
 # ---------- 用户附加环境 + DLL 覆盖 ----------
@@ -1243,6 +1407,28 @@ run_wine() {
         fi
         log "wineboot -i 退出码=$_wb_rc"
         echo
+        # v3.3.20（用户问题 3）：proton 树 wine.inf 的游戏 AppDefaults hack
+        # 兜底清除 —— Valve 树的 wine.inf.in 带 31 条 Steam 游戏兼容 hack
+        #（ActOfWar/BlackOps3/DIRT5/ffxvi/RDR2 等），wineboot 后全部打进
+        # user.reg。新 wine 包构建期已剔除（build.sh strip_wineinf_appdefaults），
+        # 存量包由此处文件级清除（与 App 侧 WineRegistry.sanitizeAppDefaults
+        # 同语义）。幂等：干净前缀零动作。
+        if [ -f "$WINEPREFIX/user.reg" ] \
+            && grep -q '^\[Software\\\\Wine\\\\AppDefaults\\\\' "$WINEPREFIX/user.reg" 2>/dev/null; then
+            local _ur="$WINEPREFIX/user.reg" _urt="$_ur.anwind-cleanup" _n
+            _n="$(grep -c '^\[Software\\\\Wine\\\\AppDefaults\\\\' "$_ur" 2>/dev/null || echo 0)"
+            awk '
+                /^\[Software\\\\Wine\\\\AppDefaults\\\\/ { skip=1; next }
+                /^\[/ { skip=0 }
+                !skip { print }
+            ' "$_ur" > "$_urt" 2>/dev/null
+            if [ -s "$_urt" ] && mv -f "$_urt" "$_ur" 2>/dev/null; then
+                info "已清除 user.reg 的 ${_n} 个游戏 AppDefaults 注册表块（proton wine.inf 的 Steam 游戏 hack，Android 上无用）"
+            else
+                rm -f "$_urt" 2>/dev/null
+                warn "AppDefaults 注册表清除写回失败（跳过，不影响使用）"
+            fi
+        fi
     fi
     # /opt/prefix 预置资产注入（v3.2.25；参考 startwine.sh 前缀构建段：
     # wineboot 后解压 /opt/prefix 资产 + 注册表导入 + dxvk。幂等标记，
@@ -1299,6 +1485,45 @@ anwind_vdesk_resolution() {
     echo "1280x720"
 }
 
+# v3.3.20：驱动包安装入口（anwind-container install-driver 的实现载体；
+# 亦可在终端直接 `anwind-wine --install-driver <zip|tar|URL>`）。复用
+# vk_driver_install 的全套语义（zip/tar 通吃 + meta.json libraryName +
+# ABI 门禁 + 自生成 ICD/meta），与 App 图形驱动页 ➕ 安装同款落位。
+anwind_wine_install_driver() { # <文件|URL> [槽位名]
+    local _src="$1" _slot="${2:-}" _f _tmp=0
+    [ -n "$_src" ] || { die "--install-driver 需要 <zip|tar(.gz/.xz/.bz2/.zst)|URL> [槽位名]"; }
+    case "$_src" in
+        http://*|https://*)
+            _f="$RFS_USR/tmp/anwind-dl/$(basename "$_src" | sed 's/[?].*//')"
+            mkdir -p "$(dirname "$_f")"
+            if command -v curl >/dev/null 2>&1; then
+                curl -L --fail --connect-timeout 20 -o "$_f" "$_src" || { die "下载失败: $_src"; }
+            elif command -v wget >/dev/null 2>&1; then
+                wget -q -O "$_f" "$_src" || { die "下载失败: $_src"; }
+            else
+                die "需要 curl 或 wget（pkg install curl）"
+            fi
+            _tmp=1
+            ;;
+        *)
+            _f="$_src"
+            [ -f "$_f" ] || { die "文件不存在: $_f"; }
+            ;;
+    esac
+    [ -n "$_slot" ] || _slot="$(basename "$_f")"
+    local _dir
+    _dir="$(vk_slot_dirname "$_slot")"
+    if vk_driver_install "$_slot" "$_f" "$_dir"; then
+        [ "$_tmp" = 1 ] && rm -f "$_f"
+        echo
+        echo "已装槽位: $_dir"
+        echo "启用: anwind-container driver select <容器> $_dir   （或 App 图形驱动页选择）"
+        return 0
+    fi
+    [ "$_tmp" = 1 ] && rm -f "$_f"
+    return 1
+}
+
 # ---------- 主入口 ----------
 CMD="${1:-}"
 [ -n "$CMD" ] || { version; echo; usage; exit 0; }
@@ -1317,6 +1542,12 @@ case "$CMD" in
     --list-backends|--backends)
         backend_list
         exit 0
+        ;;
+    --install-driver)
+        # v3.3.20：驱动包安装（不需要容器；anwind-container install-driver 委托至此）
+        shift
+        anwind_wine_install_driver "$@"
+        exit $?
         ;;
     --debug)
         # 诊断模式：seh（崩溃/异常）、模块加载、vulkan/wgl 错误全开，

@@ -662,6 +662,27 @@ object RootfsLauncher {
             // 2) 运行时目录兜底（rootfs tmp / X11 socket / XDG / 前缀 / logs）
             WineEnvironment.ensureRuntimeDirs(container)
 
+            // 2.5) v3.3.20（用户问题 3）：存量前缀的游戏 AppDefaults 注册表
+            //      兜底清除 —— proton 树 wine 包的 wine.inf 带 31 条 Steam
+            //      游戏 hack（atiadlxx/winxp/xinput 等），已建好的前缀里
+            //      user.reg 照样带着这些垃圾块。标记文件记录清除时的 wine
+            //      目录名：未清过 / 换过 wine → 清一次（幂等，干净前缀秒过）。
+            //      新前缀由 initializePrefixIfNeeded 的 wineboot 后清理覆盖。
+            runCatching {
+                val marker = File(container.prefixPath, ".anwind-appdefaults-clean")
+                val markerVal = if (marker.isFile) marker.readText().trim() else ""
+                if (markerVal != resolved.wineDir.name) {
+                    val removed = WineRegistry.sanitizeAppDefaults(
+                        File(container.prefixPath)
+                    ) { sink.stamp(it) }
+                    marker.parentFile?.mkdirs()
+                    marker.writeText(resolved.wineDir.name)
+                    if (removed > 0) {
+                        sink.stamp("（前缀垃圾注册表已清（$removed 块）；换 wine 运行时后会再检查一次）")
+                    }
+                }
+            }.onFailure { sink.stamp("⚠ AppDefaults 兜底清理跳过：${it.message}（不影响启动）") }
+
             // 3) 基础环境（隔离白名单）+ WINEPREFIX
             val env = LinkedHashMap(WineEnvironment.buildBaseEnv(container, resolved.wineDir))
             env["WINEPREFIX"] = container.prefixPath
@@ -794,16 +815,44 @@ object RootfsLauncher {
                         // 驱动目录前插 LD_LIBRARY_PATH（附属 .so 解析；wine 的
                         // LD_LIBRARY_PATH 首段是 rootfs/usr/lib，驱动目录更优先）
                         val driverDir = act.driverDir
-                        val existingLd = env["LD_LIBRARY_PATH"]
-                        env["LD_LIBRARY_PATH"] = if (existingLd.isNullOrBlank()) {
-                            driverDir.absolutePath
-                        } else {
-                            "${driverDir.absolutePath}:$existingLd"
+                        val ldParts = buildList {
+                            add(driverDir.absolutePath)
+                            // v3.3.20：路由模式下 turnip 本体目录也前插 —— 其
+                            // 附属 .so（如有）按目录优先级解析
+                            if (act.adrenotoolsDriverDir != null &&
+                                act.adrenotoolsDriverDir != driverDir
+                            ) add(act.adrenotoolsDriverDir.absolutePath)
+                            env["LD_LIBRARY_PATH"]?.takeIf { it.isNotBlank() }?.let { add(it) }
                         }
+                        env["LD_LIBRARY_PATH"] = ldParts.joinToString(":")
                         if (act.wrapperStack) {
                             // wrapper 栈模式（WinNative setDriverById + wrapper_icd 同款）：
                             // ICD→libvulkan_wrapper.so，turnip 经 ADRENOTOOLS_*
                             // 注入，X11 WSI 由 wrapper 的 xcb 侧提供
+                            //
+                            // v3.3.20（用户实测反馈修复）：ADRENOTOOLS_HOOKS_PATH
+                            // 此前从未注入 —— wrapper 生态的 libvulkan_wrapper.so
+                            // （用户提供的 wrapper-22 等）从 env 读四件套，没有
+                            // HOOKS_PATH 时 adrenotools 初始化报
+                            // "Couldn't preload the hook implementation"、
+                            // hook 链（libmain_hook.so → libhook_impl.so）无法
+                            // 建立 → wrapper dlopen 后零 ICD 生效（DXVK 报
+                            // VK_KHR_surface not supported 黑屏，即用户
+                            // "切换 wrapper 依旧无法使用"的运行期根因）。
+                            // hooks 目录 = wrapper 栈 slot 目录（libmain_hook.so
+                            // 等随包装在同一目录）。
+                            act.adrenotoolsHooksDir?.let { hooks ->
+                                env["ADRENOTOOLS_HOOKS_PATH"] = hooks.absolutePath
+                            }
+                            // adrenotools 临时目录（patched .so 落盘位）：wrapper
+                            // 内部拼 <driverPath>/temp，必须预创建（WinNative
+                            // vulkan.c 的 mkdir(tmpdir) 同款语义）
+                            act.adrenotoolsTempDir?.let { tmp ->
+                                runCatching { tmp.mkdirs() }
+                                    .onFailure {
+                                        sink.stamp("⚠ adrenotools 临时目录创建失败：${it.message}")
+                                    }
+                            }
                             if (act.adrenotoolsDriverName != null && act.adrenotoolsDriverDir != null) {
                                 env["ADRENOTOOLS_DRIVER_PATH"] = act.adrenotoolsDriverDir.absolutePath
                                 env["ADRENOTOOLS_DRIVER_NAME"] = act.adrenotoolsDriverName
@@ -811,10 +860,12 @@ object RootfsLauncher {
                                     "wrapper 栈激活（${
                                         if (act.routedFromWrapperSlot != null) "android 平台驱动，经 ${act.routedFromWrapperSlot} 的 wrapper 栈路由"
                                         else "本槽位 wrapper 栈"
-                                    }）：adrenotools 加载 ${act.adrenotoolsDriverName}，X11 WSI 由 wrapper 提供"
+                                    }）：adrenotools 加载 ${act.adrenotoolsDriverName}，X11 WSI 由 wrapper 提供" +
+                                        (act.adrenotoolsHooksDir?.let { "（hooks=${it.name}/）" } ?: "")
                                 )
                             } else {
-                                sink.stamp("wrapper 栈激活：ICD→libvulkan_wrapper.so（未配对 turnip 驱动本体，wrapper 可能回退系统驱动）")
+                                sink.stamp("wrapper 栈激活：ICD→libvulkan_wrapper.so（未配对 turnip 驱动本体，wrapper 回退系统 GPU 驱动）" +
+                                    (act.adrenotoolsHooksDir?.let { "（hooks=${it.name}/）" } ?: ""))
                             }
                             sink.stamp("Vulkan 驱动激活（$activeVkSlot）：VK_ICD_FILENAMES → ${act.icd.absolutePath}")
                         } else {

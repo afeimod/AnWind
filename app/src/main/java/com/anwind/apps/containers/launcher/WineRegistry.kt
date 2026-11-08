@@ -645,6 +645,14 @@ object WineRegistry {
             }
             if (lastCode == 0 || File(container.prefixPath, "system.reg").isFile) {
                 log("wineboot -i 完成（前缀 system.reg 已落盘）")
+                // v3.3.20（用户问题 3）：proton 树 wine.inf 的游戏 AppDefaults
+                // hack 兜底清除 —— 新 wine 包已在构建期剔除 wine.inf 的
+                // AppDefaults 行，但【存量 wine 包】（用户已安装的 proton_9/
+                // proton_10 等）的 wine.inf 仍带 31 条游戏 hack，wineboot 后
+                // 照样打进 user.reg。此处文件级清除 `[Software\\Wine\\
+                // AppDefaults\\...]` 注册表块，旧包建的前缀同样干净。
+                runCatching { sanitizeAppDefaults(File(container.prefixPath), log) }
+                    .onFailure { log("⚠ AppDefaults 注册表清理异常：${it.message}（不影响使用）") }
                 true
             } else {
                 log("wineboot -i 失败（退出码 $lastCode，159=SIGSYS/旧包fsync、1=加载失败、-1=超时强杀）")
@@ -655,6 +663,62 @@ object WineRegistry {
             log("wineboot 初始化异常：${e.message}")
             false
         }
+    }
+
+    /**
+     * v3.3.20（用户问题 3）：清除 user.reg 里的游戏 AppDefaults 注册表块。
+     *
+     * 【根因】Valve proton 树的 loader/wine.inf.in 带 31 条 Steam 游戏兼容
+     * hack（ActOfWar/BlackOps3/DIRT5/ffxvi/RDR2/Spider-Man 等的
+     * atiadlxx=builtin、winxp/win7 Version、xinput/d3d8/vulkan-1 覆盖、
+     * SpeechSynth 禁用），wineboot 建前缀/升级前缀时全部写入 user.reg 的
+     * `[Software\\Wine\\AppDefaults\\<exe>]` 块 —— Android 上全是无关死配置
+     * （官方 wine-11.0 / hangover-11.16 树零 AppDefaults 行，已实测核对）。
+     *
+     * 构建期剔除（build.sh strip_wineinf_appdefaults）治新包；本函数文件级
+     * 清除【存量包建的前缀】：
+     *  * user.reg 块结构：`[Software\\Wine\\AppDefaults\\xxx.exe] <ts>` 头 +
+     *    `#time=...` + 若干值行，直到下一个 `[` 开头的块头；
+     *  * 只删 `Software\\Wine\\AppDefaults\\` 块（HKCU 侧），其余注册表
+     *    原样保留；
+     *  * 幂等：无匹配块 = no-op；前缀无 user.reg（异常形态）= no-op。
+     *
+     * @return 清除的块数（0 = 本就干净）
+     */
+    fun sanitizeAppDefaults(prefix: File, log: (String) -> Unit = {}): Int {
+        val userReg = File(prefix, "user.reg")
+        if (!userReg.isFile) return 0
+        val lines = runCatching { userReg.readLines() }.getOrNull() ?: return 0
+        val out = ArrayList<String>(lines.size)
+        var skipping = false
+        var removed = 0
+        for (line in lines) {
+            if (line.startsWith("[")) {
+                // 新块头：AppDefaults 块进入跳过态，其余块头结束跳过态
+                skipping = line.startsWith("[Software\\\\Wine\\\\AppDefaults\\\\")
+                if (skipping) removed++
+                else out.add(line)
+            } else if (!skipping) {
+                out.add(line)
+            }
+        }
+        if (removed == 0) return 0
+        // 先写临时文件再原子替换 —— wine 进程可能并发持有 user.reg
+        val tmp = File(prefix, ".user.reg.anwind-cleanup")
+        runCatching {
+            tmp.writeText(out.joinToString("\n") + "\n")
+            if (!tmp.renameTo(userReg)) {
+                // rename 失败（跨句柄占用等）回退直接写
+                tmp.copyTo(userReg, overwrite = true)
+                tmp.delete()
+            }
+        }.onFailure {
+            tmp.delete()
+            log("⚠ user.reg AppDefaults 清除写回失败：${it.message}")
+            return 0
+        }
+        log("已清除 user.reg 的 ${removed} 个游戏 AppDefaults 注册表块（proton wine.inf 携带的 Steam 游戏兼容 hack，Android 上无用）")
+        return removed
     }
 
     /**
