@@ -6,54 +6,65 @@ buildSys="cmake"
 license="MIT"
 
 # ============================================================
-# v3.3.16（box64-0.4.2 冒烟修复）：补丁基线下调 v0.4.4 → v0.4.2
+# v3.3.23（全版本补丁集重写）：删除"版本基线前置判断"
 # ------------------------------------------------------------
-# 【事故回放】CI 选 v0.4.2 构建：v3.3.10 的版本前置判断把
-# revision < v0.4.4 一律 doNotApplyPatch=1 跳过 0001 补丁 ——
-# 产物成为【未打补丁】降级形态（shm 断言跳过 + 大字警告），
-# 用户按提示"选 v0.4.4 及以上"才能拿完整特性。
-# 【实测勘误（本轮沙箱全量 dry-run 验证）】0001 补丁在：
-#   v0.4.4  ：全部 hunk 精确命中（基线）；
-#   v0.4.2  ：全部 hunk 命中（仅行号偏移），且 elfparser.c 的
-#             DT_RELR/RELRSZ/RELRENT case 结构与 v0.4.4 完全一致
-#             （逐行号核对）—— 补丁语义在 v0.4.2 上完整成立；
-#   v0.4.0  ：elfparser.c Hunk#1 FAILED（RELR case 上下文不同）
-#             —— 真实不可应用，维持跳过；
-#   master  ：全部 hunk 命中（漂移仅偏移）。
-# 故补丁基线下调为 v0.4.2（含），v0.4.0/v0.4.1 仍走整包跳过。
-# 其余防线不变：patchOptional=1 兜底未来版本/分支漂移。
+# 【事故回放】旧逻辑把补丁基线钉在 v0.4.2：< 基线的 revision 一律
+# doNotApplyPatch=1 跳过 0001 —— 单独构建 0.3.0/0.3.2/0.3.4/0.3.6/
+# 0.3.8/0.4.0 时产物为【未打补丁】降级形态：bionic 宿主上 shm 链路
+# 两条全断（动态程序 function not found / 静态程序 ENOSYS）、
+# Android 标签 RELR 不识别（wineboot SIGSEGV 风险）——即用户实测
+# "0.3.x~0.4.0 全都不能用"的直接根源之一。
+#
+# 【新补丁集（沙箱 9 版本全量验证全绿）】6 补丁按【版本分裂锚点】
+# 设计，在 custom_patch() 里用 `patch -l --fuzz=0` 应用：
+#   * -l：空白折叠 —— 0.3.x 的 16 空格缩进与 0.4.x 的 12 空格同匹配；
+#   * --fuzz=0：上下文必须精确连续出现，永不乱插（旧单行上下文 +
+#     默认 fuzz=2 时代，0005 曾被 fuzz 塞进 endBox64() —— 该函数无
+#     emu 变量，直接编译错误，是旧版全废的另一根源）；
+#   * 锚点组合在非目标版本不存在 → dry-run 失败 → 整文件跳过
+#     （patchOptional 语义，记录进 patchesSkipped）。
+# 版本分裂矩阵：
+#   0001 shm+RELR+接线  ：v0.3.0 ~ master 全版本应用
+#   0002 elfparser64 RELR：全版本（-l 覆盖缩进变迁）
+#   0004 elfparser32 RELR：v0.3.2+（v0.3.0 无该文件，跳过）
+#   0005 static-exit     ：v0.3.2..v0.4.3（v0.3.0 无 DynaRun 跳过；
+#                         v0.4.4+ 上游原生已修且锚点被
+#                         box64_hasinterp 行隔断，跳过即正确）
+#   0006 static-exit 030 ：仅 v0.3.0（锚点 Run(emu, 0) 后续版本无）
+#   0007 clang gate      ：v0.3.2+（v0.3.0 无 if(CI) 块）
 # ============================================================
-_patch_baseline_major=0
-_patch_baseline_minor=4
-_patch_baseline_patch=2
-_box64_ver_major="$(echo "${revision}" | sed -n 's/^[vV]\?\([0-9]\+\)\..*$/\1/p')"
-_box64_ver_minor="$(echo "${revision}" | sed -n 's/^[vV]\?[0-9]\+\.\([0-9]\+\).*/\1/p')"
-_box64_ver_patch="$(echo "${revision}" | sed -n 's/^[vV]\?[0-9]\+\.[0-9]\+\.\([0-9]\+\).*/\1/p')"
-if [[ -n "${_box64_ver_major}" ]]; then
-  # 解析出版本号（如 v0.4.2 / 0.4.6）：与基线 0.4.2 逐段比较
-  _box64_lt_baseline=0
-  if (( _box64_ver_major < _patch_baseline_major )); then
-    _box64_lt_baseline=1
-  elif (( _box64_ver_major == _patch_baseline_major )) && (( _box64_ver_minor < _patch_baseline_minor )); then
-    _box64_lt_baseline=1
-  elif (( _box64_ver_major == _patch_baseline_major )) && (( _box64_ver_minor == _patch_baseline_minor )) && (( ${_box64_ver_patch:-0} < _patch_baseline_patch )); then
-    _box64_lt_baseline=1
-  fi
-  if (( _box64_lt_baseline == 1 )); then
-    # v3.3.11：顶层 echo 必须 >&2 —— get_dep() 以 $(...) 捕获本文件 stdout
-    # 作为依赖列表，裸 echo 会把 "[INFO]" 混进 deps，collect_dep 把它当
-    # 包名报 "项目不存在 => [INFO]"（CI 实测，box64 相关构建全挂）
-    echo "[INFO] box64 revision=${revision} < v${_patch_baseline_major}.${_patch_baseline_minor}.${_patch_baseline_patch}（补丁基线）—— 0.4.2 以前的版本（v0.4.0/v0.4.1）不接受 0001 补丁，按选择跳过" >&2
-    doNotApplyPatch=1
+custom_patch() {
+  local _srcDir
+  if [[ -n "${pkgSrcDir:-}" ]]; then
+    _srcDir="${pkgSrcDir}"
   else
-    echo "[INFO] box64 revision=${revision} >= 补丁基线 v0.4.2，正常应用 0001 补丁（漂移时 patchOptional 跳过）" >&2
-    patchOptional=1
+    _srcDir="${srcDir}/${pjName}"
   fi
-else
-  # master / main / 分支名：无法解析版本 → patchOptional 兑底跳过
-  echo "[INFO] box64 revision=${revision} 非版本号（分支/漂移 ref）—— 补丁 dry-run 失败时将跳过（patchOptional=1）" >&2
-  patchOptional=1
-fi
+  cd "${_srcDir}" || return 1
+
+  local _patchFiles=()
+  _patchFiles=($(ls "${wsDir}"/projects/"${pjName}"/*.patch 2>/dev/null | LC_ALL=C sort))
+  [[ ! -f "${_patchFiles[0]:-}" ]] && _patchFiles=()
+
+  patchesApplied="${patchesApplied:-}"
+  patchesSkipped="${patchesSkipped:-}"
+  local _patch
+  for _patch in "${_patchFiles[@]}"; do
+    if patch -l --fuzz=0 -p1 --dry-run < "${_patch}" >/dev/null 2>&1; then
+      info "应用补丁（严格锚点 -l --fuzz=0）=> ${_patch}"
+      patch -l --fuzz=0 --no-backup-if-mismatch -N -p1 < "${_patch}" \
+        || { err "补丁应用失败=> ${_patch}"; cd -; return 1; }
+      patchesApplied+=" $(basename "${_patch}")"
+    else
+      # 版本分裂设计内的预期跳过（如 v0.3.0 跳 0004/0005/0007，
+      # v0.4.4+ 跳 0005/0006 —— 上游原生已修）
+      warn "补丁不适用于当前源码（版本分裂锚点未命中，按设计跳过）=> ${_patch}"
+      patchesSkipped+=" $(basename "${_patch}")"
+    fi
+  done
+  cd - >/dev/null
+  return 0
+}
 
 # ============================================================
 # AnWind bionic-box64（aarch64 / NDK bionic 链接）
@@ -242,9 +253,36 @@ install() {
   cp -p "${_src}/x64android/libc++_shared.so" \
     "${destDir}${prefix}/lib/box64-x86_64-linux-gnu/"
 
-  # ---- 3. 系统级 box64 rc ----
+  # ---- 3. 系统级 box64 rc + AnWind 性能默认段 ----
+  # v3.3.24（0.4.2 "能用但特别慢" 根因修复）：上游 v0.4.2 与 v0.4.4 的
+  # 运行时默认值差异是旧版性能断崖的直接来源（src/include/env.h 逐行核对）：
+  #   * BOX64_DYNAREC_CALLRET：0.4.2 默认 0（关）→ 0.4.4 默认 2（开）。
+  #     call/ret 内部跳转优化，wine/游戏这类调用密集负载的主要提速项；
+  #   * BOX64_DYNACACHE：0.4.2 默认 2（只读缓存但从不生成 → 缓存永远为空，
+  #     每次启动都全量重编译 dynablock）→ 0.4.4 默认 1（读+写，二次启动
+  #     直接落盘复用）；
+  #   * BOX64_DYNACACHE_MIN：0.4.2 默认 350（多数小块不缓存）→ 0.4.4 默认 30。
+  # 追加全局 [*] 段把所有版本拉到 v0.4.4 等效配置：对 v0.4.4+ 三个值与
+  # 上游默认完全一致（零行为变化），对 v0.3.x~v0.4.3 补齐性能缺口。
+  # 段优先级：具体进程名段（如上游自带的 [zoom] CALLRET=0）覆盖 [*]，
+  # 上游为个别程序写的规避设置不受影响。
+  # 注意：0.4.2 的 DynaCache 无 LIMIT/COMPRESS（0.4.4 才引入），缓存写入
+  # $HOME/.cache/box64 且不限量 —— rootfs HOME 在应用私有目录，可写、
+  # 随容器删除回收，可接受。
   mkdir -p "${destDir}${prefix}/etc/"
   cp -p "${_src}/system/box64.box64rc" "${destDir}${prefix}/etc/"
+  cat >> "${destDir}${prefix}/etc/box64.box64rc" <<'ANWRC'
+
+# ==== AnWind: align legacy (< v0.4.4) runtime defaults with v0.4.4 ====
+# v0.4.2 shipped CALLRET=0 / DYNACACHE=2(read-only) / DYNACACHE_MIN=350,
+# v0.4.4 made 2 / 1(read-write) / 30 the defaults. The [*] section only
+# fills values the more specific process sections do not set, so upstream
+# per-program workarounds (e.g. [zoom] CALLRET=0) keep winning.
+[*]
+BOX64_DYNAREC_CALLRET=2
+BOX64_DYNACACHE=1
+BOX64_DYNACACHE_MIN=30
+ANWRC
 
   # ---- 4. PATH 入口链接：usr/bin/box64 → ../local/bin/box64 ----
   # 相对链接在 $prefix（rootfs 绝对前缀）与 tar 解包后均成立；
@@ -332,14 +370,14 @@ install() {
   if [[ "${_patch_in_tree}" == "0" ]]; then
     echo "=============================================================="
     echo "⚠️⚠️ 0001-anwind-android-shmem-native.patch 未在链（revision=${revision}"
-    echo "    低于补丁基线 v0.4.4 或 ref 漂移被跳过）—— 本产物为【未打补丁】形态："
+    echo "    严格锚点 dry-run 未命中 —— ref 大幅漂移或补丁文件损坏）："
     echo "    * bionic 宿主上 shm 链路两条全断（静态程序 ENOSYS / 动态程序"
     echo "      function not found）—— wine 需要 SysV shm 的路径会失败；"
     echo "    * NDK lld 的 Android 标签 RELR 重定位（DT_ANDROID_RELR）不识别"
     echo "      —— bionic wine ntdll 的 .data 自指针保持裸地址，wineboot 有"
     echo "      SIGSEGV 风险。"
-    echo "    如需完整特性：选 v0.4.2 及以上版本重新构建（v0.4.0/v0.4.1 的"
-    echo "    elfparser.c 结构与 0001 补丁不兼容，无法打补丁）。"
+    echo "    v3.3.23 起补丁集为全版本锚点（v0.3.0~v0.4.5+ 沙箱全量验证），"
+    echo "    出现本警告属异常：请检查上游源码是否发生不兼容改动。"
     echo "=============================================================="
   fi
   local _sym_ok=1

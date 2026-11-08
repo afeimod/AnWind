@@ -844,6 +844,16 @@ object RootfsLauncher {
                             act.adrenotoolsHooksDir?.let { hooks ->
                                 env["ADRENOTOOLS_HOOKS_PATH"] = hooks.absolutePath
                             }
+                            // v3.3.24：第四件套 REDIRECT_DIR（wrapper-22 的
+                            // libvulkan_wrapper.so 四变量契约；libadrenotools 的
+                            // file_redirect_hook 层）。仅当 wrapper 栈 slot 目录下
+                            // 存在 redirect/ 子目录时导出 —— libadrenotools 对
+                            // "设了但目录不存在"会报错，不设则该 hook 层完全
+                            // 跳过（yuzu/裸 turnip 包零影响，带 vendor 文件
+                            // 替换的完整 adpkg 包自动生效）。
+                            act.adrenotoolsRedirectDir?.let { redir ->
+                                env["ADRENOTOOLS_REDIRECT_DIR"] = redir.absolutePath
+                            }
                             // adrenotools 临时目录（patched .so 落盘位）：wrapper
                             // 内部拼 <driverPath>/temp，必须预创建（WinNative
                             // vulkan.c 的 mkdir(tmpdir) 同款语义）

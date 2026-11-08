@@ -218,6 +218,19 @@ pre_setup() {
     echo "    构建继续；若运行期异常请检查源码树内 *.rej 文件"
   fi
 
+  # v3.3.24：Android wineserver 握手超时修复生效硬校验（0008/0008b 任一
+  # 形态命中即可；与 hangover-wine 配方同款）。缺失后果：残留/冻结
+  # wineserver 场景下 wine 客户端阻塞在 recvmsg 无输出挂死（前缀建不出
+  # 来，system.reg 永不落盘）。0008 覆盖 wine ≤10 形态（receive_fd），
+  # 0008b 覆盖 wine 11 形态（wine_server_receive_fd + 局部 data 变量）。
+  if [[ -f dlls/ntdll/unix/server.c ]] \
+     && ! grep -q 'ANWIND_FIX_HANDSHAKE_TIMEOUT' dlls/ntdll/unix/server.c; then
+    echo "::error::Android wineserver 握手超时修复（0008/0008b）未生效！"
+    echo "   后果：残留/冻结 wineserver 时客户端无输出挂死（前缀建不出、system.reg 永不落盘）"
+    echo "   请核查源码树形态与补丁锚点：projects/${pjName}/0008-*.patch 与 0008b-*.patch"
+    return 1
+  fi
+
   # v3.3.20（用户问题 3）：wine.inf 垃圾 AppDefaults 注册表剔除（与
   # hangover-wine 配方同款）—— proton 树的 loader/wine.inf.in 带 31 条
   # Valve/Steam 游戏兼容 hack（ActOfWar/BlackOps3/DIRT5/ffxvi/RDR2 等的
