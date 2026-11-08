@@ -170,6 +170,93 @@ object GuanliSupport {
     }
 
     /**
+     * v3.3.18（用户需求："选择 wrapper 时同时更改 conf 里的 path.conf，
+     * 选择 turnip 时也要改，三个选项都要改路径"）：把 /opt 生态
+     * conf/path.conf 的 VK_ICD_FILENAMES 行改写为指定 ICD 路径
+     * （wineguanli.py 参考行为 —— 图形驱动页的驱动选择直接落到 conf，
+     * conf 与容器选择永远一致）。
+     *
+     *  - 写入目标 = 当前【激活的 /opt 生态根】（与 WineEnvironment.optRoot
+     *    同序探测，rootfs/opt 优先、其次 wine 槽位内同名布局）；无任何生态
+     *    时新建 rootfs/opt/conf/path.conf（此前无生态可被旁路，安全）；
+     *  - 已有行（含 # 注释形态）【原位替换】，绝不重写整个文件 —— conf 的
+     *    其余内容（LD_LIBRARY_PATH / LIBGL_DRIVERS_PATH / BOX64_* 等）
+     *    一字不动；
+     *  - 无该行时插到 mesa 配置段（LIBGL_DRIVERS_PATH / #mesa 标记后），
+     *    再无则文末追加；
+     *  - icdPath 为 null = 注释掉该行（Vulkan loader 走默认搜索，同样命中
+     *    rootfs 内置 Mesa Turnip）。
+     *
+     * 三个选项的映射（GraphicsDriverTab 选择时 + RootfsLauncher 6a 激活时
+     * 双写）：
+     *  - Turnip（Mesa 内置）→ rootfs 自带 freedreno ICD；
+     *  - Wrapper 驱动 → 独立驱动库 drivers/&lt;slot&gt;/icd.json；
+     *  - Turnip 驱动包（/opt/tz）→ 同独立驱动库 icd.json。
+     *
+     * @return null 成功（或安全跳过）；否则用户可读错误
+     */
+    fun syncPathConfVkIcd(
+        icdPath: String?,
+        wineDir: File? = null,
+        log: (String) -> Unit = {}
+    ): String? = runCatching {
+        val root = WineEnvironment.optRoot(wineDir)
+            ?: run {
+                // 无 rootfs 侧生态：若任何 wine 槽位自带生态（本容器槽位已随
+                // wineDir 探测过），不新建 rootfs/opt/conf —— 防把探测序 #1
+                // 翻给自己、旁路该槽位生态；运行时激活链会对正确根写入。
+                if (ContainerManager.listWines().any { w ->
+                        WineEnvironment.optRoot(File(w.dir)) != null
+                    }
+                ) {
+                    log("path.conf 同步跳过：/opt 生态位于 wine 槽位内（非 rootfs/opt），运行时激活链写入正确根")
+                    return@runCatching null
+                }
+                File(ContainerManager.ROOTFS_ROOT, "opt")
+            }
+        val confDir = File(root, "conf")
+        if (!confDir.isDirectory) confDir.mkdirs()
+        val pathConf = File(confDir, "path.conf")
+        val lines = if (pathConf.isFile) pathConf.readLines() else emptyList()
+        val newLine = if (icdPath.isNullOrBlank()) {
+            "#export VK_ICD_FILENAMES=（v3.3.18 图形驱动页管理：当前未选驱动，Vulkan loader 默认搜索）"
+        } else {
+            "export VK_ICD_FILENAMES=$icdPath"
+        }
+        val vkLine = Regex("^\\s*#?\\s*export\\s+VK_ICD_FILENAMES\\s*=")
+        val idx = lines.indexOfFirst { vkLine.containsMatchIn(it) }
+        val out = if (idx >= 0) {
+            lines.toMutableList().also { it[idx] = newLine }
+        } else {
+            val mut = lines.toMutableList()
+            // 插入锚点：优先 LIBGL_DRIVERS_PATH 行后（VK 行与驱动路径行
+            // 相邻，归组最自然）；无则 #mesa 段标记后；再无则文末追加
+            val libGl = mut.indexOfFirst { it.contains("LIBGL_DRIVERS_PATH") }
+            val mesa = mut.indexOfFirst { it.contains("#mesa") }
+            val anchor = when {
+                libGl >= 0 -> libGl
+                mesa >= 0 -> mesa
+                else -> -1
+            }
+            if (anchor >= 0) {
+                mut.add(anchor + 1, newLine)
+            } else {
+                mut.add("")
+                mut.add("# Vulkan ICD（v3.3.18 图形驱动页管理）")
+                mut.add(newLine)
+            }
+            mut
+        }
+        pathConf.writeText(out.joinToString("\n") + "\n")
+        log(
+            "path.conf 已同步：VK_ICD_FILENAMES → " +
+                (if (icdPath.isNullOrBlank()) "（注释：loader 默认搜索）" else icdPath) +
+                "（${pathConf.absolutePath}）"
+        )
+        null
+    }.getOrElse { "path.conf 同步失败：${it.message}" }
+
+    /**
      * 解压 tar 包到指定目录（wineguanli extract_package / extract_box_file
      * 同一动作）。
      *

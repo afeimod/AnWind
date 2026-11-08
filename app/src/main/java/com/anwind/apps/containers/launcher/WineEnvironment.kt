@@ -810,6 +810,21 @@ object WineEnvironment {
             return
         }
         val userEnv = container.env
+        // v3.3.18（用户实报：“选择 wrapper 驱动依旧是 turnip，是不是和我的
+        // conf 配置有关？”—— 正是）：Vulkan ICD 选择保护。启动链顺序是
+        // 6a 注入容器所选驱动的 VK_ICD_FILENAMES → 6c source opt/conf ——
+        // 用户 path.conf 常见硬编码 turnip 的 freedreno ICD（如
+        // VK_ICD_FILENAMES=…/freedreno_icd.aarch64.json），旧版此处无差别
+        // env[k]=v 覆盖 → 选了 wrapper 也会被顶回 turnip。现在容器选中
+        // wrapper / turnip 槽位时，VK_ICD_FILENAMES / VK_DRIVER_FILES 两个
+        // ICD 指定键【不得被 conf 覆盖】（VK_DRIVER_FILES 是新 loader 的
+        // 优先键，留着它同样能压过注入值）。conf 与选择的同步由
+        // GuanliSupport.syncPathConfVkIcd 负责（UI 选择/运行时激活均落
+        // conf），此处仅防护手工编辑/多容器等不同步的残余情形。未选槽位
+        //（Mesa 内置档）时 conf 值照常透传（用户 conf 自定 ICD 仍生效）。
+        val vkSlotActive = (container.wrapper.isNotBlank() && container.wrapper != "off") ||
+            (container.turnip.isNotBlank() && container.turnip != "off")
+        val vkGuarded = mutableListOf<String>()
         val applied = mutableListOf<String>()
         val blocked = mutableListOf<String>()
         // $VAR 展开作用域：当前 env 优先，conf 自身已解析值作第二来源
@@ -824,6 +839,8 @@ object WineEnvironment {
                     log("opt conf: $k 被容器 env= 显式配置覆盖，保留容器值")
                 }
                 k in CONF_BLOCKED_KEYS -> blocked.add(k)
+                vkSlotActive && (k == "VK_ICD_FILENAMES" || k == "VK_DRIVER_FILES") ->
+                    vkGuarded.add(k)
                 k == "PATH" -> {
                     // 合并而非覆盖：conf PATH 里 env PATH 缺失的目录前置补入
                     // （sh 的 `export PATH=/usr/bin:$PATH` 同款追加语义）
@@ -843,6 +860,13 @@ object WineEnvironment {
         }
         if (blocked.isNotEmpty()) {
             log("opt 生态: ${blocked.joinToString(", ")} 属 App 链路关键变量（WINEPREFIX/加载器/X11/动态库路径），conf 值不透传")
+        }
+        if (vkGuarded.isNotEmpty()) {
+            log(
+                "opt 生态: ${vkGuarded.joinToString(", ")} 被容器 Vulkan 驱动选择接管" +
+                    "（wrapper=${container.wrapper.ifBlank { "—" }} / turnip=${container.turnip.ifBlank { "—" }}）" +
+                    "，conf 值不透传 —— 启动链已注入所选驱动 ICD（选了 wrapper 不再被 path.conf 顶回 turnip）"
+            )
         }
         // wine_path.conf 已按用户要求剔除：wine 目录由 AnWind 槽位体系管理
         log(

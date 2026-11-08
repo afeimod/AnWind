@@ -762,6 +762,15 @@ object RootfsLauncher {
                         "${driverDir.absolutePath}:$existingLd"
                     }
                     sink.stamp("Vulkan 驱动激活（$activeVkSlot）：VK_ICD_FILENAMES → ${icd.absolutePath}")
+                    // v3.3.18（用户需求："选择 wrapper 时同时更改 conf 里的
+                    // path.conf，选择 turnip 时也要改，三个选项都要改路径"）：
+                    // 激活成功即落 conf —— path.conf 的 VK_ICD_FILENAMES 行
+                    // 原位改写为本驱动 ICD（wineguanli.py 参考行为；UI 选择时
+                    // GraphicsDriverTab 已写过，此处兜底 /opt tar 运行时自动
+                    // 安装、conf 被手工改回等路径），conf 与容器选择永远一致。
+                    runCatching {
+                        GuanliSupport.syncPathConfVkIcd(icd.absolutePath, resolved.wineDir) { sink.stamp(it) }
+                    }.getOrElse { sink.stamp("⚠ path.conf 同步异常：${it.message}（不影响本次会话）") }
                     if (WrapperDriverSupport.shouldForceZink(container.gallium)) {
                         env["MESA_LOADER_DRIVER_OVERRIDE"] = "zink"
                         env["GALLIUM_DRIVER"] = "zink"

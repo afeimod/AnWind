@@ -296,8 +296,18 @@ android {
         // ⑤两个 build.sh（wine + hangover-wine）补丁生效硬校验：virtual.c
         //   无 noexec 标记 / env.c 无 locale 标记 → ::error:: 直接构建失
         //   败 —— CI 不再可能产出缺补丁的裸奔 wine 包。
-        versionCode = 96
-        versionName = "2.38.33"
+        versionCode = 97
+        versionName = "2.38.34"
+        // v3.3.18（源码包 v3.3.18）：Vulkan 驱动选择 ↔ opt/conf/path.conf
+        //   双向打通 + conf 顶回根治 —— ①三个驱动选项（Turnip 内置 /
+        //   Wrapper / Turnip 包）切换时自动原位改写 rootfs/opt/conf/
+        //   path.conf 的 VK_ICD_FILENAMES 行（wineguanli.py 参考行为，
+        //   其余 conf 内容一字不动；GuanliSupport.syncPathConfVkIcd，
+        //   UI 选择 + 运行时激活双写）；②根治"选了 wrapper 依旧是
+        //   turnip"：启动链 6a 注入所选驱动 ICD 后，6c source path.conf
+        //   的硬编码 freedreno ICD 不再覆盖（VK_ICD_FILENAMES /
+        //   VK_DRIVER_FILES 接管防护，未选槽位时 conf 自定值仍生效）——
+        //   用户 path.conf 的 turnip 硬编码正是此前 wrapper 失效根因。
         // v3.3.10（源码包 v3.3.10）：fexcore 独立目录 + 桌面图标精简/拖拽
         //   + box64 按版本跳过补丁 + wine mf 补丁分档 + Wrapper 驱动
         //   （WinNative/yuzu 同型 Turnip）——详见 README-FIX.md：

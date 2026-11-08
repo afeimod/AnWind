@@ -1373,6 +1373,41 @@ private fun GraphicsDriverTab(
         }
     }
 
+    // v3.3.18（用户需求："选择 wrapper 时同时更改 conf 里的 path.conf，
+    // 选择 turnip 时也要改，三个选项都要改路径"）：Vulkan 驱动选择 →
+    // 同步改写 opt/conf/path.conf 的 VK_ICD_FILENAMES 行（wineguanli.py
+    // 参考行为：图形驱动页的驱动选择直接落到 conf，选择即生效、conf 与
+    // 容器选择永远一致）：
+    //  - Turnip（Mesa 内置）→ rootfs 自带 freedreno ICD 路径；
+    //  - Wrapper 驱动 / Turnip 驱动包槽位 → 独立驱动库 drivers/<slot>/icd.json；
+    //  - 槽位尚未安装（/opt tar 运行时自动装）→ 跳过（不写悬空路径 ——
+    //    loader 打不开 ICD 会致 Vulkan 不可用；RootfsLauncher 6a 激活链
+    //    安装后补写）。
+    // key 变化即触发：三个类型选项 / 版本下拉 / ➕ 安装后选择 / 🗑 卸载，
+    // 全部经由 edit.wrapper / edit.turnip 落位，无一旁路。
+    LaunchedEffect(edit.wrapper, edit.turnip) {
+        withContext(Dispatchers.IO) {
+            val wrapperActive = edit.wrapper.isNotBlank() && edit.wrapper != "off"
+            val tzActive = edit.turnip.isNotBlank() && edit.turnip != "off"
+            val wineDir = ContainerManager.listWines()
+                .firstOrNull { it.name == edit.wine }?.let { File(it.dir) }
+            when {
+                wrapperActive || tzActive -> {
+                    val slot = if (wrapperActive) edit.wrapper else edit.turnip
+                    // 已装槽位才写（ICD 真实存在）；tar-only 槽位等运行时装好后补写
+                    WrapperDriverSupport.icdFor(slot)?.absolutePath?.let { icd ->
+                        GuanliSupport.syncPathConfVkIcd(icd, wineDir)
+                    }
+                }
+                // Turnip（Mesa 内置）/ 默认 —— 写 rootfs 自带 freedreno ICD
+                //（rootfs 无该文件时注释掉该行，loader 默认搜索同效果）
+                else -> GuanliSupport.syncPathConfVkIcd(
+                    WrapperDriverSupport.bundledTurnipIcd()?.absolutePath, wineDir
+                )
+            }
+        }
+    }
+
     // yuzu 式安装：文件管理器选 zip/tar 包 → 直接装进驱动库（独立目录，
     // 装完立即出现在版本列表）—— WinNative promptInstallDriverFromFile 同款
     DisposableEffect(driversTick) {
@@ -1533,7 +1568,10 @@ private fun GraphicsDriverTab(
             "v3.3.16 新机制（WinNative 同款）：每个驱动装在独立目录"
                 + "（usr/share/anwind-wrapper/drivers/<名>/），rootfs 任何文件不被覆盖 ——"
                 + " turnip 与 wrapper 并列选择、多版本共存、切换零文件读写；"
-                + " 支持 rootfs 布局包 / WinNative meta.json 包 / yuzu 裸包（zip 或 tar）"
+                + " 支持 rootfs 布局包 / WinNative meta.json 包 / yuzu 裸包（zip 或 tar）\n"
+                + "v3.3.18：三个选项切换时自动同步改写 rootfs/opt/conf/path.conf 的"
+                + " VK_ICD_FILENAMES 行（选择即落 conf，其余 conf 内容一字不动）——"
+                + " 运行会话日志的「path.conf 已同步」行可核对实际写入值"
         )
     }
     GGroup("Zink 驱动") {
