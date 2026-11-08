@@ -6,6 +6,11 @@ import java.io.File
 import java.util.zip.ZipInputStream
 
 /**
+ * v3.3.19a（2026-11-08 热修，CI 实证）：v3.3.19 的 hasX11Wsi KDoc 注释里
+ * 通配符连写把块注释提前闭合，残余文字落入类体 → kspReleaseKotlin 连报
+ * 12 条 "Expecting member declaration"（207 行各 token 列号逐一对应）。
+ * 已改写注释措辞，语义零改动。
+ *
  * v3.3.19（用户实测反馈："wrapper 无法正常使用运行游戏"，会话日志实证
  * DXVK 报 "Required Vulkan extension VK_KHR_surface not supported"——
  * ICD 根本没被 dlopen 成功）：补齐 WinNative DriverPackages.java 的
@@ -204,7 +209,7 @@ object WrapperDriverSupport {
         }.getOrNull()
     }
 
-    /** X11 WSI 启发式：DT_NEEDED 含 libxcb*/libX11* = X11 平台构建（可直挂 ICD）。 */
+    /** X11 WSI 启发式：DT_NEEDED 含 libxcb 系或 libX11 系 = X11 平台构建（可直挂 ICD）。 */
     private fun hasX11Wsi(needed: List<String>): Boolean =
         needed.any { it == "libxcb.so" || it.startsWith("libxcb-") || it.startsWith("libX11") }
 
