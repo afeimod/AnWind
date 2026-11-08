@@ -296,8 +296,20 @@ android {
         // ⑤两个 build.sh（wine + hangover-wine）补丁生效硬校验：virtual.c
         //   无 noexec 标记 / env.c 无 locale 标记 → ::error:: 直接构建失
         //   败 —— CI 不再可能产出缺补丁的裸奔 wine 包。
-        versionCode = 97
-        versionName = "2.38.34"
+        versionCode = 98
+        versionName = "2.38.35"
+        // v3.3.19（源码包 v3.3.19）：wrapper 驱动运行时可用性根治 ——
+        //   ELF ABI 门禁（WinNative DriverPackages.identify 移植：glibc 包
+        //   拒装，bionic 才收）+ wrapper 栈包形态（libvulkan_wrapper.so 作
+        //   ICD + ADRENOTOOLS_DRIVER_PATH/NAME 注入，X11 WSI 由 wrapper 的
+        //   xcb 侧提供）+ android 平台裸 turnip 自动路由 wrapper 栈 +
+        //   DT_NEEDED 依赖闭环预检（缺什么点名）+ 激活注入
+        //   VK_LOADER_DEBUG=error（loader 错误进会话日志）。用户实测根因：
+        //   选了 glibc 构建的 wrapper-22 → bionic wine dlopen 失败 →
+        //   零 ICD → DXVK "VK_KHR_surface not supported"；新逻辑对不可用槽位
+        //   显式回退 Mesa 内置 Turnip 并把原因写进会话日志，游戏不再黑屏。
+        //   CI 同步新增 anwind-turnip-driver-*-bionic.tar.gz 驱动包产物
+        //   （build-mesa-bionic，bionic/X11 平台构建，零 ABI 风险）。
         // v3.3.18（源码包 v3.3.18）：Vulkan 驱动选择 ↔ opt/conf/path.conf
         //   双向打通 + conf 顶回根治 —— ①三个驱动选项（Turnip 内置 /
         //   Wrapper / Turnip 包）切换时自动原位改写 rootfs/opt/conf/

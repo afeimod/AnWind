@@ -1231,6 +1231,62 @@ PCMBSF
     echo "   请核查源码树形态与补丁锚点：projects/${pjName}/0019-fix-arm64ec-lstrcpya-wineboot-proton.patch.proton"
     return 1
   fi
+
+  # f) v3.3.18：proton_9.0 arm64ec 第四批炸点 —— ntdll 专属 syscall 导出缺
+  #    EC 裸跳板（CI wine-build-log-arm64ec (2).zip 实证链条终点）。0019 修完
+  #    kernel32/virtual.o 后主 make 推进至
+  #    dlls/ntdll/arm64ec-windows/signal_arm64ec.o 阵亡：
+  #      signal_arm64ec.c:1629: error: use of undeclared identifier
+  #        '__wine_needs_override_large_address_aware'
+  #      ntsyscalls.h:481: SYSCALL_ENTRY( 0x00e9, __wine_needs_override_large_address_aware, 0 )
+  #    【机制】proton_9.0 的 ntdll.spec 尾部有 Valve 追加的三个非 Nt 的
+  #    -syscall 条目（__wine_dbg_ftrace / __wine_set_unix_env /
+  #    __wine_needs_override_large_address_aware，unix 侧实现俱在），autogen 的
+  #    tools/make_specfiles 把它们收进生成的 ntsyscalls.h；x86_64/i386/aarch64
+  #    PE 趟由 signal_*.c 的 __ASM_GLOBAL_FUNC 汇编展开自动定义（Valve 不构建
+  #    EC 从未暴露），而 arm64ec PE 趟的 signal_arm64ec.c 是逐一手写裸跳板 ——
+  #    只写了上游自带的两个 wine_*_file_name，Valve 追加的三个没有跳板：
+  #    needs_override 无任何 EC 趟可见声明（仅 unix_private.h）→ 表展开直接
+  #    炸；dbg_ftrace/set_unix_env 靠 debug.h/winternl.h 声明过编译但 EC 链接
+  #    同缺定义。proton_10.0+ 已删这三个 spec 条目（与官方树一致）→ 门控
+  #    不触发；wine-9.7/hangover/official 树无这些条目同理。
+  if [[ -f dlls/ntdll/ntdll.spec ]] \
+     && grep -q '^@ stdcall -syscall __wine_needs_override_large_address_aware()' dlls/ntdll/ntdll.spec 2>/dev/null \
+     && ! grep -q 'SYSCALL_API __wine_needs_override_large_address_aware' dlls/ntdll/signal_arm64ec.c 2>/dev/null; then
+    echo "应用 ntdll 专属 syscall EC 跳板补齐（proton_9.0 第四批炸点，CI 实证 signal_arm64ec.o）"
+    if patch --silent --forward -p1 --fuzz=0 \
+         < "${wsDir}/projects/${pjName}/0020-fix-arm64ec-syscall-thunks-proton9.patch.proton"; then
+      echo "已补齐三个 EC 裸跳板（__wine_dbg_ftrace / __wine_set_unix_env / __wine_needs_override_large_address_aware）"
+    else
+      echo "⚠️ syscall EC 跳板补丁有 hunk 未应用（树差异，继续构建）"
+      echo "    若 arm64ec PE 编译报 signal_arm64ec.o undeclared identifier / EC 链接报未定义符号，请核查该补丁锚点"
+    fi
+  fi
+  # 【硬校验】spec 有该 syscall 导出而 EC 跳板仍缺失 —— 防锚点漂移静默落空
+  if [[ "${args}" == *"--enable-archs=arm64ec,"* ]] \
+     && grep -q '^@ stdcall -syscall __wine_needs_override_large_address_aware()' dlls/ntdll/ntdll.spec 2>/dev/null \
+     && ! grep -q 'SYSCALL_API __wine_needs_override_large_address_aware' dlls/ntdll/signal_arm64ec.c 2>/dev/null; then
+    echo "::error::0020 补丁未生效（signal_arm64ec.c 仍缺 __wine_needs_override_large_address_aware EC 跳板）！"
+    echo "   arm64ec 编译趟必炸于 dlls/ntdll/arm64ec-windows/signal_arm64ec.o（undeclared identifier，CI 实证）；"
+    echo "   修完编译错误后 EC 链接还会缺 __wine_dbg_ftrace / __wine_set_unix_env 定义"
+    echo "   请核查源码树形态与补丁锚点：projects/${pjName}/0020-fix-arm64ec-syscall-thunks-proton9.patch.proton"
+    return 1
+  fi
+  # 同向排查：EC 趟跳板齐备性兜底校验（spec 里全部非 Nt 的 -syscall 条目都
+  # 必须在 signal_arm64ec.c 有跳板或头文件可见声明 —— 防后续 Valve 树再追加
+  _ec_syscall_missing=0
+  if [[ "${args}" == *"--enable-archs=arm64ec,"* ]] && [[ -f dlls/ntdll/ntdll.spec ]]; then
+    while IFS= read -r _spec_line; do
+      _sym=$(echo "${_spec_line}" | sed -n 's/^@ stdcall -syscall[^\n]* \([A-Za-z_][A-Za-z0-9_]*\)(.*/\1/p')
+      [[ -z "${_sym}" ]] && continue
+      if ! grep -q "SYSCALL_API ${_sym}" dlls/ntdll/signal_arm64ec.c 2>/dev/null \
+         && ! grep -rq "extern.*${_sym}\b" dlls/ntdll/signal_arm64ec.c include/winternl.h include/wine/debug.h 2>/dev/null; then
+        echo "::error::EC 跳板兜底校验失败：ntdll.spec 的 -syscall 条目 ${_sym} 在 signal_arm64ec.c 无跳板且无可见声明！"
+        _ec_syscall_missing=1
+      fi
+    done < <(grep '^@ stdcall -syscall ' dlls/ntdll/ntdll.spec 2>/dev/null | grep -v ' Nt\| Zw')
+    [[ "${_ec_syscall_missing}" == "1" ]] && return 1
+  fi
   CFLAGS="${CFLAGS/-Oz/}"
   CXXFLAGS="${CXXFLAGS/-Oz/}"
   CPPFLAGS="${CPPFLAGS/-Oz/}"

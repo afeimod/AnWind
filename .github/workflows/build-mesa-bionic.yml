@@ -217,6 +217,33 @@ jobs:
           echo "=== 打包完成 ==="
           ls -lh "${PACKAGE_NAME}.tar.gz" "checksums-mesa-${{ matrix.arch }}.txt"
 
+      # ============ 8.5. turnip 驱动包（v3.3.19 图形驱动槽位专用） ============
+      # 与 rootfs 同一配方/同一 bionic/X11 平台构建，App 图形驱动页 ➕ 直接安装：
+      #   usr/lib/libvulkan_freedreno.so + usr/share/vulkan/icd.d/freedreno_icd.aarch64.json
+      #   （rootfs 布局包形态，WrapperDriverSupport.install 归一化到独立 slot）。
+      # 零 ABI 风险 —— 互联网流转的 turnip 包绝大多数是 glibc 构建，bionic
+      # 原生 wine 无法 dlopen（DXVK 只报 VK_KHR_surface not supported）。
+      # 依赖（libdrm/libzstd/libexpat/libc++_shared/libxcb 系列）由
+      # rootfs/usr/lib 提供（同 CI 依赖包拓扑），驱动包只携带驱动本体。
+      - name: 打包 turnip 驱动包（aarch64）
+        if: ${{ matrix.arch == 'aarch64' }}
+        run: |
+          DRIVER_NAME="anwind-turnip-driver-${MESA_VER}-bionic"
+          echo "DRIVER_NAME=${DRIVER_NAME}" >> "$GITHUB_ENV"
+          M=/tmp/mesa-verify/data/data/com.anwind/files/rootfs/usr
+          STAGE=/tmp/turnip-driver-pkg
+          rm -rf "$STAGE" && mkdir -p "$STAGE/usr/lib" "$STAGE/usr/share/vulkan/icd.d"
+          cp "$M/lib/libvulkan_freedreno.so" "$STAGE/usr/lib/"
+          cp "$M/share/vulkan/icd.d/freedreno_icd.aarch64.json" "$STAGE/usr/share/vulkan/icd.d/"
+          # 同包随行关键依赖（存在才拷；保证 rootfs mesa 版本落后时驱动仍能加载）
+          for l in libdrm.so libdrm_freedreno.so libzstd.so libexpat.so; do
+            [[ -e "$M/lib/$l" ]] && cp "$M/lib/$l" "$STAGE/usr/lib/"
+          done
+          tar -czf "${GITHUB_WORKSPACE}/${DRIVER_NAME}.tar.gz" -C "$STAGE" usr
+          sha256sum "${GITHUB_WORKSPACE}/${DRIVER_NAME}.tar.gz" > "${GITHUB_WORKSPACE}/checksums-turnip-driver.txt"
+          echo "=== turnip 驱动包打包完成 ==="
+          ls -lh "${GITHUB_WORKSPACE}/${DRIVER_NAME}.tar.gz" "${GITHUB_WORKSPACE}/checksums-turnip-driver.txt"
+
       # ============ 9. 上传日志与产物 ============
       - name: 上传构建日志
         uses: actions/upload-artifact@v4
@@ -235,6 +262,16 @@ jobs:
             checksums-mesa-${{ matrix.arch }}.txt
           if-no-files-found: error
 
+      - name: 上传 turnip 驱动包（aarch64）
+        if: ${{ matrix.arch == 'aarch64' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.DRIVER_NAME }}
+          path: |
+            ${{ env.DRIVER_NAME }}.tar.gz
+            checksums-turnip-driver.txt
+          if-no-files-found: error
+
       - name: 创建 Release
         if: ${{ github.event.inputs.make_release == 'true' }}
         uses: softprops/action-gh-release@v2
@@ -248,8 +285,11 @@ jobs:
             - x86_64: softpipe(产物名 swrast_dri.so)
             - 设备安装: 解包 `anwind-mesa-*.tar.gz` 至 /（data/data/com.anwind/... 自动就位）
             - 容器内切换 GL 驱动: `anwind-container set <name> gallium=zink|freedreno|llvmpipe`
+            - 图形驱动槽位专用包: `anwind-turnip-driver-*-bionic.tar.gz`（aarch64，App 图形驱动页 ➕ 安装，零 ABI 风险）
           files: |
             ${{ env.PACKAGE_NAME }}.tar.gz
             checksums-mesa-${{ matrix.arch }}.txt
+            anwind-turnip-driver-*.tar.gz
+            checksums-turnip-driver.txt
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

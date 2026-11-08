@@ -749,41 +749,105 @@ object RootfsLauncher {
             }
             if (activeVkSlot != null) {
                 val slotName = activeVkSlot.substringAfter(':')
-                val icd = WrapperDriverSupport.icdFor(slotName)
-                if (icd != null) {
-                    env["VK_ICD_FILENAMES"] = icd.absolutePath
-                    // 驱动目录前插 LD_LIBRARY_PATH（附属 .so 解析；wine 的
-                    // LD_LIBRARY_PATH 首段是 rootfs/usr/lib，驱动目录更优先）
-                    val driverDir = icd.parentFile
-                    val existingLd = env["LD_LIBRARY_PATH"]
-                    env["LD_LIBRARY_PATH"] = if (existingLd.isNullOrBlank()) {
-                        driverDir.absolutePath
-                    } else {
-                        "${driverDir.absolutePath}:$existingLd"
+                // v3.3.19：激活计划（WinNative 语义：ELF 平台识别 + wrapper 栈
+                // 路由 + 依赖闭环预检）。用户实测（2026-11-08 会话日志）：选了
+                // wrapper-22 后游戏报 "Required Vulkan extension VK_KHR_surface
+                // not supported" —— ICD 的 .so 在 bionic 原生 wine 进程里
+                // dlopen 失败（glibc 构建 / 缺依赖），loader 静默跳过 → 零 ICD
+                // → DXVK 空手而归。旧逻辑照注入不误 → 游戏必黑屏且无任何
+                // 线索；新逻辑：不可用的槽位显式回退 Mesa 内置 Turnip，原因
+                // 逐条写进会话日志（glibc / 非 ELF / 缺哪个依赖，全部点名）。
+                val act = WrapperDriverSupport.activationFor(slotName)
+                // 回退时 path.conf 一并回写 Mesa 内置（防 conf 里残留旧 ICD
+                // 误导 glibc/startwine 链路）
+                val fallbackStockConf = {
+                    val stockIcd = WrapperDriverSupport.bundledTurnipIcd()
+                    if (stockIcd != null) {
+                        runCatching {
+                            GuanliSupport.syncPathConfVkIcd(stockIcd.absolutePath, resolved.wineDir) { sink.stamp(it) }
+                        }.onFailure { sink.stamp("⚠ path.conf 回写异常：${it.message}（不影响本次会话）") }
                     }
-                    sink.stamp("Vulkan 驱动激活（$activeVkSlot）：VK_ICD_FILENAMES → ${icd.absolutePath}")
-                    // v3.3.18（用户需求："选择 wrapper 时同时更改 conf 里的
-                    // path.conf，选择 turnip 时也要改，三个选项都要改路径"）：
-                    // 激活成功即落 conf —— path.conf 的 VK_ICD_FILENAMES 行
-                    // 原位改写为本驱动 ICD（wineguanli.py 参考行为；UI 选择时
-                    // GraphicsDriverTab 已写过，此处兜底 /opt tar 运行时自动
-                    // 安装、conf 被手工改回等路径），conf 与容器选择永远一致。
-                    runCatching {
-                        GuanliSupport.syncPathConfVkIcd(icd.absolutePath, resolved.wineDir) { sink.stamp(it) }
-                    }.getOrElse { sink.stamp("⚠ path.conf 同步异常：${it.message}（不影响本次会话）") }
-                    if (WrapperDriverSupport.shouldForceZink(container.gallium)) {
-                        env["MESA_LOADER_DRIVER_OVERRIDE"] = "zink"
-                        env["GALLIUM_DRIVER"] = "zink"
-                        env.putIfAbsent("ZINK_DESCRIPTORS", "lazy")
-                        env.putIfAbsent("ZINK_DEBUG", "compact")
-                        env.putIfAbsent("TU_DEBUG", "noconform")
-                        sink.stamp("GL 联动 zink：GALLIUM_DRIVER=zink（GL over Vulkan → 用户驱动）")
-                    } else {
-                        sink.stamp("GL 保持 ${container.gallium}（用户显式选择，仅 Vulkan 侧走用户驱动）")
+                }
+                when {
+                    act == null -> sink.stamp(
+                        "⚠ Vulkan 驱动 $slotName 的 ICD 清单未就位（安装失败或包内无 libvulkan*.so），回退 Mesa 内置 Turnip"
+                    )
+                    act.platform == WrapperDriverSupport.DriverPlatform.GLIBC -> {
+                        sink.stamp("⚠ Vulkan 驱动 $slotName 是 glibc 构建（DT_NEEDED 含 libc.so.6），bionic 原生 wine 无法 dlopen —— 回退 Mesa 内置 Turnip")
+                        sink.stamp("   出路：① 改装 bionic 构建的 turnip 驱动包（AnWind CI 产物 anwind-turnip-driver-*-bionic.tar.gz）② 或装含 libvulkan_wrapper.so 的 wrapper 栈包经 adrenotools 路由")
+                        fallbackStockConf()
                     }
-                    sink.stamp("（切回 Mesa 内置 Turnip：图形驱动页选回默认即可，零文件读写）")
-                } else {
-                    sink.stamp("⚠ Vulkan 驱动 $slotName 的 ICD 清单未就位（安装失败或包内无 libvulkan*.so），回退 Mesa 内置 Turnip")
+                    act.platform == WrapperDriverSupport.DriverPlatform.UNKNOWN -> {
+                        sink.stamp("⚠ Vulkan 驱动 $slotName 无法识别 ABI（ICD 目标非有效 ARM64 ELF，文件损坏？）—— 回退 Mesa 内置 Turnip")
+                        fallbackStockConf()
+                    }
+                    act.missingDeps.isNotEmpty() -> {
+                        sink.stamp("⚠ Vulkan 驱动 $slotName 依赖未闭环：${act.missingDeps.joinToString("、")}（驱动目录/rootfs/usr/lib/系统库均未找到）—— 回退 Mesa 内置 Turnip")
+                        sink.stamp("   出路：换完整驱动包，或把缺的 .so 一并放进驱动包重新安装（wrapper 栈常见缺 libandroid-sysvshm.so）")
+                        fallbackStockConf()
+                    }
+                    else -> {
+                        env["VK_ICD_FILENAMES"] = act.icd.absolutePath
+                        // v3.3.19：loader 侧错误级诊断 —— ICD dlopen 失败等原因
+                        // 直接进会话日志（驱动类问题不再"无声"）
+                        env["VK_LOADER_DEBUG"] = "error"
+                        // 驱动目录前插 LD_LIBRARY_PATH（附属 .so 解析；wine 的
+                        // LD_LIBRARY_PATH 首段是 rootfs/usr/lib，驱动目录更优先）
+                        val driverDir = act.driverDir
+                        val existingLd = env["LD_LIBRARY_PATH"]
+                        env["LD_LIBRARY_PATH"] = if (existingLd.isNullOrBlank()) {
+                            driverDir.absolutePath
+                        } else {
+                            "${driverDir.absolutePath}:$existingLd"
+                        }
+                        if (act.wrapperStack) {
+                            // wrapper 栈模式（WinNative setDriverById + wrapper_icd 同款）：
+                            // ICD→libvulkan_wrapper.so，turnip 经 ADRENOTOOLS_*
+                            // 注入，X11 WSI 由 wrapper 的 xcb 侧提供
+                            if (act.adrenotoolsDriverName != null && act.adrenotoolsDriverDir != null) {
+                                env["ADRENOTOOLS_DRIVER_PATH"] = act.adrenotoolsDriverDir.absolutePath
+                                env["ADRENOTOOLS_DRIVER_NAME"] = act.adrenotoolsDriverName
+                                sink.stamp(
+                                    "wrapper 栈激活（${
+                                        if (act.routedFromWrapperSlot != null) "android 平台驱动，经 ${act.routedFromWrapperSlot} 的 wrapper 栈路由"
+                                        else "本槽位 wrapper 栈"
+                                    }）：adrenotools 加载 ${act.adrenotoolsDriverName}，X11 WSI 由 wrapper 提供"
+                                )
+                            } else {
+                                sink.stamp("wrapper 栈激活：ICD→libvulkan_wrapper.so（未配对 turnip 驱动本体，wrapper 可能回退系统驱动）")
+                            }
+                            sink.stamp("Vulkan 驱动激活（$activeVkSlot）：VK_ICD_FILENAMES → ${act.icd.absolutePath}")
+                        } else {
+                            sink.stamp(
+                                "Vulkan 驱动激活（$activeVkSlot）：VK_ICD_FILENAMES → ${act.icd.absolutePath}" +
+                                    "（bionic ✓，X11 WSI ${if (act.x11wsi) "✓" else "✗ android 平台构建"}）"
+                            )
+                            if (!act.x11wsi) {
+                                sink.stamp("⚠ 该驱动为 android 平台构建（无 X11 WSI）且无 wrapper 栈可路由：DXVK 交换链可能创建失败")
+                                sink.stamp("   出路：装一个含 libvulkan_wrapper.so 的 wrapper 栈包（自动路由）或换 X11 平台构建包")
+                            }
+                        }
+                        // v3.3.18（用户需求："选择 wrapper 时同时更改 conf 里的
+                        // path.conf，选择 turnip 时也要改，三个选项都要改路径"）：
+                        // 激活成功即落 conf —— path.conf 的 VK_ICD_FILENAMES 行
+                        // 原位改写为本驱动 ICD（wineguanli.py 参考行为；UI 选择时
+                        // GraphicsDriverTab 已写过，此处兜底 /opt tar 运行时自动
+                        // 安装、conf 被手工改回等路径），conf 与容器选择永远一致。
+                        runCatching {
+                            GuanliSupport.syncPathConfVkIcd(act.icd.absolutePath, resolved.wineDir) { sink.stamp(it) }
+                        }.getOrElse { sink.stamp("⚠ path.conf 同步异常：${it.message}（不影响本次会话）") }
+                        if (WrapperDriverSupport.shouldForceZink(container.gallium)) {
+                            env["MESA_LOADER_DRIVER_OVERRIDE"] = "zink"
+                            env["GALLIUM_DRIVER"] = "zink"
+                            env.putIfAbsent("ZINK_DESCRIPTORS", "lazy")
+                            env.putIfAbsent("ZINK_DEBUG", "compact")
+                            env.putIfAbsent("TU_DEBUG", "noconform")
+                            sink.stamp("GL 联动 zink：GALLIUM_DRIVER=zink（GL over Vulkan → 用户驱动）")
+                        } else {
+                            sink.stamp("GL 保持 ${container.gallium}（用户显式选择，仅 Vulkan 侧走用户驱动）")
+                        }
+                        sink.stamp("（切回 Mesa 内置 Turnip：图形驱动页选回默认即可，零文件读写）")
+                    }
                 }
             }
 
