@@ -1287,6 +1287,57 @@ PCMBSF
     done < <(grep '^@ stdcall -syscall ' dlls/ntdll/ntdll.spec 2>/dev/null | grep -v ' Nt\| Zw')
     [[ "${_ec_syscall_missing}" == "1" ]] && return 1
   fi
+  # h) v3.3.19：0013 rpcrt4 EC thunks 生效硬校验（CI wine-build-log-arm64ec.zip
+  #    实证 cstub.o / cproxy.o 阵亡：v3.2.25 版 THUNK_ENTRY 宏对 cpsf.h 的
+  #    表达式参数（32*(block)+n）做 ##num 粘贴只取首 token，"NdrProxyForwarding
+  #    Function32 * (1) + 0(void)" 连片解析错误；且 call_stubless_func 尾调
+  #    的 NdrpClientCall2 是 wine-9.7 符号，proton_9.0 叫 ndr_client_call，
+  #    链接必炸）。0013 由主补丁循环应用，此处校验 v3.2.26 修复版确实落位
+  #    （EC_THUNK 字面量枚举是其独有标记）。wine-10+ 树 cstub/cproxy 已重写
+  #    （rpcrt4 无 ALL_THUNK_ENTRIES asm 形态）→ 门控不触发，静默跳过。
+  if [[ "${args}" == *"--enable-archs=arm64ec,"* ]] \
+     && [[ -f dlls/rpcrt4/cstub.c ]] \
+     && grep -q 'ALL_THUNK_ENTRIES' dlls/rpcrt4/cstub.c 2>/dev/null \
+     && ! grep -q 'EC_THUNK(' dlls/rpcrt4/cstub.c 2>/dev/null; then
+    echo "::error::0013 补丁未生效或仍为 v3.2.25 旧版（rpcrt4/cstub.c 的 EC 趟缺 EC_THUNK 字面量枚举）！"
+    echo "   arm64ec 编译趟必炸于 dlls/rpcrt4/arm64ec-windows/cstub.o / cproxy.o（##num 表达式粘贴连片解析错误，CI 实证）"
+    echo "   请核查源码树形态与补丁锚点：projects/${pjName}/0013-fix-arm64ec-rpcrt4-thunks-wine97.patch"
+    return 1
+  fi
+  # 同向：cproxy 的 EC callee 必须与本树的非 static NDR 客户端符号一致
+  # 【树差异】wine-9.7 的非 static 符号是 NdrpClientCall2（ndr_client_call
+  # 在 9.7 为 static，跨 TU 不可见）；proton_9.0/wine-9.0 相反（非 static
+  # 的是 ndr_client_call）。两符号 4 参签名同形（stub_desc, format,
+  # stack_top, fpu_stack），EC 汇编的 x0-x3 传参对两者通用。0013 v3.2.26
+  # 按 proton_9.0 形态产出（当前 CI 主战场），wine-9.7 树由此处原地换名。
+  # 【树探测】cproxy.c 各原生分支本就调用本树符号：p9 aarch64 =
+  # bl __ASM_NAME("ndr_client_call")；w97 aarch64 = bl NdrpClientCall2。
+  if [[ "${args}" == *"--enable-archs=arm64ec,"* ]] \
+     && [[ -f dlls/rpcrt4/cproxy.c ]] \
+     && grep -q 'EC_THUNK(' dlls/rpcrt4/cproxy.c 2>/dev/null; then
+    if grep -q 'ASM_NAME("ndr_client_call")' dlls/rpcrt4/cproxy.c 2>/dev/null; then
+      _ec_callee=ndr_client_call
+    elif grep -q 'bl NdrpClientCall2' dlls/rpcrt4/cproxy.c 2>/dev/null; then
+      _ec_callee=NdrpClientCall2
+    else
+      _ec_callee=""
+    fi
+    if [[ -n "${_ec_callee}" ]]; then
+      if ! grep -q 'bl \\"#'${_ec_callee}'\\"' dlls/rpcrt4/cproxy.c 2>/dev/null; then
+        # EC callee 与树不符 → 原地换名（bl \"#符号\" 形态仅 EC 分支使用，
+        # 各原生分支用 __ASM_NAME / 裸符号形态，不受本 sed 影响）
+        sed -i 's|bl \\"#[A-Za-z_]*\\"|bl \\"#'${_ec_callee}'\\"|' dlls/rpcrt4/cproxy.c
+        echo "0013 EC callee 已适配本树（${_ec_callee}）"
+      fi
+      # 【硬校验】换名后必须命中 —— 防树探测/换名任一环节静默落空
+      if ! grep -q 'bl \\"#'${_ec_callee}'\\"' dlls/rpcrt4/cproxy.c 2>/dev/null; then
+        echo "::error::0013 EC callee 适配失败（期望 ${_ec_callee}）！"
+        echo "   cproxy.c 的 call_stubless_func 尾调符号与本树不符，arm64ec 链接必炸 undefined symbol"
+        echo "   请核查：projects/${pjName}/0013-fix-arm64ec-rpcrt4-thunks-wine97.patch（v3.2.26）"
+        return 1
+      fi
+    fi
+  fi
   CFLAGS="${CFLAGS/-Oz/}"
   CXXFLAGS="${CXXFLAGS/-Oz/}"
   CPPFLAGS="${CPPFLAGS/-Oz/}"

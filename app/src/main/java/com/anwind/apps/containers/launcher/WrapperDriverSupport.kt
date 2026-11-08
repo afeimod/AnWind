@@ -422,15 +422,18 @@ object WrapperDriverSupport {
                 if (it.startsWith("/")) File(it) else File(useIcd.parentFile, it)
             }
             if (useLib != null && useLib.isFile && useLib != libFile) {
-                runCatching { identifyElf(useLib.readBytes()) }?.let { checkLibs.add(useLib to it.needed) }
+                runCatching { identifyElf(useLib.readBytes()) }.getOrNull()
+                    ?.let { checkLibs.add(useLib to it.needed) }
             }
             File(useDir, ADRENOTOOLS_SO).takeIf { it.isFile }?.let { at ->
-                runCatching { identifyElf(at.readBytes()) }?.let { checkLibs.add(at to it.needed) }
+                runCatching { identifyElf(at.readBytes()) }.getOrNull()
+                    ?.let { checkLibs.add(at to it.needed) }
             }
             if (adrenoDir != null && adrenoName != null) {
                 val t = File(adrenoDir, adrenoName)
                 if (t.isFile) {
-                    runCatching { identifyElf(t.readBytes()) }?.let { checkLibs.add(t to it.needed) }
+                    runCatching { identifyElf(t.readBytes()) }.getOrNull()
+                        ?.let { checkLibs.add(t to it.needed) }
                 }
             }
         }
@@ -595,7 +598,7 @@ object WrapperDriverSupport {
         val writeErr = runCatching {
             File(dest, ICD_NAME).writeText(icdJson)
             File(dest, META_NAME).writeText(metaJson)
-        }.getOrElse { "ICD/meta 写入失败：${it.message}" }
+        }.exceptionOrNull()?.let { "ICD/meta 写入失败：${it.message}" }
         if (writeErr != null) {
             runCatching { dest.deleteRecursively() }
             return writeErr
@@ -612,7 +615,8 @@ object WrapperDriverSupport {
                 ?.let { checkLibs.add(it to driverElf.needed) }
         }
         File(dest, ADRENOTOOLS_SO).takeIf { it.isFile }?.let { at ->
-            runCatching { identifyElf(at.readBytes()) }?.let { checkLibs.add(at to it.needed) }
+            runCatching { identifyElf(at.readBytes()) }.getOrNull()
+                ?.let { checkLibs.add(at to it.needed) }
         }
         val missing = missingDeps(checkLibs, depSearchDirs(dest))
         log("✅ 驱动 $slot 已安装：$installed 个文件 → ${dest.absolutePath}（bionic / " +
