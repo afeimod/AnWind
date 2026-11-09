@@ -282,6 +282,58 @@ object RootfsLauncher {
         runCatching { stopContainer(null, name) }
     }
 
+    // ------------------------------------------------------------------
+    // v3.3.29：tabtip.exe 会话级压制（App 原生链路）
+    // ------------------------------------------------------------------
+
+    /** 压制线程单例闸（多容器/多会话并发时只跑一个扫杀线程）。 */
+    private val tabtipSuppressing = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /**
+     * v3.3.29：wine 会话存活期间的 tabtip.exe 扫杀线程。
+     *
+     * 根因（用户设备日志 wine-10arm-20261109-120811 实证）：opt 生态前缀
+     * 注入的 tabtip.exe（触摸键盘辅助进程）在会话 boot 后被拉起，对游戏
+     * 窗口做 UI Automation / MSAA 查询（oleacc:find_class_data +
+     * uiautomation:uia_get_providers_for_hwnd），查询经 WM_GETOBJECT
+     * 同步消息送达 32 位游戏的窗口过程 —— 仙剑四等 2000 年代 MFC 老游戏
+     * 处理该消息时解引用野指针崩溃（page fault on read access）。
+     * v3.3.28 的会话启动前一次性拦截扑空（tabtip 尚未拉起）。
+     *
+     * 机制：每 3s 扫 /proc 数字目录的 cmdline，发现 tabtip.exe 即 kill；
+     * wineserver 消失（容器会话结束）自止；全局单例闸防多线程叠加。
+     * AnWind 有自己的输入链路（安卓 IME → wine），tabtip 纯属冗余。
+     */
+    private fun startTabtipSuppression() {
+        if (!tabtipSuppressing.compareAndSet(false, true)) return
+        Thread({
+            try {
+                while (true) {
+                    var serverAlive = false
+                    val procs = File("/proc").listFiles { f -> f.name.all { it.isDigit() } }
+                    if (procs.isNullOrEmpty()) break
+                    for (p in procs) {
+                        val cmd = runCatching {
+                            File(p, "cmdline").readBytes().toString(Charsets.ISO_8859_1)
+                        }.getOrNull() ?: continue
+                        if (cmd.contains("wineserver")) {
+                            serverAlive = true
+                        } else if (cmd.contains("tabtip.exe")) {
+                            // 同 UID 子进程（wine 会话树），可直接发信号
+                            runCatching { android.os.Process.sendSignal(p.name.toInt(), 9) }
+                        }
+                    }
+                    if (!serverAlive) break
+                    Thread.sleep(3000)
+                }
+            } catch (_: InterruptedException) {
+            } catch (_: Throwable) {
+            } finally {
+                tabtipSuppressing.set(false)
+            }
+        }, "anwind-tabtip-suppress").apply { isDaemon = true; start() }
+    }
+
     /** 当前是否存在可用的 X11 socket（App 侧）。 */
     fun x11SocketReady(): Boolean = X11Support.x11SocketReady()
 
@@ -830,6 +882,16 @@ object RootfsLauncher {
                             // ICD→libvulkan_wrapper.so，turnip 经 ADRENOTOOLS_*
                             // 注入，X11 WSI 由 wrapper 的 xcb 侧提供
                             //
+                            // v3.3.29：NDK 依赖前置解析 —— 依赖链
+                            // libvulkan_wrapper.so → libnativewindow.so →
+                            // libbinder_ndk.so 的 verneed 校验兜底（设备日志
+                            // wine-10arm-20261109-121003 实证：缺它 ICD 整体
+                            // 被忽略 → Found no drivers）。详见
+                            // WrapperDriverSupport.ensureNdkDeps 注释。
+                            val ndkLinked = WrapperDriverSupport.ensureNdkDeps()
+                            if (ndkLinked > 0) {
+                                sink.stamp("NDK 依赖前置解析：rootfs/usr/lib 新建 $ndkLinked 个系统库软链（libbinder_ndk 链 verneed 校验兜底）")
+                            }
                             // v3.3.20（用户实测反馈修复）：ADRENOTOOLS_HOOKS_PATH
                             // 此前从未注入 —— wrapper 生态的 libvulkan_wrapper.so
                             // （用户提供的 wrapper-22 等）从 env 读四件套，没有
@@ -1239,6 +1301,17 @@ object RootfsLauncher {
             }
 
             registerSession(key, WineSession(key, executor, sink))
+
+            // v3.3.29：tabtip.exe 会话级压制（App 原生链路）。
+            //   v3.3.28 只在终端脚本链路拦截且时机在会话启动前 —— 扑空
+            //   （tabtip 由 wine 会话启动链路在 boot 后拉起；设备日志
+            //   wine-10arm-20261109-120811 崩溃快照里 00000110 tabtip.exe
+            //   仍在运行、其线程 0114 正在发 oleacc/uiautomation 查询，
+            //   查询经 WM_GETOBJECT 同步送达 32 位游戏窗口过程，仙剑四等
+            //   MFC 老游戏处理该消息解引用野指针崩溃）。
+            //   此处为 wine 会话存活期间的后台扫杀（每 3s，wineserver 消失
+            //   自止，全局单例防叠加；App 自身进程 cmdline 无 tabtip 字样）。
+            startTabtipSuppression()
 
             // 13) v3.3.9（用户问题 2）：F5任务管理器随容器启动
             //     （startfex.sh / startwine.sh 的 `-5,--f5taskmgr` 同款：

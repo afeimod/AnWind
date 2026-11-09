@@ -340,13 +340,26 @@ isolate_env() {
     [ -n "$_lang" ] || _lang="zh_CN.UTF-8"
     export LANG="$_lang"
 
-    # --- 4) 动态库搜索路径 → 仅 rootfs（驱动/渲染库零串扰）---
-    # 注意：不追加继承值（Termux 侧 lib 会污染 Mesa/ARM 驱动符号解析）
+    # --- 4) 动态库搜索路径 → rootfs 优先 + 末位 /system/lib64 兜底 ---
+    # 注意：不追加继承值（Termux 侧 lib 会污染 Mesa/ARM 驱动符号解析）。
+    # v3.3.29：末位补 /system/lib64（WinlatorXR BionicProgramLauncher 同款
+    #   "rootDir/usr/lib:/system/lib64"）。根因（用户设备日志
+    #   wine-10arm-20261109-121003 实证）：wrapper 栈 ICD → libvulkan_
+    #   wrapper.so →（DT_NEEDED 绝对路径）/system/lib64/libnativewindow.so
+    #   → libbinder_ndk.so 按 soname 在 LD_LIBRARY_PATH 里搜 → 搜不到 →
+    #   Vulkan Loader "cannot find libbinder_ndk.so from verneed[2]" →
+    #   ICD 整体被忽略 → "Found no drivers" → DXVK vkCreateInstance 失败。
+    #   rootfs 路径全部在前，系统目录仅兜底 NDK 库，零符号污染。
+    #   仅 aarch64 追加：x86_64 形态走 glibc ld-linux，混入 bionic 系统
+    #   目录反而有解析风险（WinlatorXR 全程 arm64 也无此分支）。
     local _lp="$RFS_USR/lib"
     [ -d "$RFS_USR/local/lib" ] && _lp="$_lp:$RFS_USR/local/lib"
     [ -d "$WINE_DIR/lib" ]      && _lp="$_lp:$WINE_DIR/lib"
     [ -d "$RFS_USR/opt/lib" ]   && _lp="$_lp:$RFS_USR/opt/lib"
     [ -d "$RFS_USR/opt/fex/lib" ] && _lp="$_lp:$RFS_USR/opt/fex/lib"
+    case "$(uname -m)" in
+        aarch64|arm64) [ -d /system/lib64 ] && _lp="$_lp:/system/lib64" ;;
+    esac
     export LD_LIBRARY_PATH="$_lp"
 
     # --- 5) PATH → rootfs 优先，App 前缀仅兜底（curl/zstd 等下载工具）---
@@ -966,6 +979,7 @@ apply_vk_driver() {
         # 经 ADRENOTOOLS_* 注入；hooks 目录（libmain_hook.so 等所在）=
         # wrapper slot 目录；temp 目录为 adrenotools patched .so 落盘位
         #（wrapper 内部拼 <driverPath>/temp，WinNative vulkan.c 同款）
+        ensure_ndk_deps   # v3.3.29：NDK 依赖前置解析（libbinder_ndk 链）
         local _drv=""
         _drv="$(sed -n 's/.*"driverLibrary"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$DRIVERS_ROOT/$_dir/meta.json" 2>/dev/null | head -n 1)"
         export VK_ICD_FILENAMES="$_icd"
@@ -995,6 +1009,7 @@ apply_vk_driver() {
             [ -f "$_w/libvulkan_wrapper.so" ] && [ -f "$_w/icd.json" ] && { _wdir="${_w%/}"; break; }
         done
         if [ -n "$_wdir" ]; then
+            ensure_ndk_deps   # v3.3.29：NDK 依赖前置解析（libbinder_ndk 链）
             export VK_ICD_FILENAMES="$_wdir/icd.json"
             export LD_LIBRARY_PATH="$_dirfull:$_wdir${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
             export ADRENOTOOLS_DRIVER_PATH="$_dirfull/"
@@ -1389,20 +1404,69 @@ anwind_kill_tabtip() {
     return 0
 }
 
+# v3.3.29：会话级 tabtip.exe 压制守护。
+#   v3.3.28 的会话启动前一次性 kill 实证无效（用户设备日志
+#   wine-10arm-20261109-120811：崩溃快照里 00000110 tabtip.exe 仍在运行、
+#   且其线程 0114 正在发 oleacc/uiautomation 查询 —— tabtip 由 wine 会话
+#   启动链路在 boot 后才拉起，启动前扫杀必然扑空）。改为后台守护：
+#   wineserver 存活期间每 3s 扫杀一次新拉起的 tabtip.exe，wineserver
+#   退出或 20 分钟上限后自行退出。脚本 exec wine 后守护子壳孤儿化，
+#   生命周期天然与会话绑定，无泄漏。
+anwind_tabtip_watchdog() {
+    (
+        _n=0
+        while [ "$_n" -lt 400 ]; do
+            _srv=0
+            for _p in /proc/[0-9]*; do
+                [ -r "$_p/cmdline" ] || continue
+                _cmd="$(tr '\0' ' ' < "$_p/cmdline" 2>/dev/null)"
+                case "$_cmd" in
+                    *wineserver*) _srv=1 ;;
+                    *tabtip.exe*)
+                        case "$_cmd" in
+                            *anwind-wine*) ;;
+                            *) kill -9 "${_p#/proc/}" 2>/dev/null || true ;;
+                        esac
+                        ;;
+                esac
+            done
+            [ "$_srv" = "1" ] || break
+            sleep 3
+            _n=$((_n+1))
+        done
+    ) >/dev/null 2>&1 &
+    return 0
+}
+
+# v3.3.29：wrapper 栈 NDK 依赖前置解析（第二层保险）。
+#   依赖链：libvulkan_wrapper.so → libnativewindow.so → libbinder_ndk.so。
+#   bionic linker（init_verneed）校验：libnativewindow.so 的 verneed 条目
+#   引用的库必须以其 soname 出现在其已加载子依赖中，否则报
+#   "cannot find libbinder_ndk.so from verneed[2] in DT_NEEDED list" →
+#   ICD 整体被 Vulkan Loader 忽略 → "Found no drivers"（用户设备日志
+#   wine-10arm-20261109-121003 实证，v3.3.28 的 /system/lib64 只在 App
+#   层设置、被 isolate_env 重建丢弃，本轮已补脚本层 + 本兜底双保险）。
+#   做法：rootfs/usr/lib 缺哪个 NDK 库就软链哪个（目标 /system/lib64）。
+#   bionic 按 realpath 取 basename 兜底 soname → 软链不破坏 soname 匹配；
+#   rootfs/usr/lib 在 LD_LIBRARY_PATH 首位 → soname 搜索首选命中，使
+#   libbinder_ndk.so 成为 libnativewindow.so 的子依赖，verneed 通过。
+#   已有实体文件（rootfs CI 的 libandroid-stub 平台代理等）则跳过不动。
+ensure_ndk_deps() {
+    local _n
+    for _n in libbinder_ndk.so libnativewindow.so libandroid.so libmediandk.so libOpenSLES.so; do
+        [ -e "$RFS_USR/lib/$_n" ] && continue
+        [ -e "/system/lib64/$_n" ] || continue
+        ln -sf "/system/lib64/$_n" "$RFS_USR/lib/$_n" 2>/dev/null || true
+    done
+    return 0
+}
+
 run_wine() {
     # 纯日志：前缀状态观测（只读探测，不改任何流程）
     log "run_wine: 前缀 system.reg $([ -f "$WINEPREFIX/system.reg" ] && echo 已存在 || echo 不存在-将首次初始化)"
-    # v3.3.28：游戏/程序会话启动前拦截 tabtip.exe（触摸键盘辅助进程）。
-    #   根因（用户设备日志 wine-456/wine-10arm 实证）：opt 生态前缀注入的
-    #   tabtip.exe 对游戏窗口做 UI Automation / MSAA 查询（日志特征：
-    #   oleacc:find_class_data "Button" + uiautomation:uia_get_providers_
-    #   for_hwnd），查询经 WM_GETOBJECT 同步消息送达 32 位游戏的窗口
-    #   过程 —— 仙剑四等 2000 年代 MFC 老游戏处理该消息时解引用野指针
-    #   崩溃（page fault on read access，arm64+FEX 与 x86_64+box64 的
-    #   唯一行为差异：box64 下 tabtip 兼容性差从未真正跑起来，FEX 下
-    #   正常运行才触发了游戏 bug）。AnWind 有自己的输入链路（安卓 IME
-    #   → wine），tabtip 纯属冗余，游戏会话一律终止。
-    anwind_kill_tabtip
+    # tabtip 拦截（v3.3.29 重构）：主流程派发前已统一执行
+    # anwind_kill_tabtip + anwind_tabtip_watchdog（会话级压制），此处不再
+    # 重复调用。根因说明见 anwind_tabtip_watchdog 函数注释。
     # wineserver：真实 Unix ELF 宿主程序 → 直连宿主二进制（box64 形态包装）
     if [ "${1:-}" = "wineserver" ]; then
         local _bin
@@ -1640,4 +1704,10 @@ info "环境: PREFIX=$PREFIX HOME=$HOME LANG=$LANG 音频=${PULSE_SERVER:-（关
 log "$(version)"
 log "会话开始 $(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo '?') 内核=$(uname -m 2>/dev/null) pid=$$"
 log "派发: 后端=$BACKEND wine目录=$WINE_DIR 参数: $*"
+# v3.3.29：会话级 tabtip 压制 —— 先清残留（v3.3.28），再挂会话期守护
+#（tabtip 由 wine 会话启动链路在 boot 后拉起，启动前扫杀扑空，见
+# anwind_tabtip_watchdog 注释；两条防线互补，wineserver 退出即自止）
+anwind_kill_tabtip
+anwind_tabtip_watchdog
+info "tabtip 会话级压制已挂载（启动前清残留 + wineserver 存活期每 3s 扫杀）"
 run_wine "$@"

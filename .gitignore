@@ -13,3 +13,8 @@ local.properties
 *.keystore
 app/release/
 keystore.jks
+app/build/
+termux-x11/build/
+termux-x11-stub/build/
+anwind-release.keystore
+local.properties

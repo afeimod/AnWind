@@ -1462,16 +1462,30 @@ private fun mimeForExtension(ext: String): String = when (ext) {
     else -> "*/*"
 }
 
+// v3.3.29：Windows 程序/脚本全家桶图标识别（用户需求：exe cmd 等）。
+//   此前 exe/msi 有图标，cmd/bat/com/scr/lnk/dll/ini/reg 等全落默认 📄，
+//   在游戏目录里一眼分不清哪些能点着跑。现按 Windows 语义分档：
+//   可执行本体（exe/com/scr）→ ⚙️；安装包 msi → 🧰；
+//   脚本（bat/cmd）→ 🖥️（控制台批处理）；快捷方式 lnk → 🔗；
+//   DLL → 🧩；配置/注册表（ini/cfg/conf/inf/reg）→ 🛠️；
+//   镜像 iso/img → 💿；压缩包补 tar/gz/xz/bz2/zst/tzst 双后缀场景。
 private fun iconForExtension(ext: String): String = when (ext.lowercase()) {
     "apk" -> "📦"
     "html", "htm" -> "🌐"
     "txt" -> "📄"
     "jpg", "jpeg", "png", "gif", "bmp", "webp" -> "🖼️"
-    "mp3", "wav", "ogg", "m4a", "flac" -> "🎵"
-    "mp4", "avi", "mov", "mkv", "3gp", "webm" -> "📺"
+    "mp3", "wav", "ogg", "m4a", "flac", "wma", "aac", "mid" -> "🎵"
+    "mp4", "avi", "mov", "mkv", "3gp", "webm", "wmv", "flv", "ts", "m4v" -> "📺"
     "pdf" -> "📕"
-    "exe", "msi" -> "⚙️"
-    "zip", "rar", "7z" -> "🗜️"
+    "exe", "com", "scr" -> "⚙️"
+    "msi" -> "🧰"
+    "bat", "cmd" -> "🖥️"
+    "lnk" -> "🔗"
+    "dll" -> "🧩"
+    "ini", "cfg", "conf", "inf", "reg" -> "🛠️"
+    "iso", "img" -> "💿"
+    "zip", "rar", "7z", "tar", "gz", "xz", "bz2", "zst", "tzst" -> "🗜️"
+    "ttf", "otf", "ttc" -> "🔤"
     "doc", "docx" -> "📘"
     "xls", "xlsx" -> "📗"
     "ppt", "pptx" -> "📙"

@@ -296,8 +296,31 @@ android {
         // ⑤两个 build.sh（wine + hangover-wine）补丁生效硬校验：virtual.c
         //   无 noexec 标记 / env.c 无 locale 标记 → ::error:: 直接构建失
         //   败 —— CI 不再可能产出缺补丁的裸奔 wine 包。
-        versionCode = 99
-        versionName = "2.38.36"
+        versionCode = 100
+        versionName = "2.38.37"
+        // v3.3.29（源码包 v3.3.29，App v2.38.37 / versionCode 100）——
+        //   用户设备日志（wine-10arm-20261109 三连发）实证修复轮：
+        //   ①【wrapper 驱动"不能用"真根因】：选 wrapper/yuzu 驱动后 Vulkan
+        //     Loader 报 "cannot find libbinder_ndk.so from verneed[2] in
+        //     DT_NEEDED list for /system/lib64/libnativewindow.so" → ICD
+        //     整体被忽略 → "Found no drivers" → DXVK vkCreateInstance 失败。
+        //     三层修复：a) anwind-wine isolate_env 末位补 /system/lib64
+        //     （WinlatorXR BionicProgramLauncher 同款；此前 v3.3.28 只在
+        //     App 层设置、被脚本 isolate_env 重建丢弃）；b) NDK 依赖前置
+        //     解析（脚本 ensure_ndk_deps + Kotlin WrapperDriverSupport.
+        //     ensureNdkDeps 双份）：rootfs/usr/lib 缺 libbinder_ndk.so 等
+        //     即软链 /system/lib64 —— 使其成为 libnativewindow.so 的已
+        //     加载子依赖，bionic verneed 校验通过；c) App 原生链路
+        //     （RootfsLauncher 直 exec，不经脚本）同步接入 b)。
+        //   ②【tabtip 拦截真生效】：v3.3.28 的会话启动前一次性拦截扑空
+        //     （崩溃快照里 tabtip.exe 仍存活且正在发 UIA 查询）→ 改为
+        //     会话级压制：脚本链 anwind_tabtip_watchdog（wineserver 存活
+        //     期每 3s 扫杀）+ App 链 startTabtipSuppression 同语义。
+        //   ③文件管理器（此电脑）图标识别扩展：exe/com/scr ⚙️、msi 🧰、
+        //     bat/cmd 🖥️、lnk 🔗、dll 🧩、ini/cfg/conf/inf/reg 🛠️、
+        //     iso/img 💿、压缩包补 tar/gz/xz/bz2/zst/tzst 双后缀、字体
+        //     ttf/otf/ttc 🔤（此前 cmd/bat 等全落默认 📄）。
+        //   附：SAFEFLAGS=0 全档保留（v3.3.21 用户实测定论）。
         // v3.3.28（源码包 v3.3.28，App v2.38.36 / versionCode 99）——
         //   用户全盘否定 v3.3.24/26/27 后的全面复查轮。核心发现：
         //   ①【交付断层】v3.3.19~v3.3.27 的全部驱动修复（ELF 魔数修复、

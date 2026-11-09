@@ -106,6 +106,56 @@ object WrapperDriverSupport {
     val driverRoot: File get() = rfs(DRIVER_ROOT_REL)
 
     // ------------------------------------------------------------------
+    // v3.3.29：NDK 依赖前置解析（wrapper 栈 libbinder_ndk 链兜底）
+    // ------------------------------------------------------------------
+
+    /** wrapper 栈加载链涉及的系统 NDK 库（bionic verneed 校验的软链兜底集）。 */
+    private val NDK_DEP_LIBS = listOf(
+        "libbinder_ndk.so", "libnativewindow.so", "libandroid.so",
+        "libmediandk.so", "libOpenSLES.so"
+    )
+
+    /**
+     * v3.3.29：wrapper 栈 NDK 依赖前置解析。
+     *
+     * 根因（用户设备日志 wine-10arm-20261109-121003 实证）：
+     * wrapper ICD → libvulkan_wrapper.so →（DT_NEEDED）libnativewindow.so →
+     * （DT_NEEDED + verneed）libbinder_ndk.so。bionic linker 的
+     * VersionTracker::init_verneed 校验要求 verneed 引用的库以 soname 出现在
+     * libnativewindow.so 的已加载子依赖中；设备 rootfs 无 libbinder_ndk.so、
+     * 进程搜索路径又解析不到时，报
+     * "cannot find libbinder_ndk.so from verneed[2] in DT_NEEDED list" →
+     * Vulkan Loader 忽略整个 ICD → "Found no drivers" → DXVK 全灭。
+     *
+     * 兜底：rootfs/usr/lib 缺哪个 NDK 库就软链哪个（目标 /system/lib64）。
+     * bionic 按 realpath 的 basename 兜底 soname → 软链不破坏 soname 匹配；
+     * rootfs/usr/lib 在 LD_LIBRARY_PATH 首位 → soname 搜索首选命中，使
+     * libbinder_ndk.so 成为 libnativewindow.so 的子依赖，verneed 通过。
+     * 已有实体文件（rootfs CI 的 libandroid-stub 平台代理等）跳过不动。
+     *
+     * @return 实际新建软链数量（0 = 全部已就位或系统目录无对应库）
+     */
+    fun ensureNdkDeps(): Int {
+        val rfsLib = rfs("usr/lib")
+        val sysLib = File("/system/lib64")
+        if (!sysLib.isDirectory || !rfsLib.isDirectory) return 0
+        var linked = 0
+        for (name in NDK_DEP_LIBS) {
+            val dst = File(rfsLib, name)
+            if (dst.exists()) continue
+            val src = File(sysLib, name)
+            if (!src.exists()) continue
+            runCatching {
+                // 清可能残留的悬链（exists() 对悬链为 false 但路径被占用）
+                dst.delete()
+                android.system.Os.symlink(src.absolutePath, dst.absolutePath)
+                linked++
+            }
+        }
+        return linked
+    }
+
+    // ------------------------------------------------------------------
     // v3.3.19：ELF 识别（WinNative DriverPackages.identify 全语义移植）
     // ------------------------------------------------------------------
 
