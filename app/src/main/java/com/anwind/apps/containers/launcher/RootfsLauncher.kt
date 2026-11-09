@@ -822,6 +822,16 @@ object RootfsLauncher {
             }
             if (activeVkSlot != null) {
                 val slotName = activeVkSlot.substringAfter(':')
+                // v3.3.32：系统专有驱动档（wrapper="system"）—— 先确保 wrapper 栈就位
+                //（内置 wrapper-stack.tzst 自动安装，5.5MB 一次性）；栈不可用时回退 Mesa。
+                if (slotName == WrapperDriverSupport.SYSTEM_SLOT) {
+                    val stackOk = runCatching {
+                        WrapperDriverSupport.ensureWrapperStackAvailable(context) { sink.stamp(it) }
+                    }.getOrDefault(false)
+                    if (!stackOk) {
+                        sink.stamp("⚠ 系统驱动：wrapper 栈不可用（资产缺失/安装失败），回退 Mesa 内置 Turnip")
+                    }
+                }
                 // v3.3.19：激活计划（WinNative 语义：ELF 平台识别 + wrapper 栈
                 // 路由 + 依赖闭环预检）。用户实测（2026-11-08 会话日志）：选了
                 // wrapper-22 后游戏报 "Required Vulkan extension VK_KHR_surface
@@ -830,7 +840,22 @@ object RootfsLauncher {
                 // → DXVK 空手而归。旧逻辑照注入不误 → 游戏必黑屏且无任何
                 // 线索；新逻辑：不可用的槽位显式回退 Mesa 内置 Turnip，原因
                 // 逐条写进会话日志（glibc / 非 ELF / 缺哪个依赖，全部点名）。
-                val act = WrapperDriverSupport.activationFor(slotName)
+                val act0 = WrapperDriverSupport.activationFor(slotName)
+                // v3.3.32：android 平台驱动（高通/联发科专有 yuzu 包，无 X11 WSI）
+                // 若无 wrapper 栈可路由 → 自动安装内置 wrapper 栈后重算一次
+                //（用户此前“装了 v849/q615.50 类包选了必黑屏”的闭环链路）。
+                var act = act0
+                if (act != null && !act.wrapperStack && !act.x11wsi) {
+                    val stackOk = runCatching {
+                        WrapperDriverSupport.ensureWrapperStackAvailable(context) { sink.stamp(it) }
+                    }.getOrDefault(false)
+                    if (stackOk) {
+                        act = WrapperDriverSupport.activationFor(slotName)
+                        if (act?.wrapperStack == true) {
+                            sink.stamp("已自动安装内置 wrapper 栈：专有驱动 ${slotName} 经 adrenotools 路由（X11 WSI 由 wrapper 提供，v3.3.32）")
+                        }
+                    }
+                }
                 // 回退时 path.conf 一并回写 Mesa 内置（防 conf 里残留旧 ICD
                 // 误导 glibc/startwine 链路）
                 val fallbackStockConf = {
@@ -843,7 +868,10 @@ object RootfsLauncher {
                 }
                 when {
                     act == null -> sink.stamp(
-                        "⚠ Vulkan 驱动 $slotName 的 ICD 清单未就位（安装失败或包内无 libvulkan*.so），回退 Mesa 内置 Turnip"
+                        if (slotName == WrapperDriverSupport.SYSTEM_SLOT)
+                            "⚠ 系统驱动档不可用：wrapper 栈未就位（内置资产安装失败？），回退 Mesa 内置 Turnip"
+                        else
+                            "⚠ Vulkan 驱动 $slotName 的 ICD 清单未就位（安装失败或包内无 libvulkan*.so），回退 Mesa 内置 Turnip"
                     )
                     act.platform == WrapperDriverSupport.DriverPlatform.GLIBC -> {
                         sink.stamp("⚠ Vulkan 驱动 $slotName 是 glibc 构建（DT_NEEDED 含 libc.so.6），bionic 原生 wine 无法 dlopen —— 回退 Mesa 内置 Turnip")
@@ -933,8 +961,19 @@ object RootfsLauncher {
                                         (act.adrenotoolsHooksDir?.let { "（hooks=${it.name}/）" } ?: "")
                                 )
                             } else {
-                                sink.stamp("wrapper 栈激活：ICD→libvulkan_wrapper.so（未配对 turnip 驱动本体，wrapper 回退系统 GPU 驱动）" +
-                                    (act.adrenotoolsHooksDir?.let { "（hooks=${it.name}/）" } ?: ""))
+                                // v3.3.32：系统专有驱动档（wrapper="system"）——
+                                // 不注入 ADRENOTOOLS_DRIVER_*，libvulkan_wrapper.so
+                                // 自身回退加载 /system/lib64/libvulkan.so（设备厂商
+                                // 专有驱动：高通 Adreno 系统驱动 / 联发科 Mali 同通路）
+                                val isSystem = slotName == WrapperDriverSupport.SYSTEM_SLOT
+                                sink.stamp(
+                                    (if (isSystem) "系统专有驱动激活（高通/联发科）：" else "wrapper 栈激活：") +
+                                        "ICD→libvulkan_wrapper.so（${
+                                            if (isSystem) "wrapper 回退系统 /system/lib64/libvulkan.so —— 设备厂商专有驱动"
+                                            else "未配对 turnip 驱动本体，wrapper 回退系统 GPU 驱动"
+                                        }）" +
+                                        (act.adrenotoolsHooksDir?.let { "（hooks=${it.name}/）" } ?: "")
+                                )
                             }
                             sink.stamp("Vulkan 驱动激活（$activeVkSlot）：VK_ICD_FILENAMES → ${act.icd.absolutePath}")
                         } else {
@@ -1200,7 +1239,23 @@ object RootfsLauncher {
             // 文件；PE 可执行段由 wine 的匿名内存回退加载（wine 补丁
             // 0011/0014 系列）。旧两代执行区残留在此一次性清理释放。
             val effectiveArgs = prepareNoexecDirectRead(wineArgs, container) { sink.stamp(it) }
-            val command = buildCommand(resolved, effectiveArgs, dmode, resolution)
+
+            // v3.3.33（"dxvk 运行仙剑四还是不行"修复）：dxvk_appfix 移植到
+            // App 原生链 —— v3.3.30 的仙剑四 d3d9.floatEmulation=Strict 补丁
+            // 此前只存在于终端脚本链（anwind-wine dxvk_appfix_conf），原生链
+            // 从未生效（用户 2026-11-09 21:57 会话日志实证：DXVK 读的是
+            // /opt/dxvk.conf 原文件、无"DXVK 兼容补丁"行，游戏代码 +0x2941b5
+            // page fault 依旧）。两条链路自此对齐。
+            val pal4Hit = runCatching {
+                WineEnvironment.applyPal4Compat(env, effectiveArgs, container) { sink.stamp(it) }
+            }.getOrDefault(false)
+
+            val command0 = buildCommand(resolved, effectiveArgs, dmode, resolution)
+            // v3.3.33：CPU 亲和性原生链真正生效（taskset 前缀包装）——
+            // 旧行为只导出 PRIMARY_CORES 供 /opt 生态脚本消费，原生链
+            // 从不绑核；仙剑四命中且未配置 cores 时自动单核（该游戏
+            // 2007 引擎多核竞态崩溃为社区共识问题）。
+            val command = applyTasksetAffinity(command0, env, pal4Hit) { sink.stamp(it) }
             // v3.1：工作目录跟随 exe 所在目录（Unix 路径直取父目录 /
             // Windows 盘符路径经 dosdevices 映射）—— DX9 等大量游戏按
             // CWD 相对路径找 media\ 等资源，旧版写死 HOME 导致
@@ -1456,6 +1511,7 @@ object RootfsLauncher {
         val systemReg = File(container.prefixPath, "system.reg")
         if (!systemReg.isFile) {
             prefixLog("前缀未就绪（system.reg 缺失）→ 自动重跑一次 wineboot -u 修复……")
+            var rbCode = -1
             runCatching {
                 // v3.3.3：-i → -u（startfex.sh 同款）+ 压 mono 弹窗。
                 val rbCmd = WineRuntime.wineCommand(resolved) + listOf("wineboot", "-u")
@@ -1471,12 +1527,45 @@ object RootfsLauncher {
                     runCatching { rb.stopAndWait(true, 10, TimeUnit.SECONDS) }
                     prefixLog("警告: wineboot 重试超时（300s），已终止 —— 前缀构建链继续（失败步骤下次启动自动重试）")
                 } else {
+                    rbCode = runCatching { rb.exitValue() }.getOrDefault(-1)
                     prefixLog(
-                        "wineboot 重试结束（退出码=${runCatching { rb.exitValue() }.getOrDefault(-1)}，" +
+                        "wineboot 重试结束（退出码=$rbCode，" +
                             "system.reg ${if (systemReg.isFile) "已生成 ✓" else "仍缺失 ✗"}）"
                     )
                 }
             }.onFailure { prefixLog("警告: wineboot 重试异常: ${it.message}") }
+            // v3.3.33（用户："box64-0.3.8 运行 wine 还是不行"）：重试仍段错误
+            //（139，ntdll 早期初始化 R15 高 32 位丢失型随机崩溃 —— v3.3.21
+            // 注释记载的已知问题，地址空间布局依赖、SAFEFLAGS 无关）时，
+            // 再以 BOX64_DYNAREC=0（纯解释器，确定性执行）兜底跑一次 ——
+            // 前缀构建是一次性分钟级路径，解释器慢一点可接受，换来的是
+            // "布局彩票"型崩溃不再让前缀永远建不起来。仅 box64 后端生效。
+            if (!systemReg.isFile && rbCode == 139 &&
+                resolved.backend == ContainerBackend.BOX64
+            ) {
+                prefixLog("wineboot 重试段错误（139，box64 dynarec 地址空间布局型随机崩溃）→ 以 BOX64_DYNAREC=0（解释器模式）再兜底一次……")
+                runCatching {
+                    val rb2 = NativeShellExecutor.create()
+                        .setCommand(*(WineRuntime.wineCommand(resolved) + listOf("wineboot", "-u")).toTypedArray())
+                        .putEnv(env)
+                        .putEnv("WINEDLLOVERRIDES", "mscoree=disabled")
+                        .putEnv("WINEPREFIX", container.prefixPath)
+                        .putEnv("BOX64_DYNAREC", "0")
+                        .setWorkingDir(WineEnvironment.RUNTIME_DIR)
+                        .exec()
+                    val finished2 = runCatching { rb2.waitFor(600, TimeUnit.SECONDS) }.getOrDefault(false)
+                    if (!finished2) {
+                        runCatching { rb2.stopAndWait(true, 10, TimeUnit.SECONDS) }
+                        prefixLog("警告: 解释器模式 wineboot 兜底超时（600s），已终止 —— 下次启动自动重试")
+                    } else {
+                        prefixLog(
+                            "解释器模式兜底结束（退出码=${runCatching { rb2.exitValue() }.getOrDefault(-1)}，" +
+                                "system.reg ${if (systemReg.isFile) "已生成 ✓" else "仍缺失 ✗"}）" +
+                                (if (!systemReg.isFile) " —— 建议换用新版 box64（AnWind CI 已构建 v0.4.4+，仓库 Projects/box64）" else "")
+                        )
+                    }
+                }.onFailure { prefixLog("警告: 解释器模式兜底异常: ${it.message}") }
+            }
         }
         // v3.3.4：taskmgr 前置保活已移除（用户问题 5 —— 参考链路里解压与
         // 注册表的每一步都是独立 wine 客户端，wineserver 按需拉起，无需
@@ -1662,6 +1751,89 @@ object RootfsLauncher {
         // （命令行不包 —— Explorer Desktops 注册表已在前置步骤写入）。
         // explorer 自引用防重包（用户手动传 explorer /desktop 时透传）。
         return cmd + wineArgs
+    }
+
+    // ------------------------------------------------------------------
+    // v3.3.33：CPU 亲和性原生链（taskset 前缀）
+    // ------------------------------------------------------------------
+
+    /** taskset 二进制的运行时探测缓存（null = 未探测）。 */
+    private var tasksetProbe: Pair<String, Boolean>? = null // (路径, 支持 -c 列表语法)
+
+    /**
+     * v3.3.33：给最终启动命令加 taskset 前缀，把 wine 及全部子进程钉到
+     * PRIMARY_CORES（容器 CPU核心 页 cores= 配置）指定的核心集 —— 与
+     * anwind-wine 的 apply_taskset_cores 同语义，但作用于 App 原生 exec 链
+     *（旧版只导出变量不绑核）。仙剑四命中且未配置 cores 时自动单核。
+     *
+     * 安全性：taskset 二进制不存在 / 语法探测失败 → 原样返回命令（零影响）；
+     * 语法探测（-c 列表式 vs 十六进制掩码式）用 /system/bin/true 一次探明并
+     * 静态缓存，避免不同 toybox/util-linux 实现差异把启动搞挂。
+     */
+    private fun applyTasksetAffinity(
+        command: List<String>,
+        env: Map<String, String>,
+        pal4AutoSingleCore: Boolean,
+        log: (String) -> Unit
+    ): List<String> {
+        var cores = env["PRIMARY_CORES"]?.trim().orEmpty()
+        if (cores.isEmpty() && pal4AutoSingleCore) {
+            cores = "0"
+            log("仙剑四兼容：未配置 cores，本次自动单核（多核竞态崩溃规避，CPU核心 页可改回）")
+        }
+        if (cores.isEmpty()) return command
+        val total = Runtime.getRuntime().availableProcessors()
+        val parsed = WineEnvironment.parseCoreSpec(cores)
+            .filter { it in 0 until total }.distinct().sorted()
+        if (parsed.isEmpty()) {
+            log("PRIMARY_CORES=$cores 无有效核心号（设备共 $total 核），跳过核绑定")
+            return command
+        }
+        val probe = probeTaskset()
+        if (probe == null) {
+            log("PRIMARY_CORES=$cores 但未找到可用 taskset（rootfs/system 均无），跳过核绑定 —— 保持系统调度")
+            return command
+        }
+        val (tasksetBin, supportsCList) = probe
+        val finalCmd = if (supportsCList) {
+            listOf(tasksetBin, "-c", parsed.joinToString(",")) + command
+        } else {
+            var mask = 0L
+            parsed.forEach { mask = mask or (1L shl it) }
+            listOf(tasksetBin, java.lang.Long.toHexString(mask)) + command
+        }
+        log(
+            "核绑定: taskset ${if (supportsCList) "-c ${parsed.joinToString(",")}" else "mask=${WineEnvironment.formatCoreSpec(parsed)}"}" +
+                "（cores=$cores，wine 及全部子进程继承；taskset=$tasksetBin）"
+        )
+        return finalCmd
+    }
+
+    /** 探测可用 taskset（rootfs → /system/bin；含 -c 语法探明），结果静态缓存。 */
+    private fun probeTaskset(): Pair<String, Boolean>? {
+        tasksetProbe?.let { return it }
+        val candidates = listOf(
+            File("${ContainerManager.ROOTFS_ROOT}/usr/bin/taskset"),
+            File("${ContainerManager.ROOTFS_ROOT}/usr/local/bin/taskset"),
+            File("/system/bin/taskset")
+        )
+        val bin = candidates.firstOrNull { it.isFile && it.canExecute() } ?: return null
+        // -c（CPU 列表）语法探测：toybox 新版支持，老 util-linux 只认十六进制掩码。
+        // 用 /system/bin/true（toybox 自带）做牺牲进程，一次探明。
+        val trueBin = listOf(File("/system/bin/true"), File("/system/bin/id"))
+            .firstOrNull { it.isFile && it.canExecute() }
+        var supportsC = false
+        if (trueBin != null) {
+            supportsC = runCatching {
+                val p = ProcessBuilder(bin.absolutePath, "-c", "0", trueBin.absolutePath)
+                    .start()
+                val ok = p.waitFor(3, TimeUnit.SECONDS)
+                ok && p.exitValue() == 0
+            }.getOrDefault(false)
+        }
+        val result = bin.absolutePath to supportsC
+        tasksetProbe = result
+        return result
     }
 
     /**

@@ -68,6 +68,8 @@ app/src/main/assets/anwind/
 | `launcher/`（10 文件） | v3.0 原生启动链：RootfsLauncher 编排 + NativeShellExecutor 直接 exec（详见 docs/NATIVE-LAUNCHER.md） |
 | `ContainerScreens.kt` | **v3.2.18 wineguanli.py 完全重制**：工具栏 + 左右分栏 + 五选项卡 + 高级设置页（DY/Box/Wine安装/MANGOHUD）+ 更多设置对话框（CPU/函数库/环境变量/高级功能/Direct3D/AnWind原生）+ 对话框族；全宽度自适应（等比缩放 + 窄屏横向滑动） |
 | `GuanliSupport.kt` | wineguanli 数据层移植：DY 三预设 / env K=V 编解码 / /opt tar 扫描与解压 / Wine 安装删除 / AppDefaults 注册表 / MANGOHUD 串 / Android 快捷方式 |
+| `launcher/WrapperDriverSupport.kt` | **v3.3.32 高通/联发科专有驱动**：yuzu 式驱动包安装（ABI 门禁 + 独立目录）+ wrapper 栈路由 +『系统驱动（高通/联发科专有）』档（内置 wrapper-stack.tzst 资产，wrapper 回退 /system/lib64/libvulkan.so；详见 docs/SYSTEM-GPU-DRIVERS.md） |
+| `filemanager/PeIcon.java` | **v3.3.31 文件管理器 exe 内嵌图标**：纯 Java PE 资源解析器（RT_GROUP_ICON→RT_ICON，PNG/DIB 1-32bpp 全支持），FileExplorerApp 网格/列表直显每个 exe 自带的真实图标 |
 
 关键设计：
 

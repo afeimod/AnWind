@@ -298,8 +298,31 @@ android {
         // ⑤两个 build.sh（wine + hangover-wine）补丁生效硬校验：virtual.c
         //   无 noexec 标记 / env.c 无 locale 标记 → ::error:: 直接构建失
         //   败 —— CI 不再可能产出缺补丁的裸奔 wine 包。
-        versionCode = 101
-        versionName = "2.38.38"
+        versionCode = 102
+        versionName = "2.38.39"
+        // v3.3.33（源码包 v3.3.33，App v2.38.39 / versionCode 102）——
+        //   用户 2026-11-09 21:5x 两份日志（wine-10 仙剑四崩溃 / wine-9.2
+        //   box64 wineboot 段错误）+ 三项功能需求的修复轮：
+        //   ①【仙剑四 DXVK 修复（原生链）】：v3.3.30 的 d3d9.floatEmulation=
+        //     Strict appfix 只在终端脚本链生效，App 原生链从未注入（用户
+        //     21:57 日志实证：DXVK 读 /opt/dxvk.conf 原文件、无补丁行、
+        //     +0x2941b5 崩溃依旧）→ WineEnvironment.applyPal4Compat 移植；
+        //     另加仙剑四自动单核（2007 引擎多核竞态崩溃社区共识）+
+        //     CPU 亲和性原生链真正生效（taskset 前缀，cores= 配置落地）；
+        //   ②【box64 wineboot 段错误兜底】：重试仍 139（R15 高 32 位丢失
+        //     型随机崩溃，v3.3.21 已记载）时以 BOX64_DYNAREC=0 解释器模式
+        //     兜底重跑（App 链 + 终端脚本链双端）；建议用户升级 box64 至
+        //     CI v0.4.4+（用户设备仍为 0.3.8，日志环境为旧版激进预设）；
+        //   ③【文件管理器 exe 内嵌真实图标】（用户需求）：PeIcon.java
+        //     纯 Java PE 解析器（RT_GROUP_ICON→RT_ICON，PNG/DIB 1-32bpp，
+        //     A/B 双偏移风格自适应，桌面端已对真实 exe 验证）+
+        //     ExeIconThumbnail（LruCache，exe/dll/scr/com/cpl/ocx/ico）；
+        //   ④【高通/联发科专有系统驱动支持】（用户需求，参考 WinlatorXR）：
+        //     新增『系统驱动（高通/联发科专有）』档（wrapper="system"，
+        //     内置 wrapper-stack.tzst APK 资产 5.5MB 自动安装，wrapper 回退
+        //     /system/lib64/libvulkan.so）；yuzu 格式专有驱动包（v819.2/
+        //     v849/q615.50 等）安装后自动经 wrapper 栈路由；依赖预检补
+        //     vendor 分区（/vendor/lib64 等 HIDL 库解析）。
         // v3.3.30（源码包 v3.3.30，App v2.38.38 / versionCode 101）——
         //   用户 2026-11-09 18:2x 日志四连发实证的修复轮：
         //   ①【wrapper/yuzu 驱动"装了选了也不能用"根因闭环】：v3.3.29

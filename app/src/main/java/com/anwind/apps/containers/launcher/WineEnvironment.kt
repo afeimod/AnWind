@@ -567,6 +567,63 @@ object WineEnvironment {
         return out
     }
 
+    // ------------------------------------------------------------------
+    // v3.3.33：仙剑四（PAL4）兼容 —— dxvk_appfix 原生链移植
+    // ------------------------------------------------------------------
+
+    /**
+     * v3.3.33（用户："dxvk 运行仙剑四还是不行"）：把 anwind-wine v3.3.30 的
+     * 仙剑四 DXVK 兼容补丁移植到 App 原生链。
+     *
+     * 背景：仙剑奇侠传四（PAL4，2007，CEGUI + D3D9 + mss32）在 arm64ec 新
+     * WoW64 下进主菜单后游戏代码 page fault（+0x2941b5 读野指针）—— 老游戏
+     * 依赖 D3D9 的 x87 浮点语义（NaN/denorm 传播），GPU 侧返回值异常 →
+     * CEGUI 布局计算出野指针。DXVK 的 d3d9.floatEmulation=Strict 是这类
+     * 2000 年代国产/日产 DX9 游戏崩溃的标准解。
+     *
+     * v3.3.30 只在终端脚本链（anwind-wine dxvk_appfix_conf）实现，App 原生
+     * 启动链从未生效 —— 用户 2026-11-09 21:57 会话日志实证（DXVK 读的是
+     * /opt/dxvk.conf 原文件、日志无"DXVK 兼容补丁"行、崩溃地址不变）。
+     * 本函数补齐原生链：命中已知问题游戏 → 合成 conf（/opt/dxvk.conf 全量
+     * + 追加覆盖）写入前缀，DXVK_CONFIG_FILE 指向它 —— 仅命中启动生效，
+     * 其它游戏零影响（与脚本版逐字同语义）。
+     *
+     * @return true = 命中仙剑四（调用方据此做单核亲和等附加兼容动作）
+     */
+    fun applyPal4Compat(
+        env: MutableMap<String, String>,
+        args: List<String>,
+        container: ContainerData,
+        log: (String) -> Unit
+    ): Boolean {
+        val exe = args.firstOrNull { it.endsWith(".exe", ignoreCase = true) }
+            ?: args.firstOrNull { it.endsWith(".EXE") }
+            ?: return false
+        val lower = exe.lowercase()
+        val isPal4 = lower.contains("仙剑") || lower.contains("pal4")
+        if (!isPal4) return false
+        return runCatching {
+            val prefix = env["WINEPREFIX"]?.takeIf { it.isNotBlank() } ?: container.prefixPath
+            val base = File("${com.anwind.apps.containers.GuanliSupport.OPT_ROOT}/dxvk.conf")
+            val out = File(prefix, ".anwind-dxvk-appfix.conf")
+            val text = buildString {
+                if (base.isFile) append(base.readText())
+                if (isNotEmpty() && !endsWith("\n")) append('\n')
+                append("\n# AnWind appfix（仙剑奇侠传四：D3D9 浮点语义兼容，v3.3.33 原生链移植）\n")
+                append("d3d9.floatEmulation = Strict\n")
+            }
+            out.parentFile?.mkdirs()
+            out.writeText(text)
+            env["DXVK_CONFIG_FILE"] = out.absolutePath
+            log("DXVK 兼容补丁: ${File(exe).name} → d3d9.floatEmulation=Strict（CEGUI 老游戏浮点语义；v3.3.30 仅终端链生效，本次为原生链移植，仅本次启动生效）")
+            log("仙剑四附加建议：该游戏 2007 引擎存在多核竞态崩溃（社区共识），CPU核心 页选单核最稳；未配置 cores 时启动链将自动单核")
+            true
+        }.getOrElse {
+            log("⚠ 仙剑四 appfix 注入异常：${it.message}（不影响启动）")
+            false
+        }
+    }
+
     /** [0,1,2,3] → "0-3"（wineguanli.py format_cores 移植：连续段折叠）。 */
     internal fun formatCoreSpec(cores: List<Int>): String {
         if (cores.isEmpty()) return ""

@@ -18,6 +18,18 @@ APK 启动 / bootstrap 安装完成后由 `AnWindTzstAssets` **自动自解压**
 `anwind-box64-v0.2.9-aarch64-bionic.tzst`）。wine 发行包不在此自解压范围
 （仍用 `anwind-container install-wine <tzst|tar.gz>` 安装）。
 
+## 特殊资产：wrapper-stack.tzst（v3.3.32，不自动解压）
+
+**`wrapper-stack.tzst`（5.5MB）**：Vulkan wrapper 栈（WinlatorXR `wrapper.tzst`
+同源二进制：`libvulkan_wrapper.so` + `libadrenotools.so` + 四个钩子库）——
+高通/联发科【专有】系统驱动与 yuzu 格式专有驱动包（v819.2 / v849 / q615.50
+等）的唯一可用通路。文件名**不含上述关键词**，不进 AnWindTzstAssets 自解压；
+由 `WrapperDriverSupport.ensureBundledWrapperStack` 在首次需要时
+（图形驱动页选『系统驱动』/ 专有驱动包路由）安装到
+`rootfs/usr/share/anwind-wrapper/drivers/wrapper-stack/`（含自生成 ICD 与
+meta，走 `WrapperDriverSupport.install` 全套 ABI 门禁）。来源与许可见包内
+`ORIGIN.md` 及 `docs/SYSTEM-GPU-DRIVERS.md`。
+
 ## 归档成员路径布局（两种均支持）
 
 1. **CI 发行包布局**（data/data 开头，build-bionic-rootfs / build-mesa-bionic /

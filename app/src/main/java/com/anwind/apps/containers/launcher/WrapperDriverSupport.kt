@@ -98,6 +98,30 @@ object WrapperDriverSupport {
     /** adrenotools 驱动加载库（wrapper 栈包内随行，WinNative 同名）。 */
     const val ADRENOTOOLS_SO = "libadrenotools.so"
 
+    /**
+     * v3.3.32（用户需求："wrapper 和 yuzu 类驱动只能用 turnip 开源驱动，
+     * 用不了高通或者天环的系统驱动，比如高通 615.50 或者 849 等"）：
+     *
+     * 【系统专有驱动档】的 sentinel 值 —— 容器 wrapper="system" 时激活
+     * wrapper 栈但不注入 ADRENOTOOLS_DRIVER_*（libvulkan_wrapper.so 自身
+     * 回退加载 /system/lib64/libvulkan.so = 设备厂商专有驱动，高通
+     * Adreno / 联发科 Mali 同一通路，WinlatorXR 的 "System" 选项同款）。
+     *
+     * yuzu 格式专有驱动包（v819.2 / v849 / q615.50 等，包内
+     * vulkan.ad*.so / libvulkan_adreno.so + not* 改名依赖）安装后走
+     * 既有 android 平台驱动路由（无 X11 WSI → wrapper 栈 + ADRENOTOOLS_*）。
+     */
+    const val SYSTEM_SLOT = "system"
+
+    /**
+     * v3.3.32：内置 wrapper 栈的 slot 名（APK 资产 assets/anwind/wrapper-stack.tzst
+     * 首次用到时自动安装到本 slot，5.5MB，WinlatorXR wrapper.tzst 同源二进制）。
+     */
+    const val BUNDLED_WRAPPER_SLOT = "wrapper-stack"
+
+    /** v3.3.32：内置 wrapper 栈的 APK 资产路径。 */
+    const val BUNDLED_WRAPPER_ASSET = "anwind/wrapper-stack.tzst"
+
     private val RFS_ROOT get() = ContainerManager.ROOTFS_ROOT
 
     private fun rfs(rel: String) = File(RFS_ROOT, rel)
@@ -271,10 +295,17 @@ object WrapperDriverSupport {
     private fun hasX11Wsi(needed: List<String>): Boolean =
         needed.any { it == "libxcb.so" || it.startsWith("libxcb-") || it.startsWith("libX11") }
 
-    /** 依赖解析搜索位（顺序即优先级）：驱动目录 → rootfs → Android 系统。 */
+    /** 依赖解析搜索位（顺序即优先级）：驱动目录 → rootfs → Android 系统 → 厂商分区。 */
     private fun depSearchDirs(vararg driverDirs: File): List<File> =
         driverDirs.toList() + listOf(
-            rfs("usr/lib"), rfs("usr/local/lib"), File("/system/lib64"), File("/system/lib")
+            rfs("usr/lib"), rfs("usr/local/lib"), File("/system/lib64"), File("/system/lib"),
+            // v3.3.32：厂商分区 —— 高通专有驱动（v849/q615.50 等）DT_NEEDED 含
+            // vendor.qti.hardware.display.mapper@*.so / android.hardware.graphics.*
+            // / libhidlbase.so 等 HIDL 库，只存在于 /vendor（/odm、/system_ext
+            // 亦是候选位）。adrenotools 隔离命名空间加载时能制到这些路径，
+            // 预检与之一致才不会误判“依赖未闭环”而回退 Mesa。
+            File("/vendor/lib64"), File("/vendor/lib64/hw"),
+            File("/odm/lib64"), File("/system_ext/lib64")
         )
 
     /** DT_NEEDED 依赖是否可解析（版本号后缀按无版本别名兼容：libdrm.so.2 → libdrm.so）。 */
@@ -452,6 +483,11 @@ object WrapperDriverSupport {
 
     /** 计算槽位激活计划（null = 槽位未安装 / ICD 未就位）。 */
     fun activationFor(slot: String): Activation? {
+        // v3.3.32：系统专有驱动档（高通/联发科）—— wrapper 栈系统回退模式，
+        // 不注入 ADRENOTOOLS_DRIVER_*（libvulkan_wrapper.so 自行加载
+        // /system/lib64/libvulkan.so）。栈本体须已安装（调用方先
+        // ensureWrapperStackAvailable；未安装返回 null 并由调用方提示）。
+        if (slot == SYSTEM_SLOT) return systemActivationFor()
         val icd = icdFor(slot) ?: return null
         val dir = icd.parentFile ?: return null
         val lib = parseIcdLibraryPath(icd) ?: return null
@@ -534,6 +570,92 @@ object WrapperDriverSupport {
             missingDeps = missing,
             usable = usable
         )
+    }
+
+    /**
+     * v3.3.32：系统专有驱动档的激活计划 —— 任一已装 wrapper 栈槽位作 ICD，
+     * adrenotools 驱动位为空（= wrapper 回退系统 /system/lib64/libvulkan.so，
+     * 即厂商专有驱动：高通 Adreno 系（615.50/849 等系统驱动）、联发科 Mali
+     * 系同通路）。无可用 wrapper 栈时返回 null（调用方提示先装栈）。
+     */
+    private fun systemActivationFor(): Activation? {
+        val ws = listDrivers().firstOrNull { it.wrapperStack && it.icd != null }
+            ?: return null
+        val useIcd = ws.icd ?: return null
+        val useDir = ws.dir
+        val useLib = parseIcdLibraryPath(useIcd)
+            ?.let { if (it.startsWith("/")) File(it) else File(useIcd.parentFile, it) }
+            ?: return null
+        val elf = runCatching { identifyElf(useLib.readBytes()) }.getOrNull()
+        val checkLibs = mutableListOf<Pair<File, List<String>>>()
+        elf?.let { checkLibs.add(useLib to it.needed) }
+        File(useDir, ADRENOTOOLS_SO).takeIf { it.isFile }?.let { at ->
+            runCatching { identifyElf(at.readBytes()) }.getOrNull()
+                ?.let { checkLibs.add(at to it.needed) }
+        }
+        val missing = missingDeps(checkLibs, depSearchDirs(useDir))
+        return Activation(
+            slot = SYSTEM_SLOT,
+            icd = useIcd,
+            icdLibraryName = WRAPPER_SO,
+            driverDir = useDir,
+            wrapperStack = true,
+            platform = elf?.platform ?: DriverPlatform.BIONIC,
+            x11wsi = true,
+            adrenotoolsDriverDir = null,
+            adrenotoolsDriverName = null,
+            routedFromWrapperSlot = ws.slot,
+            adrenotoolsHooksDir = useDir,
+            adrenotoolsTempDir = null,
+            missingDeps = missing,
+            usable = elf?.platform == DriverPlatform.BIONIC && missing.isEmpty()
+        )
+    }
+
+    /**
+     * v3.3.32：安装 APK 内置 wrapper 栈（assets/anwind/wrapper-stack.tzst，
+     * WinlatorXR wrapper.tzst 同源二进制：libvulkan_wrapper.so + libadrenotools.so
+     * + libmain_hook/libhook_impl/libfile_redirect_hook/libgsl_alloc_hook 四钩子）。
+     * 幂等：BUNDLED_WRAPPER_SLOT 已含 wrapper .so 且 ICD 就位即跳过。
+     *
+     * @return null 成功；否则用户可读的错误信息
+     */
+    fun ensureBundledWrapperStack(
+        context: android.content.Context,
+        log: (String) -> Unit = {}
+    ): String? {
+        val slotDir = File(driverRoot, BUNDLED_WRAPPER_SLOT)
+        if (File(slotDir, WRAPPER_SO).isFile && icdFor(BUNDLED_WRAPPER_SLOT) != null) {
+            return null // 已就位（幂等）
+        }
+        // 临时文件名 = BUNDLED_WRAPPER_SLOT + .tzst —— install() 以包名推
+        // slot 目录名（safeSlotName 剥后缀），保证落位与幂等检查同名
+        val tmp = File(rfs("usr/tmp"), "$BUNDLED_WRAPPER_SLOT.tzst")
+        return runCatching {
+            runCatching { tmp.parentFile?.mkdirs() }
+            context.assets.open(BUNDLED_WRAPPER_ASSET).use { input ->
+                tmp.outputStream().use { input.copyTo(it) }
+            }
+            val err = install(tmp.absolutePath) { log(it) }
+            tmp.delete()
+            if (err == null) {
+                log("✅ 内置 wrapper 栈已安装（slot=$BUNDLED_WRAPPER_SLOT —— 高通/联发科系统专有驱动与 yuzu 专有驱动包的通路，v3.3.32）")
+            }
+            err
+        }.getOrElse { "内置 wrapper 栈安装失败：${it.message}" }
+    }
+
+    /**
+     * v3.3.32：确保 wrapper 栈可用（已装任意栈槽位即满足；否则装内置栈）。
+     * @return true = 当前存在可用 wrapper 栈槽位
+     */
+    fun ensureWrapperStackAvailable(
+        context: android.content.Context,
+        log: (String) -> Unit = {}
+    ): Boolean {
+        if (listDrivers().any { it.wrapperStack && it.icd != null }) return true
+        val err = ensureBundledWrapperStack(context, log)
+        return err == null && listDrivers().any { it.wrapperStack && it.icd != null }
     }
 
     // ------------------------------------------------------------------

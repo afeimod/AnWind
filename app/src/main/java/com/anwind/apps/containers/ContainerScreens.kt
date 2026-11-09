@@ -1399,6 +1399,16 @@ private fun GraphicsDriverTab(
             val wineDir = ContainerManager.listWines()
                 .firstOrNull { it.name == edit.wine }?.let { File(it.dir) }
             when {
+                // v3.3.32：系统驱动档 —— 先装内置 wrapper 栈再同步其 ICD
+                edit.wrapper == WrapperDriverSupport.SYSTEM_SLOT -> {
+                    runCatching {
+                        WrapperDriverSupport.ensureWrapperStackAvailable(context) { }
+                    }
+                    WrapperDriverSupport.activationFor(WrapperDriverSupport.SYSTEM_SLOT)?.icd
+                        ?.absolutePath?.let { icd ->
+                            GuanliSupport.syncPathConfVkIcd(icd, wineDir)
+                        }
+                }
                 wrapperActive || tzActive -> {
                     val slot = if (wrapperActive) edit.wrapper else edit.turnip
                     // 已装槽位才写（ICD 真实存在）；tar-only 槽位等运行时装好后补写
@@ -1448,9 +1458,10 @@ private fun GraphicsDriverTab(
     // ------------------------------------------------------------------
     // Vulkan 驱动（v3.3.16：类型 + 版本，WinNative 同款并列选择）
     // ------------------------------------------------------------------
-    GGroup("Vulkan 驱动（turnip / wrapper）") {
+    GGroup("Vulkan 驱动（turnip / wrapper / 系统专有）") {
         // 类型：从容器数据推导（wrapper 优先，其次 turnip tar，否则 Mesa 内置）
         val vkType = when {
+            edit.wrapper == WrapperDriverSupport.SYSTEM_SLOT -> "system"
             edit.wrapper.isNotBlank() && edit.wrapper != "off" -> "wrapper"
             edit.turnip.isNotBlank() && edit.turnip != "off" -> "tz"
             else -> "bundled"
@@ -1459,17 +1470,27 @@ private fun GraphicsDriverTab(
             options = listOf(
                 "Turnip（Mesa 内置，推荐）",
                 "Wrapper 驱动（已安装）",
-                "Turnip 驱动包（/opt/tz）"
+                // v3.3.32：turnip 开源包与高通/联发科专有 yuzu 包同列（后者自动路由 wrapper 栈）
+                "驱动包（turnip / 高通专有，/opt/tz）",
+                // v3.3.32（用户需求）：高通/联发科【系统专有】驱动档 ——
+                // 高通 615.50 / 849 等系统驱动与 yuzu 专有驱动包的通路
+                "系统驱动（高通/联发科专有）"
             ),
             selected = when (vkType) {
+                "system" -> "系统驱动（高通/联发科专有）"
                 "wrapper" -> "Wrapper 驱动（已安装）"
-                "tz" -> "Turnip 驱动包（/opt/tz）"
+                "tz" -> "驱动包（turnip / 高通专有，/opt/tz）"
                 else -> "Turnip（Mesa 内置，推荐）"
             },
             onSelect = { label ->
                 when {
                     label.startsWith("Turnip（Mesa") ->
                         onChange(edit.copy(wrapper = "", turnip = ""))
+                    label.startsWith("系统驱动") ->
+                        // v3.3.32：系统专有驱动档 —— sentinel 值 wrapper="system"，
+                        // 激活时经内置 wrapper 栈回退加载 /system/lib64/libvulkan.so
+                        //（设备厂商专有驱动：高通 Adreno / 联发科 Mali 同通路）
+                        onChange(edit.copy(wrapper = WrapperDriverSupport.SYSTEM_SLOT, turnip = ""))
                     label.startsWith("Wrapper") ->
                         // v3.3.17：类型切到 wrapper 时预选首个可用版本 ——
                         // 优先已装驱动，其次 /opt/wrapper tar 包（旧版只看已装列表，
@@ -1496,6 +1517,23 @@ private fun GraphicsDriverTab(
             }
         )
         when (vkType) {
+            // v3.3.32：系统专有驱动档 —— 零包零配置：wrapper 栈（内置资产，
+            // 选中时自动安装）回退加载设备厂商专有驱动（/system/lib64/libvulkan.so）
+            "system" -> {
+                val stackInstalled = installedDrivers.any { it.wrapperStack }
+                GNote(
+                    (if (stackInstalled) "✓ wrapper 栈就绪（${
+                        installedDrivers.firstOrNull { it.wrapperStack }?.slot ?: ""
+                    }）\n" else "wrapper 栈将在首次启动时自动从 APK 内置资产安装（5.5MB 一次性）\n") +
+                        "系统专有驱动档：VK_ICD_FILENAMES → 内置 wrapper 栈（libvulkan_wrapper.so），\n" +
+                        "不注入 ADRENOTOOLS_DRIVER_* —— wrapper 自行回退加载\n" +
+                        "/system/lib64/libvulkan.so = 设备厂商专有 Vulkan 驱动\n" +
+                        "  * 高通 Adreno：系统驱动（615.50 / 512.x / 849 系列等）\n" +
+                        "  * 联发科 Mali：天珑系列系统驱动同通路\n" +
+                        "X11 WSI 由 wrapper 的 xcb 侧桥接（DXVK 交换链可建）；\n" +
+                        "性能/兼容性取决于设备厂商驱动版本 —— 不如 turnip 稳时可切回"
+                )
+            }
             "wrapper" -> {
                 // v3.3.17：双源版本列表 —— 已装独立目录驱动（v3.3.16 模型，
                 // 即选即用）+ /opt/wrapper tar 包（wineguanli.py 参考行为：下拉
@@ -1519,6 +1557,28 @@ private fun GraphicsDriverTab(
                             "点下方 ➕ 从 zip/tar 包安装（yuzu 社区 / WinNative wrapper 包），\n" +
                             "或把驱动包放进 rootfs/opt/wrapper 后重进本页即可选择"
                     )
+                    // v3.3.32：一键安装 APK 内置 wrapper 栈（无需自己找包）——
+                    // 高通/联发科专有驱动与 yuzu 专有驱动包的公共通路
+                    GSmallButton(
+                        if (installing) "⏳ 安装中…" else "📦 安装内置 wrapper 栈（专有驱动通路）",
+                        GuanliColors.blueFab, Modifier.fillMaxWidth()
+                    ) {
+                        installing = true
+                        cs.launch(Dispatchers.IO) {
+                            val err = runCatching {
+                                WrapperDriverSupport.ensureBundledWrapperStack(context) { }
+                            }.getOrElse { "安装异常：${it.message}" }
+                            withContext(Dispatchers.Main) {
+                                installing = false
+                                driversTick++
+                                android.widget.Toast.makeText(
+                                    context,
+                                    err ?: "✅ 内置 wrapper 栈已安装 —— 高通/联发科系统驱动与 yuzu 专有驱动包的通路就绪",
+                                    android.widget.Toast.LENGTH_LONG
+                                ).show()
+                            }
+                        }
+                    }
                 } else {
                     GComboBox(
                         options = wrapperOpts.map { it.first },
@@ -1627,7 +1687,11 @@ private fun GraphicsDriverTab(
                 + " 支持 rootfs 布局包 / WinNative meta.json 包 / yuzu 裸包（zip 或 tar）\n"
                 + "v3.3.18：三个选项切换时自动同步改写 rootfs/opt/conf/path.conf 的"
                 + " VK_ICD_FILENAMES 行（选择即落 conf，其余 conf 内容一字不动）——"
-                + " 运行会话日志的「path.conf 已同步」行可核对实际写入值"
+                + " 运行会话日志的「path.conf 已同步」行可核对实际写入值\n"
+                + "v3.3.32：『系统驱动（高通/联发科专有）』档零包零配置 —— 内置 wrapper 栈"
+                + "（APK 资产，首次选中自动安装）回退加载设备厂商专有驱动；"
+                + "yuzu 格式专有驱动包（v819.2 / v849 / q615.50 等）➕ 安装后"
+                + "自动经 wrapper 栈路由（专有驱动无 X11 WSI，直挂必黑屏）"
         )
     }
     GGroup("Zink 驱动") {

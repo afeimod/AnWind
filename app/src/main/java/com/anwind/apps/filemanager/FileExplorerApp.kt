@@ -1176,6 +1176,8 @@ private fun RealFileGrid(items: List<File>, theme: com.anwind.core.theme.WinThem
                 extension = item.extension,
                 sizeText = if (item.isDirectory) "" else formatSize(item.length()),
                 imagePath = if (!item.isDirectory && isImageExtension(item.extension)) item.absolutePath else null,
+                // v3.3.31：exe/dll/ico 等展示文件内嵌真实图标（PE 资源 RT_GROUP_ICON）
+                exePath = if (!item.isDirectory && isPeIconExtension(item.extension)) item.absolutePath else null,
                 theme = theme
             ) { onClick(item) }
         }
@@ -1191,6 +1193,8 @@ private fun RealFileList(items: List<File>, theme: com.anwind.core.theme.WinThem
                 extension = item.extension,
                 sizeText = if (item.isDirectory) "" else formatSize(item.length()),
                 imagePath = if (!item.isDirectory && isImageExtension(item.extension)) item.absolutePath else null,
+                // v3.3.31：exe/dll/ico 等展示文件内嵌真实图标
+                exePath = if (!item.isDirectory && isPeIconExtension(item.extension)) item.absolutePath else null,
                 theme = theme
             ) { onClick(item) }
         }
@@ -1201,6 +1205,7 @@ private fun RealFileList(items: List<File>, theme: com.anwind.core.theme.WinThem
 private fun FileGridCell(
     name: String, isDir: Boolean, extension: String, sizeText: String,
     imagePath: String? = null,
+    exePath: String? = null,
     theme: com.anwind.core.theme.WinTheme, onClick: () -> Unit
 ) {
     Column(
@@ -1224,6 +1229,11 @@ private fun FileGridCell(
             } else if (imagePath != null) {
                 // 图片文件直接显示缩略图预览
                 ImageThumbnail(path = imagePath, size = 56.dp, corner = 6.dp)
+            } else if (exePath != null) {
+                // v3.3.31：Windows 可执行文件展示【内嵌真实图标】
+                //（PE 资源 RT_GROUP_ICON → RT_ICON，与资源管理器里看到的一致），
+                // 解析失败回退分类矢量图标
+                ExeIconThumbnail(path = exePath, ext = extension, size = 56.dp)
             } else {
                 // v3.3.30：内置矢量分类图标 + 扩展名角标（替代 emoji ——
                 // 设备字体差异下 emoji 渲染成同一副面孔，用户“固定图标”反馈）
@@ -1250,6 +1260,7 @@ private fun FileGridCell(
 private fun FileListRow(
     name: String, isDir: Boolean, extension: String, sizeText: String,
     imagePath: String? = null,
+    exePath: String? = null,
     theme: com.anwind.core.theme.WinTheme, onClick: () -> Unit
 ) {
     Row(
@@ -1264,6 +1275,9 @@ private fun FileListRow(
             Icon(Icons.Default.Folder, null, tint = Color(0xFFDCA84A), modifier = Modifier.size(18.dp))
         } else if (imagePath != null) {
             ImageThumbnail(path = imagePath, size = 20.dp, corner = 3.dp)
+        } else if (exePath != null) {
+            // v3.3.31：exe 内嵌真实图标（列表行）
+            ExeIconThumbnail(path = exePath, ext = extension, size = 20.dp)
         } else {
             // v3.3.30：内置矢量分类图标（列表行窄，不带角标）
             FileTypeIcon(extension, cellSize = 20.dp, showBadge = false)
@@ -1325,6 +1339,75 @@ private fun ImageThumbnail(path: String, size: Dp, corner: Dp) {
         }
     }
 }
+
+/**
+ * v3.3.31（用户需求："读取每个 exe 内部自带的图标"）：Windows PE 内嵌真实
+ * 图标缩略图 —— PeIcon（纯 Java 解析器）提取 RT_GROUP_ICON → RT_ICON
+ * （PNG / DIB 1-32bpp 全支持），内存 LruCache 按「路径|长度|mtime」记账，
+ * IO 线程解析（单个 exe 毫秒级），失败/解析中回退分类矢量图标。
+ */
+@Composable
+private fun ExeIconThumbnail(path: String, ext: String, size: Dp) {
+    val bitmap by produceState<Bitmap?>(initialValue = null, path) {
+        value = withContext(Dispatchers.IO) {
+            PeIconCache.load(path)
+        }
+    }
+    if (bitmap != null) {
+        Image(
+            bitmap = bitmap!!.asImageBitmap(),
+            contentDescription = null,
+            contentScale = ContentScale.Fit,
+            modifier = Modifier
+                .size(size)
+                .clip(RoundedCornerShape(size / 12f))
+        )
+    } else {
+        // 解析中 / 无内嵌图标：回退分类矢量图标（保持旧观感，不闪跳）
+        FileTypeIcon(ext, cellSize = size, showBadge = false)
+    }
+}
+
+/** v3.3.31：exe 内嵌图标的内存缓存（进程级；key = 路径|长度|mtime）。 */
+private object PeIconCache {
+    private val cache = android.util.LruCache<String, Bitmap>(12 * 1024 * 1024) // 12MB（按字节记账）
+
+    fun load(path: String): Bitmap? {
+        val f = File(path)
+        if (!f.isFile) return null
+        val key = "$path|${f.length()}|${f.lastModified()}"
+        synchronized(cache) { cache.get(key) }?.let { return it }
+        // 目标边长 128（网格 56dp xxhdpi 之上仍有余量；文件过大时宁可小图不 OOM）
+        val icon = runCatching {
+            if (path.substringAfterLast('.', "").equals("ico", true)) {
+                PeIcon.extractIco(path, 128)
+            } else {
+                PeIcon.extract(path, 128)
+            }
+        }.getOrNull() ?: return null
+        val bmp = runCatching {
+            if (icon.png != null) {
+                BitmapFactory.decodeByteArray(icon.png, 0, icon.png.size)
+            } else if (icon.argb != null && icon.width > 0 && icon.height > 0) {
+                Bitmap.createBitmap(icon.argb, icon.width, icon.height, Bitmap.Config.ARGB_8888)
+            } else null
+        }.getOrNull() ?: return null
+        // 超大图缩到 256 内（控制缓存占用）
+        val scaled = if (bmp.width > 256 || bmp.height > 256) {
+            val scale = 256f / maxOf(bmp.width, bmp.height)
+            Bitmap.createScaledBitmap(
+                bmp, (bmp.width * scale).toInt().coerceAtLeast(1),
+                (bmp.height * scale).toInt().coerceAtLeast(1), true
+            )
+        } else bmp
+        synchronized(cache) { cache.put(key, scaled) }
+        return scaled
+    }
+}
+
+/** v3.3.31：可提取内嵌图标的文件扩展名（PE 家族 + 独立 .ico）。 */
+private fun isPeIconExtension(ext: String): Boolean =
+    ext.lowercase() in setOf("exe", "dll", "scr", "com", "cpl", "ocx", "msc", "ico")
 
 private fun isImageExtension(ext: String): Boolean =
     ext.lowercase() in setOf("jpg", "jpeg", "png", "gif", "bmp", "webp")

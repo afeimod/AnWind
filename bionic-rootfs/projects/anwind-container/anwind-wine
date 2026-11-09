@@ -933,6 +933,41 @@ apply_vk_driver() {
     [ -n "$_slot" ] && [ "$_slot" != "off" ] && [ "$_slot" != "auto" ] \
         || _slot="$(conf_read "$CONT_CONF" turnip "")"
     [ -n "$_slot" ] && [ "$_slot" != "off" ] && [ "$_slot" != "auto" ] || return 0
+
+    # ---- v3.3.32：系统专有驱动档（wrapper=system，App 图形驱动页同款）----
+    # ICD → 任一已装 wrapper 栈；不注入 ADRENOTOOLS_DRIVER_* ——
+    # libvulkan_wrapper.so 自身回退加载 /system/lib64/libvulkan.so
+    #（设备厂商专有驱动：高通 Adreno 系统驱动 / 联发科 Mali 同通路；
+    # WinlatorXR 的 "System" 选项同语义）。栈未安装时给可照做的出路
+    #（终端侧无法读 APK 资产 —— 在 App 图形驱动页选一次即自动安装）。
+    if [ "$_slot" = "system" ]; then
+        local _wdir="" _w _g
+        for _w in "$DRIVERS_ROOT"/*/; do
+            [ -f "$_w/libvulkan_wrapper.so" ] && [ -f "$_w/icd.json" ] && { _wdir="${_w%/}"; break; }
+        done
+        if [ -n "$_wdir" ]; then
+            ensure_ndk_deps   # v3.3.29：NDK 依赖前置解析（libbinder_ndk 链）
+            export VK_ICD_FILENAMES="$_wdir/icd.json"
+            export LD_LIBRARY_PATH="$_wdir${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+            export ADRENOTOOLS_HOOKS_PATH="$_wdir"
+            info "系统专有驱动激活: wrapper 栈（$(basename "$_wdir")）→ wrapper 回退系统 /system/lib64/libvulkan.so（高通/联发科厂商专有驱动；X11 WSI 由 wrapper 提供，v3.3.32）"
+        else
+            info "警告: 系统驱动档需要 wrapper 栈（当前未安装）—— 在 App 图形驱动页选一次『系统驱动（高通/联发科专有）』即自动安装内置栈（APK 资产，终端侧无法自解）；本次 Vulkan 走 Mesa 内置"
+        fi
+        # GL 侧 zink 联动（与下方主路径同款）
+        _g="$(conf_read "$CONT_CONF" gallium auto)"
+        case "$_g" in
+            auto|" "|""|zink)
+                export MESA_LOADER_DRIVER_OVERRIDE=zink
+                export GALLIUM_DRIVER=zink
+                export ZINK_DESCRIPTORS="${ZINK_DESCRIPTORS:-lazy}"
+                export ZINK_DEBUG="${ZINK_DEBUG:-compact}"
+                export TU_DEBUG="${TU_DEBUG:-noconform}"
+                ;;
+        esac
+        return 0
+    fi
+
     _dir="$(vk_slot_dirname "$_slot")"
     local _dirfull="$DRIVERS_ROOT/$_dir"
     _icd="$_dirfull/icd.json"
@@ -1558,6 +1593,18 @@ apply_dxvk_appfix() {
     [ -n "$_conf" ] || return 0
     export DXVK_CONFIG_FILE="$_conf"
     info "DXVK 兼容补丁: $(basename "$_exe") → d3d9.floatEmulation=Strict（CEGUI 老游戏浮点语义，仅本次启动生效）"
+    # v3.3.33：仙剑四附加兼容 —— 该游戏 2007 引擎存在多核竞态崩溃（社区
+    # 共识，任务管理器单核亲和为标准解）；未配置 PRIMARY_CORES 时本 shell
+    # 自亲和单核（wine 及全部子进程继承），用户配置优先。
+    case "$(printf '%s' "$_exe" | tr '[:upper:]' '[:lower:]')" in
+        *仙剑*|*pal4*)
+            if [ -z "${PRIMARY_CORES:-}" ]; then
+                export PRIMARY_CORES="0"
+                apply_taskset_cores
+                info "仙剑四兼容: 未配置核心，已自动单核（CPU核心 配置可覆盖；多核竞态崩溃规避）"
+            fi
+            ;;
+    esac
     return 0
 }
 
@@ -1611,6 +1658,17 @@ run_wine() {
         if [ "$_wb_rc" != "0" ]; then
             warn "wineboot -i 失败（退出码 $_wb_rc；159=SIGSYS/旧包 fsync 探测，1=加载失败）"
             warn "→ 请用 v3.1.4+ 构建的 wine 包（fsync 守卫 + 自包含依赖库）"
+            # v3.3.33：139（SIGSEGV）且 box64 后端 → ntdll 早期初始化的
+            # "R15 高 32 位丢失"型随机崩溃（地址空间布局依赖，v3.3.21 已记载；
+            # 用户 box64-0.3.8 日志复现）→ BOX64_DYNAREC=0（解释器，确定性
+            # 执行）兜底重跑一次；前缀构建是一次性分钟级路径，慢可接受。
+            if [ "$_wb_rc" = "139" ] && [ "$BACKEND" = "box64" ]; then
+                warn "wineboot 段错误（139，box64 dynarec 地址空间布局型随机崩溃）→ 以 BOX64_DYNAREC=0（解释器模式）兜底重跑……"
+                BOX64_DYNAREC=0 "$BOX64_BIN" "$WINE_X86" wineboot -i
+                _wb_rc=$?
+                log "解释器模式兜底 wineboot 退出码=$_wb_rc"
+                [ "$_wb_rc" = "0" ] || warn "兜底仍失败 —— 建议换用新版 box64（AnWind CI 已构建 v0.4.4+，anwind-container install-box64）"
+            fi
         fi
         log "wineboot -i 退出码=$_wb_rc"
         echo
