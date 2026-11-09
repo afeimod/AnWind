@@ -25,6 +25,61 @@ object WineEnvironment {
     private val RFS_USR = "$RFS_ROOT/usr"
     private val APP_PREFIX = ContainerManager.APP_PREFIX
 
+    /**
+     * v3.3.30：系统库直通目录（rootfs/usr/lib/anwind-syslibs）。
+     *
+     * 根因（用户 2026-11-09 18:25 会话日志实证）：rootfs 的
+     * libandroid-stub 代理桩 libbinder_ndk.so（pulseaudio 依赖
+     * libOpenSLES 代理而随包进 rootfs；构建无 -Wl,-soname → 无
+     * DT_SONAME；App targetSdk>=23 时 bionic 不做 basename 回退 →
+     * soinfo soname 为空）在 LD_LIBRARY_PATH 里先于 /system/lib64 ——
+     * wine 进程 dlopen wrapper 栈 ICD 时，系统 libnativewindow.so 的
+     * verneed 子依赖按 soname "libbinder_ndk.so" 匹配到桩（soname 空）
+     * → bionic VersionTracker::init_verneed 报 "cannot find
+     * libbinder_ndk.so from verneed[2] in DT_NEEDED list for
+     * /system/lib64/libnativewindow.so" → ICD 被忽略 → "Found no
+     * drivers!" → DXVK 报 VK_KHR_surface not supported。
+     *
+     * 修法：直通目录内放指向 /system/lib64 真身的 symlink 并前插
+     * LD_LIBRARY_PATH（真身带正确 soname + verdef，verneed 闭环）；
+     * rootfs 桩原位保留（pulseaudio 的 OpenSLES 代理链不受影响）。
+     * anwind-wine 脚本 ensure_ndk_deps() 同款；本函数保证 App 直传
+     * env 的链路（X11 / 预检 / 未来直 exec）也正确。
+     *
+     * @return 直通目录路径；非 aarch64 或系统库缺失时 null（零动作）。
+     */
+    private fun ensureSyslibPassthrough(): String? {
+        if (!File("/system/lib64/libbinder_ndk.so").isFile) return null
+        val dir = File("$RFS_USR/lib/anwind-syslibs")
+        val names = listOf(
+            "libbinder_ndk.so", "libnativewindow.so", "libhardware.so",
+            "libsync.so", "libcutils.so"
+        )
+        var made = 0
+        if (dir.isDirectory || dir.mkdirs()) {
+            for (n in names) {
+                val target = File("/system/lib64/$n")
+                if (!target.isFile) continue
+                val link = File(dir, n)
+                runCatching {
+                    // 重建 symlink（旧链接可能指向已变化的系统分区）
+                    if (link.exists() || link.isSymlinkSafe()) link.delete()
+                    java.nio.file.Files.createSymbolicLink(
+                        link.toPath(),
+                        java.nio.file.Paths.get("/system/lib64/$n")
+                    )
+                    made++
+                }
+            }
+        }
+        return if (made > 0) dir.absolutePath else null
+    }
+
+    /** File 符号链接存在性判断（不跟随目标；ls -l 语义）。 */
+    private fun File.isSymlinkSafe(): Boolean = runCatching {
+        java.nio.file.Files.isSymbolicLink(toPath())
+    }.getOrDefault(false)
+
     /** 容器运行的家目录（rootfs home，与脚本一致）。 */
     val HOME_DIR = File("$RFS_ROOT/home")
 
@@ -90,9 +145,20 @@ object WineEnvironment {
         // 的 libhardware.so / libsync.so / libcutils.so —— Vulkan loader
         // 经 ICD json 的 library_path dlopen 驱动时按 LD_LIBRARY_PATH
         // 搜索，缺 /system/lib64 时这些库解析不到 → ICD 静默加载失败 →
-        // DXVK 报 "VK_KHR_surface not supported"。/system/lib64 放末位：
-        // rootfs 优先，系统库仅兜底（rootfs 无同名库，不污染符号解析）。
+        // DXVK 报 "VK_KHR_surface not supported"。
+        // v3.3.30：首位前插“系统库直通”目录 —— 根因修复：rootfs 的
+        // libandroid-stub 代理桩 libbinder_ndk.so（无 DT_SONAME，
+        // targetSdk≥23 时 bionic 不做 basename 回退 → soname 为空）
+        // 在 rootfs/usr/lib 里遮蔽 /system/lib64 真身，系统
+        // libnativewindow.so 的 verneed 子依赖按 soname 匹配落空 →
+        // bionic 报 "cannot find libbinder_ndk.so from verneed[2]" →
+        // wrapper/yuzu 驱动 ICD dlopen 失败（用户 2026-11-09 日志实证）。
+        // 直通目录放指向真身的 symlink，让真身（带 soname+verdef）
+        // 赢得解析；anwind-wine 脚本 ensure_ndk_deps 同款（脚本侧才是
+        // 运行时权威，此处保证 App 直传 env 的链路也正确）。
+        val syslibsDir = ensureSyslibPassthrough()
         val lp = buildList {
+            if (syslibsDir != null) add(syslibsDir)
             add("$RFS_USR/lib")
             if (File("$RFS_USR/local/lib").isDirectory) add("$RFS_USR/local/lib")
             if (File(wineDir, "lib").isDirectory) add("${wineDir.absolutePath}/lib")

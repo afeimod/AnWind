@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -296,8 +298,34 @@ android {
         // ⑤两个 build.sh（wine + hangover-wine）补丁生效硬校验：virtual.c
         //   无 noexec 标记 / env.c 无 locale 标记 → ::error:: 直接构建失
         //   败 —— CI 不再可能产出缺补丁的裸奔 wine 包。
-        versionCode = 100
-        versionName = "2.38.37"
+        versionCode = 101
+        versionName = "2.38.38"
+        // v3.3.30（源码包 v3.3.30，App v2.38.38 / versionCode 101）——
+        //   用户 2026-11-09 18:2x 日志四连发实证的修复轮：
+        //   ①【wrapper/yuzu 驱动"装了选了也不能用"根因闭环】：v3.3.29
+        //     补的 /system/lib64 末位兜底不够 —— rootfs 的 libandroid-stub
+        //     代理桩 libbinder_ndk.so（无 DT_SONAME；targetSdk≥23 时
+        //     bionic 不做 basename 回退 → soname 为空）在 rootfs/usr/lib
+        //     里仍先于系统目录遮蔽真身，系统 libnativewindow.so 的
+        //     verneed 子依赖按 soname 匹配落空 → ICD dlopen 失败 →
+        //     "Found no drivers!"。修法：anwind-wine ensure_ndk_deps 重写
+        //     为"系统库直通目录"（rootfs/usr/lib/anwind-syslibs 内放
+        //     /system/lib64 真身 symlink 并前插 LD_LIBRARY_PATH，三处
+        //     驱动分支全覆盖）+ Kotlin WineEnvironment.ensureSyslib
+        //     Passthrough 同款（App 直传 env 链路也正确）。桩原位保留
+        //     （pulseaudio 的 OpenSLES 代理链不受影响）。
+        //   ②【仙剑奇侠传四 DXVK 崩溃】：arm64ec 新 WoW64 下主菜单后
+        //     游戏代码 page fault（CEGUI+D3D9 老游戏浮点语义）。修法：
+        //     anwind-wine apply_dxvk_appfix 按 exe 识别注入
+        //     d3d9.floatEmulation=Strict（合成 conf 经 DXVK_CONFIG_FILE，
+        //     仅命中启动生效；32 位游戏走 FEX/wow64fex，与 box64 无关）。
+        //   ③【文件管理器图标】：v3.3.29 的 emoji 方案在设备字体上渲染
+        //     千篇一律（用户"显示个固定图标"）。修法：Material 内置矢量
+        //     图标体系 —— exe/msi/scr/com、cmd/bat/ps1、dll/sys/so、
+        //     lnk、ini/cfg/reg、txt/doc/xls/ppt/pdf、zip/rar、apk、
+        //     iso、字体、音视频等全分类专属图标+扩展名角标
+        //     （FileTypeIcon / fileIconSpecFor）。
+        //   无需重建 rootfs / wine 包（全部改动在 APK 侧）。
         // v3.3.29（源码包 v3.3.29，App v2.38.37 / versionCode 100）——
         //   用户设备日志（wine-10arm-20261109 三连发）实证修复轮：
         //   ①【wrapper 驱动"不能用"真根因】：选 wrapper/yuzu 驱动后 Vulkan
@@ -792,10 +820,23 @@ android {
     //    Android 14 系统安装器会拒绝安装（必须 adb install -t）
     //    所以 CI 构建必须用 release keystore 签名
     // ============================================================
-    val keystorePath = System.getenv("KEYSTORE_PATH")
-    val keystorePass = System.getenv("KEYSTORE_PASS")
-    val keyAlias = System.getenv("KEY_ALIAS") ?: "anwind"
-    val keyPass = System.getenv("KEY_PASS")
+    // v3.3.30：签名源三级优先 —— ① 环境变量（CI）② 项目内持久 keystore
+    //（keystore/anwind-release.jks + 同目录 properties 存口令；沙箱/换机
+    // 构建不再因丢失旧密钥而迫使全体用户卸载重装）③ 都缺 → debug 签名。
+    val projectKeystore = rootProject.file("keystore/anwind-release.jks")
+    val projectKeystoreProps = rootProject.file("keystore/anwind-release.properties")
+    var keystorePath = System.getenv("KEYSTORE_PATH")
+    var keystorePass = System.getenv("KEYSTORE_PASS")
+    var keyAlias = System.getenv("KEY_ALIAS") ?: "anwind"
+    var keyPass = System.getenv("KEY_PASS")
+    if (keystorePath == null && projectKeystore.exists() && projectKeystoreProps.exists()) {
+        val props = Properties()
+        projectKeystoreProps.inputStream().use { props.load(it) }
+        keystorePath = projectKeystore.absolutePath
+        keystorePass = props.getProperty("storePass") ?: keystorePass
+        keyAlias = props.getProperty("keyAlias") ?: keyAlias
+        keyPass = props.getProperty("keyPass") ?: keyPass ?: keystorePass
+    }
 
     signingConfigs {
         create("release") {

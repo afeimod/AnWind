@@ -36,6 +36,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -1224,7 +1225,9 @@ private fun FileGridCell(
                 // 图片文件直接显示缩略图预览
                 ImageThumbnail(path = imagePath, size = 56.dp, corner = 6.dp)
             } else {
-                Text(text = iconForExtension(extension), fontSize = 36.sp)
+                // v3.3.30：内置矢量分类图标 + 扩展名角标（替代 emoji ——
+                // 设备字体差异下 emoji 渲染成同一副面孔，用户“固定图标”反馈）
+                FileTypeIcon(extension, cellSize = 56.dp, showBadge = true)
             }
         }
         Spacer(Modifier.height(6.dp))
@@ -1262,7 +1265,8 @@ private fun FileListRow(
         } else if (imagePath != null) {
             ImageThumbnail(path = imagePath, size = 20.dp, corner = 3.dp)
         } else {
-            Text(text = iconForExtension(extension), fontSize = 14.sp)
+            // v3.3.30：内置矢量分类图标（列表行窄，不带角标）
+            FileTypeIcon(extension, cellSize = 20.dp, showBadge = false)
         }
         Spacer(Modifier.width(12.dp))
         Text(
@@ -1311,8 +1315,13 @@ private fun ImageThumbnail(path: String, size: Dp, corner: Dp) {
                 .clip(RoundedCornerShape(corner))
         )
     } else {
+        // v3.3.30：解码失败回退矢量图片图标（不再用 emoji）
         Box(modifier = Modifier.size(size), contentAlignment = Alignment.Center) {
-            Text(text = "🖼️", fontSize = (size.value * 0.6f).sp)
+            Icon(
+                Icons.Default.Image, null,
+                tint = Color(0xFFE91E63),
+                modifier = Modifier.size(size * 0.8f)
+            )
         }
     }
 }
@@ -1464,32 +1473,97 @@ private fun mimeForExtension(ext: String): String = when (ext) {
 
 // v3.3.29：Windows 程序/脚本全家桶图标识别（用户需求：exe cmd 等）。
 //   此前 exe/msi 有图标，cmd/bat/com/scr/lnk/dll/ini/reg 等全落默认 📄，
-//   在游戏目录里一眼分不清哪些能点着跑。现按 Windows 语义分档：
-//   可执行本体（exe/com/scr）→ ⚙️；安装包 msi → 🧰；
-//   脚本（bat/cmd）→ 🖥️（控制台批处理）；快捷方式 lnk → 🔗；
-//   DLL → 🧩；配置/注册表（ini/cfg/conf/inf/reg）→ 🛠️；
-//   镜像 iso/img → 💿；压缩包补 tar/gz/xz/bz2/zst/tzst 双后缀场景。
-private fun iconForExtension(ext: String): String = when (ext.lowercase()) {
-    "apk" -> "📦"
-    "html", "htm" -> "🌐"
-    "txt" -> "📄"
-    "jpg", "jpeg", "png", "gif", "bmp", "webp" -> "🖼️"
-    "mp3", "wav", "ogg", "m4a", "flac", "wma", "aac", "mid" -> "🎵"
-    "mp4", "avi", "mov", "mkv", "3gp", "webm", "wmv", "flv", "ts", "m4v" -> "📺"
-    "pdf" -> "📕"
-    "exe", "com", "scr" -> "⚙️"
-    "msi" -> "🧰"
-    "bat", "cmd" -> "🖥️"
-    "lnk" -> "🔗"
-    "dll" -> "🧩"
-    "ini", "cfg", "conf", "inf", "reg" -> "🛠️"
-    "iso", "img" -> "💿"
-    "zip", "rar", "7z", "tar", "gz", "xz", "bz2", "zst", "tzst" -> "🗜️"
-    "ttf", "otf", "ttc" -> "🔤"
-    "doc", "docx" -> "📘"
-    "xls", "xlsx" -> "📗"
-    "ppt", "pptx" -> "📙"
-    else -> "📄"
+// v3.3.30：文件类型矢量图标体系（替代上方 emoji 方案 —— 用户实测
+// “识别 exe 等内置图标你就显示个固定图标”：emoji 在设备字体上渲染
+// 千篇一律且不可辨识）。现按 Windows 语义分档 → Material 内置矢量图标
+// + 专属色 + 扩展名角标（Win11 徽记风格）：
+//   可执行本体（exe/com/scr）→ 蓝系应用图标；安装包 msi → 安装箱；
+//   脚本（bat/cmd/ps1）→ 终端；快捷方式 lnk → 链接；DLL/SYS → 齿轮；
+//   配置/注册表 → 调节器；镜像 iso → 唱片；压缩包 → 拉链文件夹等。
+private data class FileIconSpec(val icon: ImageVector, val tint: Color, val label: String?)
+
+private fun fileIconSpecFor(extRaw: String): FileIconSpec {
+    val ext = extRaw.lowercase()
+    return when (ext) {
+        // 可执行 / 安装器 —— 蓝系“应用”
+        "exe", "scr", "com" -> FileIconSpec(Icons.Filled.Apps, Color(0xFF2B7DE9), ext.uppercase())
+        "msi" -> FileIconSpec(Icons.Filled.Inventory2, Color(0xFF2B7DE9), "MSI")
+        // 脚本 / 终端
+        "cmd", "bat", "ps1", "sh", "vbs" ->
+            FileIconSpec(Icons.Filled.Terminal, Color(0xFF607D8B), ext.uppercase())
+        // 系统组件（dll/sys/drv/so）—— 灰齿轮
+        "dll", "sys", "drv", "so", "ocx", "cpl" ->
+            FileIconSpec(Icons.Filled.Settings, Color(0xFF78909C), ext.uppercase())
+        // 快捷方式
+        "lnk", "url" -> FileIconSpec(Icons.Filled.Link, Color(0xFF5C6BC0), ext.uppercase())
+        // 配置 / 注册表
+        "ini", "cfg", "conf", "properties", "reg", "inf" ->
+            FileIconSpec(Icons.Filled.Tune, Color(0xFF546E7A), ext.uppercase())
+        // 纯文本
+        "txt", "log", "md", "nfo", "srt", "ass" ->
+            FileIconSpec(Icons.Filled.Description, Color(0xFF90A4AE), ext.uppercase())
+        // 文档 / 表格 / 幻灯
+        "doc", "docx", "rtf", "wps" -> FileIconSpec(Icons.Filled.Description, Color(0xFF1E88E5), "DOC")
+        "xls", "xlsx", "csv", "et", "ets" -> FileIconSpec(Icons.Filled.TableChart, Color(0xFF43A047), "XLS")
+        "ppt", "pptx", "dps" -> FileIconSpec(Icons.Filled.Slideshow, Color(0xFFFB8C00), "PPT")
+        "pdf" -> FileIconSpec(Icons.Filled.PictureAsPdf, Color(0xFFE53935), "PDF")
+        // 压缩包
+        "zip", "rar", "7z", "tar", "gz", "bz2", "xz", "zst", "tzst", "cab" ->
+            FileIconSpec(Icons.Filled.FolderZip, Color(0xFF8D6E63), ext.uppercase())
+        // 安卓包
+        "apk", "apks", "xapk", "aab" -> FileIconSpec(Icons.Filled.Android, Color(0xFF3DDC84), "APK")
+        // 网页 / 数据
+        "html", "htm" -> FileIconSpec(Icons.Filled.Language, Color(0xFF039BE5), "HTML")
+        "json", "xml", "yml", "yaml" -> FileIconSpec(Icons.Filled.DataObject, Color(0xFF8E24AA), ext.uppercase())
+        // 镜像
+        "iso", "img", "mds", "vhd" -> FileIconSpec(Icons.Filled.Album, Color(0xFF7E57C2), "ISO")
+        // 字体
+        "ttf", "otf", "ttc", "fon" -> FileIconSpec(Icons.Filled.TextFields, Color(0xFF6D4C41), "TTF")
+        // 音频
+        "mp3", "wav", "flac", "ogg", "m4a", "wma", "aac", "mid", "midi", "opus" ->
+            FileIconSpec(Icons.Filled.Audiotrack, Color(0xFF00897B), ext.uppercase())
+        // 视频
+        "mp4", "mkv", "avi", "mov", "wmv", "flv", "ts", "m4v", "webm", "3gp", "rmvb", "mpg", "mpeg" ->
+            FileIconSpec(Icons.Filled.Movie, Color(0xFF7B1FA2), ext.uppercase())
+        // 图片（缩略图解码失败时的回退也走这里）
+        "png", "jpg", "jpeg", "gif", "bmp", "webp", "svg", "ico" ->
+            FileIconSpec(Icons.Filled.Image, Color(0xFFE91E63), ext.uppercase())
+        else -> {
+            // 未知类型：通用文件图标；有扩展名时带角标
+            val label = ext.take(4).uppercase().ifBlank { null }
+            FileIconSpec(Icons.Filled.InsertDriveFile, Color(0xFF90A4AE), label)
+        }
+    }
+}
+
+/**
+ * 文件类型图标（v3.3.30）：图标居中 + 底部扩展名角标（网格视图）；
+ * 列表视图纯图标。尺寸随 cellSize 缩放。
+ */
+@Composable
+private fun FileTypeIcon(ext: String, cellSize: Dp, showBadge: Boolean) {
+    val spec = fileIconSpecFor(ext)
+    Box(modifier = Modifier.size(cellSize), contentAlignment = Alignment.Center) {
+        Icon(
+            spec.icon, null,
+            tint = spec.tint,
+            modifier = Modifier.size(cellSize * 0.74f)
+        )
+        if (showBadge && spec.label != null) {
+            Text(
+                text = spec.label,
+                color = Color.White,
+                fontSize = 7.sp,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .clip(RoundedCornerShape(2.dp))
+                    .background(spec.tint.copy(alpha = 0.95f))
+                    .padding(horizontal = 3.dp, vertical = 1.dp)
+            )
+        }
+    }
 }
 
 /** 音频文件扩展名（与媒体播放器一致） */

@@ -996,6 +996,7 @@ apply_vk_driver() {
         fi
     elif vk_so_has_x11wsi "$_lib"; then
         # ---- X11 平台构建（libxcb 直挂）：DXVK 交换链可直接创建 ----
+        ensure_ndk_deps   # v3.3.30：系统库直通（防桩遮蔽，幂等）
         export VK_ICD_FILENAMES="$_icd"
         export LD_LIBRARY_PATH="$_dirfull${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
         info "Vulkan 驱动激活: $_slot（X11 平台构建直挂，bionic ✓）"
@@ -1452,18 +1453,120 @@ anwind_tabtip_watchdog() {
 #   libbinder_ndk.so 成为 libnativewindow.so 的子依赖，verneed 通过。
 #   已有实体文件（rootfs CI 的 libandroid-stub 平台代理等）则跳过不动。
 ensure_ndk_deps() {
-    local _n
-    for _n in libbinder_ndk.so libnativewindow.so libandroid.so libmediandk.so libOpenSLES.so; do
-        [ -e "$RFS_USR/lib/$_n" ] && continue
-        [ -e "/system/lib64/$_n" ] || continue
-        ln -sf "/system/lib64/$_n" "$RFS_USR/lib/$_n" 2>/dev/null || true
+    # v3.3.30：修 wrapper/yuzu 驱动“装了选了但不能用”（用户 2026-11-09
+    # 18:25 日志 + bionic 源码链实证）。
+    #
+    # 根因：rootfs 的 libandroid-stub 代理桩 libbinder_ndk.so（pulseaudio
+    # 依赖 libOpenSLES 代理而随包进 rootfs/usr/lib；构建时 -o 直出、无
+    # -Wl,-soname → 无 DT_SONAME；App targetSdk≥23 时 bionic 不做
+    # basename 回退 → soinfo 的 soname 为空）位于 LD_LIBRARY_PATH 首段，
+    # 先于末位 /system/lib64 —— wine 进程 dlopen wrapper ICD 时，系统
+    # /system/lib64/libnativewindow.so（libvulkan_wrapper.so 的
+    # DT_NEEDED）自身的 verneed 子依赖按 soname "libbinder_ndk.so"
+    # 在直接子依赖里匹配 → 命中的是桩（soname 空）→ 落空 → bionic
+    # VersionTracker::init_verneed 报：
+    #   cannot find "libbinder_ndk.so" from verneed[2] in DT_NEEDED
+    #   list for "/system/lib64/libnativewindow.so"
+    # → ICD dlopen 失败 → loader 忽略 → "Found no drivers!" →
+    # DXVK 报 VK_KHR_surface not supported（游戏黑屏/退出）。
+    # v3.3.29 的本函数只补“缺失名”（[ -e ] && continue 跳过已存在
+    # 的桩）—— 桩仍在遮蔽，因此没修好。
+    #
+    # 修法：建 rootfs/usr/lib/anwind-syslibs/ 系统库直通目录，内放指向
+    # /system/lib64 真身的 symlink，前插 LD_LIBRARY_PATH —— 真身带正确
+    # soname + verdef，verneed 闭环；rootfs 桩原位保留（pulseaudio 的
+    # OpenSLES 代理链不受影响）。同场景（Termux 生态 libandroid-stub
+    # 桩遮蔽）在 DSH-Kxxy 项目有 A/B 实测佐证。
+    # 仅 aarch64（x86_64 形态走 glibc ld-linux，不碰 bionic 目录）。
+    case "$(uname -m)" in
+        aarch64|arm64) ;;
+        *) return 0 ;;
+    esac
+    [ -d /system/lib64 ] || return 0
+
+    # 直通清单：只收平台专属名（rootfs 不会有同名真库）；故意不收
+    # libandroid.so / libmediandk.so / libOpenSLES.so —— 这三个名是
+    # rootfs 桩的职责面（按名命中桩 → 桩再经隔离 namespace 转发真身），
+    # 换成真身反而会把 libhwui/libgui 整条系统链拽进进程（DSH-Kxxy
+    # R1 实测踩坑）。
+    local _pt="$RFS_USR/lib/anwind-syslibs" _n _made=0
+    mkdir -p "$_pt" 2>/dev/null || return 0
+    for _n in libbinder_ndk.so libnativewindow.so libhardware.so \
+              libsync.so libcutils.so; do
+        [ -f "/system/lib64/$_n" ] || continue
+        ln -sf "/system/lib64/$_n" "$_pt/$_n" 2>/dev/null && _made=$((_made+1))
     done
+    # 清理 v3.3.29 遗留：曾把系统库 symlink 进 rootfs/lib 本体 ——
+    # 与桩共存时无益（桩是实体文件不受影响），撤掉回归纯路径解析。
+    # 只删 symlink，不动实体（桩/真库都不是 symlink）。
+    for _n in libbinder_ndk.so libnativewindow.so libandroid.so \
+              libmediandk.so libOpenSLES.so; do
+        [ -L "$RFS_USR/lib/$_n" ] && rm -f "$RFS_USR/lib/$_n" 2>/dev/null
+    done
+    [ "$_made" -gt 0 ] || return 0
+    # 幂等前插（已在首位则不重复）
+    case ":${LD_LIBRARY_PATH}:" in
+        *":$_pt:"*) ;;
+        *) export LD_LIBRARY_PATH="$_pt${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" ;;
+    esac
+    if [ -e "$RFS_USR/lib/libbinder_ndk.so" ]; then
+        info "系统库直通: libbinder_ndk.so 等前插 /system/lib64 真身（绕开 rootfs 代理桩的 verneed 断链 —— wrapper/yuzu 驱动 dlopen 修复）"
+    else
+        info "系统库直通: libbinder_ndk.so 等 → /system/lib64（wrapper 栈链路依赖闭环）"
+    fi
+    return 0
+}
+
+# v3.3.30：按目标 exe 注入 DXVK 兼容补丁（无需重建 wine/rootfs 包）。
+# 背景：仙剑奇侠传四（PAL4，2007，CEGUI + D3D9 + mss32）在 arm64ec
+# 新 WoW64 下进主菜单后游戏代码 page fault（0x006941b5 cmpl $3,
+# 0x10(%eax)，用户 2026-11-09 18:24 日志）—— 老游戏依赖 D3D9 的
+# x87 浮点语义（NaN/denorm 传播），GPU 侧返回值异常 → CEGUI 布局
+# 计算出野指针。DXVK 的 d3d9.floatEmulation=Strict 是这类
+# 2000 年代国产/日产 DX9 游戏崩溃的标准解。
+# 实现：命中已知问题游戏 → 合成 conf（/opt/dxvk.conf 全量 + 追加
+# 覆盖）写入前缀，DXVK_CONFIG_FILE 指向它 —— 仅命中启动生效，
+# 其它游戏零影响。dxvk_appfix_conf <exe路径>：输出合成 conf 路径，
+# 未命中输出空。
+dxvk_appfix_conf() {
+    local _exe="$1" _base="$RFS_ROOT/opt/dxvk.conf"
+    local _out="$WINEPREFIX/.anwind-dxvk-appfix.conf"
+    case "$(printf '%s' "$_exe" | tr '[:upper:]' '[:lower:]')" in
+        *仙剑*|*pal4*)
+            mkdir -p "$WINEPREFIX" 2>/dev/null || true
+            {
+                [ -r "$_base" ] && cat "$_base"
+                printf '\n# AnWind appfix（仙剑奇侠传四：D3D9 浮点语义兼容，v3.3.30）\nd3d9.floatEmulation = Strict\n'
+            } > "$_out" 2>/dev/null || return 1
+            printf '%s' "$_out"
+            ;;
+        *) return 0 ;;
+    esac
+    return 0
+}
+
+# apply_dxvk_appfix "$@"（run_wine 参数）：扫参里的 *.exe，命中则注入
+apply_dxvk_appfix() {
+    local _a _exe="" _conf
+    for _a in "$@"; do
+        case "$_a" in
+            *.exe|*.EXE) _exe="$_a"; break ;;
+        esac
+    done
+    [ -n "$_exe" ] || return 0
+    _conf="$(dxvk_appfix_conf "$_exe")"
+    [ -n "$_conf" ] || return 0
+    export DXVK_CONFIG_FILE="$_conf"
+    info "DXVK 兼容补丁: $(basename "$_exe") → d3d9.floatEmulation=Strict（CEGUI 老游戏浮点语义，仅本次启动生效）"
     return 0
 }
 
 run_wine() {
     # 纯日志：前缀状态观测（只读探测，不改任何流程）
     log "run_wine: 前缀 system.reg $([ -f "$WINEPREFIX/system.reg" ] && echo 已存在 || echo 不存在-将首次初始化)"
+    # v3.3.30：按目标 exe 注入 DXVK 兼容补丁（仙剑四 floatEmulation；
+    # 早于下方所有 exec 分支 —— 桌面包裹/直连形态都能命中）
+    apply_dxvk_appfix "$@"
     # tabtip 拦截（v3.3.29 重构）：主流程派发前已统一执行
     # anwind_kill_tabtip + anwind_tabtip_watchdog（会话级压制），此处不再
     # 重复调用。根因说明见 anwind_tabtip_watchdog 函数注释。
