@@ -972,7 +972,8 @@ apply_vk_driver() {
         export LD_LIBRARY_PATH="$_dirfull${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
         export ADRENOTOOLS_HOOKS_PATH="$_dirfull"
         if [ -n "$_drv" ] && [ -f "$_dirfull/$_drv" ]; then
-            export ADRENOTOOLS_DRIVER_PATH="$_dirfull"
+            # v3.3.28：尾斜杠对齐 WinlatorXR（setDriverById 拼法 dir + "/"）
+            export ADRENOTOOLS_DRIVER_PATH="$_dirfull/"
             export ADRENOTOOLS_DRIVER_NAME="$_drv"
             mkdir -p "$_dirfull/temp" 2>/dev/null || true
             info "Vulkan 驱动激活: $_slot（wrapper 栈 + adrenotools 加载 $_drv，hooks=$_dirfull；X11 WSI 由 wrapper 提供）"
@@ -996,7 +997,7 @@ apply_vk_driver() {
         if [ -n "$_wdir" ]; then
             export VK_ICD_FILENAMES="$_wdir/icd.json"
             export LD_LIBRARY_PATH="$_dirfull:$_wdir${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-            export ADRENOTOOLS_DRIVER_PATH="$_dirfull"
+            export ADRENOTOOLS_DRIVER_PATH="$_dirfull/"
             export ADRENOTOOLS_DRIVER_NAME="$_basename"
             export ADRENOTOOLS_HOOKS_PATH="$_wdir"
             mkdir -p "$_dirfull/temp" 2>/dev/null || true
@@ -1132,16 +1133,18 @@ apply_box64_env() {
         warn "box64 为 glibc 形态，但 rootfs 缺少 $RFS_USR/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1"
         warn "→ exec 将以 ENOENT 失败（表现为零输出/退出码 127）；执行 anwind-container install-box64 <新版 tar.gz>（含 glibc 运行库）或重建 rootfs"
     fi
-    # v3.3.16（用户要求对齐 WinNative 性能调用）：四档 DYNAREC 预设，
-    # 变量值与 App 侧 WineEnvironment.applyBox64Env / WinNative
-    # Box64PresetManager.getEnvVars 完全一致。
-    # 注：performance 的 SAFEFLAGS=1（非 0）—— v3.2.17 设备实报 wineboot
-    # -i 于 ntdll 早期 SIGSEGV(139) 的根因就是 0（CALL/RET 后 jcc 拿陈旧
-    # flags 走错分支），App 侧早已修 1，脚本侧本次同步（此前终端路径
-    # 仍是 0 的漏网之鱼）。
+    # v3.3.21（用户定稿，设备实测）：SAFEFLAGS 全档 0 ——
+    #   用户在 Adreno 740 / Android 15 实测：box64 0.4.2 / 0.4.3 / 0.4.4
+    #   任一版本，SAFEFLAGS=0 全部可正常工作；设 1 或 2 反而崩（ntdll
+    #   早期初始化 SIGSEGV）。v3.2.17 的反向归因（0 导致崩溃）已证伪：
+    #   v3.3.27 设备日志 19:10 SAFEFLAGS=0 仍现同型崩溃、15:52 同环境
+    #   正常 —— 崩溃具有地址空间布局随机性，与 SAFEFLAGS 无关。
+    #   WinNative 预设的 1/2 值在本机不成立，全部改 0。
+    #   performance 档其余值对齐 box64 上游默认（BIGBLOCK=1 / FORWARD=128 /
+    #   X87DOUBLE=1）—— 用户实测可用配置。
     case "$_preset" in
         stability)
-            export BOX64_DYNAREC_SAFEFLAGS=2
+            export BOX64_DYNAREC_SAFEFLAGS=0
             export BOX64_DYNAREC_FASTNAN=0
             export BOX64_DYNAREC_FASTROUND=0
             export BOX64_DYNAREC_X87DOUBLE=1
@@ -1153,7 +1156,7 @@ apply_box64_env() {
             ;;
         compatibility)
             export BOX64_DYNAREC_BIGBLOCK=0
-            export BOX64_DYNAREC_SAFEFLAGS=2
+            export BOX64_DYNAREC_SAFEFLAGS=0
             export BOX64_DYNAREC_FASTNAN=0
             export BOX64_DYNAREC_FASTROUND=0
             export BOX64_DYNAREC_X87DOUBLE=1
@@ -1164,7 +1167,7 @@ apply_box64_env() {
             ;;
         intermediate)
             export BOX64_DYNAREC_BIGBLOCK=2
-            export BOX64_DYNAREC_SAFEFLAGS=2
+            export BOX64_DYNAREC_SAFEFLAGS=0
             export BOX64_DYNAREC_FASTNAN=1
             export BOX64_DYNAREC_FASTROUND=0
             export BOX64_DYNAREC_X87DOUBLE=1
@@ -1174,13 +1177,13 @@ apply_box64_env() {
             export BOX64_DYNAREC_WAIT=1
             ;;
         performance|*)
-            export BOX64_DYNAREC_BIGBLOCK=3
-            export BOX64_DYNAREC_SAFEFLAGS=1
+            export BOX64_DYNAREC_BIGBLOCK=1
+            export BOX64_DYNAREC_SAFEFLAGS=0
             export BOX64_DYNAREC_FASTNAN=1
             export BOX64_DYNAREC_FASTROUND=1
-            export BOX64_DYNAREC_X87DOUBLE=0
+            export BOX64_DYNAREC_X87DOUBLE=1
             export BOX64_DYNAREC_STRONGMEM=0
-            export BOX64_DYNAREC_FORWARD=512
+            export BOX64_DYNAREC_FORWARD=128
             export BOX64_DYNAREC_CALLRET=1
             export BOX64_DYNAREC_WAIT=1
             ;;
@@ -1360,9 +1363,46 @@ bootstrap_opt_prefix() {
     return 0
 }
 
+# v3.3.28：终止 prefix 内的 tabtip.exe（触摸键盘辅助进程）。
+#   实现说明：wine PE 进程在 /proc 下以宿主进程形态存在，cmdline 含
+#   "tabtip.exe" 字样（loader argv / Z: 路径），/proc 扫描 + kill 兜底
+#   不依赖 taskkill（省一次 wine 进程拉起，~数百毫秒）；不匹配自身
+#   （anwind-wine 自身 cmdline 无 tabtip）。幂等、零匹配零动作。
+anwind_kill_tabtip() {
+    local _p _cmd _killed=0
+    for _p in /proc/[0-9]*; do
+        [ -r "$_p/cmdline" ] || continue
+        _cmd="$(tr '\0' ' ' < "$_p/cmdline" 2>/dev/null)"
+        case "$_cmd" in
+            *tabtip.exe*)
+                # 跳过自身与父链（防 cmdline 意外包含字符串的场景）
+                case "$_cmd" in
+                    *anwind-wine*) continue ;;
+                esac
+                if kill -9 "${_p#/proc/}" 2>/dev/null; then
+                    _killed=$((_killed+1))
+                fi
+                ;;
+        esac
+    done
+    [ "$_killed" -gt 0 ] && info "已终止 $_killed 个 tabtip.exe（其 UIA/WM_GETOBJECT 查询会触发部分老 32 位游戏崩溃）"
+    return 0
+}
+
 run_wine() {
     # 纯日志：前缀状态观测（只读探测，不改任何流程）
     log "run_wine: 前缀 system.reg $([ -f "$WINEPREFIX/system.reg" ] && echo 已存在 || echo 不存在-将首次初始化)"
+    # v3.3.28：游戏/程序会话启动前拦截 tabtip.exe（触摸键盘辅助进程）。
+    #   根因（用户设备日志 wine-456/wine-10arm 实证）：opt 生态前缀注入的
+    #   tabtip.exe 对游戏窗口做 UI Automation / MSAA 查询（日志特征：
+    #   oleacc:find_class_data "Button" + uiautomation:uia_get_providers_
+    #   for_hwnd），查询经 WM_GETOBJECT 同步消息送达 32 位游戏的窗口
+    #   过程 —— 仙剑四等 2000 年代 MFC 老游戏处理该消息时解引用野指针
+    #   崩溃（page fault on read access，arm64+FEX 与 x86_64+box64 的
+    #   唯一行为差异：box64 下 tabtip 兼容性差从未真正跑起来，FEX 下
+    #   正常运行才触发了游戏 bug）。AnWind 有自己的输入链路（安卓 IME
+    #   → wine），tabtip 纯属冗余，游戏会话一律终止。
+    anwind_kill_tabtip
     # wineserver：真实 Unix ELF 宿主程序 → 直连宿主二进制（box64 形态包装）
     if [ "${1:-}" = "wineserver" ]; then
         local _bin

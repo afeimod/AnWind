@@ -296,8 +296,31 @@ android {
         // ⑤两个 build.sh（wine + hangover-wine）补丁生效硬校验：virtual.c
         //   无 noexec 标记 / env.c 无 locale 标记 → ::error:: 直接构建失
         //   败 —— CI 不再可能产出缺补丁的裸奔 wine 包。
-        versionCode = 98
-        versionName = "2.38.35"
+        versionCode = 99
+        versionName = "2.38.36"
+        // v3.3.28（源码包 v3.3.28，App v2.38.36 / versionCode 99）——
+        //   用户全盘否定 v3.3.24/26/27 后的全面复查轮。核心发现：
+        //   ①【交付断层】v3.3.19~v3.3.27 的全部驱动修复（ELF 魔数修复、
+        //     wrapper 栈 ADRENOTOOLS 四件套、tzst 支持、SAFEFLAGS=0 等）
+        //     只存在于未提交工作树，CI 从 origin/main 构建 → 用户手里的
+        //     APK 从未包含这些修复（截图报错"不是有效的 ARM64 ELF"即
+        //     旧版恒 false 魔数比对）。本轮本地构建直发，修复真正进包。
+        //   ②【DXVK arm64 闪退根因】（仙剑四，wine-456/wine-10arm 日志
+        //     实证）：Vulkan/DXVK 初始化全程正常，崩溃是 opt 前缀注入的
+        //     tabtip.exe 对游戏窗口做 UIA/WM_GETOBJECT 查询，2007 年
+        //     MFC 老游戏处理该消息解引用野指针。x86_64+box64 下 tabtip
+        //     兼容性差从未真正运行所以"没事"，arm64+FEX 下正常运行才
+        //     踩雷。修复：anwind-wine 会话启动拦截 tabtip（/proc 扫描
+        //     终止），与 DXVK 版本/驱动无关（用户判断正确）。
+        //   ③分辨率回退 bug 根因：BasicSettingsTab 的 FilePickBus 监听
+        //     闭包捕获首次组合时的旧 edit 快照（DisposableEffect key
+        //     不变不重建）→ 浏览选 exe 后保存把分辨率打回旧值。
+        //     rememberUpdatedState 修复。
+        //   ④LD_LIBRARY_PATH 末位补 /system/lib64（WinlatorXR 同款）：
+        //     wrapper/turnip 驱动的 libnativewindow.so 等系统库解析必需。
+        //   ⑤ADRENOTOOLS_DRIVER_PATH 尾斜杠对齐 WinlatorXR。
+        //   ⑥DXVK 注入 wineArch 选档补全（v3.3.21 只加了参数没接线）：
+        //     arm64ec 容器 system32 装 arm64ec 原生档（多架构包时）。
         // v3.3.19（源码包 v3.3.19）：wrapper 驱动运行时可用性根治 ——
         //   ELF ABI 门禁（WinNative DriverPackages.identify 移植：glibc 包
         //   拒装，bionic 才收）+ wrapper 栈包形态（libvulkan_wrapper.so 作

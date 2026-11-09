@@ -89,8 +89,11 @@ enum class Box64Preset(
     val label: String,
     val desc: String
 ) {
-    STABILITY("stability", "稳定优先", "SAFEFLAGS=2+STRONGMEM=2，最稳档"),
-    COMPATIBILITY("compatibility", "兼容优先", "SAFEFLAGS=2+STRONGMEM=1，更稳定"),
+    // v3.3.28：描述文案对齐 v3.3.21 实际注入值 —— 四档 SAFEFLAGS 全部
+    // 为 0（用户实测定稿：box64 0.4.2~0.4.4 任何版本 SAFEFLAGS=0 均正常，
+    // 1/2 反而触发 ntdll 早期初始化 SIGSEGV；旧文案写 SAFEFLAGS=2 已失真）。
+    STABILITY("stability", "稳定优先", "SAFEFLAGS=0+STRONGMEM=2，最稳档"),
+    COMPATIBILITY("compatibility", "兼容优先", "SAFEFLAGS=0+STRONGMEM=1，更稳定"),
     INTERMEDIATE("intermediate", "进阶", "BIGBLOCK=2+CALLRET=1，速度与兼容平衡"),
     PERFORMANCE("performance", "性能优先", "BIGBLOCK=3+全快路径，适合多数游戏");
 

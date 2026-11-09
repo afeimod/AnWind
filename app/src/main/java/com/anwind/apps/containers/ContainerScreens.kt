@@ -1068,6 +1068,13 @@ private fun BasicSettingsTab(
 ) {
     val context = LocalContext.current
     var picking by remember { mutableStateOf(false) }
+    // v3.3.28（用户实测 bug：分辨率回退）：FilePickBus 监听器由
+    // DisposableEffect(edit.name) 注册 —— key 不变时闭包永不重建，捕获的
+    // 是【首次组合时的 edit 参数快照】。用户改分辨率 → 保存 → 浏览选
+    // exe 时，回调执行 onChange(旧edit.copy(exe=…)) → 分辨率被打回面板
+    // 打开时的旧值 → 再保存即回退（与用户报告 100% 吻合）。
+    // rememberUpdatedState 让闭包始终读到最新 edit —— Compose 官方范式。
+    val currentEdit by androidx.compose.runtime.rememberUpdatedState(edit)
 
     // wineguanli.py：QFormLayout 基本配置组
     GGroup("基本配置") {
@@ -1235,7 +1242,7 @@ private fun BasicSettingsTab(
                 targetApp = "containers_basic_${edit.name}",
                 targetWindow = ""
             ) { path ->
-                onChange(edit.copy(exe = path))
+                onChange(currentEdit.copy(exe = path))
                 picking = false
             }
             onDispose { unregister() }
@@ -1466,9 +1473,13 @@ private fun GraphicsDriverTab(
                     label.startsWith("Wrapper") ->
                         // v3.3.17：类型切到 wrapper 时预选首个可用版本 ——
                         // 优先已装驱动，其次 /opt/wrapper tar 包（旧版只看已装列表，
-                        // 未装且 /opt 无包时选中后下方空空如也 → “强制选择也没列表”）
+                        // 未装且 /opt 无包时选中后下方空空如也 → “强制选择也没列表”）。
+                        // v3.3.21：只预选 wrapper 栈槽位（含 libvulkan_wrapper.so）——
+                        // 旧版 firstOrNull 会把 turnip 包顶进 Wrapper 位（用户
+                        // 实测截图：Wrapper 位显示“turnip-26.2.1 / 库：
+                        // libvulkan_freedreno.so”，选上必无效）
                         onChange(edit.copy(
-                            wrapper = installedDrivers.firstOrNull()?.slot
+                            wrapper = installedDrivers.firstOrNull { it.wrapperStack }?.slot
                                 ?: wrapperTars.firstOrNull()?.display ?: "",
                             turnip = ""
                         ))
@@ -1492,7 +1503,13 @@ private fun GraphicsDriverTab(
                 // 同名去重：包安装后的 slot 名 == 包显示名，tar 项隐藏。
                 val wrapperOpts = buildList {
                     add("默认（切回 Mesa 内置）" to "")
-                    installedDrivers.forEach { add(it.slot to it.slot) }
+                    // v3.3.21：Wrapper 下拉只列 wrapper 栈槽位（含
+                    // libvulkan_wrapper.so 的包，如 wrapper-22）—— 旧版把
+                    // turnip 类包也列进来，选中后 ICD 指向裸 turnip，
+                    // wrapper 注入链路完全没走（用户实测“选了 wrapper
+                    // 依旧无效”的 UI 根因之一）
+                    installedDrivers.filter { it.wrapperStack }
+                        .forEach { add(it.slot to it.slot) }
                     wrapperTars.filter { t -> installedDrivers.none { it.slot == t.display } }
                         .forEach { add("${it.display}（/opt/wrapper 包，运行时自动安装）" to it.display) }
                 }

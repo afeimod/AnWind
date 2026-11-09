@@ -81,14 +81,24 @@ object WineEnvironment {
         env["LANG"] = lang
         env["LC_ALL"] = lang
 
-        // --- 动态库搜索路径 → 仅 rootfs（§4；不追加继承值，防外部 lib
-        //     污染 Mesa/ARM 驱动符号解析） ---
+        // --- 动态库搜索路径 → rootfs + Android 系统（§4） ---
+        // v3.3.28：末位补 /system/lib64 —— WinlatorXR（cmod_bionic
+        // BionicProgramLauncherComponent）同款：`LD_LIBRARY_PATH =
+        // rootDir/usr/lib : /system/lib64`。wine 进程 dlopen 的链路里
+        // 有一批库只在 Android 系统目录：wrapper 驱动栈的
+        // libvulkan_wrapper.so DT_NEEDED libnativewindow.so、bionic turnip
+        // 的 libhardware.so / libsync.so / libcutils.so —— Vulkan loader
+        // 经 ICD json 的 library_path dlopen 驱动时按 LD_LIBRARY_PATH
+        // 搜索，缺 /system/lib64 时这些库解析不到 → ICD 静默加载失败 →
+        // DXVK 报 "VK_KHR_surface not supported"。/system/lib64 放末位：
+        // rootfs 优先，系统库仅兜底（rootfs 无同名库，不污染符号解析）。
         val lp = buildList {
             add("$RFS_USR/lib")
             if (File("$RFS_USR/local/lib").isDirectory) add("$RFS_USR/local/lib")
             if (File(wineDir, "lib").isDirectory) add("${wineDir.absolutePath}/lib")
             if (File("$RFS_USR/opt/lib").isDirectory) add("$RFS_USR/opt/lib")
             if (File("$RFS_USR/opt/fex/lib").isDirectory) add("$RFS_USR/opt/fex/lib")
+            if (File("/system/lib64").isDirectory) add("/system/lib64")
         }
         env["LD_LIBRARY_PATH"] = lp.joinToString(":")
 
@@ -271,14 +281,18 @@ object WineEnvironment {
                 "${glibcDir.absolutePath}:$existing"
             }
         }
-        // v3.3.16（用户要求对齐 WinNative 性能调用）：四档 DYNAREC 预设
-        // —— 变量值逐字对齐 WinNative Box64PresetManager.getEnvVars 的
-        // STABILITY / COMPATIBILITY / INTERMEDIATE / PERFORMANCE。
-        // 注：WinNative PERFORMANCE 的 SAFEFLAGS=1（非 0）与本仓 v3.2.17
-        // 的 wineboot SIGSEGV 教训（SAFEFLAGS=0 导致 flags 错乱）一致保留 1。
+        // v3.3.21（用户定稿，设备实测）：SAFEFLAGS 全档 0 ——
+        //   用户在 Adreno 740 / Android 15 实测：box64 0.4.2 / 0.4.3 /
+        //   0.4.4 任一版本，SAFEFLAGS=0 全部可正常工作；设 1 或 2 反而
+        //   崩（ntdll 早期初始化 SIGSEGV）。
+        //   v3.2.17 曾把 wineboot SIGSEGV 归因于 SAFEFLAGS=0 并改 1 ——
+        //   该归因错误：v3.3.27 设备日志（19:10）SAFEFLAGS=0 仍出现同一
+        //   R15 高 32 位丢失型 ntdll 崩溃，且 15:52 同环境同参数正常运行，
+        //   具有随机性，真实另因（地址空间布局依赖）。WinNative 预设的
+        //   1/2 值在本机实测不成立，不再跟随。
         when (container.preset) {
             Box64Preset.STABILITY -> {
-                env["BOX64_DYNAREC_SAFEFLAGS"] = "2"
+                env["BOX64_DYNAREC_SAFEFLAGS"] = "0"
                 env["BOX64_DYNAREC_FASTNAN"] = "0"
                 env["BOX64_DYNAREC_FASTROUND"] = "0"
                 env["BOX64_DYNAREC_X87DOUBLE"] = "1"
@@ -290,7 +304,7 @@ object WineEnvironment {
             }
             Box64Preset.COMPATIBILITY -> {
                 env["BOX64_DYNAREC_BIGBLOCK"] = "0"
-                env["BOX64_DYNAREC_SAFEFLAGS"] = "2"
+                env["BOX64_DYNAREC_SAFEFLAGS"] = "0"
                 env["BOX64_DYNAREC_FASTNAN"] = "0"
                 env["BOX64_DYNAREC_FASTROUND"] = "0"
                 env["BOX64_DYNAREC_X87DOUBLE"] = "1"
@@ -301,7 +315,7 @@ object WineEnvironment {
             }
             Box64Preset.INTERMEDIATE -> {
                 env["BOX64_DYNAREC_BIGBLOCK"] = "2"
-                env["BOX64_DYNAREC_SAFEFLAGS"] = "2"
+                env["BOX64_DYNAREC_SAFEFLAGS"] = "0"
                 env["BOX64_DYNAREC_FASTNAN"] = "1"
                 env["BOX64_DYNAREC_FASTROUND"] = "0"
                 env["BOX64_DYNAREC_X87DOUBLE"] = "1"
@@ -311,24 +325,18 @@ object WineEnvironment {
                 env["BOX64_DYNAREC_WAIT"] = "1"
             }
             Box64Preset.PERFORMANCE -> {
-                env["BOX64_DYNAREC_BIGBLOCK"] = "3"
-                // v3.2.17（设备实报：wine9.2 x86_64 形态 wineboot -i 于 ntdll
-                // 早期初始化 SIGSEGV，退出码 139）：SAFEFLAGS 由 0 改 1。
-                // 上游 box64 USAGE.md（SAFEFLAGS 条目）：0 = "Treat CALL/RET
-                // as if it never needs any flags" —— wine 加载器与 ntdll 初始化
-                // 大量依赖 CALL/RET 之后的条件分支，flags 不保存 = jcc 拿到
-                // 陈旧标志走错分支 → 寄存器装入未重定位的裸值 → 访问 0x928e8
-                // 类未映射小地址段错误（崩溃现场实证：RAX=0x3f000928d8 带加载
-                // 基址的正确地址 与 R15=0x928d8 裸 vaddr 低 32 位完全一致 =
-                // 错误分支后 64 位寄存器高位丢失，典型 flags 错乱后遗症）。
-                // 1 是上游默认值，也是 Winlator/WinNative wine 组合的实证底线；
-                // wineboot 前缀构建会话另由 RootfsLauncher 叠加最稳的 2。
-                env["BOX64_DYNAREC_SAFEFLAGS"] = "1"
+                // v3.3.21：PERFORMANCE 对齐用户实测可用配置 ——
+                // SAFEFLAGS=0 + 其余全部取 box64 上游默认值（BIGBLOCK=1 /
+                // FORWARD=128 / STRONGMEM=0 / X87DOUBLE=1）。旧版 BIGBLOCK=3 /
+                // FORWARD=512 / X87DOUBLE=0 属激进值，与 19:10 日志 ntdll
+                // 随机崩溃时在场，不再采用（性能差异微小，稳定性优先）。
+                env["BOX64_DYNAREC_BIGBLOCK"] = "1"
+                env["BOX64_DYNAREC_SAFEFLAGS"] = "0"
                 env["BOX64_DYNAREC_FASTNAN"] = "1"
                 env["BOX64_DYNAREC_FASTROUND"] = "1"
-                env["BOX64_DYNAREC_X87DOUBLE"] = "0"
+                env["BOX64_DYNAREC_X87DOUBLE"] = "1"
                 env["BOX64_DYNAREC_STRONGMEM"] = "0"
-                env["BOX64_DYNAREC_FORWARD"] = "512"
+                env["BOX64_DYNAREC_FORWARD"] = "128"
                 env["BOX64_DYNAREC_CALLRET"] = "1"
                 env["BOX64_DYNAREC_WAIT"] = "1"
             }

@@ -398,12 +398,35 @@ object AnWindTzstAssets {
             // 过滤 —— "off" = 用户明确关闭，不注入（glibc 前缀无 conf，
             // 保持历史全量注入行为）
             if (containerDxvkDisabled(prefix)) continue
-            if (applyDxvkAssetsToPrefix(context, prefix, dxvkAssets, combinedFp)) {
+            // v3.3.28：按容器 backend 推导 wine 形态（arm64ec/hangover =
+            // aarch64 wine → system32 用 arm64ec 原生档；box64/fexcore =
+            // x86_64 wine，旧行为）—— 与 RootfsLauncher 前缀构建链同源。
+            val arch = prefixWineArch(prefix)
+            val fp = if (arch.isEmpty()) combinedFp else "$combinedFp@arch=$arch"
+            if (applyDxvkAssetsToPrefix(context, prefix, dxvkAssets, fp, arch)) {
                 appliedCount++
             }
         }
         _dxvkReady.value = appliedCount == 0
         return appliedCount
+    }
+
+    /**
+     * v3.3.28：从前缀所属容器的 container.conf 读 backend= 推导 wine 形态。
+     * "arm64ec" → aarch64（hangover/native arm64 wine）；其余（box64/
+     * fexcore/缺键）→ x86_64。conf 缺失（glibc 前缀）返回空串 = 旧行为。
+     */
+    private fun prefixWineArch(prefix: File): String {
+        val conf = File(prefix.parentFile, "container.conf")
+        if (!conf.isFile) return ""
+        return try {
+            val backend = conf.readLines()
+                .firstOrNull { it.trim().startsWith("backend=") }
+                ?.substringAfter("=")?.trim()?.lowercase() ?: ""
+            if (backend == "arm64ec") "aarch64" else "x86_64"
+        } catch (_: Exception) {
+            ""
+        }
     }
 
     /**
@@ -431,8 +454,21 @@ object AnWindTzstAssets {
      * "构建前缀时自动打入 assets 内的 dxvk-<ver>.tar.gz 解压到 C 盘
      * windows"）；也可从容器管理器手动触发。
      *
+     * v3.3.21：新增 wineArch 参数 —— DXVK 2.7+（hangover 官方配套包）
+     * 发布包内含 x64/x32/aarch64/arm64ec 四套架构目录：
+     *   - aarch64（arm64ec/hangover）wine → system32 取 arm64ec/（原生
+     *     ARM64EC 代码，x86_64 客体经 thunk 直调，不经 FEX 翻译），
+     *     syswow64 取 x32/（32 位客体仍 FES，但 DXVK 2.7.1 比 2.3.1
+     *     新两年、d3d9 修复数百项）；
+     *   - x86_64（box64）wine → system32 取 x64/，syswow64 取 x32/。
+     * 旧版不看 wine 架构一律 x64→system32，arm64ec 容器的 system32
+     * 装进 x86_64 DLL（整条链全 FEX 翻译，慢且撞 FEX 边缘 bug ——
+     * 用户实测 PAL4 DXVK 闪退而 wined3d（原生 builtin）正常的根因）。
+     *
      * @param containerPrefix 容器的 WINEPREFIX 目录（…/containers/<name>/prefix）
      * @param dxvkEnabled     容器配置开关（container.conf 的 dxvk= 非 off）
+     * @param wineArch        wine 形态（"aarch64" / "x86_64"；空 = 旧兼容：
+     *                        仅 x64/x32 布局时行为与旧版一致）
      * @param log            进度回调（写入前缀日志窗口）
      * @return true = 已应用/无需应用；false = 解压失败（下次自动重试）
      */
@@ -440,6 +476,7 @@ object AnWindTzstAssets {
         context: Context,
         containerPrefix: File,
         dxvkEnabled: Boolean,
+        wineArch: String = "",
         log: (String) -> Unit = {}
     ): Boolean {
         if (!dxvkEnabled) return true
@@ -454,8 +491,11 @@ object AnWindTzstAssets {
         if (stripped.isNotEmpty()) {
             log("提示: 检测到未压缩 .tar 资产（${stripped.joinToString { it.name }}）—— 构建管线剥掉了压缩层，已按纯 tar 正常解压")
         }
-        val combinedFp = dxvkAssets.joinToString("|") { assetFingerprint(context, it.path) }
-        if (!applyDxvkAssetsToPrefix(context, containerPrefix, dxvkAssets, combinedFp, log)) {
+        // v3.3.21：指纹叠加 wineArch —— 容器换架构形态（换 wine）时
+        // 自动重铺正确架构的 DLL（旧指纹只含资产内容，换形态不重铺）
+        val combinedFp = dxvkAssets.joinToString("|") { assetFingerprint(context, it.path) } +
+            "@arch=$wineArch"
+        if (!applyDxvkAssetsToPrefix(context, containerPrefix, dxvkAssets, combinedFp, wineArch, log)) {
             log("警告: DXVK 解压失败（下次启动自动重试）")
             return false
         }
@@ -468,6 +508,7 @@ object AnWindTzstAssets {
         prefix: File,
         dxvkAssets: List<DxvkAsset>,
         combinedFp: String,
+        wineArch: String = "",
         log: (String) -> Unit = {}
     ): Boolean {
         val meta = File(prefix, "anwindmeta")
@@ -479,7 +520,7 @@ object AnWindTzstAssets {
         val windows = File(prefix, "drive_c/windows")
         var ok = true
         for (asset in dxvkAssets) {
-            if (!extractDxvkToWindows(context, asset, windows)) ok = false
+            if (!extractDxvkToWindows(context, asset, windows, wineArch)) ok = false
         }
         if (ok) {
             try {
@@ -491,7 +532,8 @@ object AnWindTzstAssets {
                 android.util.Log.w(TAG, "dxvk 标记写入失败: ${e.message}")
             }
             android.util.Log.i(TAG, "DXVK 已解压到前缀: ${prefix.path} → drive_c/windows")
-            log("DXVK ${dxvkAssets.last().name} 已解压到 C:\\windows（system32/syswow64）")
+            log("DXVK ${dxvkAssets.last().name} 已解压到 C:\\windows（system32/syswow64" +
+                (if (wineArch == "aarch64") ", arm64ec 原生档" else "") + "）")
         }
         return ok
     }
@@ -516,7 +558,9 @@ object AnWindTzstAssets {
      * （tar 成员布局在解压前不可知，暂存 + 归位可同时支持
      * system32/syswow64 直解与 x64/x32 重映射，且不污染 windows 目录。）
      */
-    private fun extractDxvkToWindows(context: Context, asset: DxvkAsset, windows: File): Boolean {
+    private fun extractDxvkToWindows(
+        context: Context, asset: DxvkAsset, windows: File, wineArch: String = ""
+    ): Boolean {
         val prefix = windows.parentFile?.parentFile ?: return false
         val stage = File(prefix, "anwindmeta/.dxvk-stage")
         try {
@@ -529,7 +573,7 @@ object AnWindTzstAssets {
                 android.util.Log.e(TAG, "DXVK 解压失败: ${asset.name}")
                 return false
             }
-            return installStagedDxvk(stage, windows)
+            return installStagedDxvk(stage, windows, wineArch)
         } catch (t: Throwable) {
             // 同 extractToRootfs：Error 级故障降级为日志，不穿透
             android.util.Log.e(TAG, "DXVK 解压异常: ${asset.name}: ${t.message}")
@@ -539,8 +583,42 @@ object AnWindTzstAssets {
         }
     }
 
-    /** 暂存目录 → drive_c/windows 的布局归位。 */
-    private fun installStagedDxvk(stage: File, windows: File): Boolean {
+    /**
+     * v3.3.21：/opt/dxvk1 tar 槽位包 → drive_c/windows（布局感知 + 架构感知）。
+     *
+     * 旧版启动链对 dxvk tar 槽位直接 extractTarTo(prefixWin) —— 对上游
+     * DXVK 发布包（x64/x32/aarch64/arm64ec 目录布局）会把四个架构目录
+     * 原样倒进 C:\windows（windows/x64/…、windows/arm64ec/…），DLL 一个
+     * 都不在位，等于“装了但没装”。现走与 APK 资产同款的暂存 + 布局
+     * 归位（RootfsLauncher 步骤 0 的 DXVK 分支改调本函数）。
+     */
+    fun installDxvkTarToWindows(
+        tarFile: File, windows: File, wineArch: String = "",
+        log: (String) -> Unit = {}
+    ): Boolean {
+        val prefix = windows.parentFile?.parentFile ?: return false
+        val stage = File(prefix, "anwindmeta/.dxvk-stage-opt")
+        try {
+            com.anwind.util.SafeFileOps.deleteTree(stage)
+            stage.mkdirs()
+            val err = com.anwind.apps.containers.GuanliSupport.extractTarTo(
+                tarFile.absolutePath, stage
+            ) { log(it) }
+            if (err != null) {
+                log("⚠ DXVK 槽位包解压失败：$err")
+                return false
+            }
+            return installStagedDxvk(stage, windows, wineArch)
+        } catch (t: Throwable) {
+            android.util.Log.e(TAG, "DXVK 槽位包安装异常: ${tarFile.name}: ${t.message}")
+            return false
+        } finally {
+            com.anwind.util.SafeFileOps.deleteTree(stage)
+        }
+    }
+
+    /** 暂存目录 → drive_c/windows 的布局归位（v3.3.21：架构感知）。 */
+    private fun installStagedDxvk(stage: File, windows: File, wineArch: String = ""): Boolean {
         val system32 = File(windows, "system32")
         val syswow64 = File(windows, "syswow64")
 
@@ -552,9 +630,30 @@ object AnWindTzstAssets {
         val topDirs = root.listFiles()?.filter { it.isDirectory }?.map { it.name.lowercase() } ?: emptyList()
         val hasNativeLayout = topDirs.contains("system32") || topDirs.contains("syswow64")
         val hasUpstreamLayout = topDirs.contains("x64") || topDirs.contains("x32") || topDirs.contains("x86")
+        // v3.3.21：DXVK 2.7+ 上游多架构布局（hangover 官方 dxvk-v2.7.1
+        // 同款：x64/x32/aarch64/arm64ec 四目录）—— 按 wine 形态选档
+        val hasMultiArchLayout = topDirs.contains("arm64ec") || topDirs.contains("aarch64")
+
+        // v3.3.28（补全 v3.3.21 未竟逻辑）：wineArch 真正参与选档 ——
+        //   arm64ec/hangover（aarch64 形态）wine 的 system32 装 arm64ec/
+        //   原生 DLL（x86_64 客体经 ARM64EC thunk 直调，不经 FEX 翻译；
+        //   无 arm64ec 档时退 aarch64/，再退 x64/）；syswow64 一律 x32/
+        //   （32 位客体仍 FEX，但选最新 DXVK 档）。
+        //   box64/fexcore（x86_64 形态）：system32=x64/（旧行为不变）。
+        val wantArm64ec = wineArch.equals("aarch64", ignoreCase = true)
 
         return try {
             when {
+                // 多架构布局（x64/x32/aarch64/arm64ec）+ arm64ec 形态：
+                // system32 装原生档（v3.3.21 设计语义在此兑现）
+                hasMultiArchLayout && wantArm64ec -> {
+                    val sys32Src = listOf("arm64ec", "aarch64")
+                        .firstOrNull { File(root, it).isDirectory } ?: "x64"
+                    copyTree(File(root, sys32Src), system32)
+                    listOf("x32", "x86").firstOrNull { File(root, it).isDirectory }
+                        ?.let { copyTree(File(root, it), syswow64) }
+                    true
+                }
                 // 用户样式：顶层 system32/ + syswow64/ → 直接归位
                 hasNativeLayout -> {
                     File(root, "system32").takeIf { it.isDirectory }

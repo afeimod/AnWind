@@ -42,7 +42,10 @@ object GuanliSupport {
     /** 一个 DY 预设 = 一组 BOX64_* 环境变量（顺序保持 wineguanli 原序）。 */
     val DY_PRESETS: LinkedHashMap<String, LinkedHashMap<String, String>> = linkedMapOf(
         "🔒 兼容模式" to linkedMapOf(
-            "BOX64_DYNAREC_SAFEFLAGS" to "2",
+            // v3.3.21（用户实测）：SAFEFLAGS=2 在本机（Adreno 740 / Android 15，
+            // box64 0.4.2-0.4.4）触发 ntdll 早期 SIGSEGV —— 与 wineguanli.py
+            // 参考值不同，但设备实测优先，全档取 0
+            "BOX64_DYNAREC_SAFEFLAGS" to "0",
             "BOX64_DYNAREC_BIGBLOCK" to "0",
             "BOX64_DYNAREC_CALLRET" to "0",
             "BOX64_DYNAREC_WAIT" to "1",
@@ -64,7 +67,8 @@ object GuanliSupport {
             "BOX64_DYNAREC_FORWARD" to "1024"
         ),
         "⚖️ 平衡模式" to linkedMapOf(
-            "BOX64_DYNAREC_SAFEFLAGS" to "1",
+            // v3.3.21（用户实测）：同上，SAFEFLAGS=1 亦崩，取 0
+            "BOX64_DYNAREC_SAFEFLAGS" to "0",
             "BOX64_DYNAREC_BIGBLOCK" to "1",
             "BOX64_DYNAREC_CALLRET" to "0",
             "BOX64_DYNAREC_WAIT" to "1",
@@ -320,6 +324,18 @@ object GuanliSupport {
             }
             return jerr
         }
+        // v3.3.21：tzst / tar.zst 同款直通 —— rootfs 无 zstd 时 native tar
+        // 必失败，直接走 Java（zstd-jni 解压，wrapper-gamenative.tzst 类包）
+        if ((f.name.endsWith(".tzst", true) || f.name.endsWith(".tar.zst", true)) &&
+            !File(rfsUsrBin, "zstd").canExecute()
+        ) {
+            val jerr = extractTarJavaCompat(f, destDir, 0, log)
+            if (jerr == null) {
+                log("已解压 ${f.name} → ${destDir.absolutePath}（纯 Java Zstd：rootfs 无 zstd，v3.3.21）")
+                return null
+            }
+            return jerr
+        }
 
         val path = listOf(rfsUsrBin, rfsUsrLocalBin, File("/system/bin"))
             .joinToString(":") { it.absolutePath }
@@ -366,7 +382,11 @@ object GuanliSupport {
             destDir.mkdirs()
             src.inputStream().buffered().use { raw ->
                 // 魔数判型（不信任文件名：xz=FD 37 7A 58 5A 00，gzip=1F 8B，
-                // bzip2=42 5A 68，其余按纯 tar）
+                // bzip2=42 5A 68，zstd=28 B5 2F FD，其余按纯 tar）。
+                // v3.3.21：补 zstd —— 用户实测 wrapper-gamenative.tzst
+                //（tar+zstd，WinNative 生态常见格式）旧版被当纯 tar 读 →
+                // 解压必失败。zstd-jni 经 termux-x11 模块在 classpath
+                //（TarCompressorUtils 同源），ZstdCompressorInputStream 可用。
                 raw.mark(64 * 1024)
                 val head = ByteArray(6)
                 var n = 0
@@ -381,6 +401,9 @@ object GuanliSupport {
                         head[2] == 0x7A.toByte() && head[3] == 0x58.toByte() &&
                         head[4] == 0x5A.toByte() && head[5] == 0x00.toByte() ->
                         org.apache.commons.compress.compressors.xz.XZCompressorInputStream(raw)
+                    n >= 4 && head[0] == 0x28.toByte() && head[1] == 0xB5.toByte() &&
+                        head[2] == 0x2F.toByte() && head[3] == 0xFD.toByte() ->
+                        org.apache.commons.compress.compressors.zstandard.ZstdCompressorInputStream(raw)
                     n >= 2 && head[0] == 0x1F.toByte() && head[1] == 0x8B.toByte() ->
                         org.apache.commons.compress.compressors.gzip.GzipCompressorInputStream(raw)
                     n >= 3 && head[0] == 0x42.toByte() && head[1] == 0x5A.toByte() &&

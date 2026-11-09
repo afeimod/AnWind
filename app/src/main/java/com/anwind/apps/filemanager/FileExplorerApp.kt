@@ -584,7 +584,7 @@ private fun FileExplorerContent(scope: WindowContentScope) {
                         imagePick -> "点击任意图片文件，选为播放器自定义背景"
                         exePick -> "点击 exe / bat / msi / cmd / com 程序，回填到「运行」窗口的程序路径"
                         bootVideoPick -> "点击任意视频文件，设为 App 启动动画（下次启动生效）"
-                        driverPick -> "点击驱动包（zip / tar / tar.gz / tar.xz / tar.bz2），安装到独立驱动库"
+                        driverPick -> "点击驱动包（zip / tar / tar.gz / tar.xz / tar.bz2 / tzst），安装到独立驱动库"
                         dirPick -> "浏览到目标文件夹后，点右侧「选定此目录」回传给云音乐"
                         else -> "点击音频或视频文件进行播放"
                     },
@@ -727,7 +727,7 @@ private fun FileExplorerContent(scope: WindowContentScope) {
                             // v3.3.17：驱动包选择（容器管理「➕ 安装驱动」）——
                             // 完整路径回传给发起窗口安装（旧版误用 textPick 提示选 txt/log）
                             if (isDriverPackageFile(file.name)) pickAndClose(file)
-                            else Toast.makeText(context, "请选择驱动包（zip / tar / tar.gz / tar.xz / tar.bz2）", Toast.LENGTH_SHORT).show()
+                            else Toast.makeText(context, "请选择驱动包（zip / tar / tar.gz / tar.xz / tar.bz2 / tzst）", Toast.LENGTH_SHORT).show()
                         } else if (textPick) {
                             if (isTextExtension(file.extension)) pickAndClose(file)
                             else Toast.makeText(context, "请选择文本文件（txt/log/md/json/xml 等）", Toast.LENGTH_SHORT).show()
@@ -763,7 +763,7 @@ private fun FileExplorerContent(scope: WindowContentScope) {
                         } else if (driverPick) {
                             // v3.3.17：驱动包选择（列表视图分支，与网格视图同逻辑）
                             if (isDriverPackageFile(file.name)) pickAndClose(file)
-                            else Toast.makeText(context, "请选择驱动包（zip / tar / tar.gz / tar.xz / tar.bz2）", Toast.LENGTH_SHORT).show()
+                            else Toast.makeText(context, "请选择驱动包（zip / tar / tar.gz / tar.xz / tar.bz2 / tzst）", Toast.LENGTH_SHORT).show()
                         } else if (textPick) {
                             if (isTextExtension(file.extension)) pickAndClose(file)
                             else Toast.makeText(context, "请选择文本文件（txt/log/md/json/xml 等）", Toast.LENGTH_SHORT).show()
@@ -1347,8 +1347,11 @@ private fun isExecutableExtension(ext: String): Boolean =
  */
 private fun isDriverPackageFile(name: String): Boolean {
     val n = name.lowercase()
+    // v3.3.21：补 .tzst / .tar.zst（wrapper-gamenative.tzst 类 WinNative
+    // 生态包，tar+zstd；解压链已支持 zstd-jni）
     return n.endsWith(".zip") || n.endsWith(".tar") || n.endsWith(".tar.gz") ||
-        n.endsWith(".tar.xz") || n.endsWith(".tar.bz2")
+        n.endsWith(".tar.xz") || n.endsWith(".tar.bz2") ||
+        n.endsWith(".tzst") || n.endsWith(".tar.zst")
 }
 
 /**

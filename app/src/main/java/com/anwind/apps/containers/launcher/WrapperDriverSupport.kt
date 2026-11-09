@@ -148,7 +148,15 @@ object WrapperDriverSupport {
             }
 
             // ELF 魔数 / 64 位 / 小端 / 共享库 / AArch64
-            if (i32(0) != 0x7f454c46) return@runCatching null
+            // v3.3.21（用户实测反馈根因）：旧版 `i32(0) != 0x7f454c46` 恒
+            // false —— i32 按小端组值（\x7fELF 四字节 LE = 0x464c457f），
+            // 0x7f454c46 是大端序常量，魔数比对【永远不成立】→ identifyElf
+            // 对任何文件都返回 null → v3.3.19 起所有驱动包（wrapper-22 /
+            // yuzu zip / adpkg zip / turnip tar）一律被"不是有效的 ARM64
+            // ELF"拒装（用户四类包全实测复现）。改为逐字节魔数比对。
+            if (elf[0] != 0x7f.toByte() || elf[1] != 'E'.code.toByte() ||
+                elf[2] != 'L'.code.toByte() || elf[3] != 'F'.code.toByte()
+            ) return@runCatching null
             if (elf[4].toInt() != 2 || elf[5].toInt() != 1) return@runCatching null
             if (u16(16) != 3 || u16(18) != 183) return@runCatching null
 
@@ -262,7 +270,7 @@ object WrapperDriverSupport {
     /** slot（包显示名）→ 安全目录名（WinNative safeName 同语义）。 */
     fun safeSlotName(display: String): String =
         display.trim()
-            .replace(Regex("\\.(zip|tar|tar\\.(gz|xz|bz2))$"), "")
+            .replace(Regex("\\.(zip|tar|tar\\.(gz|xz|bz2|zst)|tzst)$"), "")
             .replace(Regex("[^A-Za-z0-9._+-]"), "-")
             .trim('-', '.')
             .ifEmpty { "driver" }

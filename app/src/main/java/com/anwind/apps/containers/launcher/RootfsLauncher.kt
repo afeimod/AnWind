@@ -854,7 +854,14 @@ object RootfsLauncher {
                                     }
                             }
                             if (act.adrenotoolsDriverName != null && act.adrenotoolsDriverDir != null) {
-                                env["ADRENOTOOLS_DRIVER_PATH"] = act.adrenotoolsDriverDir.absolutePath
+                                // v3.3.28：尾斜杠对齐 WinlatorXR（AdrenotoolsManager
+                                // setDriverById 的 driverPath 拼法 `dir + "/"`）——
+                                // 部分 wrapper 栈按 driverPath 直接拼接子路径
+                                // （temp/、driver 库名），无尾斜杠时拼出
+                                // "dirtemp" 类错误路径。
+                                env["ADRENOTOOLS_DRIVER_PATH"] = act.adrenotoolsDriverDir.absolutePath.let {
+                                    if (it.endsWith("/")) it else "$it/"
+                                }
                                 env["ADRENOTOOLS_DRIVER_NAME"] = act.adrenotoolsDriverName
                                 sink.stamp(
                                     "wrapper 栈激活（${
@@ -909,15 +916,14 @@ object RootfsLauncher {
                 // 目录进 BOX64_LD_LIBRARY_PATH（缺它 box64 加载 wine unix .so
                 // 直接 "Symbol ... not found"）
                 WineEnvironment.applyBox64Env(env, container, resolved.wineDir)
-                // v3.2.17（设备实报：wineboot -i 于 ntdll 早期 SIGSEGV 139）：
-                // 前缀构建会话强制 SAFEFLAGS=2 —— 上游 USAGE.md 语义 2 =
-                // "All CALL/RET will need flags. All edge cases are also
-                // handled"。wineboot 是容器可用性的关键一次性路径（挂了整个
-                // 容器不可用），且构建期分钟级、性能不敏感，取最稳档
-                // （与 COMPATIBILITY 预设同值）；preset 其余项照常叠加。
-                // 用户容器 env= 的 applyExtraEnv 仍在链路最后，可覆盖本值。
+                // v3.3.21（用户定稿）：前缀构建会话不再强制 SAFEFLAGS=2 ——
+                //   用户实测（Adreno 740 / Android 15，box64 0.4.2-0.4.4）：
+                //   SAFEFLAGS=1 / 2 反而触发 ntdll 早期初始化 SIGSEGV，
+                //   仅 0 稳定（v3.2.17 的反向归因已证伪）。wineboot 是容器
+                //   可用性的关键一次性路径，取实测稳定值 0；用户容器 env=
+                //   的 applyExtraEnv 仍在链路最后，可覆盖本值。
                 if (isPrefixCmd) {
-                    env["BOX64_DYNAREC_SAFEFLAGS"] = "2"
+                    env["BOX64_DYNAREC_SAFEFLAGS"] = "0"
                 }
                 // v3.2.0：闭包缺失诊断（设备实测 proton10-x86_64 旧包仍报
                 // "Symbol shm_open not found"）—— 旧包没有 x86_64-bionic 目录，
@@ -1442,7 +1448,11 @@ object RootfsLauncher {
                 com.anwind.apps.terminal.termux.AnWindTzstAssets.applyDxvkToContainer(
                     context,
                     File(container.prefixPath),
-                    dxvkEnabled = container.dxvk != ContainerData.DXVK_OFF && !dxvkTarSlot
+                    dxvkEnabled = container.dxvk != ContainerData.DXVK_OFF && !dxvkTarSlot,
+                    // v3.3.28：wineArch 真正传入（v3.3.21 加了参数但从未传值）
+                    // —— arm64ec/hangover 后端 = aarch64 wine，system32 装
+                    // arm64ec 原生档 DXVK（多架构包时），x86_64 客体免 FEX。
+                    wineArch = if (resolved.backend == ContainerBackend.ARM64EC) "aarch64" else "x86_64"
                 ) { sink.stamp(it) }
             }.onFailure {
                 sink.stamp("警告: DXVK 注入异常: ${it.message}（下次启动自动重试）")
