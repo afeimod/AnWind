@@ -41,6 +41,39 @@ v3.0 实测暴露出四处"伪原生"残留，v3.1 全部根除：
 > 桌面「📦 Wine 容器」快捷方式的接入链路与排障见
 > `docs/DESKTOP-CONTAINER.md`。
 
+## v3.3.39 增补（conf 统一 + 启动/安装全链 App 内部化收官）
+
+v3.0/v3.1 已把 wine 运行、X 服务、音频、前缀/注册表全部原生化；v3.3.39
+清掉**最后两块非 App 内部的环节**，并完成 conf 体系统一：
+
+1. **conf 统一到 APK 内部端（ApkConfStore，新增）**：cores/env/locale/
+   DY/path 等 conf 的权威源迁到 App 私有存储
+   `/data/data/com.anwind/files/anwind-conf/`（assets 种子 = 用户 opt.zip
+   已知良好值）。旧版 `/opt` 生态包不存在 → conf 整页旁路
+   （"未检测到 /opt 生态"）；现在 conf 编辑永远可用。三条数据流：
+   - **种子**：assets → App 内部（仅缺失文件，用户数据永不覆盖）；
+   - **一次性导入**：/opt 生态首次出现时其 conf 值覆盖进 App 内部
+     （仅覆盖仍是种子原文的文件，UI 已改过的保持 App 值）；
+   - **写透同步**：UI 每次写入 → App 内部 + /opt/conf 双写（终端链与
+     生态脚本读到同一份）。
+   启动链 `readOptConfs/readOptLocale` 改**合并读**：App 内部 + /opt
+   生态**逐文件 mtime 新者胜** —— 终端侧直接改 /opt/conf 同样生效，
+   容器管理与终端两侧的更改全部兼容。cores.conf 的 PRIMARY_CORES
+   从此开箱即导出 → `applyTasksetAffinity` 钉大核不再依赖生态包。
+2. **installWine 原生化**：旧版是管理链路最后一块 bash 残留（App 侧
+   bash + anwind-container CLI install-wine）；现改为 Kotlin 原生
+   WineOps 链（URL 下载 + tar 解包 + 默认槽位，tar 二进制 + Java
+   回退双路径），与 UI 安装同一条代码路径。
+3. **桌面「Wine 容器」→「Bionic 容器」**：命名对齐实际形态（id 保持
+   wine-containers，桌面图标位置兼容）。
+4. **终端链兜底（anwind-wine，assets 与 bionic-rootfs 两份同步）**：
+   load_opt_confs 增补兜底候选 App 内部 anwind-conf/ —— /opt 生态
+   全缺时终端链同样读到统一 conf（prefix/dxvk1 等生态资产按既有守卫
+   静默跳过）。
+5. **path.conf 双写（GuanliSupport.syncPathConfVkIcd）**：驱动选择同步
+   VK_ICD_FILENAMES 时同时镜像进 App 内部权威源，防生态包移除后
+   stale ICD 值成为唯一来源。
+
 ## 一、动机：终端链路的结构性限制
 
 v2.x 中，App 启动 wine 的完整路径是：

@@ -34,7 +34,7 @@ UI 层零改动（`WineSessionLauncher` 重制为兼容门面）；终端与 roo
 环境全由 Kotlin 构建，画面链路彻底脱离终端）；wine 工作目录跟随 exe
 所在目录（修复"找不到 media"）；dosdevices 幂等补建 `z:→/`；
 PulseAudio 孤儿 socket 试连自愈（修复 winecfg 无音频）；`default_wine`
-失效回退主槽位。桌面「📦 Wine 容器」快捷方式全流程见
+失效回退主槽位。桌面「📦 Bionic 容器」快捷方式全流程见
 **`docs/DESKTOP-CONTAINER.md`**。
 
 ## 一、包目录结构（＝AnWind 仓库结构）
@@ -61,7 +61,7 @@ app/src/main/assets/anwind/
 
 | 文件 | 职责 |
 |---|---|
-| `ContainerApp.kt` | 桌面应用注册（"Wine 容器"，emoji:📦 图标，pinnedToDesktop 桌面快捷方式 + 任务栏固定；默认 1060×680 对齐 wineguanli 主窗） |
+| `ContainerApp.kt` | 桌面应用注册（v3.3.39 更名"Bionic 容器"，emoji:📦 图标，pinnedToDesktop 桌面快捷方式 + 任务栏固定；id 保持 wine-containers） |
 | `ContainerModels.kt` | 容器数据模型 + container.conf 编解码（后端/预设/分辨率/渲染器枚举/wineguanli 键集） |
 | `ContainerManager.kt` | 容器 CRUD / 重命名 / 默认容器 / 本地体检（与 CLI 共享同一存储） |
 | `WineSessionLauncher.kt` | 纯门面（v3.0）：API 与 v2.x 兼容，全部转发 RootfsLauncher 原生启动链 |
@@ -169,5 +169,5 @@ v2.26 起 `anwind-container` / `anwind-wine` 改为 APK 内置资产
    / build-box64-bionic / build-mesa-bionic；
 3. 设备端：导入 rootfs tar.gz → 解包 box64/mesa tar.gz →
    `anwind-container install-wine <wine tar.gz>`；
-4. 打开 App 桌面"📦 Wine 容器"→ 新建容器 → 运行 exe（或终端
+4. 打开 App 桌面"📦 Bionic 容器"→ 新建容器 → 运行 exe（或终端
    `anwind-container run <name> <exe>`），画面输出在内置 X11 桌面。

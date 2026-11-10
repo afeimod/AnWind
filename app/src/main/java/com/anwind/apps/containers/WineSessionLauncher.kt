@@ -5,7 +5,7 @@ import com.anwind.apps.containers.launcher.RootfsLauncher
 import com.anwind.apps.containers.launcher.WineSession
 
 /**
- * AnWind Wine 容器 — 启动器门面（App 侧）。
+ * AnWind Bionic 容器 — 启动器门面（App 侧）。
  *
  * v3.0（原生重制）：本对象自 v2.x 的"终端链路孵化器"重制为**纯门面** ——
  * 所有调用转发给 [RootfsLauncher]（原生启动编排器）。对外 API（方法名、
@@ -37,9 +37,15 @@ import com.anwind.apps.containers.launcher.WineSession
  * 子进程 —— 无 PTY、无 bash、无脚本；环境零串扰、驱动/音频链路
  * 由 App 直接构建、进程生命周期具备完整的进程语义。
  *
- * 交互式终端（TermuxSessionController）与 rootfs 侧脚本（anwind-wine/
- * anwind-container，仍由 App 启动时部署）保留供高级用户使用，但 App 的
- * wine 运行不再依赖它们。
+ * v3.3.39（用户："更改 bionic 容器的启动彻底变为 app 内部启动，不要
+ * 终端启动"）：全链核查确认 —— wine 运行（NativeShellExecutor 直启）、
+ * X 服务（app_process 直启）、音频（PulseAudioManager 原生）、前缀/
+ * 注册表（WineRegistry 原生）、conf（ApkConfStore 统一源）均为 App
+ * 内部执行；installWine 亦重写为原生 WineOps 链（下载 + tar 解包），
+ * 管理链路最后一块 bash 残留清零。交互式终端
+ * （TermuxSessionController）与 rootfs 侧脚本（anwind-wine/
+ * anwind-container，仍由 App 启动时部署，conf 与 App 内部统一源互通）
+ * 仅作为高级用户的手动入口保留，App 的容器运行不依赖它们。
  */
 object WineSessionLauncher {
 

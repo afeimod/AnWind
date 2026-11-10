@@ -80,3 +80,19 @@ exe=                  默认运行的程序（wineguanli custom_exe_path；空=�
   额外变量可自由添加（应用时合并进容器 env=）。
 - 「架构」下拉映射 x86_64→box64 后端、arm64ec→arm64ec 后端；完整后端集
   （auto/hangover/fexcore/native）在 更多设置 → 🧩AnWind 原生 页。
+
+## v3.3.39：conf 统一到 APK 内部端
+
+cores.conf / env.conf / dynarec_active.conf / custom.conf / path.conf /
+locale.conf 等**配置文件**的权威源已迁到 App 私有存储
+`/data/data/com.anwind/files/anwind-conf/`（assets 内置缺省 = 用户 opt.zip
+已知良好值；rootfs 重导入不清空）。/opt 生态包的 conf 降级为**合并第二源**：
+
+- App UI（容器管理）改 conf → 写 App 内部 + 写透同步 /opt/conf；
+- /opt 生态首次出现 → 现值一次性导入 App 内部（UI 已改过的文件不动）；
+- 终端侧直接改 /opt/conf → 启动链按**逐文件 mtime 新者胜**生效；
+- 未装 /opt 生态包 → conf 编辑照常可用（旧版"未检测到 /opt 生态"整页
+  旁路的行为废除），PRIMARY_CORES 大核绑定开箱即生效。
+
+`/opt` 生态包的**资产目录**（box/tz/zink/dxvk1/vkord3d/fexcore/wrapper/
+prefix）职责不变 —— 驱动 tar 扫描与解压仍从这里读取。

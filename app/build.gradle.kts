@@ -298,8 +298,38 @@ android {
         // ⑤两个 build.sh（wine + hangover-wine）补丁生效硬校验：virtual.c
         //   无 noexec 标记 / env.c 无 locale 标记 → ::error:: 直接构建失
         //   败 —— CI 不再可能产出缺补丁的裸奔 wine 包。
-        versionCode = 103
-        versionName = "2.38.40"
+        versionCode = 104
+        versionName = "2.38.41"
+        // v3.3.39（源码包 v3.3.39，App v2.38.41 / versionCode 104）——
+        //   用户 2026-11-10 定稿轮（conf 统一 APK 内部 + 容器管理兼容 +
+        //   桌面容器更名 bionic + 启动彻底 App 内部化）：
+        //   ①【conf 统一到 APK 内部端】：新增 ApkConfStore（App 私有
+        //     anwind-conf/ = 权威源）+ assets/anwind/conf 内置缺省（种子
+        //     = 用户 opt.zip 已知良好值：PRIMARY_CORES="4-7" 大核 /
+        //     STRONGMEM=0 / BIGBLOCK=3 / AVX=2 / mailbox 呈现…）。
+        //     cores/env/locale/DY/conf 编辑页不再依赖 /opt 生态包存在
+        //     （旧版"未检测到 /opt 生态"整页旁路）；启动链 readOptConfs/
+        //     readOptLocale 改合并读（App 内部 + /opt 生态，逐文件
+        //     mtime 新者胜）。
+        //   ②【兼容容器管理与终端两侧更改】：UI 写入 → App 内部 conf +
+        //     写透同步 /opt/conf（终端链 anwind-wine load_opt_confs 读到
+        //     同一份）；生态包首次出现时一次性导入现值（仍是种子原文的
+        //     文件才导入，UI 已改过的保持 App 值）；终端侧直接改
+        //     /opt/conf → 启动链按 mtime 新者胜同步生效。PRIMARY_CORES
+        //     从此开箱即导出 → applyTasksetAffinity 钉大核不再依赖
+        //     生态包（性能主诉的 conf 侧闭环）。
+        //   ③【桌面 Wine 容器 → Bionic 容器】：显示名与 UI 文案迁移
+        //     （id 保持 wine-containers，桌面图标位置兼容）—— 命名对齐
+        //     实际形态：App 原生管理的 bionic rootfs 容器。
+        //   ④【启动/安装彻底 App 内部化】：installWine 重写为原生
+        //     WineOps 链（URL 下载 + tar 解包 + 默认槽位，全程无 bash/
+        //     无 CLI/无 PTY）—— 管理链路最后一块"终端启动"残留清零；
+        //     wine 运行链（NativeShellExecutor 直启）与 X 服务
+        //     （app_process 直启）v3.1 起已是原生，无终端环节。
+        //   ⑤终端链 anwind-wine（assets + bionic-rootfs 两份同步）：
+        //     load_opt_confs 增补兜底候选 App 内部 anwind-conf/ ——
+        //     /opt 生态全缺时终端链同样读到统一 conf（prefix/dxvk1 等
+        //     生态资产按既有守卫静默跳过，无副作用）。
         // v3.3.38（源码包 v3.3.38，App v2.38.40 / versionCode 103）——
         //   用户 2026-11-10 深夜反馈轮（WineLocaleSupport.kt 编译错 +
         //   性能主攻 + 仙剑四 DXVK + hangover 中文环境确认）：

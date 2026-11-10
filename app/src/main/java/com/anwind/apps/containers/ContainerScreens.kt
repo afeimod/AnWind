@@ -42,7 +42,8 @@ import kotlinx.coroutines.withContext
 import java.io.File
 
 /**
- * AnWind Wine 容器 — 管理界面（v3.2.18 · wineguanli.py 完整重制）。
+ * AnWind Bionic 容器 — 管理界面（v3.2.18 · wineguanli.py 完整重制；
+ * v3.3.39 更名「Wine 容器」→「Bionic 容器」）。
  *
  * 本文件是 wineguanli.py（PyQt5 容器管理器，6357 行）的 Compose 逐面
  * 移植：主窗口（工具栏 + 左右分栏 + 五选项卡 + 底部操作行）、高级设置
@@ -861,7 +862,7 @@ private fun LeftContainerListBox(
         if (containers.isEmpty()) {
             item {
                 Text(
-                    "暂无容器。点击上方\"➕ 创建容器\"创建第一个 Wine 容器。",
+                    "暂无容器。点击上方\"➕ 创建容器\"创建第一个 Bionic 容器。",
                     fontSize = gsp(12.sp), color = themeSec(),
                     modifier = Modifier.padding(vertical = gdp(20.dp))
                 )
@@ -1161,7 +1162,7 @@ private fun BasicSettingsTab(
     // 下次启动 wine 即生效。
     // v3.3.8（用户问题 1）：本组只保留 locale —— cores.conf / env.conf
     // 移入「高级设置 → 🌐 生态配置」页（右侧不再拥挤，改读改写能力不变）。
-    GGroup("🌐 语言（/opt/locale.conf，全局）") {
+    GGroup("🌐 语言（App 内部 conf · locale.conf，全局）") {
         val optScope = rememberCoroutineScope()
         val optCtx = LocalContext.current
         var optRootLabel by remember { mutableStateOf("探测中…") }
@@ -1171,7 +1172,9 @@ private fun BasicSettingsTab(
         fun reloadOpt() {
             val r = OptConfSupport.root()
             optDetected = r != null
-            optRootLabel = r?.absolutePath ?: "未检测到 /opt 生态（请先安装生态包到 rootfs/opt）"
+            // v3.3.39：conf 统一到 APK 内部 —— 恒非空；装了 /opt 生态时
+            // UI 保存会写透同步过去（终端链/生态脚本读到同一份值）。
+            optRootLabel = r?.absolutePath ?: "App 内部 conf 目录不可用（anwind-conf）"
             optLocale = OptConfSupport.locale() ?: ""
         }
         LaunchedEffect(Unit) {
@@ -1182,7 +1185,7 @@ private fun BasicSettingsTab(
                 val err = withContext(Dispatchers.IO) { op() }
                 withContext(Dispatchers.IO) { reloadOpt() }
                 android.widget.Toast.makeText(
-                    optCtx, err ?: "已写入 /opt/locale.conf（下次启动 wine 生效）",
+                    optCtx, err ?: "已写入 App 内部 conf（locale.conf，下次启动 wine 生效；装了 /opt 生态会同步过去）",
                     android.widget.Toast.LENGTH_SHORT
                 ).show()
             }
@@ -2145,7 +2148,9 @@ private fun OptEcoConfigTab() {
         loaded = true
         val r = OptConfSupport.root()
         detected = r != null
-        rootLabel = r?.absolutePath ?: "未检测到 /opt 生态（请先安装生态包到 rootfs/opt）"
+        // v3.3.39：conf 统一到 APK 内部（anwind-conf/）—— 恒非空，
+        // 不再依赖 /opt 生态包；保存后写透同步到 /opt/conf。
+        rootLabel = r?.absolutePath ?: "App 内部 conf 目录不可用（anwind-conf）"
         cores = OptConfSupport.primaryCores() ?: ""
         envText = OptConfSupport.envEntries().joinToString("\n") { (k, v) -> "$k=$v" }
     }
@@ -2332,9 +2337,9 @@ private fun DyConfigTab(
     if (!available) {
         GGroup("DY 配置（Box64/Box86 动态重编译）") {
             GNote(
-                "未检测到 /opt 生态（rootfs/opt/{conf,locale.conf,prefix,dxvk1}）——\n" +
-                    "DY 配置读写 /opt/conf/custom.conf 与 dynarec_active.conf，\n" +
-                    "请先把生态包解到 rootfs/opt 后重进本页"
+                "App 内部 conf 目录不可用（/data/data/com.anwind/files/anwind-conf）——\n" +
+                    "DY 配置读写其中的 custom.conf 与 dynarec_active.conf，\n" +
+                    "请检查内部存储权限/空间后重进本页"
             )
         }
         return
@@ -3175,8 +3180,8 @@ private fun MoreSettingsDialog(
                                 if (err == null) {
                                     android.widget.Toast.makeText(
                                         context,
-                                        if (hasOptEco) "设置已保存（container.conf + /opt/conf 生态配置）"
-                                        else "设置已保存（container.conf，未检测到 /opt 生态）",
+                                        if (hasOptEco) "设置已保存（container.conf + App 内部 conf，已同步 /opt 生态）"
+                                        else "设置已保存（container.conf + App 内部 conf）",
                                         android.widget.Toast.LENGTH_SHORT
                                     ).show()
                                     onSaved()
@@ -4358,7 +4363,7 @@ private fun DoctorDialog(onDismiss: () -> Unit) {
     val dlgScale = LocalGuanliScale.current
     val dlgFontScale = LocalGuanliFontScale.current   // v3.2.23：字号系数随行
     WinDialog(
-        title = "AnWind Wine 容器体检",
+        title = "AnWind Bionic 容器体检",
         onDismiss = onDismiss,
         width = 560.dp * GuanliUiK
     ) {

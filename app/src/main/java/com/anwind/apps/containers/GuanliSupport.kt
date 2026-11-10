@@ -257,6 +257,21 @@ object GuanliSupport {
                 (if (icdPath.isNullOrBlank()) "（注释：loader 默认搜索）" else icdPath) +
                 "（${pathConf.absolutePath}）"
         )
+        // v3.3.39：conf 统一到 APK 内部 —— path.conf 同步镜像进 App 内部
+        // 权威源（同内容双写；防生态包移除后 App 侧残留 stale ICD 值成为
+        // 唯一来源 —— VK guard 只在槽位激活时兜底，Mesa 内置档下 stale
+        // VK_ICD_FILENAMES 会让 loader 找不到驱动）。
+        runCatching {
+            com.anwind.apps.containers.launcher.ApkConfStore.ensure(null)
+            val apkPath = com.anwind.apps.containers.launcher.ApkConfStore.confFile("path.conf")
+            apkPath.parentFile?.mkdirs()
+            val tmp = File(apkPath.parentFile, "path.conf.anwind-tmp")
+            tmp.writeText(out.joinToString("\n") + "\n")
+            if (!tmp.renameTo(apkPath)) {
+                tmp.copyTo(apkPath, overwrite = true)
+                tmp.delete()
+            }
+        }
         null
     }.getOrElse { "path.conf 同步失败：${it.message}" }
 

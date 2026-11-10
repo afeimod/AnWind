@@ -196,9 +196,12 @@ object RootfsLauncher {
     }
 
     /**
-     * 通过 rootfs CLI 安装 wine 发行包（bash 工具链：下载/解包 —— 不是
-     * wine 运行时，保留脚本执行；但**不经 PTY**，用原生执行器承载，
-     * 进度实时流式进 lastLogs["__install__"]）。
+     * 通过原生 WineOps 安装 wine 发行包（v3.3.39：彻底去 bash ——
+     * 旧版经 App 侧 bash + anwind-container CLI，是管理链路最后一块
+     * 「终端启动」残留；现改为 Kotlin 原生：URL → [GuanliSupport.WineOps.download]
+     * 下载 / 本地路径直用 → [GuanliSupport.WineOps.installFromTar] 解包
+     * （tar 二进制 + Java 回退双路径）→ 可选设默认槽位。进度实时流式
+     * 进 lastLogs["__install__"]，与 UI 的「WineOps 安装」同一条代码路径）。
      */
     fun installWine(
         context: Context,
@@ -209,41 +212,58 @@ object RootfsLauncher {
         if (!ContainerManager.rootfsReady()) {
             return "rootfs 未就绪：请先导入包含 anwind-container 的 bionic rootfs"
         }
-        val bash = File("${ContainerManager.APP_PREFIX}/bin/bash")
-        if (!bash.isFile) return "未找到 App 侧 bash：${ContainerManager.APP_PREFIX}/bin/bash"
-
-        val command = buildList {
-            add(bash.absolutePath)
-            add(ContainerManager.CLI)
-            add("install-wine")
-            add(src.trim())
-            slotName?.takeIf { it.isNotBlank() }?.let {
-                add("--name"); add(it.trim())
-            }
-            if (mkDefault) add("--default")
-        }
-
         val key = "__install__"
         val sink = SessionLogSink(key, newSessionLog(key))
-        sink.log("[AnWind] 安装 wine：$src" + (slotName?.let { "（槽位 $it）" } ?: ""))
-        // 安装进度实时进 lastLogs（UI "Wine 输出"面板读取）
+        sink.log("[AnWind] 安装 wine（原生链）：$src" + (slotName?.let { "（槽位 $it）" } ?: ""))
         lastLogs[key] = sink.text
 
-        try {
-            val executor = NativeShellExecutor.create()
-                .setCommand(*command.toTypedArray())
-                .putEnv(installerEnv())
-                .setWorkingDir(WineEnvironment.RUNTIME_DIR)
-                .onStdOut { sink.log(it) }
-                .onStdErr { sink.log(it) }
-                .onExit { code -> onSessionExit(key, code, sink) }
-                .exec()
-            registerSession(key, WineSession(key, executor, sink))
-            return null
-        } catch (e: Exception) {
-            unregisterSession(key)
-            return "安装进程启动失败：${e.message}"
-        }
+        // 安装链在独立线程执行（下载/解包分钟级）；不登记 wine 会话
+        //（安装不是 wine 进程 —— UI 状态由 lastLogs["__install__"] 流驱动）
+        Thread({
+            try {
+                val slot = slotName?.trim().orEmpty()
+                // 1) 源：URL 下载 / 本地文件直用
+                val local: File = if (src.trim().startsWith("http://") || src.trim().startsWith("https://")) {
+                    sink.log("[AnWind] 下载中：${src.trim()}")
+                    try {
+                        GuanliSupport.WineOps.download(src.trim()) { sink.log(it) }
+                    } catch (e: Exception) {
+                        sink.stamp("下载失败：${e.message ?: e.javaClass.simpleName}")
+                        return@Thread
+                    }
+                } else {
+                    File(src.trim()).also { if (!it.isFile) {
+                        sink.stamp("文件不存在：${src.trim()}")
+                        return@Thread
+                    } }
+                }
+                // 2) arch：x86_64（盒装 wine 发行包默认；anwind-container 同款默认）
+                val arch = "x86_64"
+                sink.log("[AnWind] 解包安装 → ${ContainerManager.WINE_OPT_DIR}/$slot")
+                val err = GuanliSupport.WineOps.installFromTar(local.absolutePath, slot, arch)
+                if (err != null) {
+                    sink.stamp("安装失败：$err")
+                    return@Thread
+                }
+                // 3) 可选设默认槽位（写入全局 container.conf，与 CLI 同格式）；
+                //    槽位名推导与 installFromTar 逐字镜像（sanitize 作用于
+                //    显式槽位与派生名两分支），保证 default_wine 指向真实目录。
+                val finalSlot = slot.ifBlank {
+                    local.nameWithoutExtension.let { n ->
+                        n.removeSuffix(".tar").removePrefix("wine-").ifEmpty { "wine" }.let { "wine-$it" }
+                    }
+                }.replace(Regex("[^A-Za-z0-9._-]"), "-")
+                if (mkDefault) {
+                    val derr = GuanliSupport.WineOps.setDefaultWine(finalSlot)
+                    if (derr != null) sink.stamp("⚠ 设默认槽位失败：$derr")
+                    else sink.stamp("已设默认 wine 槽位：$finalSlot")
+                }
+                sink.stamp("安装完成：$finalSlot（${ContainerManager.WINE_OPT_DIR}/$finalSlot）")
+            } catch (e: Exception) {
+                sink.stamp("安装异常：${e.message ?: e.javaClass.simpleName}")
+            }
+        }, "anwind-install-wine").apply { isDaemon = true; start() }
+        return null
     }
 
     /**
@@ -632,6 +652,11 @@ object RootfsLauncher {
         lastLogs[key] = sink.text
 
         try {
+            // 0) v3.3.39：conf 统一源就位（assets 种子 + 生态一次性导入）——
+            //    App 内部 anwind-conf/ 成为权威源，后续 applyOptConfEnv
+            //    合并读（App 内部 + /opt 生态，mtime 新者胜）。
+            ApkConfStore.ensure(context)
+
             // 0) v3.3.10：运行会话先解压选中的 /opt 驱动包（tar -xf →
             //    各自正确的目标））：
             //      - turnip(/opt/tz)、zink(/opt/zink) → rootfs/usr/lib
@@ -1979,16 +2004,5 @@ object RootfsLauncher {
         "${ctx.packageName} ${pi.versionName ?: "?"}"
     } catch (_: Exception) {
         "?"
-    }
-
-    /** installer 的最小环境（bash 工具链：下载/解包，非 wine 运行时）。 */
-    private fun installerEnv(): Map<String, String> {
-        val rfsUsr = "${ContainerManager.ROOTFS_ROOT}/usr"
-        return mapOf(
-            "HOME" to WineEnvironment.HOME_DIR.absolutePath,
-            "TMPDIR" to "$rfsUsr/tmp",
-            "PATH" to "$rfsUsr/bin:$rfsUsr/local/bin:/system/bin:/system/xbin:" +
-                "${ContainerManager.APP_PREFIX}/bin"
-        )
     }
 }

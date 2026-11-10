@@ -176,6 +176,12 @@ load_opt_confs() { # [额外候选根目录（wine 槽位）...]
     local _cands="$RFS_ROOT/opt"
     for _x in "$@"; do [ -n "$_x" ] && _cands="$_cands $_x"; done
     _cands="$_cands $RFS_USR/opt"
+    # v3.3.39：conf 统一到 APK 内部（App 权威源）—— 兜底候选：/opt 生态
+    # 全部缺失时读 App 内部 anwind-conf/（assets 种子 + UI 编辑；App 每次
+    # 写入会写透同步到 /opt/conf，两链天然同值）。marker 检查同规则
+    #（anwind-conf/conf/ 恒存在）。prefix/dxvk1 等生态资产在此根不存在，
+    # 后续各步按既有守卫静默跳过 —— 仅 conf/locale.conf 生效，无副作用。
+    _cands="$_cands /data/data/com.anwind/files/anwind-conf"
     for _root in $_cands; do
         if [ -d "$_root/conf" ] || [ -f "$_root/locale.conf" ] \
             || [ -d "$_root/prefix" ] || [ -d "$_root/dxvk1" ]; then

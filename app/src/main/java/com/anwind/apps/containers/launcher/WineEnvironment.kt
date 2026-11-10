@@ -1029,46 +1029,24 @@ object WineEnvironment {
     }
 
     /**
-     * 解析 opt/conf 内全部 .conf 的 KEY=VALUE（与 anwind-wine 脚本
-     * load_opt_confs 同源语义）：
-     *  - 固定顺序（startfex.sh 同款，v3.2.26 按用户要求**剔除 wine_path.conf**
-     *    —— wine 目录由 AnWind 槽位体系管理，不读包内声明）：env / cores /
-     *    path / dynarec_fixmpeg / dynarec_active；
-     *  - 其余 *.conf（dynarec_* 等）按名兜底，但**排除两类非环境文件**：
-     *    wine_path.conf（槽位自管）与 custom.conf（v3.2.29 —— 它是 DY
-     *    取值定义表 `export BOX64_DYNAREC_BIGBLOCK=0,1,2,3`，逗号候选值
-     *    不是真值，sh source 语义下根本不加载它，旧版当环境导出是错的）；
+     * 解析 conf 全部 KEY=VALUE（与 anwind-wine 脚本 load_opt_confs 同源
+     * 语义）—— v3.3.39 起委托 [ApkConfStore.mergedConfMap]（统一源）：
+     *  - App 内部 anwind-conf/conf/（权威源：assets 种子 + UI 编辑 +
+     *    生态一次性导入 + 写透同步）与 /opt 生态 conf/（rootfs/opt、
+     *    wine 槽位 opt/ 等全部候选，[optRoot]）**逐文件 mtime 新者胜**；
+     *  - 固定顺序（startfex.sh 同款）：env / cores / path /
+     *    dynarec_fixmpeg / dynarec_active；其余 *.conf 按名兜底，排除
+     *    wine_path.conf（槽位自管）与 custom.conf（DY 取值定义表，
+     *    逗号候选值不是真值，sh source 语义下不加载）；
      *  - 仅提取 `KEY=VALUE` / `export KEY=VALUE` 行（行内注释/引号剥离），
      *    不执行 —— 配置文件无法注入任意代码，也碰不到容器隔离变量；
-     *  - **同名键后写覆盖**（v3.2.29 修复）：sh 逐文件 source 时后载入的
-     *    文件覆盖先载入的（startfex.sh 顺序 path.conf 在 dynarec_active.conf
-     *    之前 → active 的值必须胜出；旧版 putIfAbsent 先写优先，方向反了）。
+     *  - **同名键后写覆盖**（v3.2.29 修复保留：sh 逐文件 source 时后
+     *    载入的文件覆盖先载入的）。
      *
-     * @return 键值映射；无 /opt/conf 时为空 map。
+     * @return 键值映射；双源全无 .conf 时为空 map。
      */
-    fun readOptConfs(wineDir: File? = null): Map<String, String> {
-        val confDir = optRoot(wineDir)?.let { File(it, "conf") } ?: return emptyMap()
-        if (!confDir.isDirectory) return emptyMap()
-        val fixed = listOf(
-            "env.conf", "cores.conf", "path.conf",
-            "dynarec_fixmpeg.conf", "dynarec_active.conf"
-        )
-        // 非 KEY=VALUE 环境文件：wine_path.conf（槽位自管）+ custom.conf（DY 取值定义表）
-        val skip = setOf("wine_path.conf", "custom.conf")
-        val files = LinkedHashMap<String, File>()
-        fixed.forEach { name -> File(confDir, name).takeIf { it.isFile }?.let { files[name] = it } }
-        confDir.listFiles { f -> f.isFile && f.name.endsWith(".conf") && f.name !in skip }
-            ?.sortedBy { it.name }
-            ?.forEach { files.putIfAbsent(it.name, it) }
-        val out = LinkedHashMap<String, String>()
-        files.values.forEach { f ->
-            f.readLines().forEach { raw ->
-                val parsed = parseConfLine(raw) ?: return@forEach
-                out[parsed.first] = parsed.second   // 后写覆盖（sh source 语义）
-            }
-        }
-        return out
-    }
+    fun readOptConfs(wineDir: File? = null): Map<String, String> =
+        ApkConfStore.mergedConfMap(wineDir)
 
     /**
      * 单行 KEY=VALUE 解析（v3.2.29）：export 前缀剥离 → 键名校验 →
@@ -1179,21 +1157,16 @@ object WineEnvironment {
     }
 
     /**
-     * opt/locale.conf → 语言（startwine.sh：export LC_ALL="$(cat /opt/locale.conf)"）。
+     * locale.conf → 语言（startwine.sh：export LC_ALL="$(cat /opt/locale.conf)"）。
+     *
+     * v3.3.39：统一到 APK 内部 —— 委托 [ApkConfStore.mergedLocale]
+     * （App 内部 anwind-conf/locale.conf 与 /opt 生态根 locale.conf
+     * 逐文件 mtime 新者胜；无任何源 → null）。
      *
      * @return 合法 locale 字符串；无文件/内容非法为 null。
      */
-    fun readOptLocale(wineDir: File? = null): String? {
-        val f = optRoot(wineDir)?.let { File(it, "locale.conf") } ?: return null
-        if (!f.isFile) return null
-        val raw = runCatching { f.readLines().firstOrNull() }.getOrNull() ?: return null
-        val value = raw.trim().trim('"', '\'')
-        if (value.isEmpty()) return null
-        // C / C.UTF-8 / POSIX / language / language_REGION.charset / @modifier
-        return value.takeIf {
-            it.matches(Regex("[A-Za-z]{2,3}(_[A-Za-z]{2,4})?(\\.[A-Za-z0-9-]+)?(@[A-Za-z0-9-]+)?"))
-        }
-    }
+    fun readOptLocale(wineDir: File? = null): String? =
+        ApkConfStore.mergedLocale(wineDir)
 
     /**
      * 应用 /opt 生态环境（conf **source 语义** + locale.conf）。
@@ -1223,19 +1196,20 @@ object WineEnvironment {
         wineDir: File? = null,
         log: (String) -> Unit = {}
     ) {
-        val root = optRoot(wineDir)
-        if (root == null) {
-            log("opt 生态: 未检测到（探测: ${optProbeReport(wineDir)}）—— conf/locale.conf 全部旁路")
-            log("→ 期望位置: /data/data/com.anwind/files/rootfs/opt/{conf,locale.conf,prefix,dxvk1} 或 wine 槽位目录内同名布局")
-            return
-        }
+        // v3.3.39：conf 统一到 APK 内部 —— 未装 /opt 生态包不再旁路：
+        // App 内部 anwind-conf/（assets 种子 + UI 编辑 + 生态一次性导入）
+        // 永远是权威源；/opt 生态 conf 仅作为合并第二源（逐文件 mtime
+        // 新者胜 —— 终端侧直接改 /opt/conf 同样生效）。cores.conf 的
+        // PRIMARY_CORES 从此开箱即导出（applyTasksetAffinity 钉大核不再
+        // 依赖生态包存在）。
+        ApkConfStore.ensure(null)
+        log(ApkConfStore.probeLine(wineDir))
         val conf = readOptConfs(wineDir)
         // locale.conf → LANG/LC_ALL 已上移 buildBaseEnv（v3.2.29：语言
-        // 唯一来源 /opt/locale.conf；conf/*.conf 若显式 export LANG/
+        // 唯一来源 locale.conf（现统一源）；conf/*.conf 若显式 export LANG/
         // LC_ALL，走下方通用 conf 覆盖逻辑，容器 env= 仍最高优先）。
         if (conf.isEmpty()) {
-            if (File(root, "conf").isDirectory)
-                log("opt 生态: $root/conf 内无可解析的 KEY=VALUE 配置")
+            log("conf 源: 双源均无可解析的 KEY=VALUE 配置（App 内部 + /opt 生态）")
             return
         }
         val userEnv = container.env

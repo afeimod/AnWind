@@ -44,7 +44,7 @@ object DesktopPins {
         "terminal",        // 终端
         "x11",             // X11 桌面
         "music",           // 云音乐
-        "wine-containers"  // Wine 容器
+        "wine-containers"  // Bionic 容器（v3.3.39 更名，id 不变）
     )
 
     /**

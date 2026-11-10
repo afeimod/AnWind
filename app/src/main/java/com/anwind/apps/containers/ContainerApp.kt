@@ -7,7 +7,14 @@ import com.anwind.core.window.LaunchMode
 import com.anwind.core.window.WindowContentScope
 
 /**
- * 内置"Wine 容器"应用（桌面/开始菜单入口）。
+ * 内置"Bionic 容器"应用（桌面/开始菜单入口）。
+ *
+ * v3.3.39（用户："把桌面 wine 容器改为 bionic 容器"）：显示名
+ * "Wine 容器" → "Bionic 容器" —— 命名对齐实际形态：容器是 App 原生
+ * 管理的 bionic rootfs 容器（NativeShellExecutor 直启 wine /
+ * app_process 直启 X 服务 / conf 统一 APK 内部），不再是"桌面版
+ * anwind-container CLI + 终端链"的 wine 容器。id 保持 wine-containers
+ * 不变（桌面图标位置/快捷方式兼容）。
  *
  * v3.2.18（wineguanli.py 完全重制）：窗口默认尺寸对齐 wineguanli
  * 主窗口（1024×600 最小）；窄窗口内界面自动等比缩小，放不下时
@@ -18,7 +25,7 @@ import com.anwind.core.window.WindowContentScope
  */
 val ContainersApp = AppDef(
     id = "wine-containers",
-    displayName = "Wine 容器",
+    displayName = "Bionic 容器",
     iconAsset = "emoji:📦",
     launchMode = LaunchMode.FLOATING,
     // v3.3.3（用户问题 2）：默认尺寸 900×600 → 800×560 —— 用户反馈

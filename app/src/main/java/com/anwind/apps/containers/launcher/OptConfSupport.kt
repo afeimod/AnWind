@@ -6,40 +6,52 @@ import java.io.File
  * v3.3.3：/opt/conf 生态配置读写（用户问题 5："容器编辑所有东西都没有
  * 读取 opt 下的相关配置，也无法更改选项来改变 opt 下的配置"）。
  *
+ * v3.3.39【conf 统一到 APK 内部端】：后端整体切换到 [ApkConfStore] ——
+ * 全部读写落在 App 私有存储 /data/data/com.anwind/files/anwind-conf/
+ * （assets 种子 + UI 编辑 + 生态一次性导入），**不再要求 /opt 生态包
+ * 存在**（旧版 root()==null 时整页「未检测到 /opt 生态」不可编辑）。
+ * 每次写入成功后由 ApkConfStore 写透同步到 /opt 生态 conf —— 终端链
+ * （anwind-wine load_opt_confs）与生态脚本读到的永远是同一份值；
+ * 终端侧直接改 /opt/conf 的值在启动链按 mtime 新者胜同样生效
+ * （兼容容器管理 / 终端两侧的一切更改）。
+ *
  * 语义对照 wineguanli.py（PyQt 容器管理器，参考实现）：
  *  - env.conf / locale.conf / cores.conf 均为 sh source 语义的行式配置：
  *    `export KEY="VALUE"`（locale.conf 是单行裸值）；
  *  - 写 = 逐行扫描替换同名键，无则文件尾追加（save_mangohud_config
- *    同款 replace-or-append）；目录不存在自动创建（Path("/opt/conf")
- *    .mkdirs 同款）；删 = 剔除同名行后回写；
+ *    同款 replace-or-append）；删 = 剔除同名行后回写；
  *  - 解析仅识别 `KEY=VALUE` / `export KEY=VALUE` 行（与启动链
  *    [WineEnvironment.readOptConfs] 同源容错），引号剥离。
  *
- * 路径解析复用 [WineEnvironment.optRoot]（与启动链完全同源 —— UI 里改
- * 的就是启动链 source 的那一份，杜绝"改了不生效"）。
- * 全部方法在调用方线程执行（UI 侧自行 Dispatchers.IO）；原子落盘
- * （tmp + rename，失败回退 copyTo）。
+ * 路径解析与启动链**完全同源**（[ApkConfStore.mergedConfMap] 的
+ * App 内部那一侧）—— UI 里改的就是启动链读的那一份，杜绝"改了不生效"。
+ * 全部方法在调用方线程执行（UI 侧自行 Dispatchers.IO）。
  */
 object OptConfSupport {
 
-    /** /opt 生态根；未安装生态包时 null（UI 显示"未检测到 /opt 生态"）。 */
-    fun root(): File? = WineEnvironment.optRoot(null)
+    /**
+     * conf 根目录 —— v3.3.39 起恒为 App 内部 [ApkConfStore.CONF_ROOT]
+     * （ensure 种子后必存在；root() 不再返回 null，conf 编辑永远可用）。
+     * 生态包探测（prefix/dxvk1/驱动 tar 等）继续走
+     * [WineEnvironment.optRoot]，与本方法无关。
+     */
+    fun root(): File? {
+        if (!ApkConfStore.ensure(null)) return null
+        return File(ApkConfStore.CONF_ROOT)
+    }
 
-    /** /opt/conf 目录；生态缺失时 null。 */
+    /** conf 文件目录（App 内部；与 /opt 生态 conf/ 布局同构）。 */
     fun confDir(): File? = root()?.let { File(it, "conf") }
 
     // ------------------------------------------------------------------
     // env.conf：通用 KEY=VALUE 读写
     // ------------------------------------------------------------------
 
-    /** env.conf 现有条目（按文件顺序；无文件/无生态 → 空）。 */
-    fun envEntries(): List<Pair<String, String>> {
-        val f = confFile("env.conf") ?: return emptyList()
-        return parseConfLines(f)
-    }
+    /** env.conf 现有条目（按文件顺序；无文件 → 空）。 */
+    fun envEntries(): List<Pair<String, String>> = ApkConfStore.envEntries()
 
     /**
-     * 写入/更新 env.conf 的一个键（replace-or-append）。
+     * 写入/更新 env.conf 的一个键（replace-or-append + 写透同步 /opt）。
      * @return null 成功；非 null 为错误消息。
      */
     fun writeEnvKey(key: String, value: String): String? {
@@ -47,7 +59,7 @@ object OptConfSupport {
         if (k.isEmpty() || !Regex("^[A-Za-z_][A-Za-z0-9_]*$").matches(k)) {
             return "无效变量名: \"$key\"（仅允许字母/数字/下划线，且不以数字开头）"
         }
-        return rewriteConf("env.conf") { lines ->
+        return ApkConfStore.rewriteConf("env.conf") { lines ->
             val quoted = "\"${value.trim()}\""
             var replaced = false
             for (i in lines.indices) {
@@ -61,9 +73,9 @@ object OptConfSupport {
         }
     }
 
-    /** 删除 env.conf 的一个键；@return null 成功 / 错误消息。 */
+    /** 删除 env.conf 的一个键（+ 写透同步 /opt）。@return null 成功 / 错误消息。 */
     fun removeEnvKey(key: String): String? =
-        rewriteConf("env.conf") { lines ->
+        ApkConfStore.rewriteConf("env.conf") { lines ->
             lines.removeAll { keyOf(it) == key }
         }
 
@@ -71,13 +83,10 @@ object OptConfSupport {
     // cores.conf：PRIMARY_CORES（CPU 核心绑定，如 "0-3" / "4,5"）
     // ------------------------------------------------------------------
 
-    fun primaryCores(): String? {
-        val f = confFile("cores.conf") ?: return null
-        return parseConfLines(f).firstOrNull { it.first == "PRIMARY_CORES" }?.second
-    }
+    fun primaryCores(): String? = ApkConfStore.primaryCores()
 
     fun writePrimaryCores(value: String): String? =
-        rewriteConf("cores.conf") { lines ->
+        ApkConfStore.rewriteConf("cores.conf") { lines ->
             val quoted = "\"${value.trim()}\""
             var replaced = false
             for (i in lines.indices) {
@@ -90,13 +99,13 @@ object OptConfSupport {
         }
 
     /**
-     * v3.3.4（用户问题 1）：cores.conf 双键回写 —— wineguanli.py
-     * save_advanced_settings 同款（PRIMARY_CORES + SECONDARY_CORES 两行），
-     * 更多设置·CPU核心页保存时同步生态包 conf，/opt 生态脚本与
-     * 启动链（readOptConfs source）都能读到同一份。
+     * cores.conf 双键回写 —— wineguanli.py save_advanced_settings 同款
+     * （PRIMARY_CORES + SECONDARY_CORES 两行），更多设置·CPU核心页保存时
+     * 同步写 App 内部 conf（+ 写透 /opt），生态脚本与启动链
+     * （readOptConfs source）都能读到同一份。
      */
     fun writeCores(primary: String, secondary: String): String? =
-        rewriteConf("cores.conf") { lines ->
+        ApkConfStore.rewriteConf("cores.conf") { lines ->
             val p = "export PRIMARY_CORES=\"${primary.trim()}\""
             val s = "export SECONDARY_CORES=\"${secondary.trim()}\""
             var fp = false
@@ -115,24 +124,10 @@ object OptConfSupport {
     // locale.conf：单行裸值（语言）
     // ------------------------------------------------------------------
 
-    /** 当前 locale.conf 值（复用启动链同源解析；无生态 → null）。 */
-    fun locale(): String? = WineEnvironment.readOptLocale(null)
+    /** 当前 locale.conf 值（复用启动链同源解析；无 → null）。 */
+    fun locale(): String? = ApkConfStore.locale()
 
-    fun writeLocale(value: String): String? {
-        val root = root() ?: return "未检测到 /opt 生态"
-        return try {
-            val f = File(root, "locale.conf")
-            val tmp = File(f.parentFile, f.name + ".anwind-tmp")
-            tmp.writeText(value.trim() + "\n")
-            if (!tmp.renameTo(f)) {
-                tmp.copyTo(f, overwrite = true)
-                tmp.delete()
-            }
-            null
-        } catch (e: Exception) {
-            e.message ?: e.javaClass.simpleName
-        }
-    }
+    fun writeLocale(value: String): String? = ApkConfStore.writeLocale(value)
 
     // ------------------------------------------------------------------
     // DY 配置（v3.3.4，用户问题 2：wineguanli.py DynarecEditor 同源移植）
@@ -172,83 +167,52 @@ object OptConfSupport {
     ).joinToString("\n") + "\n"
 
     /** custom.conf 是否存在（不存在时 UI 可先落缺省定义表）。 */
-    fun dyCustomExists(): Boolean = confFile("custom.conf") != null
+    fun dyCustomExists(): Boolean = ApkConfStore.confFile("custom.conf").isFile
 
     /** custom.conf 缺失时写入缺省定义表（wineguanli load_config 同款自建）。@return null 成功。 */
-    fun ensureDyCustomConf(): String? {
-        if (dyCustomExists()) return null
-        val dir = confDir() ?: return "未检测到 /opt 生态"
-        return try {
-            dir.mkdirs()
-            java.io.File(dir, "custom.conf").writeText(DY_DEFAULT_CUSTOM_CONF)
-            null
-        } catch (e: Exception) {
-            e.message ?: e.javaClass.simpleName
-        }
-    }
+    fun ensureDyCustomConf(): String? =
+        ApkConfStore.ensureDyCustomConf(DY_DEFAULT_CUSTOM_CONF)
 
     /** custom.conf 变量定义（VAR → 候选值列表，保持文件顺序；无文件 → 空）。 */
-    fun dyVariables(): LinkedHashMap<String, List<String>> {
-        val out = LinkedHashMap<String, List<String>>()
-        val f = confFile("custom.conf") ?: return out
-        parseConfLines(f).forEach { (k, v) ->
-            val values = v.split(',').map { it.trim() }.filter { it.isNotEmpty() }
-            if (values.isNotEmpty() && k !in out) out[k] = values
-        }
-        return out
-    }
+    fun dyVariables(): LinkedHashMap<String, List<String>> = ApkConfStore.dyVariables()
 
     /** dynarec_active.conf 当前值（VAR → 值；无文件 → 空）。 */
-    fun dyActive(): LinkedHashMap<String, String> {
-        val out = LinkedHashMap<String, String>()
-        val f = confFile("dynarec_active.conf") ?: return out
-        parseConfLines(f).forEach { (k, v) -> out[k] = v }
-        return out
-    }
+    fun dyActive(): LinkedHashMap<String, String> = ApkConfStore.dyActive()
 
     /**
      * 应用 DY 配置：整文件重写 dynarec_active.conf（wineguanli apply_config
-     * 同款 —— 定义表内的变量逐行 export，表外变量不写）。
+     * 同款 —— 定义表内的变量逐行 export，表外变量不写；+ 写透同步 /opt）。
      * @return null 成功；否则错误消息。
      */
-    fun writeDynarecActive(values: List<Pair<String, String>>): String? {
-        val dir = confDir() ?: return "未检测到 /opt 生态"
-        val allowed = dyVariables().keys
-        return try {
-            dir.mkdirs()
-            val f = java.io.File(dir, "dynarec_active.conf")
-            val tmp = java.io.File(dir, "dynarec_active.conf.anwind-tmp")
-            val body = values.filter { it.first in allowed }
-                .joinToString("\n") { (k, v) -> "export $k=$v" }
-            tmp.writeText(if (body.isEmpty()) "" else body + "\n")
-            if (!tmp.renameTo(f)) {
-                tmp.copyTo(f, overwrite = true)
-                tmp.delete()
-            }
-            null
-        } catch (e: Exception) {
-            e.message ?: e.javaClass.simpleName
-        }
-    }
+    fun writeDynarecActive(values: List<Pair<String, String>>): String? =
+        ApkConfStore.writeDynarecActive(values)
 
     /** 添加变量定义（custom.conf 追加 export VAR=候选值）。@return null 成功。 */
     fun appendDyVariable(name: String, valuesCsv: String): String? =
-        rewriteConf("custom.conf") { lines ->
+        ApkConfStore.rewriteConf("custom.conf") { lines ->
             lines.add("export ${name.trim()}=${valuesCsv.trim()}")
         }
 
     /** 删除变量定义（custom.conf 剔除同名行）。@return null 成功。 */
     fun removeDyVariable(name: String): String? =
-        rewriteConf("custom.conf") { lines ->
+        ApkConfStore.rewriteConf("custom.conf") { lines ->
             lines.removeAll { keyOf(it) == name }
         }
 
     /** 恢复 custom.conf 缺省定义表（wineguanli reset_default 同款）。@return null 成功。 */
     fun resetDyCustomConf(): String? {
-        val dir = confDir() ?: return "未检测到 /opt 生态"
+        if (!ApkConfStore.ensure(null)) return "App 内部 conf 目录不可用"
         return try {
-            dir.mkdirs()
-            java.io.File(dir, "custom.conf").writeText(DY_DEFAULT_CUSTOM_CONF)
+            ApkConfStore.confFile("custom.conf").let { f ->
+                f.parentFile?.mkdirs()
+                val tmp = File(f.parentFile, f.name + ".anwind-tmp")
+                tmp.writeText(DY_DEFAULT_CUSTOM_CONF)
+                if (!tmp.renameTo(f)) {
+                    tmp.copyTo(f, overwrite = true)
+                    tmp.delete()
+                }
+            }
+            ApkConfStore.syncOut("custom.conf")
             null
         } catch (e: Exception) {
             e.message ?: e.javaClass.simpleName
@@ -256,29 +220,8 @@ object OptConfSupport {
     }
 
     // ------------------------------------------------------------------
-    // 内部：行式 conf 解析 / 原子回写
+    // 内部：行式 conf 解析（键名提取；解析器与启动链同源）
     // ------------------------------------------------------------------
-
-    private fun confFile(name: String): File? =
-        confDir()?.let { d -> File(d, name).takeIf { it.isFile } }
-
-    /** 解析 `KEY=VALUE` / `export KEY=VALUE` 行（引号剥离；忽略注释/空行）。 */
-    private fun parseConfLines(f: File): List<Pair<String, String>> =
-        runCatching {
-            f.readLines().mapNotNull { raw ->
-                var line = raw.trim()
-                if (line.isEmpty() || line.startsWith("#")) return@mapNotNull null
-                if (line.startsWith("export ")) line = line.substring(7).trim()
-                val eq = line.indexOf('=')
-                if (eq <= 0) return@mapNotNull null
-                val k = line.substring(0, eq).trim()
-                var v = line.substring(eq + 1).trim()
-                if (v.length >= 2 && v.first() == '"' && v.last() == '"') {
-                    v = v.substring(1, v.length - 1)
-                }
-                if (k.isEmpty()) null else k to v
-            }
-        }.getOrDefault(emptyList())
 
     private fun keyOf(line: String): String? {
         var l = line.trim()
@@ -288,28 +231,5 @@ object OptConfSupport {
         if (eq <= 0) return null
         val k = l.substring(0, eq).trim()
         return k.ifEmpty { null }
-    }
-
-    /**
-     * 行级转换 + 原子回写（tmp + rename；跨设备 rename 失败回退 copyTo）。
-     * @return null 成功；非 null 错误消息。
-     */
-    private fun rewriteConf(name: String, transform: (MutableList<String>) -> Unit): String? {
-        val dir = confDir() ?: return "未检测到 /opt 生态"
-        return try {
-            dir.mkdirs()
-            val f = File(dir, name)
-            val lines = if (f.isFile) f.readLines().toMutableList() else mutableListOf()
-            transform(lines)
-            val tmp = File(dir, "$name.anwind-tmp")
-            tmp.writeText(lines.joinToString("\n").let { if (it.isEmpty()) "" else "$it\n" })
-            if (!tmp.renameTo(f)) {
-                tmp.copyTo(f, overwrite = true)
-                tmp.delete()
-            }
-            null
-        } catch (e: Exception) {
-            e.message ?: e.javaClass.simpleName
-        }
     }
 }

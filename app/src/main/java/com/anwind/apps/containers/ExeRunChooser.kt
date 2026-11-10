@@ -149,10 +149,10 @@ private fun ExeRunChooserContent(scope: WindowContentScope) {
         } else if (loaded.isEmpty()) {
             Box(Modifier.fillMaxWidth().padding(vertical = 32.dp), contentAlignment = Alignment.Center) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text("暂无 Wine 容器", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = theme.windowTitleBarTextColor)
+                    Text("暂无 Bionic 容器", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = theme.windowTitleBarTextColor)
                     Spacer(Modifier.height(6.dp))
                     Text(
-                        "请先打开「Wine 容器」管理器新建一个容器，再回来运行本程序",
+                        "请先打开「Bionic 容器」管理器新建一个容器，再回来运行本程序",
                         fontSize = 11.sp, color = theme.secondaryTextColor
                     )
                 }
