@@ -696,7 +696,11 @@ object RootfsLauncher {
                 //      环境变量注入（VK_ICD_FILENAMES + zink 联动）在 6a。
                 listOf(
                     "wrapper" to container.wrapper,
-                    "tz" to container.turnip
+                    "tz" to container.turnip,
+                    // v3.3.37：专有驱动包（yuzu/高通）独立目录 /opt/yuzu ——
+                    // 与 /opt/tz 分列（用户："安装应该放在对应的目录进行选择"）；
+                    // 槽位字段同为 turnip（激活链 6a / apply_vk_driver 零改动）。
+                    "yuzu" to container.turnip
                 ).forEach { (optDir, slot) ->
                     if (slot.isNotBlank() && slot != "off" && WrapperDriverSupport.icdFor(slot) == null) {
                         val tar = GuanliSupport.scanOpt(optDir).firstOrNull { it.display == slot }
@@ -1081,9 +1085,26 @@ object RootfsLauncher {
             //（aarch64 wine 原生 exec 不经 box64），预设改映射 FEX_ 前缀
             // 环境变量（libwow64fex/libarm64ecfex 配置层最高优先级）。
             // opt conf 与容器 env= 在其后执行，仍可覆盖。
+            // v3.3.37：+ ensureFexConfigFile —— 参考 WinlatorXR FEXCoreManager
+            // 的实证通道：libwow64fex/libarm64ecfex 读 $HOME/.fex-emu/
+            // Config.json（FEX_* env 在部分构建上不生效，双通道保险）。
             if (resolved.backend == ContainerBackend.ARM64EC) {
                 WineEnvironment.applyFexPresetEnv(env, container) { sink.stamp(it) }
+                WineEnvironment.ensureFexConfigFile(env, container) { sink.stamp(it) }
             }
+
+            // v3.3.37：全局性能基线（WinlatorXR 容器出厂调优串移植，两线
+            // 共用：mailbox 呈现 / GL NO_ERROR / DXVK 异步编译与状态缓存 /
+            // WINEDEBUG=-all / esync 等）—— 全部 putIfAbsent，opt conf 与
+            // 容器 env= 在其后仍可逐项覆盖。
+            WineEnvironment.applyPerfBaselineEnv(env) { sink.stamp(it) }
+
+            // v3.3.37：DXVK 真激活 —— v3.2.27 撤销全部 DllOverrides 后，
+            // wine 默认加载序（builtin 优先）从未真正加载过解压进
+            // system32/syswow64 的 DXVK DLL；dxvk 槽位激活时注入
+            // D3D/DXGI 全家 native,builtin（WinlatorXR WineUtils 同款），
+            // 与 winedbg=d 合并，容器 dxoverrides/env= 仍最高优。
+            WineEnvironment.applyDxvkEnv(env, container) { sink.stamp(it) }
 
             // 6c) v3.2.25（用户问题：wine 启动没读 rootfs/opt/conf 与
             //     locale.conf）：/opt 生态环境（startwine.sh/startfex.sh

@@ -29,6 +29,12 @@ pkgSrcDir="${wsDir}/projects/glibc-x86_64"
 # ============================================================
 
 UBUNTU_POOL="http://archive.ubuntu.com/ubuntu/pool/main"
+# v3.3.37 镜像池（box64-build-log-aarch64(7).zip 实证：GH runner 到
+# archive.ubuntu.com 的瞬时网络抖动——“Read error (Connection timed
+# out) in headers”两连击即整轮报废，构建连 box64 配方都没进）。
+# custom_url 依次试池内全部镜像，每镜像 wget 自带内部重试，
+# 全部镜像失败才判死。镜像列表可用 ANWIND_UBUNTU_MIRRORS 覆盖。
+UBUNTU_MIRRORS="${ANWIND_UBUNTU_MIRRORS:-http://archive.ubuntu.com/ubuntu http://azure.archive.ubuntu.com/ubuntu http://us.archive.ubuntu.com/ubuntu https://mirrors.edge.kernel.org/ubuntu}"
 GLIBC_VER="${ANWIND_GLIBC_VER:-2.39-0ubuntu8.9}"
 GCC_VER="${ANWIND_GCC_VER:-14.2.0-4ubuntu2~24.04.1}"
 # ⚠ Ubuntu pool 会清理旧修订（1.3.dfsg-3.1ubuntu2.2 已 404，导致 CI 整轮报废），
@@ -47,14 +53,25 @@ custom_url() {
   # extra_fuction 执行时构建系统已 cd 进 pkgSrcDir（源码树目录），
   # 相对路径在两个阶段指向不同位置 -> 下载成功但校验报"缺少已下载的包"
   # （CI run#14 rootfs 构建折在此处）。
-  local _deb _name
+  local _deb _name _rel _m _ok
   mkdir -p "${srcDir}/${pjName}"
   for _deb in $DEBS; do
     _name="$(basename "${_deb}")"
+    # v3.3.37：剥掉原镜像前缀得到 /pool/main/... 相对路径（对全部镜像成立），
+    # 依次试镜像池；单镜像 --tries=2 对瞬时超时不够用（日志 7 两连击即死）。
+    _rel="/${_deb#*/ubuntu/}"
     echo "下载 => ${_name}"
-    wget -nv --timeout=60 --tries=2 --waitretry=3 \
-      -O "${srcDir}/${pjName}/${_name}" "${_deb}" \
-      || { echo "下载失败 => ${_deb}" && exit 1; }
+    _ok=0
+    for _m in ${UBUNTU_MIRRORS}; do
+      if wget -nv --timeout=90 --tries=3 --waitretry=5 --retry-connrefused \
+        -O "${srcDir}/${pjName}/${_name}" "${_m}${_rel}"; then
+        _ok=1; break
+      fi
+      echo "  [!] 镜像失败，换下一个 => ${_m}${_rel}" >&2
+      rm -f "${srcDir}/${pjName}/${_name}"
+    done
+    [[ ${_ok} == 1 ]] \
+      || { echo "下载失败 => ${_deb}（全部镜像重试后仍失败——网络问题非代码问题，请直接重跑 workflow）" && return 1; }
   done
 }
 

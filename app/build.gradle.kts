@@ -300,6 +300,33 @@ android {
         //   败 —— CI 不再可能产出缺补丁的裸奔 wine 包。
         versionCode = 102
         versionName = "2.38.39"
+        // v3.3.37（源码包 v3.3.37，App v2.38.39 / versionCode 102 —— 构建
+        //   系统与配置轮，App 版本号不变）—— 用户 2026-11-10 反馈六连修：
+        //   ①【性能全链对齐 WinlatorXR】（"还不如 proot"）：box64 PERFORMANCE
+        //     档逐字对齐（BIGBLOCK=3/FORWARD=512/X87DOUBLE=0/+MMAP32=1 +
+        //     X11GLX/DYNAREC 恒开）；新增全局性能基线 applyPerfBaselineEnv
+        //     （mailbox 呈现 + MESA_NO_ERROR + DXVK_ASYNC/GPLASYNCCACHE/
+        //     STATE_CACHE + WINEDEBUG=-all + GST 解码优先级，两线共用）；
+        //     WINEESYNC 0→1（参考实现未设即强制 1）；arm64ec 线 FEX 补
+        //     ~/.fex-emu/Config.json 写入（FEXCoreManager 实证通道）+
+        //     FEX_DISKCACHE=1；终端链 anwind-wine 同步（两份脚本一致）。
+        //   ②【DXVK 真激活】（"arm64ec 仙剑四用 dxvk 直接失败"核心根因）：
+        //     v3.2.27 撤销全部 DllOverrides 后 wine 默认加载序（builtin 优先）
+        //     从未加载过解压进 system32/syswow64 的 DXVK DLL —— dxvk 槽位
+        //     激活时注入 D3D/DXGI 全家 native,builtin（WinlatorXR WineUtils
+        //     同款；off 档零注入，用户 dxoverrides/env= 仍最高优）。
+        //   ③【闪屏对策】mailbox 呈现模式 + zink KOPPER 禁用 + GL NO_ERROR。
+        //   ④【驱动目录分列】（"wrapper和yuzu类驱动包括系统驱动怎么全跑到
+        //     turnip(opt/tz)那里了"）：/opt/tz（turnip 包）与 /opt/yuzu
+        //     （yuzu/高通专有包）独立目录独立档位独立选择；RootfsLauncher
+        //     0.5 与脚本兜底安装同步支持 /opt/yuzu。
+        //   ⑤【中文环境兜底】rootfs-fonts 的 NotoSansSC 纳入 CJK 字体候选
+        //     （/system/fonts 无 CJK 的设备不再直接方块）。
+        //   ⑥【glibc 下载镜像池】（box64-build-log-aarch64(7) 实证：CI 到
+        //     archive.ubuntu.com 瞬时超时两连击即整轮报废）：glibc-aarch64/
+        //     glibc-x86_64 下载改多镜像+强重试，网络抖动不再杀构建；
+        //     mesa 配方补 libglapi.so.0 别名（zink 已在构建链，旧 rootfs
+        //     重跑 build-bionic-rootfs 即带）。
         // v3.3.33（源码包 v3.3.33，App v2.38.39 / versionCode 102）——
         //   用户 2026-11-09 21:5x 两份日志（wine-10 仙剑四崩溃 / wine-9.2
         //   box64 wineboot 段错误）+ 三项功能需求的修复轮：

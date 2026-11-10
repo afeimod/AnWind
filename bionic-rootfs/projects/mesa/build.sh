@@ -250,8 +250,18 @@ install() {
   cd "${destDir}/${prefix}/lib"
   # 上游 meson.build：glx gl_lib_version='1.2.0'→.so.1；egl soversion='1'；
   # es2api soversion='2'；gbm version='1.0.0'→.so.1
+  # v3.3.37：+ libglapi.so.0 —— zink/freedreno GL 路径运行时按版本化
+  # SONAME dlopen libglapi 的程序（GLVND 形态应用）解析兜底（用户：
+  # "缺少libgl.so"—— libGL.so/.so.1 均已在链，本别名补齐 glapi 同类缺口）。
   ln -sf libGL.so libGL.so.1
   ln -sf libEGL.so libEGL.so.1
   ln -sf libGLESv2.so libGLESv2.so.2
   ln -sf libgbm.so libgbm.so.1
+  ln -sf libglapi.so libglapi.so.0 2>/dev/null || true
+  # v3.3.37 备注（用户："rootfs 缺少 zink 的构建和使用"）：aarch64 形态
+  # 自 v3.3.x 起 -Dgallium-drivers=softpipe,freedreno,zink（见 pre_setup），
+  # turnip Vulkan ICD 同链产出 —— 旧版 rootfs 包没有 zink 是历史版本问题，
+  # 重跑 build-bionic-rootfs / build-Allmesa 即可带上；运行侧启用 =
+  # 容器图形驱动选 zink（App: applyGpuEnv / 脚本: apply_gpu_env，含
+  # ZINK_DESCRIPTORS=lazy + KOPPER 禁用 + mailbox 呈现全套）。
 }

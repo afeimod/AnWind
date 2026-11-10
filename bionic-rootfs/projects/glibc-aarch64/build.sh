@@ -61,6 +61,10 @@ deps=""
 # ============================================================
 
 UBUNTU_PORTS="http://ports.ubuntu.com/ubuntu-ports"
+# v3.3.37 镜像池（同 glibc-x86_64：GH runner 瞬时网络抖动两连击即整轮报废，
+# box64-build-log-aarch64(7).zip 实证）。ports 有镜像池，依次试全部镜像，
+# 全部失败才判死；可用 ANWIND_PORTS_MIRRORS 覆盖。
+PORTS_MIRRORS="${ANWIND_PORTS_MIRRORS:-http://ports.ubuntu.com/ubuntu-ports https://ftp.yz.yamagata-u.ac.jp/pub/linux/ubuntu-ports https://mirror.nju.edu.cn/ubuntu-ports}"
 # 环境变量钉死值（为空则走 Packages.gz 索引解析）
 GLIBC_VER_PIN="${ANWIND_GLIBC_VER:-}"
 GCC_VER_PIN="${ANWIND_GCC_VER:-}"
@@ -79,10 +83,17 @@ _resolve_pkg() {
     _gz="${_idxDir}/${_pocket}.gz"
     if [[ ! -s "${_gz}" ]]; then
       echo "索引 => ${_pocket}" >&2
-      wget -q --timeout=60 --tries=2 --waitretry=3 \
-        -O "${_gz}.tmp" "${UBUNTU_PORTS}/dists/${_pocket}/main/binary-arm64/Packages.gz" \
-        || { rm -f "${_gz}.tmp"; echo "警告: 索引下载失败 => ${_pocket}" >&2; continue; }
-      mv -f "${_gz}.tmp" "${_gz}"
+      # v3.3.37：索引下载也走镜像池（索引拿不到则解析全失败，比 deb 更前置）
+      for _m in ${PORTS_MIRRORS}; do
+        if wget -q --timeout=90 --tries=3 --waitretry=5 --retry-connrefused \
+          -O "${_gz}.tmp" "${_m}/dists/${_pocket}/main/binary-arm64/Packages.gz"; then
+          mv -f "${_gz}.tmp" "${_gz}"
+          break
+        fi
+        rm -f "${_gz}.tmp"
+        echo "  [!] 索引镜像失败，换下一个 => ${_m}（${_pocket}）" >&2
+      done
+      [[ -s "${_gz}" ]] || echo "警告: 索引下载失败 => ${_pocket}（全部镜像）" >&2
     fi
   done
   # 汇总候选三列："<去epoch版本><TAB><完整版本><TAB><pool路径>"，
@@ -145,10 +156,21 @@ custom_url() {
 
   for _url in "${_urls[@]}"; do
     _name="$(basename "${_url}")"
+    # v3.3.37：镜像池+强重试（单镜像 --tries=2 对瞬时超时不够用；
+    # 剥掉原镜像前缀得到 /pool/... 相对路径，对池内全部镜像成立）
+    _rel="/${_url#*/ubuntu-ports/}"
     echo "下载 => ${_name}"
-    wget -nv --timeout=60 --tries=2 --waitretry=3 \
-      -O "${_debDir}/${_name}" "${_url}" \
-      || { echo "下载失败 => ${_url}" && return 1; }
+    _ok=0
+    for _m in ${PORTS_MIRRORS}; do
+      if wget -nv --timeout=90 --tries=3 --waitretry=5 --retry-connrefused \
+        -O "${_debDir}/${_name}" "${_m}${_rel}"; then
+        _ok=1; break
+      fi
+      echo "  [!] 镜像失败，换下一个 => ${_m}${_rel}" >&2
+      rm -f "${_debDir}/${_name}"
+    done
+    [[ ${_ok} == 1 ]] \
+      || { echo "下载失败 => ${_url}（全部镜像重试后仍失败——网络问题非代码问题，请直接重跑 workflow）" && return 1; }
   done
 }
 

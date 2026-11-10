@@ -95,6 +95,16 @@ object WineLocaleSupport {
         "/system/fonts/DroidSansFallback.ttf"
     )
 
+    // v3.3.37（用户："hangover 的构建缺失中文环境"）：rootfs-fonts 配方安装的
+    // NotoSansSC 纳入候选 —— 设备 /system/fonts 无 CJK 时（TV 盒子 /
+    // 部分 ROM）不再直接放弃，rootfs 自带字体兜底。位置与 rootfs-fonts
+    // 配方 extra_fuction 的安装路径一一对应（share/fonts/noto/、dejavu/）。
+    private val ROOTFS_FONT_CANDIDATES = listOf(
+        "usr/share/fonts/noto/NotoSansSC.ttf",
+        "usr/share/fonts/noto/NotoSansCJKsc-Regular.otf",
+        "usr/share/fonts/anwind-cjk"
+    )
+
     /** 前缀内“字体已装”标记。 */
     private fun fontMarker(prefix: File) = File(prefix, ".anwind-cjk-font")
 
@@ -193,9 +203,15 @@ object WineLocaleSupport {
         val needKr = lang.startsWith("ko")
         if (!(lang.startsWith("zh") || needJp || needKr)) return
 
+        // v3.3.37：双源候选 —— 设备 /system/fonts 优先，rootfs-fonts 配方
+        // 安装的 NotoSansSC（usr/share/fonts/noto/）兜底（无 /system CJK 的
+        // 设备此前直接放弃 → 中文方块）。
         val src = SYS_FONT_CANDIDATES.firstOrNull { File(it).isFile }
+            ?: ROOTFS_FONT_CANDIDATES.firstNotNullOfOrNull { rel ->
+                File(ContainerManager.ROOTFS_ROOT, rel).takeIf { it.isFile }
+            }
         if (src == null) {
-            log("警告: 设备 /system/fonts 未找到 CJK 字体（NotoSansCJK/MiSans/DroidSansFallback 均缺失）——中文将显示为方块")
+            log("警告: 设备 /system/fonts 与 rootfs share/fonts 均未找到 CJK 字体——中文将显示为方块（rootfs 重建会随 rootfs-fonts 配方安装 NotoSansSC）")
             return
         }
 

@@ -390,6 +390,27 @@ object WrapperDriverSupport {
     }
 
     /**
+     * v3.3.37：专有驱动库名判定（yuzu/高通/联发科专有包 —— vulkan.adXXXX /
+     * vulkan.purple / libvulkan_adreno 命名族；turnip 本体固定
+     * libvulkan_freedreno.so）。UI 的"专有驱动包（/opt/yuzu）"档与
+     * "Turnip 驱动包（/opt/tz）"档按此分列（用户：安装应放在对应目录
+     * 进行选择，不再全混在 opt/tz 一个入口）。
+     */
+    fun isProprietaryLib(libraryName: String): Boolean {
+        val lib = libraryName.trim().lowercase()
+        if (lib.isEmpty() || lib == "libvulkan_freedreno.so" || lib == "libvulkan_wrapper.so") return false
+        // vulkan.ad07xx.so / vulkan.purple.so / libvulkan_adreno.so /
+        // libvulkan.qualcomm 等厂商命名族
+        return lib.startsWith("vulkan.") || lib.contains("adreno") || lib.contains("qualcomm") ||
+            lib.contains("mediatek") || lib.contains("mali")
+    }
+
+    /** 槽位级专有判定（meta.json 的 libraryName 为准；未知槽位按 false）。 */
+    fun isProprietarySlot(slot: String): Boolean =
+        listDrivers().firstOrNull { it.slot == slot && !it.wrapperStack }
+            ?.let { isProprietaryLib(it.libraryName) } ?: false
+
+    /**
      * slot 的 ICD 清单（存在且 library_path 指向真实 .so 才算数）。
      * RootfsLauncher / conf 同步的探测入口。
      */

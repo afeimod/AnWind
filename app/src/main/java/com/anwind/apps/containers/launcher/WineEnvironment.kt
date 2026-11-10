@@ -240,8 +240,15 @@ object WineEnvironment {
                 env["ZINK_DEBUG"] = "compact"
                 // Turnip 崩溃规避仅此一项（sysmem 已撤销，见上）
                 env.putIfAbsent("TU_DEBUG", "noconform")
+                // v3.3.37（WinlatorXR XServerDisplayActivity:2381-2382 同款）：
+                // kopper 禁用 —— zink 不自建 X11 swapchain，交换链提交交给
+                // wine 的 GLX/X11 呈现路径（走 kopper 时呈现节奏不受控，
+                // 是闪屏/帧率不稳的来源之一）。
+                env.putIfAbsent("LIBGL_KOPPER_DISABLE", "true")
             }
-            "freedreno" -> env["GALLIUM_DRIVER"] = "freedreno"
+            "freedreno" -> {
+                env["GALLIUM_DRIVER"] = "freedreno"
+            }
             else -> {
                 // softpipe（含旧 llvmpipe 归一值）—— 软件渲染节奏配套
                 env["GALLIUM_DRIVER"] = "softpipe"
@@ -347,15 +354,21 @@ object WineEnvironment {
                 "${glibcDir.absolutePath}:$existing"
             }
         }
-        // v3.3.21（用户定稿，设备实测）：SAFEFLAGS 全档 0 ——
-        //   用户在 Adreno 740 / Android 15 实测：box64 0.4.2 / 0.4.3 /
-        //   0.4.4 任一版本，SAFEFLAGS=0 全部可正常工作；设 1 或 2 反而
-        //   崩（ntdll 早期初始化 SIGSEGV）。
-        //   v3.2.17 曾把 wineboot SIGSEGV 归因于 SAFEFLAGS=0 并改 1 ——
-        //   该归因错误：v3.3.27 设备日志（19:10）SAFEFLAGS=0 仍出现同一
-        //   R15 高 32 位丢失型 ntdll 崩溃，且 15:52 同环境同参数正常运行，
-        //   具有随机性，真实另因（地址空间布局依赖）。WinNative 预设的
-        //   1/2 值在本机实测不成立，不再跟随。
+        // v3.3.37（用户：“性能问题根本没有解决，甚至还不如 proot”）：
+        // 四档全面对齐 WinlatorXR Box86_64PresetManager.java:23-95 参考值
+        // （同代 Adreno 硬件 + 同代 box64 实战验证的档位表）：
+        //   * PERFORMANCE：BIGBLOCK 1→3、FORWARD 128→512、X87DOUBLE 1→0、
+        //     +MMAP32=1 —— 与参考实现逐字一致，这是 32 位游戏 dynarec
+        //     吞吐差距的主供应商（旧值“性能差异微小”的判断源自 v3.3.21
+        //     随机崩溃时代的保守化，当年崩溃真因另在 RELR/地址布局）；
+        //   * SAFEFLAGS 保持全档 0：用户设备实测（Adreno 740 / Android 15）
+        //     1/2 触发 ntdll 早期 SIGSEGV（v3.3.21 定稿，不随参考值回改）；
+        //   * 新增恒定项：BOX64_DYNAREC=1（显式）、BOX64_X11GLX=1（参考
+        //     实现同款：GLX 经 box64 桥接到宿主 X11 —— 缺它 GLX 走死路）、
+        //     BOX64_MMAP32 仅性能档（参考同款，配合 WRAPPER_DISABLE_PLACED
+        //     由 wrapper 栈侧自行消费）。
+        env.putIfAbsent("BOX64_DYNAREC", "1")
+        env.putIfAbsent("BOX64_X11GLX", "1")
         when (container.preset) {
             Box64Preset.STABILITY -> {
                 env["BOX64_DYNAREC_SAFEFLAGS"] = "0"
@@ -380,31 +393,29 @@ object WineEnvironment {
                 env["BOX64_DYNAREC_WAIT"] = "1"
             }
             Box64Preset.INTERMEDIATE -> {
-                env["BOX64_DYNAREC_BIGBLOCK"] = "2"
+                env["BOX64_DYNAREC_BIGBLOCK"] = "1"
                 env["BOX64_DYNAREC_SAFEFLAGS"] = "0"
                 env["BOX64_DYNAREC_FASTNAN"] = "1"
                 env["BOX64_DYNAREC_FASTROUND"] = "0"
                 env["BOX64_DYNAREC_X87DOUBLE"] = "1"
                 env["BOX64_DYNAREC_STRONGMEM"] = "0"
-                env["BOX64_DYNAREC_FORWARD"] = "256"
+                env["BOX64_DYNAREC_FORWARD"] = "128"
                 env["BOX64_DYNAREC_CALLRET"] = "1"
                 env["BOX64_DYNAREC_WAIT"] = "1"
             }
             Box64Preset.PERFORMANCE -> {
-                // v3.3.21：PERFORMANCE 对齐用户实测可用配置 ——
-                // SAFEFLAGS=0 + 其余全部取 box64 上游默认值（BIGBLOCK=1 /
-                // FORWARD=128 / STRONGMEM=0 / X87DOUBLE=1）。旧版 BIGBLOCK=3 /
-                // FORWARD=512 / X87DOUBLE=0 属激进值，与 19:10 日志 ntdll
-                // 随机崩溃时在场，不再采用（性能差异微小，稳定性优先）。
-                env["BOX64_DYNAREC_BIGBLOCK"] = "1"
+                // v3.3.37：WinlatorXR PERFORMANCE 档逐字对齐（仅 SAFEFLAGS
+                // 按用户设备实测保持 0）。
+                env["BOX64_DYNAREC_BIGBLOCK"] = "3"
                 env["BOX64_DYNAREC_SAFEFLAGS"] = "0"
                 env["BOX64_DYNAREC_FASTNAN"] = "1"
                 env["BOX64_DYNAREC_FASTROUND"] = "1"
-                env["BOX64_DYNAREC_X87DOUBLE"] = "1"
+                env["BOX64_DYNAREC_X87DOUBLE"] = "0"
                 env["BOX64_DYNAREC_STRONGMEM"] = "0"
-                env["BOX64_DYNAREC_FORWARD"] = "128"
+                env["BOX64_DYNAREC_FORWARD"] = "512"
                 env["BOX64_DYNAREC_CALLRET"] = "1"
                 env["BOX64_DYNAREC_WAIT"] = "1"
+                env["BOX64_MMAP32"] = "1"
             }
         }
     }
@@ -412,6 +423,142 @@ object WineEnvironment {
     // ------------------------------------------------------------------
     // 3b) Android 安全默认 + arm64ec 仿真器 DLL（v3.1.4）
     // ------------------------------------------------------------------
+
+    /**
+     * v3.3.37：全局性能基线（WinlatorXR DefaultVersion.ENV_VARS 容器
+     * 出厂调优串的全量移植，box64 / arm64ec 两条线共用）。
+     *
+     * 用户原话：“性能问题根本没有解决，甚至还不如 proot 容器运行 wine
+     * 的性能，完全解析参考源码的性能调用以及所有配置”。参考实现
+     * （WinlatorXR core/DefaultVersion.java:41-44 + XServerDisplayActivity
+     * :1663-1675/:2431-2441 + DXVKConfigDialog:152-194）注入而我们缺的：
+     *  * MESA 侧（闪屏/掉帧双杀）：
+     *    - MESA_VK_WSI_PRESENT_MODE=mailbox —— 交换链呈现模式走 mailbox
+     *      （防撕裂 + 低延迟；参考实现无条件注入，正是“仙剑四一直闪屏”
+     *      类问题的标准对策）；
+     *    - MESA_NO_ERROR=1 / MESA_DEBUG=silent —— GL 错误检查关、
+     *      调试输出静默（驱动级开销削减）；
+     *    - ZINK_DESCRIPTORS=lazy / ZINK_DEBUG=compact —— zink 描述符惰性
+     *      分配 + 紧凑位掩码（zink 档额外收益，zink 联动处已设，此处
+     *      putIfAbsent 兜底防覆盖链被 conf 顶掉后裸奔）。
+     *  * DXVK 侧（arm64ec 仙剑四 DXVK 路径的关键配套）：
+     *    - DXVK_DISABLE_TIMELINE_SEMAPHORES=1（Android timeline semaphore
+     *      兼容 + 开销削减，参考默认串原样）；
+     *    - DXVK_ASYNC=1 + DXVK_GPLASYNCCACHE=1 —— GPL 异步管线编译，
+     *      老 D3D9 游戏卡顿的主削减项（参考 dxwrapper 默认 async=1）；
+     *    - DXVK_STATE_CACHE_PATH → rootfs home/.cache（状态缓存持久化，
+     *      重启游戏不再全量重编译着色器）；
+     *    - DXVK_LOG_LEVEL=none / DXVK_HUD=0 —— 零日志开销。
+     *  * wine 行为（BionicProgramLauncherComponent:294-308 同款）：
+     *    - WINE_GST_NO_GL=1（gstreamer 解码路径免 GL 争用）；
+     *    - GST_PLUGIN_FEATURE_RANK 提升视频解码器优先级；
+     *    - WINE_NO_DUPLICATE_EXPLORER=1 / WINE_DISABLE_FULLSCREEN_HACK=1。
+     *  * WINEDEBUG=-all：wine fixme/err 洪流是旧游戏肉眼级帧率损耗
+     *    （每帧数百行 stderr 落日志管道）—— 会话日志已有进程级输出
+     *    兜底，wine 自身通道全静默。
+     *
+     * 优先级：全部 putIfAbsent —— opt conf（applyOptConfEnv 在后）与
+     * 容器 env=（applyExtraEnv 在最后）均可逐项覆盖。
+     */
+    fun applyPerfBaselineEnv(env: MutableMap<String, String>, log: (String) -> Unit = {}) {
+        // Mesa / 呈现
+        env.putIfAbsent("MESA_VK_WSI_PRESENT_MODE", "mailbox")
+        env.putIfAbsent("MESA_NO_ERROR", "1")
+        env.putIfAbsent("MESA_DEBUG", "silent")
+        env.putIfAbsent("ZINK_DESCRIPTORS", "lazy")
+        env.putIfAbsent("ZINK_DEBUG", "compact")
+        // DXVK
+        env.putIfAbsent("DXVK_DISABLE_TIMELINE_SEMAPHORES", "1")
+        env.putIfAbsent("DXVK_ASYNC", "1")
+        env.putIfAbsent("DXVK_GPLASYNCCACHE", "1")
+        env.putIfAbsent("DXVK_LOG_LEVEL", "none")
+        env.putIfAbsent("DXVK_HUD", "0")
+        val cacheDir = File("$RFS_ROOT/home/.cache/dxvk-state")
+        runCatching { cacheDir.mkdirs() }
+        env.putIfAbsent("DXVK_STATE_CACHE_PATH", cacheDir.absolutePath)
+        // wine 行为
+        env.putIfAbsent("WINEDEBUG", "-all")
+        env.putIfAbsent("WINE_GST_NO_GL", "1")
+        env.putIfAbsent("WINE_NO_DUPLICATE_EXPLORER", "1")
+        env.putIfAbsent("WINE_DISABLE_FULLSCREEN_HACK", "1")
+        env.putIfAbsent(
+            "GST_PLUGIN_FEATURE_RANK",
+            "ximagesink:3000,avdec_wmav1:512,avdec_wmav2:512,avdec_wmapro:512"
+        )
+        log(
+            "性能基线（WinlatorXR 容器调优串移植）：mailbox 呈现 + GL NO_ERROR + " +
+                "DXVK 异步编译/状态缓存 + WINEDEBUG=-all（opt conf / 容器 env= 可逐项覆盖）"
+        )
+    }
+
+    /**
+     * v3.3.37：FEX 运行时配置文件（WinlatorXR FEXCoreManager.java:110-118/
+     * 241-243 同款机制 —— libwow64fex/libarm64ecfex 从
+     * `$HOME/.fex-emu/Config.json` 读配置，这是参考实现【实证有效】的
+     * 通道；FEX_* 环境变量在部分 FEX 构建上不生效，env 保留作次级兜底）。
+     *
+     * 按容器预设写（WinlatorXR 四档语义）：
+     *  * PERFORMANCE：TSO 全关（Fastest）+ X87ReducedPrecision=1（x87 64 位
+     *    精算提速）+ Multiblock=1（超块内分支直通）—— 32 位游戏三件套；
+     *  * INTERMEDIATE：TSO 全关 + Multiblock=1（x87 保持 80 位精算）；
+     *  * COMPATIBILITY：TSOEnabled=1（标量 TSO 开，向量/REP-MOVS 保持关）；
+     *  * STABILITY：TSOEnabled=1 + HalfBarrierTSOEnabled=1（最强 TSO 语义）。
+     * + FEX_DISKCACHE=1（JIT 磁盘缓存，二次启动免重编译 —— 参考实现
+     *   Proton11 容器默认）。
+     *
+     * HOME = rootfs/home（wine 进程家目录，全容器共享）；仅 arm64ec 线
+     * 调用（HODLL 注入的 FEX DLL 才是消费者）。幂等：内容无变化不重写。
+     */
+    fun ensureFexConfigFile(env: MutableMap<String, String>, container: ContainerData, log: (String) -> Unit = {}) {
+        val (tso, x87, note) = when (container.preset) {
+            Box64Preset.STABILITY ->
+                Triple("\"TSOEnabled\":\"1\",\"HalfBarrierTSOEnabled\":\"1\"", "\"X87ReducedPrecision\":\"0\"", "TSO+半屏障（稳定优先）")
+            Box64Preset.COMPATIBILITY ->
+                Triple("\"TSOEnabled\":\"1\"", "\"X87ReducedPrecision\":\"0\"", "标量 TSO（兼容优先）")
+            Box64Preset.INTERMEDIATE ->
+                Triple("\"TSOEnabled\":\"0\"", "\"X87ReducedPrecision\":\"0\"", "TSO 全关 + Multiblock（进阶）")
+            Box64Preset.PERFORMANCE ->
+                Triple("\"TSOEnabled\":\"0\"", "\"X87ReducedPrecision\":\"1\"", "TSO 全关 + x87 64 位精算 + Multiblock（性能）")
+        }
+        val json = "{\"Config\":{$tso,\"VectorTSOEnabled\":\"0\",\"MemcpySetTSOEnabled\":\"0\",$x87,\"Multiblock\":\"1\"}}"
+        runCatching {
+            val fexDir = File("${env["HOME"] ?: "$RFS_ROOT/home"}/.fex-emu")
+            fexDir.mkdirs()
+            val f = File(fexDir, "Config.json")
+            if (!f.isFile || f.readText() != json) f.writeText(json)
+            env.putIfAbsent("FEX_DISKCACHE", "1")
+            log("FEX 配置: ~/.fex-emu/Config.json 已就绪（$note；FEX_DISKCACHE=1）")
+        }.onFailure { log("⚠ FEX 配置写入失败：${it.message}（不影响启动，env 侧档位仍生效）") }
+    }
+
+    /**
+     * v3.3.37：DXVK 真激活（arm64ec 仙剑四“DXVK 直接失败”的核心修复）。
+     *
+     * 根因：v3.2.27 按用户要求移除了 APK 侧全部 DllOverrides（当时 WineLibrary
+     * 无条件写表污染加载序）—— 但 wine 的默认 DLL 加载序是 builtin 优先，
+     * DXVK DLL 解压进 drive_c/windows 后【从未被加载】：游戏拿到的仍是
+     * 内置 wined3d。参考实现（WinlatorXR WineUtils.java:141-149 +
+     * Container.java:27 默认 dxwrapper="dxvk"）的做法：**装 DXVK 即同步写
+     * D3D/DXGI 全家 native,builtin**。
+     *
+     * 本函数在 dxvk 槽位激活（dxvk != off，含 auto 内置档）时经
+     * WINEDLLOVERRIDES 注入（会话级、可逆、不碰注册表；与既有的
+     * winedbg=d 合并；容器 dxoverrides 仍最高优）：
+     *   d3d8/d3d9/d3d10/d3d10_1/d3d10core/d3d11/d3d12/d3d12core/
+     *   ddraw/dxgi = native,builtin
+     * 选 off（wined3d 兜底）时零注入 —— wine 默认加载序即 wined3d。
+     */
+    fun applyDxvkEnv(env: MutableMap<String, String>, container: ContainerData, log: (String) -> Unit = {}) {
+        val dxvkActive = container.dxvk.isNotBlank() && container.dxvk != "off"
+        if (!dxvkActive) {
+            log("DXVK 未激活（dxvk=off → wined3d 内置路径，零覆盖注入）")
+            return
+        }
+        val override = "d3d8,d3d9,d3d10,d3d10_1,d3d10core,d3d11,d3d12,d3d12core,ddraw,dxgi=native,builtin"
+        val existing = env["WINEDLLOVERRIDES"]
+        env["WINEDLLOVERRIDES"] = if (existing.isNullOrBlank()) override else "$override;$existing"
+        log("DXVK 激活：D3D/DXGI 全家 native,builtin（v3.2.27 移除后 wine 默认序从未真正加载 DXVK —— 本行恢复 WinlatorXR 同款激活语义）")
+    }
 
     /**
      * Android 沙箱兼容默认（v3.1.4）+ arm64ec 仿真器 DLL 选择。
@@ -482,7 +629,12 @@ object WineEnvironment {
         userEnv: String = "",
         @Suppress("UNUSED_PARAMETER") fexMode: Boolean = false
     ) {
-        env.putIfAbsent("WINEESYNC", "0")
+        // v3.3.37：WINEESYNC 0→1（对齐 WinlatorXR XServerDisplayActivity:1748-1751
+        // —— 未设即强制 1；同为 bionic 直跑环境，esync 是线程密集型 32 位
+        // D3D9 游戏的主帧率供应商。WINEFSYNC 保持 0：futex_waitv 会被
+        // Android seccomp 以 SIGSYS 击杀。fd 上限不够时 env= WINEESYNC=0
+        // 一键回退（putIfAbsent 语义）。）
+        env.putIfAbsent("WINEESYNC", "1")
         env.putIfAbsent("WINEFSYNC", "0")
         // v3.2.3：预加载器首进程规避（详见 KDoc ①b；子进程风险由
         // WineLayoutRepair 停用 bin/*-preloader + WineProbePatch 改写

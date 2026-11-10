@@ -728,6 +728,11 @@ apply_gpu_env() {
             export GALLIUM_DRIVER=zink
             export ZINK_DESCRIPTORS=lazy
             export ZINK_DEBUG=compact
+            # v3.3.37（WinlatorXR 同款）：Turnip 崩溃规避仅 noconform；
+            # kopper 禁用 —— zink 不自建 X11 swapchain，呈现交给 wine 的
+            # GLX/X11 路径（闪屏/帧率不稳的来源之一）。
+            [ -z "${TU_DEBUG:-}" ] && export TU_DEBUG=noconform
+            [ -z "${LIBGL_KOPPER_DISABLE:-}" ] && export LIBGL_KOPPER_DISABLE=true
             ;;
         freedreno)
             export GALLIUM_DRIVER=freedreno
@@ -972,11 +977,12 @@ apply_vk_driver() {
     local _dirfull="$DRIVERS_ROOT/$_dir"
     _icd="$_dirfull/icd.json"
 
-    # 兜底安装：slot 未安装而 /opt/wrapper、/opt/tz 有对应 zip/tar 包 →
-    # 装进独立目录（App 图形驱动页 ➕ 是主入口，此处保证终端/旧容器可用）
+    # 兜底安装：slot 未安装而 /opt/wrapper、/opt/tz、/opt/yuzu 有对应
+    # zip/tar 包 → 装进独立目录（App 图形驱动页 ➕ 是主入口，此处保证
+    # 终端/旧容器可用；v3.3.37 起专有驱动包独立 /opt/yuzu 目录）
     if [ ! -f "$_icd" ]; then
         _tar=""
-        for _srcdir in wrapper tz; do
+        for _srcdir in wrapper tz yuzu; do
             for _f in "$RFS_ROOT/opt/$_srcdir/$_slot."*; do
                 [ -f "$_f" ] || continue
                 _tar="$_f"; break 2
@@ -1101,8 +1107,13 @@ apply_android_safe_env() {
     # 此处环境默认再兜一层 —— 旧版 wine 包没打守卫时也能活）；esync 依赖
     # /dev/shm 与 eventfd，沙箱内行为不可预期。默认双禁（Winlator/
     # MiceWine 同款），用户 extra env 可覆盖（apply_extra_env 在后面执行）。
+    # v3.3.37：WINEESYNC 0→1（对齐 WinlatorXR XServerDisplayActivity
+    # :1748-1751 未设即强制 1）：同为 bionic 直跑环境，esync 是线程密集型
+    # 32 位 D3D9 游戏的主帧率供应商；fd 上限不够时 extra env 写
+    # WINEESYNC=0 一键回退。WINEFSYNC 保持 0（futex_waitv 必被 seccomp
+    # SIGSYS 击杀，构建侧 __ANDROID__ 守卫 + 此处兑底双保险）。
     [ -z "${WINEFSYNC:-}" ] && export WINEFSYNC=0
-    [ -z "${WINEESYNC:-}" ] && export WINEESYNC=0
+    [ -z "${WINEESYNC:-}" ] && export WINEESYNC=1
     # v3.2.8：userfaultfd 写监视探测（wine 10/proton_10.0 树 virtual_init
     # 无条件调 kernel_writewatch_init → 裸 syscall(__NR_userfaultfd)，
     # aarch64 nr 374）不在 Android 应用 seccomp 白名单 → SIGSYS(31) →
@@ -1118,6 +1129,21 @@ apply_android_safe_env() {
     # 异常行后进程直接退出；容器 dxoverrides（apply_extra_env）前插，
     # 用户写 winedbg=n,b 在最前可恢复调试器。
     [ -z "${WINEDLLOVERRIDES:-}" ] && export WINEDLLOVERRIDES="winedbg=d"
+    # v3.3.37：DXVK 真激活（App 侧 WineEnvironment.applyDxvkEnv 同款）——
+    # v3.2.27 撤销全部 DllOverrides 后，wine 默认加载序（builtin 优先）
+    # 从未真正加载过解压进 windows/ 的 DXVK DLL；dxvk 槽位非 off 时
+    # 注入 D3D/DXGI 全家 native,builtin（WinlatorXR WineUtils.java:141
+    # 同款）。仅用户未显式设置时生效，extra env/dxoverrides 仍最高优。
+    if [ -z "${WINEDLLOVERRIDES:-}" ] || [ "${WINEDLLOVERRIDES}" = "winedbg=d" ]; then
+        _dxvk="$(conf_read "$CONT_CONF" dxvk auto)"
+        case "$_dxvk" in
+            off|"") ;;
+            *)
+                export WINEDLLOVERRIDES="d3d8,d3d9,d3d10,d3d10_1,d3d10core,d3d11,d3d12,d3d12core,ddraw,dxgi=native,builtin;winedbg=d"
+                info "DXVK 激活：D3D/DXGI 全家 native,builtin（不覆盖则 wine 默认序永不加载 DXVK；winedbg=d 兜底保留）"
+                ;;
+        esac
+    fi
     # arm64ec 形态仿真器 DLL 默认（v3.1.4 wine 包自带 FEX/box64 PE，
     # 配方 pre_package 注入 lib/wine/aarch64-windows/）：上游
     # official/proton 树默认 xtajit64 桩（只报不支持），hangover 树默认
@@ -1128,6 +1154,38 @@ apply_android_safe_env() {
         [ -f "$WINE_DIR/lib/wine/aarch64-windows/libwow64fex.dll" ] \
             && [ -z "${HODLL:-}" ] && export HODLL=libwow64fex.dll
     fi
+}
+
+# ---------- v3.3.37：全局性能基线（WinlatorXR 容器出厂调优串移植） ----------
+# App 侧 WineEnvironment.applyPerfBaselineEnv 同款语义（DefaultVersion.
+# ENV_VARS + XServerDisplayActivity:2431-2441 + DXVKConfigDialog:152-194），
+# box64 / arm64ec 两条线共用；全部"未设才导出"—— opt conf（apply_opt_
+# conf_env 在后）与容器 env=（apply_extra_env 在后）均可逐项覆盖。
+apply_perf_baseline_env() {
+    # Mesa / 呈现（闪屏对策：mailbox 防撕裂 + 低延迟）
+    [ -z "${MESA_VK_WSI_PRESENT_MODE:-}" ] && export MESA_VK_WSI_PRESENT_MODE=mailbox
+    [ -z "${MESA_NO_ERROR:-}" ]            && export MESA_NO_ERROR=1
+    [ -z "${MESA_DEBUG:-}" ]               && export MESA_DEBUG=silent
+    [ -z "${ZINK_DESCRIPTORS:-}" ]         && export ZINK_DESCRIPTORS=lazy
+    [ -z "${ZINK_DEBUG:-}" ]               && export ZINK_DEBUG=compact
+    # DXVK（异步管线编译 + 状态缓存持久化 + 零日志）
+    [ -z "${DXVK_DISABLE_TIMELINE_SEMAPHORES:-}" ] && export DXVK_DISABLE_TIMELINE_SEMAPHORES=1
+    [ -z "${DXVK_ASYNC:-}" ]        && export DXVK_ASYNC=1
+    [ -z "${DXVK_GPLASYNCCACHE:-}" ] && export DXVK_GPLASYNCCACHE=1
+    [ -z "${DXVK_LOG_LEVEL:-}" ]    && export DXVK_LOG_LEVEL=none
+    [ -z "${DXVK_HUD:-}" ]          && export DXVK_HUD=0
+    if [ -z "${DXVK_STATE_CACHE_PATH:-}" ]; then
+        mkdir -p "${HOME%/}/.cache/dxvk-state" 2>/dev/null
+        export DXVK_STATE_CACHE_PATH="${HOME%/}/.cache/dxvk-state"
+    fi
+    # wine 行为（BionicProgramLauncherComponent:294-308 同款）+ fixme 洪流静默
+    [ -z "${WINEDEBUG:-}" ] && export WINEDEBUG=-all
+    [ -z "${WINE_GST_NO_GL:-}" ] && export WINE_GST_NO_GL=1
+    [ -z "${WINE_NO_DUPLICATE_EXPLORER:-}" ] && export WINE_NO_DUPLICATE_EXPLORER=1
+    [ -z "${WINE_DISABLE_FULLSCREEN_HACK:-}" ] && export WINE_DISABLE_FULLSCREEN_HACK=1
+    [ -z "${GST_PLUGIN_FEATURE_RANK:-}" ] \
+        && export GST_PLUGIN_FEATURE_RANK="ximagesink:3000,avdec_wmav1:512,avdec_wmav2:512,avdec_wmapro:512"
+    info "性能基线生效（mailbox 呈现 + GL NO_ERROR + DXVK 异步/状态缓存 + WINEDEBUG=-all；conf/env 可覆盖）"
 }
 
 # ---------- v3.3.35：arm64ec 线性能档位（FEX_ 前缀环境变量） ----------
@@ -1166,6 +1224,26 @@ apply_fex_preset_env() {
             info "性能档 arm64ec 线生效（FEX）：JIT L1/L2 全量缓存 + x87 64 位精算提速（渲染毛刺→降一档即回）"
             ;;
     esac
+    # v3.3.37：FEX Config.json（WinlatorXR FEXCoreManager.java:110-118/241-243
+    # 实证通道）：libwow64fex/libarm64ecfex 读 $HOME/.fex-emu/Config.json——
+    # FEX_* 环境变量在部分构建上不生效，配置文件是参考实现验证过的通道，
+    # 双通道保险。按预设写（TSO 四档 + x87 + Multiblock=1），幂等。
+    local _json
+    case "$_preset" in
+        stability)      _json='{"Config":{"TSOEnabled":"1","HalfBarrierTSOEnabled":"1","VectorTSOEnabled":"0","MemcpySetTSOEnabled":"0","X87ReducedPrecision":"0","Multiblock":"1"}}' ;;
+        compatibility)  _json='{"Config":{"TSOEnabled":"1","VectorTSOEnabled":"0","MemcpySetTSOEnabled":"0","X87ReducedPrecision":"0","Multiblock":"1"}}' ;;
+        intermediate)   _json='{"Config":{"TSOEnabled":"0","VectorTSOEnabled":"0","MemcpySetTSOEnabled":"0","X87ReducedPrecision":"0","Multiblock":"1"}}' ;;
+        performance|*)  _json='{"Config":{"TSOEnabled":"0","VectorTSOEnabled":"0","MemcpySetTSOEnabled":"0","X87ReducedPrecision":"1","Multiblock":"1"}}' ;;
+    esac
+    if mkdir -p "${HOME%/}/.fex-emu" 2>/dev/null; then
+        if [ ! -f "${HOME%/}/.fex-emu/Config.json" ] \
+            || [ "$(cat "${HOME%/}/.fex-emu/Config.json" 2>/dev/null)" != "$_json" ]; then
+            printf '%s\n' "$_json" > "${HOME%/}/.fex-emu/Config.json" 2>/dev/null \
+                && info "FEX 配置: ~/.fex-emu/Config.json 已写入（${_preset} 档；WinlatorXR FEXCoreManager 同款通道）"
+        fi
+    fi
+    # JIT 磁盘缓存（二次启动免重编译；参考实现 Proton11 容器默认）
+    [ -z "${FEX_DISKCACHE:-}" ] && export FEX_DISKCACHE=1
 }
 
 apply_box64_env() {
@@ -1174,6 +1252,10 @@ apply_box64_env() {
     export BOX64_LOG=0
     export BOX64_NOBANNER=1
     export BOX64_DYNAREC_TRACE=0
+    # v3.3.37（WinlatorXR BionicProgramLauncherComponent:427-438 同款）：
+    # dynarec 显式开启 + GLX 桥接（缺 X11GLX 时 GLX 走死路）。
+    [ -z "${BOX64_DYNAREC:-}" ] && export BOX64_DYNAREC=1
+    [ -z "${BOX64_X11GLX:-}" ]  && export BOX64_X11GLX=1
     # v3.2.24（用户问题 3，对齐 startwine.sh / startfex.sh 参考链路）：
     #   export BOX64_PATH=$WINE_PATH/bin
     #   export BOX64_LD_LIBRARY_PATH=$WINEPATH/lib/wine/i386-unix:$WINEPATH/lib/wine/x86_64-unix
@@ -1268,26 +1350,31 @@ apply_box64_env() {
             export BOX64_DYNAREC_WAIT=1
             ;;
         intermediate)
-            export BOX64_DYNAREC_BIGBLOCK=2
+            export BOX64_DYNAREC_BIGBLOCK=1
             export BOX64_DYNAREC_SAFEFLAGS=0
             export BOX64_DYNAREC_FASTNAN=1
             export BOX64_DYNAREC_FASTROUND=0
             export BOX64_DYNAREC_X87DOUBLE=1
             export BOX64_DYNAREC_STRONGMEM=0
-            export BOX64_DYNAREC_FORWARD=256
+            export BOX64_DYNAREC_FORWARD=128
             export BOX64_DYNAREC_CALLRET=1
             export BOX64_DYNAREC_WAIT=1
             ;;
         performance|*)
-            export BOX64_DYNAREC_BIGBLOCK=1
+            # v3.3.37：WinlatorXR PERFORMANCE 档逐字对齐（BIGBLOCK=3 /
+            # FORWARD=512 / X87DOUBLE=0 / +MMAP32=1；仅 SAFEFLAGS 按用户
+            # 设备实测保持 0）。旧值 BIGBLOCK=1/FORWARD=128 是 v3.3.21
+            # 随机崩溃时代的保守化 —— 当年崩溃真因另在 RELR/地址布局。
+            export BOX64_DYNAREC_BIGBLOCK=3
             export BOX64_DYNAREC_SAFEFLAGS=0
             export BOX64_DYNAREC_FASTNAN=1
             export BOX64_DYNAREC_FASTROUND=1
-            export BOX64_DYNAREC_X87DOUBLE=1
+            export BOX64_DYNAREC_X87DOUBLE=0
             export BOX64_DYNAREC_STRONGMEM=0
-            export BOX64_DYNAREC_FORWARD=128
+            export BOX64_DYNAREC_FORWARD=512
             export BOX64_DYNAREC_CALLRET=1
             export BOX64_DYNAREC_WAIT=1
+            export BOX64_MMAP32=1
             ;;
     esac
     # 容器 env 中允许覆盖 BOX64_*
@@ -1902,6 +1989,7 @@ audio_setup
 apply_gpu_env
 apply_vk_driver
 apply_android_safe_env
+apply_perf_baseline_env
 apply_fex_preset_env
 apply_opt_conf_env
 apply_extra_env

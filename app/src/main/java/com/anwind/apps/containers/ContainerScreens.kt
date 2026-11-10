@@ -71,6 +71,8 @@ import java.io.File
  *  - 图形驱动：Turnip/Zink/WineD3D(turnip=/zink=/wined3d=，/opt/tz、
  *    /opt/zink、/opt/vkord3d 扫描)、DXVK(dxvk=，默认=auto / 不使用=off /
  *    /opt/dxvk1 槽位)
+ *    v3.3.37：Vulkan 驱动分列 —— turnip 包（/opt/tz）与 yuzu/高通专有
+ *    包（/opt/yuzu）各自独立档位独立选择，系统驱动独立档（wrapper=system）
  *  - CPU 核心：cores=（wineguanli 写 /opt/conf/cores.conf，AnWind 写
  *    容器键 + PRIMARY_CORES/SECONDARY_CORES 环境注入，语义一致）
  *  - 函数库：dsound=/dshow=/dpi=/winver=（注册表落地见 WineLibrary）
@@ -1360,6 +1362,10 @@ private fun GraphicsDriverTab(
     // 下拉自动扫描 /opt/wrapper，选中后运行前自动解压安装）。
     var installedDrivers by remember { mutableStateOf<List<WrapperDriverSupport.DriverEntry>>(emptyList()) }
     var tzTars by remember { mutableStateOf<List<GuanliSupport.OptTar>>(emptyList()) }
+    // v3.3.37：专有驱动包（yuzu/高通）独立目录 /opt/yuzu —— 与 /opt/tz
+    //（turnip）分列选择（用户："wrapper和yuzu类驱动包括系统驱动安装
+    // 怎么全跑到turnip(opt/tz)那里了，安装应该放在对应的目录进行选择"）。
+    var yuzuTars by remember { mutableStateOf<List<GuanliSupport.OptTar>>(emptyList()) }
     var wrapperTars by remember { mutableStateOf<List<GuanliSupport.OptTar>>(emptyList()) }
     var driversTick by remember { mutableIntStateOf(0) }
     var installing by remember { mutableStateOf(false) }
@@ -1373,6 +1379,7 @@ private fun GraphicsDriverTab(
             wined3dTars = GuanliSupport.scanOpt("vkord3d")
             fexcoreTars = GuanliSupport.scanOpt("fexcore")
             tzTars = GuanliSupport.scanOpt("tz")
+            yuzuTars = GuanliSupport.scanOpt("yuzu")
             // v3.3.17：wrapper 同步扫描 /opt/wrapper（参考 wineguanli.py：
             // 图形驱动页的 Wrapper 下拉自动扫描 tar 包；RootfsLauncher 0.5 在
             // 运行时对未安装的槽位自动安装）
@@ -1460,19 +1467,28 @@ private fun GraphicsDriverTab(
     // Vulkan 驱动（v3.3.16：类型 + 版本，WinNative 同款并列选择）
     // ------------------------------------------------------------------
     GGroup("Vulkan 驱动（turnip / wrapper / 系统专有）") {
-        // 类型：从容器数据推导（wrapper 优先，其次 turnip tar，否则 Mesa 内置）
+        // 类型：从容器数据推导（wrapper 优先，其次 turnip 槽位，否则 Mesa 内置）。
+        // v3.3.37：专有包（yuzu/高通）档 —— 纯状态推导（已装槽位的 meta
+        // libraryName + /opt/yuzu tar 名匹配），不做磁盘扫描（组合线程安全）。
         val vkType = when {
             edit.wrapper == WrapperDriverSupport.SYSTEM_SLOT -> "system"
             edit.wrapper.isNotBlank() && edit.wrapper != "off" -> "wrapper"
-            edit.turnip.isNotBlank() && edit.turnip != "off" -> "tz"
+            edit.turnip.isNotBlank() && edit.turnip != "off" -> when {
+                installedDrivers.firstOrNull { it.slot == edit.turnip && !it.wrapperStack }
+                    ?.let { WrapperDriverSupport.isProprietaryLib(it.libraryName) } == true -> "yuzu"
+                yuzuTars.any { it.display == edit.turnip } -> "yuzu"
+                else -> "tz"
+            }
             else -> "bundled"
         }
         GComboBox(
             options = listOf(
                 "Turnip（Mesa 内置，推荐）",
                 "Wrapper 驱动（已安装）",
-                // v3.3.32：turnip 开源包与高通/联发科专有 yuzu 包同列（后者自动路由 wrapper 栈）
-                "驱动包（turnip / 高通专有，/opt/tz）",
+                // v3.3.37：turnip 包与 yuzu/高通专有包【分列】—— 各自独立
+                // 目录 /opt/tz、/opt/yuzu，各自版本下拉，不再混在一个入口。
+                "Turnip 驱动包（/opt/tz）",
+                "专有驱动包（yuzu / 高通，/opt/yuzu）",
                 // v3.3.32（用户需求）：高通/联发科【系统专有】驱动档 ——
                 // 高通 615.50 / 849 等系统驱动与 yuzu 专有驱动包的通路
                 "系统驱动（高通/联发科专有）"
@@ -1480,7 +1496,8 @@ private fun GraphicsDriverTab(
             selected = when (vkType) {
                 "system" -> "系统驱动（高通/联发科专有）"
                 "wrapper" -> "Wrapper 驱动（已安装）"
-                "tz" -> "驱动包（turnip / 高通专有，/opt/tz）"
+                "yuzu" -> "专有驱动包（yuzu / 高通，/opt/yuzu）"
+                "tz" -> "Turnip 驱动包（/opt/tz）"
                 else -> "Turnip（Mesa 内置，推荐）"
             },
             onSelect = { label ->
@@ -1505,13 +1522,25 @@ private fun GraphicsDriverTab(
                                 ?: wrapperTars.firstOrNull()?.display ?: "",
                             turnip = ""
                         ))
+                    // v3.3.37：专有驱动包（yuzu/高通）独立分支 —— 预选首个
+                    // 专有槽位（vulkan.ad* 命名族），其次 /opt/yuzu tar 包。
+                    label.startsWith("专有驱动包") ->
+                        onChange(edit.copy(
+                            turnip = installedDrivers.firstOrNull {
+                                !it.wrapperStack && WrapperDriverSupport.isProprietaryLib(it.libraryName)
+                            }?.slot ?: yuzuTars.firstOrNull()?.display ?: "",
+                            wrapper = ""
+                        ))
                     else ->
                         // v3.3.20：切到 turnip 类型时预选首个可用版本 —— 优先
                         // 已装 turnip 槽位（➕ zip 安装），其次 /opt/tz tar 包
-                        //（与 wrapper 分支同款双源预选）
+                        //（与 wrapper 分支同款双源预选）；v3.3.37 起只认
+                        // turnip 本体（libvulkan_freedreno），专有包在“专有
+                        // 驱动包”分支预选。
                         onChange(edit.copy(
-                            turnip = installedDrivers.firstOrNull { !it.wrapperStack }?.slot
-                                ?: tzTars.firstOrNull()?.display ?: "",
+                            turnip = installedDrivers.firstOrNull {
+                                !it.wrapperStack && !WrapperDriverSupport.isProprietaryLib(it.libraryName)
+                            }?.slot ?: tzTars.firstOrNull()?.display ?: "",
                             wrapper = ""
                         ))
                 }
@@ -1601,12 +1630,14 @@ private fun GraphicsDriverTab(
             }
             "tz" -> {
                 // v3.3.20（用户实测反馈修复）：已装 turnip 槽位（➕ zip 安装的
-                // yuzu/adpkg 包）此前【选不了】—— 本下拉只扫 /opt/tz 的 tar，
+                // 包）此前【选不了】—— 本下拉只扫 /opt/tz 的 tar，
                 // 装完的独立目录槽位根本不在列表里（即"装了也没法用"的 UI 根因）。
                 // 现在与 wrapper 分支同款双源：已装槽位优先 + /opt/tz tar 包。
+                // v3.3.37：只列 turnip 本体（libvulkan_freedreno 命名族）——
+                // yuzu/高通专有包（vulkan.ad* 命名族）分列到"专有驱动包"档。
                 val tzOpts = buildList {
                     add("默认（切回 Mesa 内置）" to "")
-                    installedDrivers.filter { !it.wrapperStack }
+                    installedDrivers.filter { !it.wrapperStack && !WrapperDriverSupport.isProprietaryLib(it.libraryName) }
                         .forEach { add(it.slot to it.slot) }
                     tzTars.filter { t -> installedDrivers.none { it.slot == t.display } }
                         .forEach { add("${it.display}（/opt/tz 包，运行时自动安装）" to it.display) }
@@ -1633,6 +1664,44 @@ private fun GraphicsDriverTab(
                     if (edit.turnip.isNotBlank() && installedDrivers.none { it.slot == edit.turnip }
                         && tzTars.any { it.display == edit.turnip }) {
                         GNote("${edit.turnip}：运行时自动从 /opt/tz 安装到独立驱动库")
+                    }
+                }
+            }
+            // v3.3.37：yuzu/高通专有驱动包独立档（用户："安装应该放在对应的
+            // 目录进行选择"）—— 版本列表 = 已装专有槽位（vulkan.ad* 命名族）
+            // + /opt/yuzu tar 包；激活语义与 turnip 槽位同轨（android 平台
+            // 构建自动经 wrapper 栈路由，RootfsLauncher 6a / 脚本 apply_vk_driver
+            // 已有逻辑零改动）。
+            "yuzu" -> {
+                val yuzuOpts = buildList {
+                    add("默认（切回 Mesa 内置）" to "")
+                    installedDrivers.filter { !it.wrapperStack && WrapperDriverSupport.isProprietaryLib(it.libraryName) }
+                        .forEach { add(it.slot to it.slot) }
+                    yuzuTars.filter { t -> installedDrivers.none { it.slot == t.display } }
+                        .forEach { add("${it.display}（/opt/yuzu 包，运行时自动安装）" to it.display) }
+                }
+                if (yuzuOpts.size == 1) {
+                    DriverCombo(
+                        tars = yuzuTars, value = edit.turnip,
+                        dirNote = "rootfs/opt/yuzu 内未发现 tar 包；把 yuzu 格式驱动 zip/tar 放进去或直接用 ➕ 安装（v819.2 / v849 / q615.50 等，运行时自动经 wrapper 栈路由）",
+                        onSelect = { onChange(edit.copy(turnip = it, wrapper = "")) }
+                    )
+                } else {
+                    GComboBox(
+                        options = yuzuOpts.map { it.first },
+                        selected = yuzuOpts.firstOrNull { it.second == edit.turnip }?.first
+                            ?: edit.turnip.ifBlank { "默认（切回 Mesa 内置）" },
+                        onSelect = { label ->
+                            yuzuOpts.firstOrNull { it.first == label }?.second
+                                ?.let { onChange(edit.copy(turnip = it, wrapper = "")) }
+                        }
+                    )
+                    installedDrivers.firstOrNull { it.slot == edit.turnip && !it.wrapperStack }?.let { d ->
+                        GNote("库：${d.libraryName}（来源包 ${d.sourceFile}，目录 ${d.dir.name}/）—— android 平台构建将自动经 wrapper 栈路由（X11 WSI 由 wrapper 提供）")
+                    }
+                    if (edit.turnip.isNotBlank() && installedDrivers.none { it.slot == edit.turnip }
+                        && yuzuTars.any { it.display == edit.turnip }) {
+                        GNote("${edit.turnip}：运行时自动从 /opt/yuzu 安装到独立驱动库")
                     }
                 }
             }
