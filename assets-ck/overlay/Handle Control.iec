@@ -1,0 +1,295 @@
+{
+  "schemaVersion": 1,
+  "name": "Handle Control",
+  "widgets": [
+    {
+      "type": "ThumbStick",
+      "x": 0.17486678,
+      "y": 0.74379015,
+      "scale": 1.1,
+      "opacity": 0.6,
+      "hide": false,
+      "mode": "LeftThumbStick",
+      "invertX": false,
+      "invertY": false
+    },
+    {
+      "type": "ThumbStick",
+      "x": 0.6076573,
+      "y": 0.7428232,
+      "scale": 1.1,
+      "opacity": 0.6,
+      "hide": false,
+      "mode": "RightThumbStick",
+      "invertX": false,
+      "invertY": false
+    },
+    {
+      "type": "Button",
+      "x": 0.547,
+      "y": 0.048,
+      "scale": 1.0,
+      "opacity": 0.6,
+      "hide": false,
+      "shape": "RoundRect",
+      "text": "",
+      "toggleSwitch": false,
+      "bindings": [
+        {
+          "type": "ControllerButton",
+          "item": "BtnStart"
+        },
+        {},
+        {},
+        {}
+      ]
+    },
+    {
+      "type": "Button",
+      "x": 0.395,
+      "y": 0.051,
+      "scale": 1.0,
+      "opacity": 0.6,
+      "hide": false,
+      "shape": "RoundRect",
+      "text": "",
+      "toggleSwitch": false,
+      "bindings": [
+        {
+          "type": "ControllerButton",
+          "item": "BtnSelect"
+        },
+        {},
+        {},
+        {}
+      ]
+    },
+    {
+      "type": "DPad",
+      "x": 0.36,
+      "y": 0.79,
+      "scale": 1.0,
+      "opacity": 0.6,
+      "hide": false,
+      "enable8Way": false,
+      "bindings": [
+        {
+          "type": "ControllerButton",
+          "item": "BtnDPadUp"
+        },
+        {
+          "type": "ControllerButton",
+          "item": "BtnDPadDown"
+        },
+        {
+          "type": "ControllerButton",
+          "item": "BtnDPadLeft"
+        },
+        {
+          "type": "ControllerButton",
+          "item": "BtnDPadRight"
+        }
+      ]
+    },
+    {
+      "type": "Button",
+      "x": 0.845,
+      "y": 0.54,
+      "scale": 1.0,
+      "opacity": 0.6,
+      "hide": false,
+      "shape": "Circle",
+      "text": "",
+      "toggleSwitch": false,
+      "bindings": [
+        {
+          "type": "ControllerButton",
+          "item": "BtnY"
+        },
+        {},
+        {},
+        {}
+      ]
+    },
+    {
+      "type": "Button",
+      "x": 0.785,
+      "y": 0.66,
+      "scale": 1.0,
+      "opacity": 0.6,
+      "hide": false,
+      "shape": "Circle",
+      "text": "",
+      "toggleSwitch": false,
+      "bindings": [
+        {
+          "type": "ControllerButton",
+          "item": "BtnX"
+        },
+        {},
+        {},
+        {}
+      ]
+    },
+    {
+      "type": "Button",
+      "x": 0.905,
+      "y": 0.66,
+      "scale": 1.0,
+      "opacity": 0.6,
+      "hide": false,
+      "shape": "Circle",
+      "text": "",
+      "toggleSwitch": false,
+      "bindings": [
+        {
+          "type": "ControllerButton",
+          "item": "BtnB"
+        },
+        {},
+        {},
+        {}
+      ]
+    },
+    {
+      "type": "Button",
+      "x": 0.845,
+      "y": 0.78,
+      "scale": 1.0,
+      "opacity": 0.6,
+      "hide": false,
+      "shape": "Circle",
+      "text": "",
+      "toggleSwitch": false,
+      "bindings": [
+        {
+          "type": "ControllerButton",
+          "item": "BtnA"
+        },
+        {},
+        {},
+        {}
+      ]
+    },
+    {
+      "type": "Button",
+      "x": 0.11547375,
+      "y": 0.32938713,
+      "scale": 1.25,
+      "opacity": 0.6,
+      "hide": false,
+      "shape": "Rect",
+      "text": "",
+      "toggleSwitch": false,
+      "bindings": [
+        {
+          "type": "ControllerButton",
+          "item": "BtnL1"
+        },
+        {},
+        {},
+        {}
+      ]
+    },
+    {
+      "type": "Button",
+      "x": 0.03903051,
+      "y": 0.19813727,
+      "scale": 1.0,
+      "opacity": 0.6,
+      "hide": false,
+      "shape": "Square",
+      "text": "",
+      "toggleSwitch": false,
+      "bindings": [
+        {
+          "type": "ControllerButton",
+          "item": "BtnL2"
+        },
+        {},
+        {},
+        {}
+      ]
+    },
+    {
+      "type": "Button",
+      "x": 0.053371415,
+      "y": 0.896049,
+      "scale": 1.0,
+      "opacity": 0.6,
+      "hide": false,
+      "shape": "Circle",
+      "text": "",
+      "toggleSwitch": false,
+      "bindings": [
+        {
+          "type": "ControllerButton",
+          "item": "BtnL3"
+        },
+        {},
+        {},
+        {}
+      ]
+    },
+    {
+      "type": "Button",
+      "x": 0.8630653,
+      "y": 0.3294,
+      "scale": 1.25,
+      "opacity": 0.6,
+      "hide": false,
+      "shape": "Rect",
+      "text": "",
+      "toggleSwitch": false,
+      "bindings": [
+        {
+          "type": "ControllerButton",
+          "item": "BtnR1"
+        },
+        {},
+        {},
+        {}
+      ]
+    },
+    {
+      "type": "Button",
+      "x": 0.92962855,
+      "y": 0.1981,
+      "scale": 1.0,
+      "opacity": 0.6,
+      "hide": false,
+      "shape": "Square",
+      "text": "",
+      "toggleSwitch": false,
+      "bindings": [
+        {
+          "type": "ControllerButton",
+          "item": "BtnR2"
+        },
+        {},
+        {},
+        {}
+      ]
+    },
+    {
+      "type": "Button",
+      "x": 0.7441909,
+      "y": 0.895081,
+      "scale": 1.0,
+      "opacity": 0.6,
+      "hide": false,
+      "shape": "Circle",
+      "text": "",
+      "toggleSwitch": false,
+      "bindings": [
+        {
+          "type": "ControllerButton",
+          "item": "BtnR3"
+        },
+        {},
+        {},
+        {}
+      ]
+    }
+  ]
+}

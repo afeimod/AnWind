@@ -1,0 +1,39 @@
+{
+  "bundles": {
+    "dxvk-1.10.3.tzst": {
+      "url": "https://api.github.com/repos/Tux-And-Wine/wfp-winfusion/releases/assets/620704763",
+      "sha256": "70598a5c1aaed7f3813854a65a5144c2ea54602876e6c9468031c7fe6facf555",
+      "size": 3516958
+    },
+    "dxvk-2.3.1.tzst": {
+      "url": "https://api.github.com/repos/Tux-And-Wine/wfp-winfusion/releases/assets/620705228",
+      "sha256": "b64490c49878251c6d21db84b9a22b144f12117e51685757d7aaaad6054bbaf0",
+      "size": 3930591
+    },
+    "dxvk-2.4.1.tzst": {
+      "url": "https://api.github.com/repos/Tux-And-Wine/wfp-winfusion/releases/assets/620705725",
+      "sha256": "899a4d5c319d3387fa577ac1378146970ac41ad7f95d3b391baf2cf1fd4c0505",
+      "size": 4409241
+    },
+    "vkd3d-2.14.1.tzst": {
+      "url": "https://api.github.com/repos/Tux-And-Wine/wfp-winfusion/releases/assets/620727414",
+      "sha256": "b124577279ee79b7f3cee5c414f34a72fa5ee0c869bc1b26971b31809f8ef560",
+      "size": 2305608
+    },
+    "vkd3d-3.0.1.tzst": {
+      "url": "https://api.github.com/repos/Tux-And-Wine/wfp-winfusion/releases/assets/620727624",
+      "sha256": "a2e1e8372c9f98b54b636b30937ab49e0e589cb04ecdfd16e2c2903fa1b82a27",
+      "size": 4057369
+    },
+    "vkd3d-3.0.tzst": {
+      "url": "https://api.github.com/repos/Tux-And-Wine/wfp-winfusion/releases/assets/620727900",
+      "sha256": "35108279ee47f11bfc08de6f21b888d1d64ed42a771dfb7b8a2c0f2aed488cfa",
+      "size": 3942588
+    },
+    "vkd3d-3.1.0.tzst": {
+      "url": "https://api.github.com/repos/Tux-And-Wine/wfp-winfusion/releases/assets/620728121",
+      "sha256": "f419142687fdc7941ff13eeb03f0a3539c67011b02f6c08bb083dfc30d5f780e",
+      "size": 4171300
+    }
+  }
+}

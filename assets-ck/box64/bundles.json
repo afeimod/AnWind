@@ -1,0 +1,19 @@
+{
+  "bundles": {
+    "box64-0.4.0.tzst": {
+      "url": "https://api.github.com/repos/Tux-And-Wine/wfp-winfusion/releases/assets/677137479",
+      "sha256": "2f1175b8d3d6682d4a72a0a67570f729d3f374c3865f1a6473fef9c9f4b62d3a",
+      "size": 9415837
+    },
+    "box64-0.4.2.tzst": {
+      "url": "https://api.github.com/repos/Tux-And-Wine/wfp-winfusion/releases/assets/677137752",
+      "sha256": "269971ee1574c5b47e62bfa0e7c87d706e006641f3822d5e1b9410a033768db5",
+      "size": 9413150
+    },
+    "box64-0.4.3.tzst": {
+      "url": "https://api.github.com/repos/Tux-And-Wine/wfp-winfusion/releases/assets/677138223",
+      "sha256": "91c1e1a3104eb195f3c0203c8cc214de19326e1d8a646761d015e7400dff3f4b",
+      "size": 9415341
+    }
+  }
+}
