@@ -6,54 +6,130 @@ buildSys="cmake"
 license="MIT"
 
 # ============================================================
-# v3.3.16（box64-0.4.2 冒烟修复）：补丁基线下调 v0.4.4 → v0.4.2
+# v3.3.34（用户："我是让你修复 box64-0.3.8 也能正常使用，不要让我
+# 升级 0.4.4 —— 0.3.8 对 32 位兼容速度比较快"）：补丁体系重构，
+# 让 v0.3.2..v0.4.4+ 全版本线都能正确吃到补丁。
 # ------------------------------------------------------------
-# 【事故回放】CI 选 v0.4.2 构建：v3.3.10 的版本前置判断把
-# revision < v0.4.4 一律 doNotApplyPatch=1 跳过 0001 补丁 ——
-# 产物成为【未打补丁】降级形态（shm 断言跳过 + 大字警告），
-# 用户按提示"选 v0.4.4 及以上"才能拿完整特性。
-# 【实测勘误（本轮沙箱全量 dry-run 验证）】0001 补丁在：
-#   v0.4.4  ：全部 hunk 精确命中（基线）；
-#   v0.4.2  ：全部 hunk 命中（仅行号偏移），且 elfparser.c 的
-#             DT_RELR/RELRSZ/RELRENT case 结构与 v0.4.4 完全一致
-#             （逐行号核对）—— 补丁语义在 v0.4.2 上完整成立；
-#   v0.4.0  ：elfparser.c Hunk#1 FAILED（RELR case 上下文不同）
-#             —— 真实不可应用，维持跳过；
-#   master  ：全部 hunk 命中（漂移仅偏移）。
-# 故补丁基线下调为 v0.4.2（含），v0.4.0/v0.4.1 仍走整包跳过。
-# 其余防线不变：patchOptional=1 兜底未来版本/分支漂移。
+# 【事故回放（v3.3.16 的错误前提）】旧版把补丁基线钉在 v0.4.2：
+#   revision < 0.4.2 → doNotApplyPatch=1 → 选 v0.3.8 构建出的产物
+#   是【完全未打补丁】的 vanilla box64：
+#     * DT_ANDROID_RELR 不识别 → bionic wine ntdll .data 自指针保持
+#       裸地址 → wineboot 一进 mmap_add_reserved_area 即 SIGSEGV
+#       （用户"box64-0.3.8 运行 wine 还是不行"的直接根因）；
+#     * 无内建 SysV shm（bionic 宿主上 wine 的 X11/MIT-SHM 链路断）；
+#     * 静态程序退出桥 bug（exit code 128 / stdout 不刷出）。
+# 【本轮沙箱实测（v0.3.8 树逐 hunk 验证）】
+#   * 0001 原样携带的 elfparser.c hunk 是 v0.4.2+ 的 12 空格缩进形态，
+#     在 v0.3.8 的 16 空格深嵌套 switch 上必然 FAILED —— 整文件被
+#     dry-run 门禁否决，其余 hunk（shm/static-exit/CMake）全陪葬；
+#   * 更危险的是 0002 在默认 fuzz=2 下会对 v0.3.8 "成功"误落位：
+#     实测 case 0x6fffe000 被插到 case DT_VERDEFNUM 之下 —— 语义全错。
+# 【重构方案（三层）】
+#   1) 0001 拆分：elfparser.c/elfparser32.c 的 RELR hunk 移出，归
+#      0002（v0.4.2+ 12 空格）/0003（v0.3.2..v0.4.1 16 空格，本轮
+#      新增、按 v0.3.8 原树锚定）/0004（elfparser32.c 全版本）——
+#      0001 只剩与缩进无关的核心 hunk，全版本通吃；
+#   2) custom_patch()（框架原生钩子）：本项目所有补丁一律
+#      patch --fuzz=0 严格 dry-run 门禁，fuzzy 误落位从机制上杜绝
+#      （0002/0003 按精确布局自选择：两个必中其一，0004 全中）；
+#   3) 版本门废除：不再以 <0.4.2 否决整包 —— 每个补丁文件按自身
+#      锚点独立成立/跳过（v0.3.0/v0.3.1 无 elfparser32.c 的老树，
+#      0004 自然跳过；0006 只认 v0.3.0 的 Run(emu,0) 形态）。
+# 其余防线不变：install() 的 _patch_in_tree 源码树探测与全套
+# 冒烟断言（shm 符号 / .dynsym 导出 / DYNAREC 核心 / NOLOADADDR）。
 # ============================================================
-_patch_baseline_major=0
-_patch_baseline_minor=4
-_patch_baseline_patch=2
-_box64_ver_major="$(echo "${revision}" | sed -n 's/^[vV]\?\([0-9]\+\)\..*$/\1/p')"
-_box64_ver_minor="$(echo "${revision}" | sed -n 's/^[vV]\?[0-9]\+\.\([0-9]\+\).*/\1/p')"
-_box64_ver_patch="$(echo "${revision}" | sed -n 's/^[vV]\?[0-9]\+\.[0-9]\+\.\([0-9]\+\).*/\1/p')"
-if [[ -n "${_box64_ver_major}" ]]; then
-  # 解析出版本号（如 v0.4.2 / 0.4.6）：与基线 0.4.2 逐段比较
-  _box64_lt_baseline=0
-  if (( _box64_ver_major < _patch_baseline_major )); then
-    _box64_lt_baseline=1
-  elif (( _box64_ver_major == _patch_baseline_major )) && (( _box64_ver_minor < _patch_baseline_minor )); then
-    _box64_lt_baseline=1
-  elif (( _box64_ver_major == _patch_baseline_major )) && (( _box64_ver_minor == _patch_baseline_minor )) && (( ${_box64_ver_patch:-0} < _patch_baseline_patch )); then
-    _box64_lt_baseline=1
-  fi
-  if (( _box64_lt_baseline == 1 )); then
-    # v3.3.11：顶层 echo 必须 >&2 —— get_dep() 以 $(...) 捕获本文件 stdout
-    # 作为依赖列表，裸 echo 会把 "[INFO]" 混进 deps，collect_dep 把它当
-    # 包名报 "项目不存在 => [INFO]"（CI 实测，box64 相关构建全挂）
-    echo "[INFO] box64 revision=${revision} < v${_patch_baseline_major}.${_patch_baseline_minor}.${_patch_baseline_patch}（补丁基线）—— 0.4.2 以前的版本（v0.4.0/v0.4.1）不接受 0001 补丁，按选择跳过" >&2
-    doNotApplyPatch=1
-  else
-    echo "[INFO] box64 revision=${revision} >= 补丁基线 v0.4.2，正常应用 0001 补丁（漂移时 patchOptional 跳过）" >&2
-    patchOptional=1
-  fi
-else
-  # master / main / 分支名：无法解析版本 → patchOptional 兑底跳过
-  echo "[INFO] box64 revision=${revision} 非版本号（分支/漂移 ref）—— 补丁 dry-run 失败时将跳过（patchOptional=1）" >&2
-  patchOptional=1
-fi
+# 【历史教训链（v3.2.13→v3.2.21，保留备考）】冒烟断言曾三次误报：
+#   v2.13 查 functions_list.txt（GO 型符号不进缓存）、v2.14 查符号表
+#   （GO 包装符号从不进 .symtab）、v2.15 查注册字符串（方向对但当时
+#   shm 链路真断）；v3.2.21 八符号 ANW_EXPORT 默认可见性 + .dynsym
+#   硬校验才闭环。详见 0001 头部说明。
+# ============================================================
+
+# v3.3.34：custom_patch —— --fuzz=0 严格按文件门禁应用本项目补丁。
+# 框架 apply_patches() 检测到本函数即完全走此路径（不再用默认 fuzz=2
+# 的整包 dry-run）。逐文件独立成立/跳过，语义与框架一致：
+#   patchesApplied / patchesSkipped 全局变量照常登记（install() 的
+#   条件化冒烟依赖它们），占位符经 expand_patch_placeholders 展开。
+custom_patch() {
+  local _patchFiles
+  local _srcDir="${pkgSrcDir:-${srcDir}/${pjName}}"
+
+  [[ -z $pjName ]] && { echo "错误: pjName 未定义！" >&2; return 1; }
+  _patchFiles=($(ls "${wsDir}"/projects/"${pjName}"/*.patch 2>/dev/null | LC_ALL=C sort))
+  [[ ! -f "${_patchFiles[0]}" ]] && _patchFiles=()
+  [[ ${#_patchFiles[@]} -eq 0 ]] && { echo "box64: 无需应用任何补丁" >&2; return 0; }
+
+  [[ -f "${wsDir}/patch-rules.conf" ]] || { echo "错误: 缺少补丁替换规则文件" >&2; return 1; }
+
+  patchesApplied="${patchesApplied:-}"
+  patchesSkipped="${patchesSkipped:-}"
+  cd "${_srcDir}" || return 1
+
+  local _patch _expanded _fuzzmode
+  for _patch in "${_patchFiles[@]}"; do
+    if ! _expanded="$(expand_patch_placeholders < "$_patch")"; then
+      echo "错误: 补丁占位符展开失败=> $_patch" >&2
+      cd - >/dev/null; return 1
+    fi
+    # 【fuzz 策略（v3.3.34 三次修正，两树实测）】
+    #  * 除 0001 外全部 --fuzz=0 严格门禁：
+    #    - RELR 布局孪生（0002/0003/0004）：默认 fuzz=2 会把 0002 的
+    #      v0.4.2 形态 hunk "成功"误插到 v0.3.8 的 case DT_VERDEFNUM
+    #      之下（沙箱实测语义级损坏）；严格匹配让 0002/0003 按精确缩进
+    #      布局自选择（12 空格 vs 16 空格深嵌套），必中其一。
+    #    - static-exit / clang-gate 孪生（0005/0006/0007）：【本轮发现
+    #      现网事故】默认 fuzz 下 0005/0006 在 0001 之后上下文已变，
+    #      会"成功"把整段注释+SetRDX 盲落到 core.c 文件末尾（函数体
+    #      外的裸语句 = 编译错误）—— 用原始 HEAD 的 0001 在 v0.4.4
+    #      复现成立，即现网 box64 构建自 0005/0006 引入起对所有版本
+    #      都埋着这颗雷；fuzz=0 下它们按设计各认各的锚点、正确跳过。
+    #  * 0001 例外保留默认 fuzz：其 CMake clang-gate hunk 与 core.c
+    #    SetRDX hunk 在 v0.4.4 上依赖 fuzz 跨版本落位（上游把
+    #    if(!box64_hasinterp) 插进上下文中间、CMake NOGIT 段行漂移；
+    #    fuzz=0 实测误杀整文件）。
+    case "$(basename "${_patch}")" in
+      0001-*) _fuzzmode="" ;;
+      *)      _fuzzmode="--fuzz=0" ;;
+    esac
+    if printf '%s\n' "${_expanded}" | patch -p1 ${_fuzzmode} --dry-run >/dev/null 2>&1; then
+      echo "box64: 测试通过（fuzz=${_fuzzmode:-默认}）=> ${_patch}" >&2
+      printf '%s\n' "${_expanded}" | patch --no-backup-if-mismatch ${_fuzzmode} -N -p1 \
+        || { echo "错误: 补丁应用失败=> $_patch" >&2; cd - >/dev/null; return 1; }
+      patchesApplied+=" $(basename "${_patch}")"
+    else
+      # 该补丁与本源码树形态不匹配（如 0002 遇 v0.3.8 / 0003 遇 v0.4.4
+      # / 0006 遇非 v0.3.0 树）—— 按设计跳过，交由同位的孪生补丁接管。
+      echo "box64: 补丁不适用于当前源码布局（按设计跳过）=> ${_patch}" >&2
+      patchesSkipped+=" $(basename "${_patch}")"
+    fi
+  done
+
+  cd - >/dev/null
+  echo "box64: 补丁统计 —— 应用: [${patchesApplied}] / 跳过: [${patchesSkipped}]" >&2
+  # v3.3.34 硬保障：核心补丁 0001（shm/static-exit）必须在链 —— 它与
+  # 源码布局无关，任何版本线都应命中；缺失说明源码树异常漂移，宁可
+  # 构建失败也不带病发布（v3.2.20 曾以警告带病发布，历史不再重演）。
+  case " ${patchesApplied} " in
+    *" 0001-anwind-android-shmem-native.patch "*)
+      ;;
+    *)
+      echo "错误: 核心补丁 0001（内建 SysV shm + 静态退出修复）未生效 —— elfparser 拆分后它与布局无关，任何 v0.3.2+ 树都应命中；请核查源码树形态" >&2
+      return 1
+      ;;
+  esac
+  # RELR 保障：elfparser.c 的孪生补丁 0002/0003 必中其一（wineboot
+  # SIGSEGV 根治线），elfparser32.c 由 0004 覆盖（v0.3.0/v0.3.1 无该
+  # 文件的老树除外 —— 那些树没有 32 位加载器，跳过即正确）。
+  case " ${patchesApplied} " in
+    *" 0002-anwind-android-relr64.patch "*|*" 0003-anwind-android-relr-legacy.patch "*)
+      ;;
+    *)
+      echo "错误: elfparser.c 的 Android RELR 补丁（0002/0003）一个都没命中 —— bionic wine 将因 DT_ANDROID_RELR 跳过而 SIGSEGV，请核查源码树形态" >&2
+      return 1
+      ;;
+  esac
+  return 0
+}
 
 # ============================================================
 # AnWind bionic-box64（aarch64 / NDK bionic 链接）
@@ -184,7 +260,20 @@ fi
 #   Winlator（WINLATOR_GLIBC 链）与 MiceWine（NDK bionic 链）的 box64
 #   构建【均显式 -DNOLOADADDR=ON】，本配方对齐 —— box64 运行时按
 #   /proc/self/maps 自适应任意基址（Termux 同款形态）。
-args="-DANDROID=ON -DBAD_SIGNAL=ON -DARM_DYNAREC=ON -DNOLOADADDR=ON"
+# v3.3.34（用户："32位游戏特别卡，肯定有东西没弄好"）：BOX32=ON。
+# 上游 option(BOX32 ... ${BOX32}) 默认 OFF —— 此前所有构建都没带
+# -DBOX32，box64 根本编不进 32 位 x86 ELF 加载器（elfloader32/
+# elfparser32/box32stack 等整段 if(BOX32) 列表不进 ELFLOADER_SRC）：
+# x86_64 wine 的 wow64 为 32 位 PE 拉起 i386 unix 侧（wine32 preloader
+# 是 i386 ELF）时被拒 → box64 后端下 32 位游戏直接没有可用路径
+# （"特别卡/不行"的box64线根因）。0.3.8 的 box32 dynarec 正是用户
+# 点名"对 32 兼容速度比较快"的那条线 —— 显式开启；0004 补丁
+# （elfparser32.c 的 DT_ANDROID_RELR）在 BOX32=ON 时随 32 位加载器
+# 一起进链，bionic 32 位 .so 的 RELR 重定位同样被覆盖。
+# 上游标注 "experimental" —— 与 MiceWine/Winlator 家族 32 位支持同款
+# 取舍；若上游某版本 box32 构建损坏，CI 冒烟（本 install() 段）会
+# 直接失败暴露，不带病发布。
+args="-DANDROID=ON -DBAD_SIGNAL=ON -DARM_DYNAREC=ON -DNOLOADADDR=ON -DBOX32=ON"
 
 # 运行时配套闭包（见头部【deps 说明】：非编译期依赖，是保证
 # "完整文件集"一次到位的构建顺序声明）
@@ -331,15 +420,16 @@ install() {
   fi
   if [[ "${_patch_in_tree}" == "0" ]]; then
     echo "=============================================================="
-    echo "⚠️⚠️ 0001-anwind-android-shmem-native.patch 未在链（revision=${revision}"
-    echo "    低于补丁基线 v0.4.4 或 ref 漂移被跳过）—— 本产物为【未打补丁】形态："
+    echo "⚠️⚠️ 0001-anwind-android-shmem-native.patch 未在链（源码树异常"
+    echo "    漂移 —— v3.3.34 拆分后该补丁与源码布局无关，v0.3.2+ 任何"
+    echo "    版本线都应命中，custom_patch 门禁也应因此失败中止）——"
+    echo "    本产物为【未打补丁】形态："
     echo "    * bionic 宿主上 shm 链路两条全断（静态程序 ENOSYS / 动态程序"
     echo "      function not found）—— wine 需要 SysV shm 的路径会失败；"
     echo "    * NDK lld 的 Android 标签 RELR 重定位（DT_ANDROID_RELR）不识别"
     echo "      —— bionic wine ntdll 的 .data 自指针保持裸地址，wineboot 有"
     echo "      SIGSEGV 风险。"
-    echo "    如需完整特性：选 v0.4.2 及以上版本重新构建（v0.4.0/v0.4.1 的"
-    echo "    elfparser.c 结构与 0001 补丁不兼容，无法打补丁）。"
+    echo "    如需完整特性：核查源码树与 custom_patch 的 fuzz=0 严格门禁日志。"
     echo "=============================================================="
   fi
   local _sym_ok=1

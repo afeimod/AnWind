@@ -1,8 +1,9 @@
 From: AnWind <anwind@example.invalid>
-Subject: [PATCH] AnWind box64 bionic: built-in SysV shm + Android RELR + v0.4.2 static-exit fix
+Subject: [PATCH] AnWind box64 bionic: built-in SysV shm + static-exit fix (layout-independent core)
 
-Four AnWind additions on top of upstream box64 (authored against v0.4.4,
-backports make it apply to v0.4.2 as well):
+AnWind box64 core patch: built-in SysV shm + static-exit fix + CMake wiring.
+Layout-INDEPENDENT hunks only (applies v0.3.2..v0.4.4+; RELR tags live in
+0002/0003/0004 per source layout):
 
 1. Native SysV shm for bionic hosts (v3.2.18, completed in v3.2.21):
    - src/libtools/android_shmem.c: memfd-backed shmget/shmat/shmctl/shmdt
@@ -13,22 +14,7 @@ backports make it apply to v0.4.2 as well):
      libc (host) or the built-in emulation (ANDROID).
    - CMakeLists.txt: compile android_shmem.c for ANDROID builds.
 
-2. Android RELR packed-relocation support (v3.2.20) - the wineboot SIGSEGV fix:
-   - elfparser.c / elfparser32.c: recognize DT_ANDROID_RELR (0x6fffe000) /
-     DT_ANDROID_RELRSZ (0x6fffe001) / DT_ANDROID_RELRENT (0x6fffe003).
-     NDK r29 lld emits these by default for bionic-linked .so (same standard
-     RELR encoding, Android tag numbers). Without this, ALL packed
-     R_X86_64_RELATIVE relocations are silently skipped: the bionic wine
-     x86_64-unix/ntdll.so then keeps raw link-time self-pointers in .data
-     (virtual.c: static struct list reserved_areas = LIST_INIT(reserved_areas))
-     and dies with SIGSEGV in mmap_add_reserved_area (LIST_FOR_EACH reads
-     area->base at [unrelocated_ptr + 0x10]) on the very first wineboot -
-     device log: ntdll.so+0x770a8, R15=0x00000000000928d8 (raw),
-     RAX=0x0000003f000928d8 (correct relocated), access to 0x928e8.
-   - CMakeLists.txt: gate -Wno-pointer-type-mismatch (gcc-only) to GNU cc so
-     clang builds stop printing "unrecognized command-line option" noise.
-
-3. .dynsym export fix (v3.2.21) - the missing piece that kept the CI
+2. .dynsym export fix (v3.2.21) - the missing piece that kept the CI
    "shm 符号未进动态导出表" warning alive and broke the wine shm bridge:
    upstream compiles everything with -fvisibility=hidden
    (CMakeLists: add_definitions(-std=gnu11 -funwind-tables
@@ -48,7 +34,7 @@ backports make it apply to v0.4.2 as well):
    Default-visibility globals are put into .dynsym by --export-dynamic
    AND become garbage-collection roots, so both failure modes are closed.
 
-4. v3.3.17 backport for v0.4.2: static-binary exit fix (upstream v0.4.4
+3. v3.3.17 backport for v0.4.2: static-binary exit fix (upstream v0.4.4
    introduced box64_hasinterp / hasElfInterp).  On v0.4.2 the exit bridge
    was pushed into RDX (the rtld_fini slot of the SysV process-entry ABI)
    even for STATIC binaries; glibc's __libc_start_main registers it with
@@ -77,6 +63,16 @@ backports make it apply to v0.4.2 as well):
    my_shmctl/my_shmdt, and x64Syscall_linux's cases 29/30/31/67 call the
    built-in implementation directly (disassembly-checked).
 ---
+RELR SPLIT (v3.3.34, 2026-11-10): the elfparser.c / elfparser32.c hunks were
+moved OUT of this patch into the per-layout files (0002 = v0.4.2+ 12-space
+indent, 0003 = v0.3.2..v0.4.1 16-space deep-nest, 0004 = elfparser32.c on
+every tag that has the file). Reason: the whole-file dry-run gate means ONE
+layout-mismatched hunk (v0.3.8's 16-space switch) vetoed the ENTIRE patch -
+so selecting box64 v0.3.8 produced an unpatched binary (no shm, no
+static-exit fix, no RELR) and wine died with the exact SIGSEGV 0002
+documents. With the layout hunks separated, this file applies on every tag
+and the RELR files self-select by layout.
+
 diff --git a/CMakeLists.txt b/CMakeLists.txt
 index 9eb7f3c..990c9c2 100644
 --- a/CMakeLists.txt
@@ -165,55 +161,6 @@ index 3dfb57e..44afe8a 100644
      DynaRun(emu);
      // Get EAX
      int ret = GetEAX(emu);
-diff --git a/src/elfs/elfparser.c b/src/elfs/elfparser.c
-index 37a2d37..8152388 100644
---- a/src/elfs/elfparser.c
-+++ b/src/elfs/elfparser.c
-@@ -288,12 +288,24 @@ elfheader_t* ParseElfHeader64(FILE* f, const char* name, int exec)
-                 h->relaent = val;
-                 break;
-             case DT_RELR:
-+            case 0x6fffe000:
-+                // AnWind: DT_ANDROID_RELR - Android/bionic flavored RELR packed
-+                // relocations. NDK r29 lld emits these by default
-+                // (--use-android-relr-tags) for bionic-linked .so: the SAME
-+                // standard RELR encoding (address entries + bitmaps), only the
-+                // dynamic tag numbers differ. Without this alias, all packed
-+                // R_X86_64_RELATIVE relocs are silently skipped and any
-+                // statically self-referencing .data symbol (wine virtual.c
-+                // reserved_areas = LIST_INIT(reserved_areas) etc.) keeps its
-+                // raw link-time address -> SIGSEGV on first dereference.
-                 h->relr = ptr;
-                 break;
-             case DT_RELRSZ:
-+            case 0x6fffe001:  // DT_ANDROID_RELRSZ (see DT_ANDROID_RELR above)
-                 h->relrsz = val;
-                 break;
-             case DT_RELRENT:
-+            case 0x6fffe003:  // DT_ANDROID_RELRENT (see DT_ANDROID_RELR above)
-                 h->relrent = val;
-                 break;
-             case DT_PLTGOT:
-diff --git a/src/elfs/elfparser32.c b/src/elfs/elfparser32.c
-index 3a3f66c..eff9f9a 100755
---- a/src/elfs/elfparser32.c
-+++ b/src/elfs/elfparser32.c
-@@ -213,12 +213,15 @@ elfheader_t* ParseElfHeader32(FILE* f, const char* name, int exec)
-                     h->relaent = val;
-                     break;
-                 case DT_RELR:
-+                case 0x6fffe000:  // DT_ANDROID_RELR (AnWind: bionic RELR tags, same encoding)
-                     h->relr = ptr;
-                     break;
-                 case DT_RELRSZ:
-+                case 0x6fffe001:  // DT_ANDROID_RELRSZ
-                     h->relrsz = val;
-                     break;
-                 case DT_RELRENT:
-+                case 0x6fffe003:  // DT_ANDROID_RELRENT
-                     h->relrent = val;
-                     break;
-                 case DT_PLTGOT:
 diff --git a/src/emu/x64syscall.c b/src/emu/x64syscall.c
 index 3dfb57e..44afe8a 100644
 --- a/src/emu/x64syscall.c
@@ -704,3 +651,4 @@ index c147d76..adc7025 100644
  GOW(shutdown, iFii)
  GOWM(__sigaction, iFEipp)
  GOWM(sigaction, iFEipp)
+

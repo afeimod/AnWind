@@ -1284,7 +1284,7 @@ private fun BasicSettingsTab(
                 ContainerFlags.OPENGL to "OpenGL驱动 (opengl3)",
                 ContainerFlags.UNITY to "Unity单线程渲染 (-force-gfx-direct)",
                 ContainerFlags.F5TASK to "F5任务管理器 (随容器启动)",
-                ContainerFlags.FEXMODE to "FEX模式(HODLL=libwow64fex.dll)",
+                ContainerFlags.FEXMODE to "FEX模式(HODLL=libwow64fex.dll, 默认已注入)",
                 ContainerFlags.CLOSESERVICE to "关闭service服务",
                 ContainerFlags.DEBUG to "调试日志"
             ),
@@ -1310,7 +1310,8 @@ private fun BasicSettingsTab(
         GNote(
             "startfex.sh/startwine.sh 同款逻辑，参数一律追加在 exe 之后：强制DX11 → -dx11；" +
                 "OpenGL → --rendering-driver opengl3；Unity单线程 → -force-gfx-direct；" +
-                "F5任务管理器 → 随容器启动 /opt/apps/f5taskmgr.exe；FEX模式 → HODLL=libwow64fex.dll（仅 arm64ec）；" +
+                "F5任务管理器 → 随容器启动 /opt/apps/f5taskmgr.exe；FEX模式 → HODLL=libwow64fex.dll（v3.3.34 起默认注入，勾选仅为显式标记）；" +
+                "自定义参数里写 hodll=… / hodll64=…（大小写均可）会自动提升为环境变量不再传给游戏；" +
                 "调试日志 → AnWind 会话日志本就常显（标记槽位）"
         )
     }

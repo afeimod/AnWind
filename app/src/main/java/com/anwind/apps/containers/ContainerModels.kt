@@ -272,9 +272,11 @@ object ContainerFlags {
      * 槽位标成“强制DX11启动”，从未追加过任何参数）。 */
     const val DX11 = "dx11"
 
-    /** v3.2.29 语义修正：FEX 模式（wineguanli.py 高级启动选项）—— arm64ec
-     *  wine 经 `HODLL=libwow64fex.dll` 让 x86_64/i386 PE 走 FEX 仿真 DLL
-     *  （startfex.sh 同款；旧注释的"切 fexcore 后端"从未接线，已废）。 */
+    /** FEX 模式（wineguanli.py 高级启动选项）。v3.3.34 语义再修：
+     *  HODLL=libwow64fex.dll 已改为【默认注入】（WinlatorXR 对齐 ——
+     *  BionicProgramLauncherComponent 对 arm64EC 无条件设 HODLL），本
+     *  勾选不再承担门禁，仅作显式标记；用户 env=/启动参数的显式
+     *  HODLL=/hodll= 值仍最高优先（大小写不敏感归一为大写键）。 */
     const val FEXMODE = "fexmode"
 
     /** 全部合法开关（UI 勾选组展示顺序）。 */

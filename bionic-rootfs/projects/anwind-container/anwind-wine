@@ -1083,6 +1083,12 @@ apply_extra_env() {
         # shellcheck disable=SC2086
         export $_extra
     fi
+    # v3.3.34（用户："启动参数加 hodll=libwow64fex.dll 好像没有真正运行"）：
+    # wine 读【大写】HODLL/HODLL64 —— 用户在 env= 写小写 hodll=/hodll64=
+    # 时 export 出的是小写变量，wine 永远读不到。此处归一：小写已设且
+    # 大写未设 → 提升为大写（App 原生链 WineEnvironment 同款语义）。
+    [ -n "${hodll:-}" ]    && [ -z "${HODLL:-}" ]    && export HODLL="$hodll"
+    [ -n "${hodll64:-}" ]  && [ -z "${HODLL64:-}" ]  && export HODLL64="$hodll64"
     local _ovr
     _ovr="$(conf_read "$CONT_CONF" dxoverrides "")"
     [ -n "$_ovr" ] && export WINEDLLOVERRIDES="${_ovr}${WINEDLLOVERRIDES:+:$WINEDLLOVERRIDES}"

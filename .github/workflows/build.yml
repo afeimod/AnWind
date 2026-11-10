@@ -149,9 +149,32 @@ jobs:
           cat local.properties
 
       # ============ 8. 构建 Debug APK ============
+      # v2.23.0（2026-11-09 APK 构建事故修复）：三段重试 + 后段 --refresh-dependencies。
+      # 根因（logs_115696791448.zip 实证）：同一次运行里 GitHub 缓存服务回 400、
+      # 保存缓存时返回 Azure 边缘故障页（"Our services aren't available right now"），
+      # 依赖解析在同一网络窗口内对所有 maven 仓库（含 Maven Central）集体
+      # "not found"——是 GitHub Actions 服务降级，不是坐标错误、也不是
+      # 负缓存（本次运行 Gradle home 为空，负缓存理论被证伪；KSP 1.9.25-1.0.20
+      # 在 Maven Central / aliyun public / Plugin Portal 均实测 200）。
+      # 对策：构建失败自动重试（最多 3 次、指数退避），第 2 次起加
+      # --refresh-dependencies 刷新任何被瞬时故障污染的元数据/负缓存条目。
       - name: 🔨 Build Debug APK
         if: github.event.inputs.build_type == 'debug' || github.event.inputs.build_type == 'both'
-        run: gradle assembleDebug --stacktrace --no-daemon
+        run: |
+          set +e
+          for attempt in 1 2 3; do
+            echo "=== Debug build attempt ${attempt}/3 ==="
+            extra=""
+            if [ "$attempt" -gt 1 ]; then
+              extra="--refresh-dependencies"
+              echo "(retry: --refresh-dependencies enabled)"
+            fi
+            gradle assembleDebug --stacktrace --no-daemon $extra && exit 0
+            echo "⚠️ Attempt ${attempt} failed"
+            [ "$attempt" -lt 3 ] && sleep $((attempt * 45))
+          done
+          echo "::error::assembleDebug failed after 3 attempts (see log above; if all attempts failed at dependency resolution, check https://www.githubstatus.com for a GitHub Actions outage)"
+          exit 1
         env:
           KEYSTORE_PATH: ${{ github.workspace }}/anwind-release.keystore
           KEYSTORE_PASS: anwind-release-pass-2026
@@ -161,7 +184,21 @@ jobs:
       # ============ 9. 构建 Release APK（用 release keystore 签名） ============
       - name: 🔨 Build Release APK
         if: github.event.inputs.build_type == 'release' || github.event.inputs.build_type == 'both'
-        run: gradle assembleRelease --stacktrace --no-daemon
+        run: |
+          set +e
+          for attempt in 1 2 3; do
+            echo "=== Release build attempt ${attempt}/3 ==="
+            extra=""
+            if [ "$attempt" -gt 1 ]; then
+              extra="--refresh-dependencies"
+              echo "(retry: --refresh-dependencies enabled)"
+            fi
+            gradle assembleRelease --stacktrace --no-daemon $extra && exit 0
+            echo "⚠️ Attempt ${attempt} failed"
+            [ "$attempt" -lt 3 ] && sleep $((attempt * 45))
+          done
+          echo "::error::assembleRelease failed after 3 attempts (see log above; if all attempts failed at dependency resolution, check https://www.githubstatus.com for a GitHub Actions outage)"
+          exit 1
         env:
           KEYSTORE_PATH: ${{ github.workspace }}/anwind-release.keystore
           KEYSTORE_PASS: anwind-release-pass-2026

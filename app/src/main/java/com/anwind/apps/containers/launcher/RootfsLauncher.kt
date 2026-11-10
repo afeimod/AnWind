@@ -599,12 +599,31 @@ object RootfsLauncher {
         val key = container.name
         val sink = SessionLogSink(key, newSessionLog(key))
 
+        // v3.3.34（用户："启动参数加 hodll=libwow64fex.dll 好像没有真正
+        // 运行"）：启动参数里的 hodll=/hodll64= token（大小写不敏感）不是
+        // 游戏 argv —— 旧链路原样追加在 exe 之后传给游戏，wine 根本看不见，
+        // 游戏还会收到一个莫名的命令行参数。此处拦截提取为环境变量（规范
+        // 大写键，经 applyWineCompatEnv 的 userEnv 路径注入，优先级与 env=
+        // 显式写入完全一致），从 argv 移除并写入会话日志 —— 用户在自定义
+        // 启动参数 / 运行对话框写 hodll=libwow64fex.dll 即真实生效、且可见。
+        val hodllTokenRe = Regex("(?i)^(hodll64|hodll)=\\S+$")
+        val argEnvTokens = wineArgs.filter { hodllTokenRe.matchEntire(it) != null }
+        val argv = if (argEnvTokens.isEmpty()) {
+            wineArgs
+        } else {
+            argEnvTokens.forEach { sink.stamp("启动参数 $it → 提升为环境变量（不再传给游戏 argv）") }
+            wineArgs.filter { hodllTokenRe.matchEntire(it) == null }
+        }
+
         // ---- 会话头（对齐旧版纯日志格式） ----
         sink.log(
             buildString {
                 append("===== AnWind wine 会话（原生链路） =====\n")
                 append("容器: $key\n")
-                append("参数: ${wineArgs.joinToString(" ")}\n")
+                append("参数: ${argv.joinToString(" ")}\n")
+                if (argEnvTokens.isNotEmpty()) {
+                    append("环境注入（启动参数提取）: ${argEnvTokens.joinToString(" ")}\n")
+                }
                 append("App: ${appVersionLine(context)}\n")
                 append("设备: Android ${Build.VERSION.RELEASE} " +
                     "(SDK ${Build.VERSION.SDK_INT}, ${Build.MODEL})\n")
@@ -1042,9 +1061,12 @@ object RootfsLauncher {
             // 6b) Android 安全默认 + arm64ec 仿真器 DLL（v3.1.4）：
             //     WINEESYNC/WINEFSYNC=0（fsync 探测 SIGSYS 兜底）、
             //     HODLL64=libarm64ecfex（存在即注入）、
-            //     HODLL=libwow64fex（仅容器勾选「FEX模式」时注入，startfex.sh 同款）
+            //     HODLL=libwow64fex（v3.3.34 起默认注入，WinlatorXR 对齐；
+            //     用户 env=/启动参数显式值最高优 —— 启动参数提取的 token
+            //     追加在 userEnv 尾部参与同一套解析）
             WineEnvironment.applyWineCompatEnv(
-                env, resolved.arch, resolved.wineDir, container.env,
+                env, resolved.arch, resolved.wineDir,
+                container.env + if (argEnvTokens.isEmpty()) "" else " " + argEnvTokens.joinToString(" "),
                 fexMode = container.hasFlag(com.anwind.apps.containers.ContainerFlags.FEXMODE)
             )
 
@@ -1238,7 +1260,7 @@ object RootfsLauncher {
             // d:/e: 盘与 Z: 盘 rootfs 入口（Z:\storage、Z:\sdcard）直读游戏
             // 文件；PE 可执行段由 wine 的匿名内存回退加载（wine 补丁
             // 0011/0014 系列）。旧两代执行区残留在此一次性清理释放。
-            val effectiveArgs = prepareNoexecDirectRead(wineArgs, container) { sink.stamp(it) }
+            val effectiveArgs = prepareNoexecDirectRead(argv, container) { sink.stamp(it) }
 
             // v3.3.33（"dxvk 运行仙剑四还是不行"修复）：dxvk_appfix 移植到
             // App 原生链 —— v3.3.30 的仙剑四 d3d9.floatEmulation=Strict 补丁

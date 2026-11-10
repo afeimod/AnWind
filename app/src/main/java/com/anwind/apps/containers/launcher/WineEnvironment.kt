@@ -459,13 +459,15 @@ object WineEnvironment {
      *    libarm64ecfex + libwow64fex（FEX）：
      *    - HODLL64=libarm64ecfex.dll —— arm64ec 运行必需（x64 仿真器
      *      DLL），包内存在即注入；用户 HODLL64 覆盖优先。
-     *    - HODLL=libwow64fex.dll —— **FEX 模式开关**（v3.2.29 用户指令，
-     *      startfex.sh / wineguanli.py 勾选菜单同款）：仅当容器勾选
-     *      「FEX模式」时注入 —— arm64ec wine 既可直接跑（x86_64/i386
-     *      走 wine 自带 wow64），也可勾选 FEX 让它们经 FEX 仿真 DLL
-     *      运行（`HODLL=libwow64fex.dll wine …`）。旧版「文件存在即
-     *      无条件注入」使勾选项形同虚设，已废；用户 env= 显式 HODLL=
-     *      仍最高优先。
+     *    - HODLL=libwow64fex.dll —— 【v3.3.34 改为默认注入】（WinlatorXR
+     *      BionicProgramLauncherComponent.java:399-405 对齐：arm64EC
+     *      无条件设 HODLL，fexcore→libwow64fex.dll、否则 wowbox64.dll）。
+     *      v3.2.29 的「勾选 FEX模式才注入」撤销：dll 存在即注入，勾选
+     *      项不再承担门禁（fexMode 形参保留仅调用点兼容）；用户 env=/
+     *      启动参数显式 HODLL= 仍最高优先。
+     *    - 【v3.3.34 大小写归一】wine 读【大写】HODLL/HODLL64 —— 用户在
+     *      env= 或启动参数写小写 hodll= 的值经 extractEnvTokenIgnoreCase
+     *      规范成大写键导出，不再"导出了但 wine 读不到"。
      *    【v3.2.10】official/proton 树已由 0010/0011 补丁移植了 HODLL/
      *    HODLL64 读取机制（对齐 hangover-11.16）：此前 vanilla 树根本不
      *    读这两个变量，xtajit(.64).dll 在 Linux 不存在 → 32 位 wow64 进程
@@ -478,7 +480,7 @@ object WineEnvironment {
         arch: WineRuntime.Arch,
         wineDir: File,
         userEnv: String = "",
-        fexMode: Boolean = false
+        @Suppress("UNUSED_PARAMETER") fexMode: Boolean = false
     ) {
         env.putIfAbsent("WINEESYNC", "0")
         env.putIfAbsent("WINEFSYNC", "0")
@@ -493,18 +495,56 @@ object WineEnvironment {
         // 排除），导出无副作用。
         env.putIfAbsent("WINE_DISABLE_KERNEL_WRITEWATCH", "1")
         if (arch != WineRuntime.Arch.AARCH64) return
-        val peDir = File(wineDir, "lib/wine/aarch64-windows")
-        val hasUserHodll64 = userEnv.contains("HODLL64=")
-        val hasUserHodll = userEnv.contains("HODLL=")
-        if (!hasUserHodll64 && File(peDir, "libarm64ecfex.dll").isFile) {
+        // v3.3.34：【HODLL 三处修复】（用户："启动参数加 hodll=libwow64fex.dll
+        // 好像没有真正运行，好像也缺失 libarm64fex.dll 的使用"）
+        //
+        // ① 大小写归一：wine 的 get_cpu_dll_name / load_arm64ec_module 读的
+        //    是【大写】HODLL/HODLL64（0010/0011 补丁与 hangover ABI）。用户
+        //    在 env= 里写小写 hodll= 时旧链路照原样导出小写键 → wine 永远
+        //    读不到 → "没有真正运行"。现在对 userEnv 做【大小写不敏感】解析
+        //    并以规范大写键导出（applyExtraEnv 之后追加的小写键无害共存）。
+        // ② WinlatorXR 对齐（BionicProgramLauncherComponent.java:399-405）：
+        //    arm64EC 无条件设 HODLL（fexcore→libwow64fex.dll、否则
+        //    wowbox64.dll），不是可选项。v3.2.29 的「勾选 FEX模式才注入」
+        //    撤销 —— dll 存在即注入 HODLL=libwow64fex.dll（32 位 wow64
+        //    i386 进程走 FEX 仿真 DLL）；用户 env=/启动参数显式值仍最高优。
+        //    fexMode 形参保留仅为调用点兼容，不再参与门禁。
+        // ③ 探测目录拓宽：libarm64ecfex.dll / libwow64fex.dll 的落位随
+        //    wine 包形态而异（aarch64-windows 平铺 / arm64ec-windows /
+        //    x86_64-windows），逐一直通探测，不再只认单一目录。
+        val userHodll64 = extractEnvTokenIgnoreCase(userEnv, "HODLL64")
+        val userHodll = extractEnvTokenIgnoreCase(userEnv, "HODLL")
+        if (userHodll64 != null) {
+            env["HODLL64"] = userHodll64
+        } else if (probeEmulatorDll(wineDir, "libarm64ecfex.dll")) {
             env["HODLL64"] = "libarm64ecfex.dll"
         }
-        // HODLL=libwow64fex.dll 仅在容器勾选「FEX模式」时注入
-        //（startfex.sh 同款；未勾选 = arm64ec wine 直接跑）
-        if (!hasUserHodll && fexMode && File(peDir, "libwow64fex.dll").isFile) {
+        if (userHodll != null) {
+            env["HODLL"] = userHodll
+        } else if (probeEmulatorDll(wineDir, "libwow64fex.dll")) {
             env["HODLL"] = "libwow64fex.dll"
         }
     }
+
+    /**
+     * v3.3.34：env 字符串里大小写不敏感地取 KEY=VALUE 的值。
+     * 键边界精确匹配（HODLL 不会命中 HODLL64 的 token）；无则 null。
+     * 支持空白切分的多 token（容器 env= 与启动参数提取共用一套语义）。
+     */
+    internal fun extractEnvTokenIgnoreCase(userEnv: String, key: String): String? {
+        val re = Regex("(?i)^${Regex.escape(key)}=(.+)$")
+        return userEnv.trim().split(Regex("\\s+")).filter { it.isNotEmpty() }
+            .firstNotNullOfOrNull { token -> re.matchEntire(token)?.groupValues?.get(1) }
+    }
+
+    /**
+     * v3.3.34：仿真器 PE DLL 探测（多 wine 布局直通）。
+     * aarch64-windows（hangover-wine 平铺主位）→ arm64ec-windows →
+     * x86_64-windows（部分发行把 EC 仿真器 DLL 放在 x86_64 目录）。
+     */
+    private fun probeEmulatorDll(wineDir: File, name: String): Boolean =
+        listOf("lib/wine/aarch64-windows", "lib/wine/arm64ec-windows", "lib/wine/x86_64-windows")
+            .any { File(File(wineDir, it), name).isFile }
 
     // ------------------------------------------------------------------
     // 4) 音频 / 用户附加环境（audio_setup / apply_extra_env 的注入端）
