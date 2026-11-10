@@ -298,8 +298,31 @@ android {
         // ⑤两个 build.sh（wine + hangover-wine）补丁生效硬校验：virtual.c
         //   无 noexec 标记 / env.c 无 locale 标记 → ::error:: 直接构建失
         //   败 —— CI 不再可能产出缺补丁的裸奔 wine 包。
-        versionCode = 102
-        versionName = "2.38.39"
+        versionCode = 103
+        versionName = "2.38.40"
+        // v3.3.38（源码包 v3.3.38，App v2.38.40 / versionCode 103）——
+        //   用户 2026-11-10 深夜反馈轮（WineLocaleSupport.kt 编译错 +
+        //   性能主攻 + 仙剑四 DXVK + hangover 中文环境确认）：
+        //   ①【APK 构建修复】：WineLocaleSupport.kt:220/231/241/245/246
+        //     五连编译错根因 = 双源字体候选 String?/File? 混合 elvis 推断
+        //     出 Any?，File(src) 全线炸（245/246 为 runCatching 类型崩塌
+        //     连带假错）→ src 归一为 File + 目录候选（anwind-cjk）展开
+        //     扫描（旧 takeIf isFile 对目录项永远落空）。
+        //   ②【性能】：BOX64_LOG 默认 1→0（v3.2.13 崩溃排查期诊断遗留：
+        //     每个 wrap/emulate 库加载打 stderr，wine 每次拉起子进程都
+        //     重刷，日志管道 IO 白吃 CPU；终端链本就是 0，两链归一；
+        //     putIfAbsent，conf/env= 排障时可设回 1）。
+        //   ③【仙剑四 DXVK（arm64ec 崩溃第二根因）】：FEX x87 精度联动
+        //     —— 游戏本体 x87 指令由 FEX 解释，PERFORMANCE 档
+        //     X87ReducedPrecision=1（64 位精算）正是 wine-10 日志
+        //     EAX=0x052ae3c7 错位野指针的供应商（floatEmulation=Strict
+        //     只管 DXVK 侧）；命中仙剑四时 ~/.fex-emu/Config.json 同步
+        //     拉回 80 位全精度（App 原生链 + 终端链双端，非仙剑四会话
+        //     下次启动自动恢复预设）。
+        //   ④【闪屏】：仙剑四 appfix 追加 d3d9.presentInterval=1（
+        //     VK_PRESENT_MODE_IMMEDIATE 无消隐同步，lorie 读到半刷新帧
+        //     即上屏 = 持续闪屏；FIFO 呈现根治，2007 年 60fps 级 RPG
+        //     垂直同步零感知代价）。
         // v3.3.37（源码包 v3.3.37，App v2.38.39 / versionCode 102 —— 构建
         //   系统与配置轮，App 版本号不变）—— 用户 2026-11-10 反馈六连修：
         //   ①【性能全链对齐 WinlatorXR】（"还不如 proot"）：box64 PERFORMANCE

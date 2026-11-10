@@ -1304,8 +1304,15 @@ object RootfsLauncher {
             // 从未生效（用户 2026-11-09 21:57 会话日志实证：DXVK 读的是
             // /opt/dxvk.conf 原文件、无"DXVK 兼容补丁"行，游戏代码 +0x2941b5
             // page fault 依旧）。两条链路自此对齐。
+            // v3.3.38：+ arm64ec 参数（仙剑四 FEX x87 80 位精度联动 ——
+            // 游戏本体 x87 指令由 FEX 解释，PERFORMANCE 档
+            // X87ReducedPrecision=1 是野指针崩溃的第二供应商）+ 闪屏
+            // presentInterval=1（IMMEDIATE 呈现撕裂根治）。
             val pal4Hit = runCatching {
-                WineEnvironment.applyPal4Compat(env, effectiveArgs, container) { sink.stamp(it) }
+                WineEnvironment.applyPal4Compat(
+                    env, effectiveArgs, container, { sink.stamp(it) },
+                    arm64ec = resolved.backend == ContainerBackend.ARM64EC
+                )
             }.getOrDefault(false)
 
             val command0 = buildCommand(resolved, effectiveArgs, dmode, resolution)

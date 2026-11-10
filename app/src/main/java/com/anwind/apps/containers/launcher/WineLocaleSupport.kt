@@ -73,6 +73,9 @@ object WineLocaleSupport {
     /** rootfs 侧 CJK 字体目录（fontconfig 扫描路径内，v3.2.24）。 */
     private val ROOTFS_CJK_FONT_DIR = "usr/share/fonts/anwind-cjk"
 
+    /** 字体扩展名（rootfs 目录候选展开扫描用）。 */
+    private val FONT_EXTS = setOf("ttf", "otf", "ttc")
+
     /** assets 内的 wine.mo（语言目录名 → asset 文件名）。 */
     private val WINE_MO_ASSETS = mapOf(
         "zh_CN" to "anwind/locale/zh_CN.mo",
@@ -206,10 +209,31 @@ object WineLocaleSupport {
         // v3.3.37：双源候选 —— 设备 /system/fonts 优先，rootfs-fonts 配方
         // 安装的 NotoSansSC（usr/share/fonts/noto/）兜底（无 /system CJK 的
         // 设备此前直接放弃 → 中文方块）。
-        val src = SYS_FONT_CANDIDATES.firstOrNull { File(it).isFile }
-            ?: ROOTFS_FONT_CANDIDATES.firstNotNullOfOrNull { rel ->
-                File(ContainerManager.ROOTFS_ROOT, rel).takeIf { it.isFile }
-            }
+        // v3.3.38【APK 构建修复】：src 归一为 **File**。旧代码
+        //   `String?.firstOrNull{…} ?: File?.firstNotNullOfOrNull{…}`
+        // 的 elvis 推断出 Any?，后续 File(src) 五处全部编译报错
+        //   （220/231/241 None of the following functions can be called…
+        //    + 245 Unresolved reference: it + 246 return is not allowed here
+        //    —— 后两条是 runCatching 块类型崩塌的连带假错）。
+        // 同时修复：ROOTFS_FONT_CANDIDATES 的第三项 anwind-cjk 是**目录**，
+        // 旧代码 takeIf { it.isFile } 对它永远 false —— 目录候选改为展开
+        // 扫描首个字体文件。
+        val src: File? = SYS_FONT_CANDIDATES.asSequence()
+            .map { File(it) }
+            .firstOrNull { it.isFile }
+            ?: ROOTFS_FONT_CANDIDATES.asSequence()
+                .flatMap { rel ->
+                    val f = File(ContainerManager.ROOTFS_ROOT, rel)
+                    when {
+                        f.isFile -> sequenceOf(f)
+                        f.isDirectory -> f.listFiles().orEmpty()
+                            .filter { it.isFile && it.extension.lowercase() in FONT_EXTS }
+                            .sortedBy { it.name }
+                            .asSequence()
+                        else -> emptySequence()
+                    }
+                }
+                .firstOrNull()
         if (src == null) {
             log("警告: 设备 /system/fonts 与 rootfs share/fonts 均未找到 CJK 字体——中文将显示为方块（rootfs 重建会随 rootfs-fonts 配方安装 NotoSansSC）")
             return
@@ -217,7 +241,7 @@ object WineLocaleSupport {
 
         val fontsDir = File(prefix, "drive_c/windows/Fonts")
         fontsDir.mkdirs()
-        val ext = File(src).extension.ifEmpty { "ttf" }
+        val ext = src.extension.ifEmpty { "ttf" }
         val dstName = "anwind-cjk.$ext"
         val dst = File(fontsDir, dstName)
         // v3.2.24（用户问题 5）：rootfs 侧同步 —— 同一份字体落进
@@ -228,7 +252,7 @@ object WineLocaleSupport {
             rootfsDir.mkdirs()
             val rootfsCopy = File(rootfsDir, "anwind-cjk.$ext")
             if (!rootfsCopy.isFile) {
-                File(src).inputStream().use { input ->
+                src.inputStream().use { input ->
                     FileOutputStream(rootfsCopy).use { output -> input.copyTo(output) }
                 }
                 log("已安装 CJK 字体到 rootfs: ${rootfsCopy.absolutePath}（fontconfig 扫描路径内）")
@@ -238,7 +262,7 @@ object WineLocaleSupport {
             }
         }.onFailure { log("警告: CJK 字体安装到 rootfs 失败（${it.message}）—— X11 侧中文可能仍为方块") }
         runCatching {
-            File(src).inputStream().use { input ->
+            src.inputStream().use { input ->
                 FileOutputStream(dst).use { output -> input.copyTo(output) }
             }
         }.onFailure {

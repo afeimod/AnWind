@@ -1709,7 +1709,10 @@ dxvk_appfix_conf() {
             mkdir -p "$WINEPREFIX" 2>/dev/null || true
             {
                 [ -r "$_base" ] && cat "$_base"
-                printf '\n# AnWind appfix（仙剑奇侠传四：D3D9 浮点语义兼容，v3.3.30）\nd3d9.floatEmulation = Strict\n'
+                # v3.3.38：+presentInterval=1（闪屏根治：IMMEDIATE 呈现无消隐
+                # 同步，lorie 读到半刷新帧即上屏 = 持续闪屏；PAL4 60fps 级
+                # RPG 垂直同步零感知代价；追加在后，后值覆盖 dxvk.conf 的 -1）
+                printf '\n# AnWind appfix（仙剑奇侠传四：D3D9 浮点语义 + 呈现节流，v3.3.30 / v3.3.38 增补）\nd3d9.floatEmulation = Strict\nd3d9.presentInterval = 1\n'
             } > "$_out" 2>/dev/null || return 1
             printf '%s' "$_out"
             ;;
@@ -1730,7 +1733,22 @@ apply_dxvk_appfix() {
     _conf="$(dxvk_appfix_conf "$_exe")"
     [ -n "$_conf" ] || return 0
     export DXVK_CONFIG_FILE="$_conf"
-    info "DXVK 兼容补丁: $(basename "$_exe") → d3d9.floatEmulation=Strict（CEGUI 老游戏浮点语义，仅本次启动生效）"
+    info "DXVK 兼容补丁: $(basename "$_exe") → d3d9.floatEmulation=Strict + presentInterval=1（浮点语义 + 闪屏 FIFO 呈现，仅本次启动生效）"
+    # v3.3.38【arm64ec 崩溃根治】：FEX x87 精度联动。仙剑四游戏本体 x87
+    # 指令由 FEX 解释（arm64ec 线），PERFORMANCE 档 X87ReducedPrecision=1
+    #（64 位精算）恰是野指针崩溃的第二供应商（wine-10 日志 EAX=0x052ae3c7
+    # 错位指针实证）—— floatEmulation=Strict 只管 DXVK 侧，两边必须同时拉
+    # 回 80 位全精度。仅 FEX 读该文件，非 FEX 场景无副作用；下一次非仙剑四
+    # 会话 fex_config 按预设改回，无跨容器污染。
+    case "$(printf '%s' "$_exe" | tr '[:upper:]' '[:lower:]')" in
+        *仙剑*|*pal4*)
+            local _fexConf="${HOME:-$RFS_ROOT/home}/.fex-emu/Config.json"
+            if [ -f "$_fexConf" ] && grep -q '"X87ReducedPrecision":"1"' "$_fexConf" 2>/dev/null; then
+                sed -i 's/"X87ReducedPrecision":"1"/"X87ReducedPrecision":"0"/' "$_fexConf" 2>/dev/null \
+                    && info "FEX 兼容补丁: X87ReducedPrecision=1→0（仙剑四引擎依赖 x87 80 位中间精度；其他容器下次启动自动恢复预设）"
+            fi
+            ;;
+    esac
     # v3.3.33：仙剑四附加兼容 —— 该游戏 2007 引擎存在多核竞态崩溃（社区
     # 共识，任务管理器单核亲和为标准解）；未配置 PRIMARY_CORES 时本 shell
     # 自亲和单核（wine 及全部子进程继承），用户配置优先。

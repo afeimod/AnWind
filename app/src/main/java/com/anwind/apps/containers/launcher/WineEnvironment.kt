@@ -286,8 +286,15 @@ object WineEnvironment {
         // v3.2.24（用户问题 3，对齐 startwine.sh / startfex.sh）：
         //   export BOX64_PATH=$WINE_PATH/bin
         //   export BOX64_LD_LIBRARY_PATH=$WINEPATH/lib/wine/i386-unix:$WINEPATH/lib/wine/x86_64-unix
-        // （BOX64_LOG 的 v3.2.13 说明：由 0 改 1，error 级输出保留可诊断性）
-        env["BOX64_LOG"] = "1"
+        // v3.3.38【性能】：BOX64_LOG 默认回 0。v3.2.13 由 0 改 1 是
+        // wineboot 崩溃排查期的诊断遗留 —— LOG=1 时 box64 对每个
+        // wrap/emulate 库加载都打 stderr，wine 每次拉起子进程
+        // （wineserver 握手、regedit、游戏内 CreateProcess）都重刷一遍，
+        // 日志管道 IO + 格式化白白吃启动 CPU；崩溃根因（RELR/SAFEFLAGS）
+        // 已由构建补丁与档位定稿根治，error 级可诊断性由会话日志兜底。
+        // 排障需要时 opt conf / 容器 env= 设 BOX64_LOG=1 即可（此处
+        // putIfAbsent，conf 在链路后段可覆盖）。
+        env.putIfAbsent("BOX64_LOG", "0")
         env["BOX64_NOBANNER"] = "1"
         env["BOX64_DYNAREC_TRACE"] = "0"
         // v3.2.13：BOX64_ENVFILE —— 让 rootfs 的 /usr/etc/box64.box64rc
@@ -852,7 +859,8 @@ object WineEnvironment {
         env: MutableMap<String, String>,
         args: List<String>,
         container: ContainerData,
-        log: (String) -> Unit
+        log: (String) -> Unit,
+        arm64ec: Boolean = false
     ): Boolean {
         val exe = args.firstOrNull { it.endsWith(".exe", ignoreCase = true) }
             ?: args.firstOrNull { it.endsWith(".EXE") }
@@ -867,13 +875,45 @@ object WineEnvironment {
             val text = buildString {
                 if (base.isFile) append(base.readText())
                 if (isNotEmpty() && !endsWith("\n")) append('\n')
-                append("\n# AnWind appfix（仙剑奇侠传四：D3D9 浮点语义兼容，v3.3.33 原生链移植）\n")
+                append("\n# AnWind appfix（仙剑奇侠传四：D3D9 浮点语义 + 呈现节流，v3.3.33 原生链移植 / v3.3.38 增补）\n")
                 append("d3d9.floatEmulation = Strict\n")
+                // v3.3.38【闪屏】（用户："运行仙剑四这类一直闪屏"）：wine-10
+                // 会话日志实证 Present mode: VK_PRESENT_MODE_IMMEDIATE_KHR
+                // （dxvk.conf 的 presentInterval=-1 + syncInterval=-1 所致）
+                // —— IMMEDIATE 无消隐同步，lorie 合成器读到半刷新帧即上屏，
+                // 表现为持续闪屏/撕裂。PAL4 为 2007 年 60fps 级 RPG，垂直
+                // 同步零感知代价：presentInterval=1 → FIFO 呈现，闪屏根治。
+                // （追加在 base 之后，DXVK 配置解析后值覆盖前值，稳赢 -1。）
+                append("d3d9.presentInterval = 1\n")
             }
             out.parentFile?.mkdirs()
             out.writeText(text)
             env["DXVK_CONFIG_FILE"] = out.absolutePath
-            log("DXVK 兼容补丁: ${File(exe).name} → d3d9.floatEmulation=Strict（CEGUI 老游戏浮点语义；v3.3.30 仅终端链生效，本次为原生链移植，仅本次启动生效）")
+            log("DXVK 兼容补丁: ${File(exe).name} → d3d9.floatEmulation=Strict + presentInterval=1（浮点语义 + 闪屏 FIFO 呈现；仅本次启动生效）")
+
+            // v3.3.38【arm64ec 崩溃根治】仙剑四在 arm64ec 线的第二个死因：
+            // FEX 侧 x87 精度。wine-10 会话日志（2026-11-09 21:57）崩溃现场
+            // = d3d9 回调进游戏代码 +0x2941b5 `cmpl $3,0x10(%eax)`，
+            // EAX=0x052ae3c7（错位垃圾指针）—— 2007 引擎大量经 x87 80 位
+            // 中间精度做定点/指针换算，PERFORMANCE 档的
+            // X87ReducedPrecision=1（64 位精算提速）恰好喂出这类错位值。
+            // floatEmulation=Strict 只管 DXVK 侧 D3D9 数学的语义，
+            // 游戏本体 x87 指令由 FES 解释 —— 必须同步把 X87 精度拉回
+            // 80 位全精度。经 ~/.fex-emu/Config.json（实证通道，
+            // ensureFexConfigFile 同款）；下一次非仙剑四会话启动时
+            // ensureFexConfigFile 会按容器预设自动改回，无跨容器污染。
+            if (arm64ec) {
+                val fexConf = File("${env["HOME"] ?: "$RFS_ROOT/home"}/.fex-emu/Config.json")
+                if (fexConf.isFile) {
+                    val original = fexConf.readText()
+                    val rewritten = original
+                        .replace("\"X87ReducedPrecision\":\"1\"", "\"X87ReducedPrecision\":\"0\"")
+                    if (rewritten != original) {
+                        fexConf.writeText(rewritten)
+                        log("FEX 兼容补丁: X87ReducedPrecision=1→0（仙剑四引擎依赖 x87 80 位中间精度 —— PERFORMANCE 档的 64 位精算是野指针供应商；其他容器下次启动自动恢复预设）")
+                    }
+                }
+            }
             log("仙剑四附加建议：该游戏 2007 引擎存在多核竞态崩溃（社区共识），CPU核心 页选单核最稳；未配置 cores 时启动链将自动单核")
             true
         }.getOrElse {
