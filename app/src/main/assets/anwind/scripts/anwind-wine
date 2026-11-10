@@ -159,14 +159,14 @@ conf_read() { # <file> <key> [default]
 #                             user.reg/system.reg/fix-services.reg）
 #   opt/dxvk1/                dxvk 归档；opt/virgl/virgl-enabled 跳过标记
 # 设备侧路径：rootfs/opt（WinFusion 风格包落盘处）优先，
-# usr/opt（AnWind 自有槽位）兑底 —— 两处都检查。
+# usr/opt（AnWind 自有槽位）兜底 —— 两处都检查。
 # 解析方式：逐行 KEY=VALUE 白名单提取（不 source 不 eval）——
 # 配置文件不能执行任意代码，也无法破坏容器隔离变量（WINEPREFIX/
 # PATH/DISPLAY/HOME 等），优先级：容器 env= > opt conf > 内置默认。
 OPT_ROOT=""
 OPT_CONF_KV=""
 
-# opt/conf 固定顺序（对齐 startfex.sh）+ 其余 *.conf 兑底（dynarec_* 等）
+# opt/conf 固定顺序（对齐 startfex.sh）+ 其余 *.conf 兜底（dynarec_* 等）
 load_opt_confs() { # [额外候选根目录（wine 槽位）...]
     local _root _f _k _v _x
     # v3.2.26：探测候选 = rootfs/opt（用户指定主路径）→ 额外传入的
@@ -1111,6 +1111,13 @@ apply_android_safe_env() {
     # （virtual.c: getenv("WINE_DISABLE_KERNEL_WRITEWATCH")），置 1 跳过
     # 探测；wine 11 树不读它（编译期已排除），导出零副作用。旧包免重装。
     [ -z "${WINE_DISABLE_KERNEL_WRITEWATCH:-}" ] && export WINE_DISABLE_KERNEL_WRITEWATCH=1
+    # v3.3.35：winedbg 崩溃挂死修复（设备日志 wine-10-20261109 实证：
+    # 仙剑四页错误 → wine 拉起 syswow64\winedbg.exe —— 调试器本身也是
+    # 32 位 wow64 进程再经 FEX 转译，崩溃路径拖长且弹调试窗口，用户
+    # 视角“游戏卡死”。winedbg=d 置 disabled：未处理异常时 wine 打印
+    # 异常行后进程直接退出；容器 dxoverrides（apply_extra_env）前插，
+    # 用户写 winedbg=n,b 在最前可恢复调试器。
+    [ -z "${WINEDLLOVERRIDES:-}" ] && export WINEDLLOVERRIDES="winedbg=d"
     # arm64ec 形态仿真器 DLL 默认（v3.1.4 wine 包自带 FEX/box64 PE，
     # 配方 pre_package 注入 lib/wine/aarch64-windows/）：上游
     # official/proton 树默认 xtajit64 桩（只报不支持），hangover 树默认
@@ -1121,6 +1128,44 @@ apply_android_safe_env() {
         [ -f "$WINE_DIR/lib/wine/aarch64-windows/libwow64fex.dll" ] \
             && [ -z "${HODLL:-}" ] && export HODLL=libwow64fex.dll
     fi
+}
+
+# ---------- v3.3.35：arm64ec 线性能档位（FEX_ 前缀环境变量） ----------
+apply_fex_preset_env() {
+    # 仅 aarch64 形态（arm64ec 原生 wine，32/64 位 PE 经 libwow64fex/
+    # libarm64ecfex 的 FEX 转译）—— BOX64_DYNAREC_* 在此线全空转
+    # （不经 box64），性能档改映射 FEX 配置层最高优先级的 FEX_* 环境
+    # 变量（App 原生链 WineEnvironment.applyFexPresetEnv 同款语义）。
+    # 事实链（FEX 官方 Config.json/wiki）：DisableL2Cache/DynamicL1Cache
+    # 默认 true（省内存换卡顿）→ 性能档反开；X87ReducedPrecision 默认
+    # false（x87 80 位精算）→ 32 位老游戏 x87 热路径提速项；
+    # VectorTSO/MemcpySetTSO 默认 false → 稳定/兼容档反开作兼容兜底。
+    # 未知变量名被旧 FEX 构建忽略，零副作用；opt conf（apply_opt_conf_env
+    # 在后）与容器 env=（apply_extra_env 在后）仍可覆盖。
+    [ "${WINE_ARCH:-}" != "aarch64" ] && return 0
+    local _preset
+    _preset="$(conf_read "$CONT_CONF" preset performance)"
+    case "$_preset" in
+        stability)
+            [ -z "${FEX_VECTORTSOENABLED:-}" ]    && export FEX_VECTORTSOENABLED=1
+            [ -z "${FEX_MEMCPYSETTSOENABLED:-}" ] && export FEX_MEMCPYSETTSOENABLED=1
+            info "性能档 arm64ec 线生效（FEX）：向量/REP-MOVS TSO 兜底（稳定优先）"
+            ;;
+        compatibility)
+            [ -z "${FEX_VECTORTSOENABLED:-}" ]    && export FEX_VECTORTSOENABLED=1
+            info "性能档 arm64ec 线生效（FEX）：向量 TSO 兜底（兼容优先）"
+            ;;
+        intermediate)
+            [ -z "${FEX_DISABLEL2CACHE:-}" ]      && export FEX_DISABLEL2CACHE=0
+            info "性能档 arm64ec 线生效（FEX）：JIT L2 cache 查找启用（进阶）"
+            ;;
+        performance|*)
+            [ -z "${FEX_DISABLEL2CACHE:-}" ]      && export FEX_DISABLEL2CACHE=0
+            [ -z "${FEX_DYNAMICL1CACHE:-}" ]      && export FEX_DYNAMICL1CACHE=0
+            [ -z "${FEX_X87REDUCEDPRECISION:-}" ] && export FEX_X87REDUCEDPRECISION=1
+            info "性能档 arm64ec 线生效（FEX）：JIT L1/L2 全量缓存 + x87 64 位精算提速（渲染毛刺→降一档即回）"
+            ;;
+    esac
 }
 
 apply_box64_env() {
@@ -1340,7 +1385,7 @@ opt_extract_into() { # <dstDir> <label> [候选归档...]
             info "解压 $_label → ${_dst#$RFS_ROOT}"
             return 0
         fi
-        # toybox tar 无 xz 支持时的兑底：xzcat 管道
+        # toybox tar 无 xz 支持时的兜底：xzcat 管道
         if command -v xzcat >/dev/null 2>&1 \
             && xzcat "$_f" 2>/dev/null | "$_tar" -x -C "$_dst" 2>/dev/null; then
             info "解压 $_label（xzcat 管道）→ ${_dst#$RFS_ROOT}"
@@ -1857,6 +1902,7 @@ audio_setup
 apply_gpu_env
 apply_vk_driver
 apply_android_safe_env
+apply_fex_preset_env
 apply_opt_conf_env
 apply_extra_env
 ensure_x11

@@ -494,6 +494,14 @@ object WineEnvironment {
         // 的裸 syscall(__NR_userfaultfd)。wine 11 树不读此变量（编译期已
         // 排除），导出无副作用。
         env.putIfAbsent("WINE_DISABLE_KERNEL_WRITEWATCH", "1")
+        // v3.3.35：winedbg 崩溃挂死修复（设备日志 wine-10-20261109 实证：
+        // 仙剑四页错误 → wine 拉起 syswow64\winedbg.exe —— 调试器本身
+        // 也是 32 位 wow64 进程、再经 FEX 转译，崩溃路径被拖长且弹调试
+        // 窗口，用户视角"游戏卡死"而非"游戏崩溃"）。winedbg=d 置
+        // disabled：未处理异常时 wine 打印异常行后进程直接退出。
+        // applyExtraEnv 的 dxoverrides 前插 —— 用户在最前面写
+        // winedbg=n,b 可恢复调试器。
+        env.putIfAbsent("WINEDLLOVERRIDES", "winedbg=d")
         if (arch != WineRuntime.Arch.AARCH64) return
         // v3.3.34：【HODLL 三处修复】（用户："启动参数加 hodll=libwow64fex.dll
         // 好像没有真正运行，好像也缺失 libarm64fex.dll 的使用"）
@@ -545,6 +553,64 @@ object WineEnvironment {
     private fun probeEmulatorDll(wineDir: File, name: String): Boolean =
         listOf("lib/wine/aarch64-windows", "lib/wine/arm64ec-windows", "lib/wine/x86_64-windows")
             .any { File(File(wineDir, it), name).isFile }
+
+    /**
+     * v3.3.35：性能档位在 arm64ec 后端真正生效（用户："我的项目所有性能
+     * 都没有提升，全在最低性能"）。
+     *
+     * 根因：[Box64Preset] 此前只映射 BOX64_DYNAREC_* —— box64 后端专属
+     * 变量。arm64ec 后端（aarch64 wine 原生 exec，不经 box64，设备日志
+     * wine-10-20261109-215749 实证：后端=arm64ec、导出 67 项中无任何
+     * FEX_*）下四档预设全部空转 —— 32 位游戏跑在 libwow64fex 的 FEX
+     * 转译上，性能旋钮在 FEX 侧不在 box64 侧。
+     *
+     * 事实链（FEX 官方 Config.json / wiki：配置层最高优先级为 FEX_ 前缀
+     * 环境变量，libwow64fex 是 FEX PE 构建、走同一套 Config 层，wine
+     * 子进程继承宿主环境；未知变量名被忽略 —— 旧 FEX 构建零副作用）：
+     * - DisableL2Cache 默认 true（省内存，代价是 JIT L2 cache 查找被
+     *   关，引入卡顿）；DynamicL1Cache 默认 true（L1 按需扩缩，同样省
+     *   内存换卡顿）。游戏机内存充裕 —— 性能档反着开：L2 查找启用 +
+     *   L1 固定全量，消灭动态收缩型卡顿（进阶档仅开 L2）。
+     * - X87ReducedPrecision 默认 false（x87 内部 80 位精算）。32 位老
+     *   游戏（仙剑四一类 2007 年 x87 密集 D3D9）x87 路径热，降 64 位
+     *   精度是显著提速项；上游注明 may result in rendering bugs ——
+     *   仅性能档启用，出渲染毛刺降一档即回。
+     * - VectorTSOEnabled / MemcpySetTSOEnabled 默认 false（FEX 2406 起
+     *   默认只保标量 TSO）；稳定/兼容档反向打开 = 更接近 x86 硬件
+     *   语义（向量/REP MOVS 原子化），老多线程游戏兼容兜底，代价是
+     *   该类访存变慢 —— 与 box64 线 STRONGMEM 档位语义对称。
+     *
+     * 层级：opt conf（applyOptConfEnv）与容器 env=（applyExtraEnv 直接
+     * 赋值）在其后执行 —— conf/用户显式 FEX_*= 仍可覆盖本预设值；
+     * putIfAbsent 仅防同函数内重复。
+     */
+    fun applyFexPresetEnv(
+        env: MutableMap<String, String>,
+        container: ContainerData,
+        log: (String) -> Unit = {}
+    ) {
+        when (container.preset) {
+            Box64Preset.STABILITY -> {
+                env.putIfAbsent("FEX_VECTORTSOENABLED", "1")
+                env.putIfAbsent("FEX_MEMCPYSETTSOENABLED", "1")
+                log("性能档 arm64ec 线生效（FEX）：向量/REP-MOVS TSO 兜底（稳定优先）")
+            }
+            Box64Preset.COMPATIBILITY -> {
+                env.putIfAbsent("FEX_VECTORTSOENABLED", "1")
+                log("性能档 arm64ec 线生效（FEX）：向量 TSO 兜底（兼容优先）")
+            }
+            Box64Preset.INTERMEDIATE -> {
+                env.putIfAbsent("FEX_DISABLEL2CACHE", "0")
+                log("性能档 arm64ec 线生效（FEX）：JIT L2 cache 查找启用（进阶）")
+            }
+            Box64Preset.PERFORMANCE -> {
+                env.putIfAbsent("FEX_DISABLEL2CACHE", "0")
+                env.putIfAbsent("FEX_DYNAMICL1CACHE", "0")
+                env.putIfAbsent("FEX_X87REDUCEDPRECISION", "1")
+                log("性能档 arm64ec 线生效（FEX）：JIT L1/L2 全量缓存 + x87 64 位精算提速（渲染毛刺→降一档即回）")
+            }
+        }
+    }
 
     // ------------------------------------------------------------------
     // 4) 音频 / 用户附加环境（audio_setup / apply_extra_env 的注入端）

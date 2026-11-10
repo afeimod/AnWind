@@ -260,20 +260,19 @@ custom_patch() {
 #   Winlator（WINLATOR_GLIBC 链）与 MiceWine（NDK bionic 链）的 box64
 #   构建【均显式 -DNOLOADADDR=ON】，本配方对齐 —— box64 运行时按
 #   /proc/self/maps 自适应任意基址（Termux 同款形态）。
-# v3.3.34（用户："32位游戏特别卡，肯定有东西没弄好"）：BOX32=ON。
-# 上游 option(BOX32 ... ${BOX32}) 默认 OFF —— 此前所有构建都没带
-# -DBOX32，box64 根本编不进 32 位 x86 ELF 加载器（elfloader32/
-# elfparser32/box32stack 等整段 if(BOX32) 列表不进 ELFLOADER_SRC）：
-# x86_64 wine 的 wow64 为 32 位 PE 拉起 i386 unix 侧（wine32 preloader
-# 是 i386 ELF）时被拒 → box64 后端下 32 位游戏直接没有可用路径
-# （"特别卡/不行"的box64线根因）。0.3.8 的 box32 dynarec 正是用户
-# 点名"对 32 兼容速度比较快"的那条线 —— 显式开启；0004 补丁
-# （elfparser32.c 的 DT_ANDROID_RELR）在 BOX32=ON 时随 32 位加载器
-# 一起进链，bionic 32 位 .so 的 RELR 重定位同样被覆盖。
-# 上游标注 "experimental" —— 与 MiceWine/Winlator 家族 32 位支持同款
-# 取舍；若上游某版本 box32 构建损坏，CI 冒烟（本 install() 段）会
-# 直接失败暴露，不带病发布。
-args="-DANDROID=ON -DBAD_SIGNAL=ON -DARM_DYNAREC=ON -DNOLOADADDR=ON -DBOX32=ON"
+# v3.3.35 勘误（box64-build-log-aarch64(5).zip 实证）：v3.3.34 的
+# -DBOX32=ON 是误诊。arm64ec hangover-wine 架构下 32 位 Windows PE
+# 由 wine 进程内部 wow64 处理（libwow64fex.dll FEX 转译 x86→arm64），
+# unix 侧 wine 是纯 64 位 arm64 ELF —— box32（Linux i386 ELF 加载器）
+# 不在任何 Windows 游戏的执行路径上。BOX32=ON 唯一的实际效果是引入
+# src/libtools/myalign32.c 的 #include <obstack.h>：obstack 是 glibc
+# 专有扩展（bionic/NDK 从未提供，box64 树内 obstack.c 同样是消费者
+# 而非实现），aarch64 构建在 51% 处 fatal error: 'obstack.h' file not
+# found（日志 1849 行）—— 0.3.8/0.4.4 两版本同样中招，与补丁线无关。
+# 用户"0.3.8 对 32 兼容速度快"的正解在 wine 侧（HODLL=libwow64fex.dll
+# + libarm64fex.dll 注入，见 WineEnvironment.kt）而非 box32。上游 option
+# 原文即 "experimental, do not use"，保持 OFF。
+args="-DANDROID=ON -DBAD_SIGNAL=ON -DARM_DYNAREC=ON -DNOLOADADDR=ON"
 
 # 运行时配套闭包（见头部【deps 说明】：非编译期依赖，是保证
 # "完整文件集"一次到位的构建顺序声明）

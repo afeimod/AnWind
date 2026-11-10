@@ -914,13 +914,16 @@ object RootfsLauncher {
                         // 驱动目录前插 LD_LIBRARY_PATH（附属 .so 解析；wine 的
                         // LD_LIBRARY_PATH 首段是 rootfs/usr/lib，驱动目录更优先）
                         val driverDir = act.driverDir
+                        // v3.3.35：act 是 var（上方 wrapper 重路由可能重赋值），
+                        // act.adrenotoolsDriverDir 为不稳定表达式、无法 smart cast
+                        //（CI compileReleaseKotlin 实报）—— 先落局部 val 再判空。
+                        val adrenoDriverDir = act.adrenotoolsDriverDir
                         val ldParts = buildList {
                             add(driverDir.absolutePath)
                             // v3.3.20：路由模式下 turnip 本体目录也前插 —— 其
                             // 附属 .so（如有）按目录优先级解析
-                            if (act.adrenotoolsDriverDir != null &&
-                                act.adrenotoolsDriverDir != driverDir
-                            ) add(act.adrenotoolsDriverDir.absolutePath)
+                            if (adrenoDriverDir != null && adrenoDriverDir != driverDir)
+                                add(adrenoDriverDir.absolutePath)
                             env["LD_LIBRARY_PATH"]?.takeIf { it.isNotBlank() }?.let { add(it) }
                         }
                         env["LD_LIBRARY_PATH"] = ldParts.joinToString(":")
@@ -962,21 +965,25 @@ object RootfsLauncher {
                                         sink.stamp("⚠ adrenotools 临时目录创建失败：${it.message}")
                                     }
                             }
-                            if (act.adrenotoolsDriverName != null && act.adrenotoolsDriverDir != null) {
+                            // v3.3.35：同上 —— var 接收者的属性判空后直接使用
+                            // 无法 smart cast，先落局部 val。
+                            val adrenoDriverName = act.adrenotoolsDriverName
+                            val adrenoDriverDir = act.adrenotoolsDriverDir
+                            if (adrenoDriverName != null && adrenoDriverDir != null) {
                                 // v3.3.28：尾斜杠对齐 WinlatorXR（AdrenotoolsManager
                                 // setDriverById 的 driverPath 拼法 `dir + "/"`）——
                                 // 部分 wrapper 栈按 driverPath 直接拼接子路径
                                 // （temp/、driver 库名），无尾斜杠时拼出
                                 // "dirtemp" 类错误路径。
-                                env["ADRENOTOOLS_DRIVER_PATH"] = act.adrenotoolsDriverDir.absolutePath.let {
+                                env["ADRENOTOOLS_DRIVER_PATH"] = adrenoDriverDir.absolutePath.let {
                                     if (it.endsWith("/")) it else "$it/"
                                 }
-                                env["ADRENOTOOLS_DRIVER_NAME"] = act.adrenotoolsDriverName
+                                env["ADRENOTOOLS_DRIVER_NAME"] = adrenoDriverName
                                 sink.stamp(
                                     "wrapper 栈激活（${
                                         if (act.routedFromWrapperSlot != null) "android 平台驱动，经 ${act.routedFromWrapperSlot} 的 wrapper 栈路由"
                                         else "本槽位 wrapper 栈"
-                                    }）：adrenotools 加载 ${act.adrenotoolsDriverName}，X11 WSI 由 wrapper 提供" +
+                                    }）：adrenotools 加载 $adrenoDriverName，X11 WSI 由 wrapper 提供" +
                                         (act.adrenotoolsHooksDir?.let { "（hooks=${it.name}/）" } ?: "")
                                 )
                             } else {
@@ -1069,6 +1076,14 @@ object RootfsLauncher {
                 container.env + if (argEnvTokens.isEmpty()) "" else " " + argEnvTokens.joinToString(" "),
                 fexMode = container.hasFlag(com.anwind.apps.containers.ContainerFlags.FEXMODE)
             )
+
+            // v3.3.35：arm64ec 线性能档位 —— BOX64_DYNAREC_* 在此线全空转
+            //（aarch64 wine 原生 exec 不经 box64），预设改映射 FEX_ 前缀
+            // 环境变量（libwow64fex/libarm64ecfex 配置层最高优先级）。
+            // opt conf 与容器 env= 在其后执行，仍可覆盖。
+            if (resolved.backend == ContainerBackend.ARM64EC) {
+                WineEnvironment.applyFexPresetEnv(env, container) { sink.stamp(it) }
+            }
 
             // 6c) v3.2.25（用户问题：wine 启动没读 rootfs/opt/conf 与
             //     locale.conf）：/opt 生态环境（startwine.sh/startfex.sh

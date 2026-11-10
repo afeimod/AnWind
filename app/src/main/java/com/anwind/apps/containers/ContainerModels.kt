@@ -92,10 +92,14 @@ enum class Box64Preset(
     // v3.3.28：描述文案对齐 v3.3.21 实际注入值 —— 四档 SAFEFLAGS 全部
     // 为 0（用户实测定稿：box64 0.4.2~0.4.4 任何版本 SAFEFLAGS=0 均正常，
     // 1/2 反而触发 ntdll 早期初始化 SIGSEGV；旧文案写 SAFEFLAGS=2 已失真）。
-    STABILITY("stability", "稳定优先", "SAFEFLAGS=0+STRONGMEM=2，最稳档"),
-    COMPATIBILITY("compatibility", "兼容优先", "SAFEFLAGS=0+STRONGMEM=1，更稳定"),
-    INTERMEDIATE("intermediate", "进阶", "BIGBLOCK=2+CALLRET=1，速度与兼容平衡"),
-    PERFORMANCE("performance", "性能优先", "BIGBLOCK=3+全快路径，适合多数游戏");
+    // v3.3.35：arm64ec 线同档生效（WineEnvironment.applyFexPresetEnv ——
+    // BOX64_DYNAREC_* 仅 box64 线消费，arm64ec 线此前四档全空转）；
+    // 描述补 FEX 侧注入值，PERFORMANCE 的旧文案 BIGBLOCK=3 一并修正
+    //（v3.3.21 起 box64 侧实际 BIGBLOCK=1=上游默认+全快路径开关）。
+    STABILITY("stability", "稳定优先", "box64:STRONGMEM=2；FEX:向量/REP-MOVS全TSO，最稳档"),
+    COMPATIBILITY("compatibility", "兼容优先", "box64:STRONGMEM=1；FEX:向量TSO，更稳定"),
+    INTERMEDIATE("intermediate", "进阶", "box64:BIGBLOCK=2；FEX:L2缓存启用，速度与兼容平衡"),
+    PERFORMANCE("performance", "性能优先", "box64:全快路径；FEX:L1/L2全量+x87提速，适合多数游戏");
 
     companion object {
         fun fromId(id: String?): Box64Preset =
