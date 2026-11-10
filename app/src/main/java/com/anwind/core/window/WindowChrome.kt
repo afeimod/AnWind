@@ -8,6 +8,7 @@ import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Fullscreen
@@ -195,7 +196,22 @@ fun WindowChrome(
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(theme.windowTitleBarHeight)
-                    .background(theme.windowTitleBarColor)
+                    // v3.3.40（用户需求 5）：Win7 Aero 玻璃渐变标题栏
+                    //（截图同款：顶部高光 → 浅蓝玻璃 → 底部过渡；其余主题
+                    // 保持原纯色标题栏）
+                    .background(
+                        if (theme.windowChrome == com.anwind.core.theme.WindowChrome.AERO && !theme.isDark)
+                            androidx.compose.ui.graphics.Brush.verticalGradient(
+                                listOf(
+                                    Color(0xFFFCFDFF),
+                                    theme.windowTitleBarColor,
+                                    Color(0xFFD6E6F6).copy(alpha = 0.95f)
+                                )
+                            )
+                        else androidx.compose.ui.graphics.Brush.verticalGradient(
+                            listOf(theme.windowTitleBarColor, theme.windowTitleBarColor)
+                        )
+                    )
                     .pointerInput(state.id) {
                         detectDragGestures(
                             onDragStart = {
@@ -603,9 +619,28 @@ private fun ControlButton(
     isClose: Boolean = false,
     onClick: () -> Unit
 ) {
+    // v3.3.40（用户需求 5）：Win7 Aero 资源管理器式按钮 —— 玻璃渐变底 +
+    // 高光描边 + 底线（悬停/按下的按压态交给默认 press 透明度）；关闭键
+    // 红调。其余主题维持旧无边框形态。
+    val aero = theme.windowChrome == com.anwind.core.theme.WindowChrome.AERO && !theme.isDark
     Box(
         modifier = Modifier
             .size(width = 46.dp, height = theme.windowTitleBarHeight)
+            .then(
+                if (aero) Modifier
+                    .background(
+                        androidx.compose.ui.graphics.Brush.verticalGradient(
+                            if (isClose) listOf(Color(0xFFF6D9D5), Color(0xFFE9A9A0))
+                            else listOf(Color(0xFFF7FAFD), Color(0xFFD9E8F5))
+                        )
+                    )
+                    .border(
+                        0.5.dp,
+                        if (isClose) Color(0xFFC96A5F) else Color(0xFF9AB6D4),
+                        RectangleShape
+                    )
+                else Modifier
+            )
             .pointerInput(Unit) {
                 detectTapGestures(onTap = { onClick() })
             },
@@ -614,7 +649,7 @@ private fun ControlButton(
         Icon(
             imageVector = icon,
             contentDescription = null,
-            tint = if (isClose) Color(0xFFE81123) else theme.windowTitleBarTextColor,
+            tint = if (isClose) Color(0xFF9E2A21) else Color(0xFF16324E),
             modifier = Modifier.size(12.dp)
         )
     }

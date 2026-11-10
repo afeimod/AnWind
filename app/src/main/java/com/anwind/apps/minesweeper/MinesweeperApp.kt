@@ -55,7 +55,8 @@ val MinesweeperApp = AppDef(
     defaultWidth = 366.dp,
     defaultHeight = 488.dp,
     pinnedToDesktop = false,    // v3.3.10：桌面图标精简（保留在开始菜单）
-    pinnedToTaskbar = true
+    // v3.3.40（用户需求 5）：任务栏固定图标移除（保留在开始菜单）
+    pinnedToTaskbar = false
 ) { scope ->
     MinesweeperContent(scope)
 }

@@ -28,6 +28,10 @@ object WineRegistry {
     /**
      * 确保注册表已写入 EmulateModeset=Y。
      *
+     * v3.3.40【JSON 打入】：改经 [JsonRegistry] 直接文本合并进 user.reg ——
+     * 旧链路（拉起 `wine reg add` 客户端，每次 1~3s 进程开销）全部移除；
+     * wineserver 在跑时先收尾（内存缓存落盘，防回写覆盖直写）。
+     *
      * @return true 表示已就位（含标记命中）；false 表示本次写入失败
      *         （下次启动自动重试，不阻断容器启动）。
      */
@@ -38,29 +42,27 @@ object WineRegistry {
         log: (String) -> Unit = {}
     ): Boolean {
         val prefix = File(container.prefixPath)
+        if (!File(prefix, "system.reg").isFile) return true   // 前缀未建：留给 wineboot 后的下次启动
         if (marker(prefix).isFile) return true
         log("写入 EmulateModeset=Y（显示模式虚拟化——修复游戏枚举不到显示模式/设备创建失败）……")
         return try {
-            val cmd = NativeShellExecutor.create()
-                .setCommand(
-                    *WineRuntime.wineCommand(resolved).toTypedArray(),
-                    "reg", "add",
-                    "HKCU\\Software\\Wine\\X11 Driver",
-                    "/v", "EmulateModeset",
-                    "/t", "REG_SZ",
-                    "/d", "Y",
-                    "/f"
-                )
-                .putEnv(env)
-                .putEnv("WINEPREFIX", container.prefixPath)
-                .setWorkingDir(WineEnvironment.RUNTIME_DIR)
-                .exec()
-            val code = cmd.waitFor()
-            if (code == 0) {
+            val edits = org.json.JSONArray().put(
+                org.json.JSONObject()
+                    .put("hive", "HKCU")
+                    .put("key", "Software\\Wine\\X11 Driver")
+                    .put("values", org.json.JSONArray().put(
+                        org.json.JSONObject()
+                            .put("name", "EmulateModeset")
+                            .put("type", "sz")
+                            .put("data", "Y")
+                    ))
+            )
+            val err = JsonRegistry.apply(prefix, resolved, container, env, edits, log)
+            if (err == null) {
                 runCatching { marker(prefix).createNewFile() }
                 true
             } else {
-                log("警告: EmulateModeset 写入失败（wine 未就绪？下次启动自动重试）")
+                log("警告: EmulateModeset 写入失败（$err；下次启动自动重试）")
                 false
             }
         } catch (e: Exception) {
@@ -83,9 +85,12 @@ object WineRegistry {
      * enable=false → 删两键（脚本 apply_virtual_desktop_settings 关闭
      * 分支 + -f 清 -d 注册表防双窗口的同款动作；也是旧版"清蓝底"）。
      *
+     * v3.3.40【JSON 打入】：改经 [JsonRegistry] 直接文本合并 —— 旧链路每次
+     * 状态变化拉起 2 个 `wine reg` 客户端（2~6s）；新链路零进程。
+     *
      * 幂等标记：<prefix>/drive_c/anwind/.anwind-vd-state（"on:WxH" /
-     * "off"）—— 状态未变时跳过 wine reg 启动开销（每次约 1~3s）。
-     * 标记缺失且目标为关闭时视为干净（新前缀无桌面键），零动作。
+     * "off"）—— 状态未变时跳过。标记缺失且目标为关闭时视为干净
+     * （新前缀无桌面键），零动作。
      */
     fun setVirtualDesktopRegistry(
         resolved: WineRuntime.Resolved,
@@ -103,35 +108,55 @@ object WineRegistry {
             val prev = runCatching { mark.readText().trim() }.getOrDefault("")
             if (prev == want) return                          // 已就位
             if (!enable && prev.isEmpty()) return             // 从未开过 → 视为干净
-            val cmds = if (enable) listOf(
-                arrayOf(
-                    "reg", "add", "HKCU\\Software\\Wine\\Explorer",
-                    "/v", "Desktop", "/t", "REG_SZ", "/d", "Default", "/f"
-                ),
-                arrayOf(
-                    "reg", "add", "HKCU\\Software\\Wine\\Explorer\\Desktops",
-                    "/v", "Default", "/t", "REG_SZ", "/d", resolution, "/f"
+            val edits = org.json.JSONArray()
+            if (enable) {
+                edits.put(
+                    org.json.JSONObject()
+                        .put("hive", "HKCU")
+                        .put("key", "Software\\Wine\\Explorer")
+                        .put("values", org.json.JSONArray().put(
+                            org.json.JSONObject().put("name", "Desktop")
+                                .put("type", "sz").put("data", "Default")
+                        ))
                 )
-            ) else listOf(
-                arrayOf("reg", "delete", "HKCU\\Software\\Wine\\Explorer", "/v", "Desktop", "/f"),
-                arrayOf("reg", "delete", "HKCU\\Software\\Wine\\Explorer\\Desktops", "/f")
-            )
-            for (args in cmds) {
-                NativeShellExecutor.create()
-                    .setCommand(*WineRuntime.wineCommand(resolved).toTypedArray(), *args)
-                    .putEnv(env)
-                    .putEnv("WINEPREFIX", container.prefixPath)
-                    .setWorkingDir(WineEnvironment.RUNTIME_DIR)
-                    .exec()
-                    .waitFor(15, java.util.concurrent.TimeUnit.SECONDS)
+                edits.put(
+                    org.json.JSONObject()
+                        .put("hive", "HKCU")
+                        .put("key", "Software\\Wine\\Explorer\\Desktops")
+                        .put("values", org.json.JSONArray().put(
+                            org.json.JSONObject().put("name", "Default")
+                                .put("type", "sz").put("data", resolution)
+                        ))
+                )
+            } else {
+                edits.put(
+                    org.json.JSONObject()
+                        .put("hive", "HKCU")
+                        .put("key", "Software\\Wine\\Explorer")
+                        .put("values", org.json.JSONArray().put(
+                            org.json.JSONObject().put("name", "Desktop")
+                                .put("type", "delete")
+                        ))
+                )
+                edits.put(
+                    org.json.JSONObject()
+                        .put("hive", "HKCU")
+                        .put("key", "Software\\Wine\\Explorer\\Desktops")
+                        .put("delete", true)
+                )
+            }
+            val err = JsonRegistry.apply(prefix, resolved, container, env, edits, log)
+            if (err != null) {
+                log("⚠ 虚拟桌面注册表 JSON 直写失败：$err（下次启动重试）")
+                return
             }
             runCatching {
                 mark.parentFile?.mkdirs()
                 mark.writeText(want)
             }
             log(
-                if (enable) "独立窗口(-f)：虚拟桌面注册表已写入（Explorer Desktops Default=$resolution）"
-                else "虚拟桌面注册表已清除（关闭 wine 桌面/清蓝底）"
+                if (enable) "独立窗口(-f)：虚拟桌面注册表已写入（Explorer Desktops Default=$resolution，JSON 直写）"
+                else "虚拟桌面注册表已清除（关闭 wine 桌面/清蓝底，JSON 直写）"
             )
         }.onFailure { log("⚠ 虚拟桌面注册表写入异常：${it.message}（下次启动重试）") }
     }
@@ -330,7 +355,9 @@ object WineRegistry {
      *     绘制（BMP 为 wine 唯一保真格式）；渲染不出时桌面显示第 4 项
      *     兜底色，无副作用。
      *
-     * 单次 wine regedit /s 导入全部键（一个 wine 进程完成，不逐键起进程）。
+     * v3.3.40【JSON 打入】：整包键值改为 JSON 描述，经 [JsonRegistry]
+     * 直接合并进 user.reg —— 零 wine 进程拉起（旧链路：生成 .reg +
+     * `wine regedit /s` 客户端，1~3s）。
      * @return true 表示已就位（含标记命中）。
      */
     fun ensureModernLook(
@@ -342,72 +369,82 @@ object WineRegistry {
         val prefix = File(container.prefixPath)
         if (!File(prefix, "system.reg").isFile) return true   // 前缀未建：留给 wineboot 后的下次启动
         if (modernUiMarker(prefix).isFile) return true
-        log("应用 wine 窗口现代化外观（ClearType / 拖动内容 / light 主题 / 现代配色 / 壁纸）……")
+        log("应用 wine 窗口现代化外观（ClearType / 拖动内容 / light 主题 / 现代配色 / 壁纸，JSON 直写）……")
         return try {
             val anwindDir = File(prefix, "drive_c/anwind")
             anwindDir.mkdirs()
 
             // ---- 第 5 件：程序化渐变壁纸（24bit BMP） ----
             val wallpaperWin = if (generateModernWallpaper(File(anwindDir, "wallpaper.bmp"))) {
-                "C:\\\\anwind\\\\wallpaper.bmp"
+                "C:\\anwind\\wallpaper.bmp"
             } else ""
 
-            // ---- 第 3 件：主题文件探测（light 优先，aero 兜底；大小写不敏感——
-            //      Linux 文件系统区分大小写，个别 wine 包目录形态与 wine.inf 不一致）----
+            // ---- 第 3 件：主题文件探测（light 优先，aero 兑底；大小写不敏感——
+            //      Linux 文件系统区分大小写，注册表 DllName 必须与实际目录/文件名
+            //      逐字一致才能被 uxtheme 打开）----
             val theme = findModernTheme(prefix)
-            // ---- 汇总 .reg（REGEDIT4 / ASCII，无编码坑） ----
-            val reg = buildString {
-                appendLine("REGEDIT4")
-                appendLine()
-                appendLine("[HKEY_CURRENT_USER\\Control Panel\\Desktop]")
-                appendLine("\"FontSmoothing\"=\"2\"")
-                appendLine("\"FontSmoothingType\"=dword:00000002")
-                appendLine("\"FontSmoothingGamma\"=dword:000003e8")
-                appendLine("\"FontSmoothingOrientation\"=dword:00000001")
-                appendLine("\"DragFullWindows\"=\"1\"")
-                if (wallpaperWin.isNotEmpty()) {
-                    appendLine("\"Wallpaper\"=\"$wallpaperWin\"")
-                    appendLine("\"WallpaperStyle\"=\"2\"")
-                    appendLine("\"TileWallpaper\"=\"0\"")
-                }
-                appendLine()
-                appendLine("[HKEY_CURRENT_USER\\Control Panel\\Colors]")
-                appendLine("\"Background\"=\"47 54 68\"")
-                appendLine("\"Highlight\"=\"0 120 215\"")
-                appendLine("\"HotTrackingColor\"=\"0 102 204\"")
-                appendLine()
-                if (theme != null) {
-                    appendLine("[HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\ThemeManager]")
-                    appendLine("\"ThemeActive\"=\"1\"")
-                    appendLine("\"DllName\"=\"${theme.second.replace("\\", "\\\\")}\"")
-                    appendLine("\"ColorName\"=\"${theme.third}\"")
-                    appendLine("\"SizeName\"=\"NormalSize\"")
-                    appendLine()
-                }
-            }
-            val regFile = File(anwindDir, "modern-ui.reg")
-            regFile.writeText(reg)
 
-            val cmd = NativeShellExecutor.create()
-                .setCommand(*WineRuntime.wineCommand(resolved).toTypedArray(),
-                            "regedit", "/s", "C:\\anwind\\modern-ui.reg")
-                .putEnv(env)
-                .putEnv("WINEPREFIX", container.prefixPath)
-                .setWorkingDir(WineEnvironment.RUNTIME_DIR)
-                .exec()
-            // 超时即告失败（不阻塞启动链；不落标记 → 下次启动自动重试）
-            val finished = runCatching { cmd.waitFor(120, TimeUnit.SECONDS) }.getOrDefault(false)
-            val code = if (finished) runCatching { cmd.waitFor() }.getOrDefault(-1) else -1
-            if (finished && code == 0) {
+            // ---- 汇总为 JSON 编辑（hive/key/values → JsonRegistry 直接合并） ----
+            val edits = org.json.JSONArray()
+            val desktop = org.json.JSONObject()
+                .put("hive", "HKCU")
+                .put("key", "Control Panel\\Desktop")
+                .put(
+                    "values", org.json.JSONArray()
+                        .put(org.json.JSONObject().put("name", "FontSmoothing").put("type", "sz").put("data", "2"))
+                        .put(org.json.JSONObject().put("name", "FontSmoothingType").put("type", "dword").put("data", 2))
+                        .put(org.json.JSONObject().put("name", "FontSmoothingGamma").put("type", "dword").put("data", 1000))
+                        .put(org.json.JSONObject().put("name", "FontSmoothingOrientation").put("type", "dword").put("data", 1))
+                        .put(org.json.JSONObject().put("name", "DragFullWindows").put("type", "sz").put("data", "1"))
+                )
+            if (wallpaperWin.isNotEmpty()) {
+                desktop.getJSONArray("values")
+                    .put(org.json.JSONObject().put("name", "Wallpaper").put("type", "sz").put("data", wallpaperWin))
+                    .put(org.json.JSONObject().put("name", "WallpaperStyle").put("type", "sz").put("data", "2"))
+                    .put(org.json.JSONObject().put("name", "TileWallpaper").put("type", "sz").put("data", "0"))
+            }
+            edits.put(desktop)
+            edits.put(
+                org.json.JSONObject()
+                    .put("hive", "HKCU")
+                    .put("key", "Control Panel\\Colors")
+                    .put(
+                        "values", org.json.JSONArray()
+                            .put(org.json.JSONObject().put("name", "Background").put("type", "sz").put("data", "47 54 68"))
+                            .put(org.json.JSONObject().put("name", "Highlight").put("type", "sz").put("data", "0 120 215"))
+                            .put(org.json.JSONObject().put("name", "HotTrackingColor").put("type", "sz").put("data", "0 102 204"))
+                    )
+            )
+            if (theme != null) {
+                edits.put(
+                    org.json.JSONObject()
+                        .put("hive", "HKCU")
+                        .put("key", "Software\\Microsoft\\Windows\\CurrentVersion\\ThemeManager")
+                        .put(
+                            "values", org.json.JSONArray()
+                                .put(org.json.JSONObject().put("name", "ThemeActive").put("type", "sz").put("data", "1"))
+                                .put(org.json.JSONObject().put("name", "DllName").put("type", "sz").put("data", theme.second))
+                                .put(org.json.JSONObject().put("name", "ColorName").put("type", "sz").put("data", theme.third))
+                                .put(org.json.JSONObject().put("name", "SizeName").put("type", "sz").put("data", "NormalSize"))
+                        )
+                )
+            }
+            // JSON 文本留档（drive_c/anwind/modern-ui.json，调试/审计可读）
+            runCatching {
+                File(anwindDir, "modern-ui.json").writeText(edits.toString(2))
+            }
+
+            val err = JsonRegistry.apply(prefix, resolved, container, env, edits, log)
+            if (err == null) {
                 runCatching { modernUiMarker(prefix).writeText(buildString {
                     appendLine("applied=1")
                     appendLine("wallpaper=${wallpaperWin.isNotEmpty()}")
                     appendLine("theme=${theme?.first ?: "none"}")
                 }) }
-                log("wine 窗口现代化外观已生效（主题=${theme?.first ?: "未启用（前缀无内置主题文件）"}，壁纸=${if (wallpaperWin.isNotEmpty()) "已安装" else "生成失败跳过"}）")
+                log("wine 窗口现代化外观已生效（主题=${theme?.first ?: "未启用（前缀无内置主题文件）"}，壁纸=${if (wallpaperWin.isNotEmpty()) "已安装" else "生成失败跳过"}；JSON 直写零进程）")
                 true
             } else {
-                log("警告: 现代化外观导入未确认成功（退出码=$code；下次启动自动重试）")
+                log("警告: 现代化外观 JSON 直写失败（$err；下次启动自动重试）")
                 false
             }
         } catch (e: Exception) {
@@ -761,6 +798,19 @@ object WineRegistry {
     ): Boolean {
         val cacheKey = "${resolved.wineDir.absolutePath}|${resolved.backend.id}|${container.name}"
         smokeTested[cacheKey]?.let { return it }
+        // v3.3.40【性能】：跨重启持久标记（内容 = wine 主程序 mtime）——
+        // 旧版缓存仅进程内，每次 App 重启后首个 wineboot 会话都要重拉
+        // `wine --version` 子进程（1s 级）；二进制未换（mtime 一致）即免测。
+        val sm = File(resolved.wineDir, ".anwind-smoketest-ok")
+        val wantMtime = runCatching { resolved.wineBinary.lastModified() }.getOrDefault(-1L)
+        if (sm.isFile && wantMtime > 0) {
+            val recorded = runCatching { sm.readText().trim().toLongOrNull() }.getOrNull()
+            if (recorded == wantMtime) {
+                smokeTested[cacheKey] = true
+                log("加载器冒烟测试: 持久标记命中（wine 主程序未变化，免重测）")
+                return true
+            }
+        }
         log("加载器冒烟测试: ${WineRuntime.wineCommand(resolved).joinToString(" ")} --version …")
         // v3.2.3：剥离 WINELOADERNOEXEC —— wine ≤10 树的 --version 分发
         // （check_command_line）与该变量同一守卫块，不剥离会把
@@ -805,7 +855,12 @@ object WineRegistry {
                 }
             }
             // 只缓存成功结果：失败不缓存（用户重装/重编 wine 包后下次自动重测）
-            if (ok) smokeTested[cacheKey] = true
+            if (ok) {
+                smokeTested[cacheKey] = true
+                if (wantMtime > 0) {
+                    runCatching { sm.writeText(wantMtime.toString()) }
+                }
+            }
             ok
         } catch (e: Exception) {
             log("加载器冒烟测试异常: ${e.message}")
@@ -1056,33 +1111,36 @@ object WineRegistry {
             }
             val totalValues = sections.values.sumOf { it.size }
             log("清洗 AppDefaults DllOverrides（${sections.keys.size} 个游戏键 / $totalValues 个值 —— 恢复 wine 默认加载序）……")
-            val sb = StringBuilder()
-            sb.append("WINE REGISTRY Version 2\n\n")
+            // v3.3.40【JSON 打入】：删除值改为 JSON 描述经 [JsonRegistry] 直
+            // 接从 user.reg 文本移除 —— 旧链路生成删除语义 .reg 再拉起
+            // `wine regedit /S`（1~3s）；新链路零 wine 进程。
+            val edits = org.json.JSONArray()
             sections.forEach { (key, names) ->
-                sb.append('[').append(key).append("]\n")
+                val values = org.json.JSONArray()
                 names.forEach { n ->
-                    if (n == "@") sb.append("@=-\n")
-                    else sb.append('"').append(n).append("\"=-\n")
+                    values.put(
+                        org.json.JSONObject()
+                            .put("name", n)
+                            .put("type", "delete")
+                    )
                 }
-                sb.append('\n')
+                edits.put(
+                    org.json.JSONObject()
+                        .put("hive", "HKCU")
+                        .put("key", key.replace("\\\\", "\\"))
+                        .put("values", values)
+                )
             }
-            val workDir = File(prefix, ".anwind-regtmp")
-            workDir.mkdirs()
-            val del = File(workDir, "purge-appdefaults.reg")
-            del.writeText(sb.toString())
-            val cmd = NativeShellExecutor.create()
-                .setCommand(*WineRuntime.wineCommand(resolved).toTypedArray(), "regedit", "/S", del.absolutePath)
-                .putEnv(env)
-                .putEnv("WINEPREFIX", container.prefixPath)
-                .setWorkingDir(WineEnvironment.RUNTIME_DIR)
-                .exec()
-            val code = cmd.waitFor()
-            if (code == 0) {
+            val err = JsonRegistry.apply(
+                File(container.prefixPath), resolved, container, env,
+                edits, log
+            )
+            if (err == null) {
                 runCatching { appDefaultsPurgeMarker(prefix).createNewFile() }
-                log("清洗 AppDefaults DllOverrides 完成 ✓（键壳保留无碍；/opt/prefix 导入侧此后自动剥段）")
+                log("清洗 AppDefaults DllOverrides 完成 ✓（JSON 直删；键壳保留无碍；/opt/prefix 导入侧此后自动剥段）")
                 true
             } else {
-                log("警告: AppDefaults 清洗 regedit 退出码 $code（下次启动重试）")
+                log("警告: AppDefaults 清洗 JSON 直删失败（$err；下次启动重试）")
                 false
             }
         } catch (e: Exception) {
@@ -1206,29 +1264,85 @@ object WineRegistry {
             }.onFailure { log("警告: marlett.ttf 复制失败: ${it.message}") }
         }
 
-        // ④ 注册表导入（wine regedit 客户端 —— 与 ensureEmulateModeset 同一通路）
+        // ④ 注册表导入（v3.3.40【JSON 打入】）：
+        //     a. prefix/*.json —— 生态包/用户侧资产直接 [JsonRegistry] 文本
+        //        合并（零 wine 进程，“注册表打入用 JSON” 的外部入口）；
+        //     b. 存量 .reg（user.reg/system.reg/fix-services.reg）—— 规范化
+        //        后【三合一】单次 `wine regedit /S` 导入（旧链路 3 次
+        //        regedit 进程拉起 → 1 次；外部 .reg 文本为生态包资产，
+        //        保持 regedit 通道由 wineserver 保证合并语义）。
         val regTmpDir = File(prefix, ".anwind-regtmp")
-        listOf("user.reg", "system.reg", "fix-services.reg").forEach { name ->
-            val reg = File(pd, name)
-            if (!reg.isFile) return@forEach
-            log("导入注册表: $name")
-            runCatching {
-                // v3.3.3（用户问题 4）：bionic regedit 兼容性规范化 ——
-                // 编码/BOM/头行/换行自动修复后以副本导入（见函数注释）。
-                val importFile = normalizeRegForBionic(reg, regTmpDir, log) ?: reg
-                val cmd = NativeShellExecutor.create()
-                    // v3.3.2：补 /S 静默 —— regedit 导入失败时的错误弹窗
-                    //（GUI 对话框）会阻塞前缀构建窗口，静默化后错误只进
-                    // 日志（退出码非 0 照旧大声告警）。
-                    .setCommand(*WineRuntime.wineCommand(resolved).toTypedArray(), "regedit", "/S", importFile.absolutePath)
-                    .putEnv(env)
-                    .putEnv("WINEPREFIX", container.prefixPath)
-                    .setWorkingDir(WineEnvironment.RUNTIME_DIR)
-                    .exec()
-                val code = cmd.waitFor()
-                if (code != 0) log("警告: regedit $name 退出码 $code（继续其余步骤）")
-                else log("导入注册表: $name ✓")
-            }.onFailure { log("警告: regedit $name 异常: ${it.message}") }
+        val regNames = listOf("user.reg", "system.reg", "fix-services.reg")
+        // ④a JSON 直写通道
+        runCatching {
+            val jsonFiles = pd.listFiles { f ->
+                f.isFile && f.name.endsWith(".json")
+            }.orEmpty()
+            for (jf in jsonFiles) {
+                log("导入注册表(JSON): ${jf.name}")
+                val err = JsonRegistry.applyJsonFile(
+                    jf, prefix, resolved, container, env, log
+                )
+                if (err != null) log("警告: ${jf.name} JSON 直写失败（$err；继续其余步骤）")
+                else log("导入注册表(JSON): ${jf.name} ✓（零 wine 进程）")
+            }
+        }.onFailure { log("警告: prefix/*.json 导入异常: ${it.message}（继续）") }
+        // ④b .reg 批量通道（三合一单次 regedit）
+        run {
+            val bodies = StringBuilder()
+            val imported = mutableListOf<String>()
+            for (name in regNames) {
+                val reg = File(pd, name)
+                if (!reg.isFile) continue
+                val normalized = normalizeRegForBionic(reg, regTmpDir, log) ?: reg
+                runCatching {
+                    val text = normalized.readText()
+                    // 剥头行/头部空行后拼接（REGEDIT4/5.00 头只保留首个；
+                    // 首个文件的头随首体进入）
+                    var t = text
+                    val first = t.lineSequence().firstOrNull { it.isNotBlank() } ?: ""
+                    val hasHeader = first.startsWith("WINE REGISTRY") ||
+                        first.equals("REGEDIT4", true) ||
+                        first.startsWith("Windows Registry Editor")
+                    if (hasHeader) {
+                        t = t.substringAfter('\n')
+                        while (t.startsWith("\n") || t.startsWith("\r")) t = t.substring(1)
+                    }
+                    if (bodies.isNotEmpty()) bodies.append('\n')
+                    bodies.append(t)
+                    imported.add(name)
+                }.onFailure { log("警告: ${name} 读取失败: ${it.message}") }
+            }
+            if (imported.isNotEmpty()) {
+                log("导入注册表: ${imported.joinToString(" + ")}（三合一单次 regedit）")
+                runCatching {
+                    val merged = File(regTmpDir, "opt-prefix-merged.reg")
+                    regTmpDir.mkdirs()
+                    merged.writeText(
+                        "WINE REGISTRY Version 2\n\n" + bodies.toString()
+                    )
+                    val cmd = NativeShellExecutor.create()
+                        .setCommand(
+                            *WineRuntime.wineCommand(resolved).toTypedArray(),
+                            "regedit", "/S", merged.absolutePath
+                        )
+                        .putEnv(env)
+                        .putEnv("WINEPREFIX", container.prefixPath)
+                        .setWorkingDir(WineEnvironment.RUNTIME_DIR)
+                        .exec()
+                    val code = cmd.waitFor()
+                    if (code != 0) log("警告: regedit 批量导入退出码 $code（继续其余步骤）")
+                    else log("导入注册表: ${imported.joinToString(" + ")} ✓")
+                }.onFailure { log("警告: regedit 批量导入异常: ${it.message}") }
+            }
+        }
+        // ⑤c（提前）：注册表写完先收尾 wineserver（JSON 直写通道同样需要 ——
+        //      wineboot 后 server 可能仍在，内存缓存回写会覆盖文件写入）
+        runCatching {
+            if (WineServerUtils.isServerRunning(container.prefixPath)) {
+                log("注册表注入完成，收尾 wineserver（内存注册表缓存落盘）……")
+                WineServerUtils.stop(resolved, container, env)
+            }
         }
 
         // ⑤ fix-fonts 归档 → windows/
@@ -1274,19 +1388,6 @@ object WineRegistry {
             }.onFailure { log("警告: install.bat 执行异常: ${it.message}（继续）") }
         }
 
-        // ⑤c v3.2.28（参考脚本 wineserver -k 同款）：注册表/字体写完先收尾
-        //     wineserver 落盘，再进 dxvk 解压 —— 顺序对齐 startwine.sh。
-        runCatching {
-            val serverBin = WineRuntime.hostToolBin(resolved, "wineserver")
-            NativeShellExecutor.create()
-                .setCommand(serverBin.absolutePath, "-k")
-                .putEnv(env)
-                .putEnv("WINEPREFIX", container.prefixPath)
-                .setWorkingDir(WineEnvironment.RUNTIME_DIR)
-                .exec()
-                .waitFor(15, TimeUnit.SECONDS)
-        }
-
         // ⑥ dxvk（virgl 启用时跳过 —— 参考脚本同款条件）
         if (!File(root, "virgl/virgl-enabled").exists()) {
             val dxvkDir = File(root, "dxvk1")
@@ -1305,24 +1406,29 @@ object WineRegistry {
             }
         }
 
-        // ⑦ wineserver 落盘注册表（参考脚本 wineserver -k 同款）
+        // ⑦ v3.3.40：收尾 wineserver 落盘注册表 —— 有存活 server 才动作
+        //    （参考脚本 wineserver -w/-k 同款语义；旧版盲拉 2 个 wineserver
+        //    进程，server 不在跑时纯浪费启动时间）。
         runCatching {
-            val serverBin = WineRuntime.hostToolBin(resolved, "wineserver")
-            NativeShellExecutor.create()
-                .setCommand(serverBin.absolutePath, "-w")
-                .putEnv(env)
-                .putEnv("WINEPREFIX", container.prefixPath)
-                .setWorkingDir(WineEnvironment.RUNTIME_DIR)
-                .exec()
-                .waitFor(20, TimeUnit.SECONDS)
-            NativeShellExecutor.create()
-                .setCommand(serverBin.absolutePath, "-k")
-                .putEnv(env)
-                .putEnv("WINEPREFIX", container.prefixPath)
-                .setWorkingDir(WineEnvironment.RUNTIME_DIR)
-                .exec()
-                .waitFor(10, TimeUnit.SECONDS)
+            if (WineServerUtils.isServerRunning(container.prefixPath)) {
+                val serverBin = WineRuntime.hostToolBin(resolved, "wineserver")
+                NativeShellExecutor.create()
+                    .setCommand(serverBin.absolutePath, "-w")
+                    .putEnv(env)
+                    .putEnv("WINEPREFIX", container.prefixPath)
+                    .setWorkingDir(WineEnvironment.RUNTIME_DIR)
+                    .exec()
+                    .waitFor(20, TimeUnit.SECONDS)
+                NativeShellExecutor.create()
+                    .setCommand(serverBin.absolutePath, "-k")
+                    .putEnv(env)
+                    .putEnv("WINEPREFIX", container.prefixPath)
+                    .setWorkingDir(WineEnvironment.RUNTIME_DIR)
+                    .exec()
+                    .waitFor(10, TimeUnit.SECONDS)
+            }
         }
+        // ⑤c（原块）已并入 ④：JSON 直写通道的收尾在那儿完成
 
         runCatching { optPrefixMarker(prefix).createNewFile() }
         runCatching { File(prefix, ".update-timestamp").writeText("disable") }

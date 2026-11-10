@@ -61,13 +61,20 @@ object WineEnvironment {
                 val target = File("/system/lib64/$n")
                 if (!target.isFile) continue
                 val link = File(dir, n)
+                // v3.3.40【性能】：链接就位且指向不变 → 零动作（旧版每次
+                // 启动 delete + createSymbolicLink 重做 5 个系统库链接 ——
+                // 文件系统写放大；OTA 换系统分区内容不改变链接目标路径，
+                // 指向比对已覆盖真正的失效场景）
+                val linkPath = link.toPath()
+                val targetPath = java.nio.file.Paths.get("/system/lib64/$n")
+                val healthy = java.nio.file.Files.isSymbolicLink(linkPath) &&
+                    runCatching {
+                        java.nio.file.Files.readSymbolicLink(linkPath) == targetPath
+                    }.getOrDefault(false)
+                if (healthy) { made++; continue }
                 runCatching {
-                    // 重建 symlink（旧链接可能指向已变化的系统分区）
                     if (link.exists() || link.isSymlinkSafe()) link.delete()
-                    java.nio.file.Files.createSymbolicLink(
-                        link.toPath(),
-                        java.nio.file.Paths.get("/system/lib64/$n")
-                    )
+                    java.nio.file.Files.createSymbolicLink(linkPath, targetPath)
                     made++
                 }
             }
@@ -517,24 +524,63 @@ object WineEnvironment {
      * 调用（HODLL 注入的 FEX DLL 才是消费者）。幂等：内容无变化不重写。
      */
     fun ensureFexConfigFile(env: MutableMap<String, String>, container: ContainerData, log: (String) -> Unit = {}) {
-        val (tso, x87, note) = when (container.preset) {
-            Box64Preset.STABILITY ->
-                Triple("\"TSOEnabled\":\"1\",\"HalfBarrierTSOEnabled\":\"1\"", "\"X87ReducedPrecision\":\"0\"", "TSO+半屏障（稳定优先）")
-            Box64Preset.COMPATIBILITY ->
-                Triple("\"TSOEnabled\":\"1\"", "\"X87ReducedPrecision\":\"0\"", "标量 TSO（兼容优先）")
-            Box64Preset.INTERMEDIATE ->
-                Triple("\"TSOEnabled\":\"0\"", "\"X87ReducedPrecision\":\"0\"", "TSO 全关 + Multiblock（进阶）")
-            Box64Preset.PERFORMANCE ->
-                Triple("\"TSOEnabled\":\"0\"", "\"X87ReducedPrecision\":\"1\"", "TSO 全关 + x87 64 位精算 + Multiblock（性能）")
+        // v3.3.40：FEX 配置页（fex_active.conf，[FexConfSupport]）值并入本
+        // 通道 —— env（FEX_* 经 applyOptConfEnv source）与 Config.json 双
+        // 通道同值，配置页成为唯一权威；未配置时回落容器预设档四档语义。
+        val presetDefaults = when (container.preset) {
+            Box64Preset.STABILITY -> mapOf(
+                "TSOEnabled" to "1", "HalfBarrierTSOEnabled" to "1",
+                "VectorTSOEnabled" to "0", "MemcpySetTSOEnabled" to "0",
+                "X87ReducedPrecision" to "0", "Multiblock" to "0"
+            )
+            Box64Preset.COMPATIBILITY -> mapOf(
+                "TSOEnabled" to "1", "HalfBarrierTSOEnabled" to "0",
+                "VectorTSOEnabled" to "0", "MemcpySetTSOEnabled" to "0",
+                "X87ReducedPrecision" to "0", "Multiblock" to "1"
+            )
+            Box64Preset.INTERMEDIATE -> mapOf(
+                "TSOEnabled" to "0", "HalfBarrierTSOEnabled" to "0",
+                "VectorTSOEnabled" to "0", "MemcpySetTSOEnabled" to "0",
+                "X87ReducedPrecision" to "0", "Multiblock" to "1"
+            )
+            Box64Preset.PERFORMANCE -> mapOf(
+                "TSOEnabled" to "0", "HalfBarrierTSOEnabled" to "0",
+                "VectorTSOEnabled" to "0", "MemcpySetTSOEnabled" to "0",
+                "X87ReducedPrecision" to "1", "Multiblock" to "1",
+                "DisableL2Cache" to "0", "DynamicL1Cache" to "0"
+            )
         }
-        val json = "{\"Config\":{$tso,\"VectorTSOEnabled\":\"0\",\"MemcpySetTSOEnabled\":\"0\",$x87,\"Multiblock\":\"1\"}}"
+        // FEX 配置页 env 变量名 → Config.json 键（WinlatorXR FEXCoreManager
+        // 实证键位；未映射的 FEX_*（SMC_CHECKS/HOSTFEATURES 等）仅 env 通道）。
+        val fexTabMap = mapOf(
+            "FEX_TSOENABLED" to "TSOEnabled",
+            "FEX_VECTORTSOENABLED" to "VectorTSOEnabled",
+            "FEX_HALFBARRIERTSOENABLED" to "HalfBarrierTSOEnabled",
+            "FEX_MEMCPYSETTSOENABLED" to "MemcpySetTSOEnabled",
+            "FEX_X87REDUCEDPRECISION" to "X87ReducedPrecision",
+            "FEX_MULTIBLOCK" to "Multiblock",
+            "FEX_DISABLEL2CACHE" to "DisableL2Cache",
+            "FEX_DYNAMICL1CACHE" to "DynamicL1Cache",
+            "FEX_MAXINST" to "MaxInst"
+        )
+        val active = runCatching { FexConfSupport.activeValues() }.getOrDefault(emptyMap())
+        val conf = LinkedHashMap<String, String>(presetDefaults)
+        fexTabMap.forEach { (envName, cfgKey) ->
+            active[envName]?.takeIf { it.isNotBlank() }?.let { conf[cfgKey] = it }
+        }
+        val json = "{\"Config\":{" + conf.entries.joinToString(",") { (k, v) -> "\"$k\":\"$v\"" } + "}}"
         runCatching {
             val fexDir = File("${env["HOME"] ?: "$RFS_ROOT/home"}/.fex-emu")
             fexDir.mkdirs()
             val f = File(fexDir, "Config.json")
             if (!f.isFile || f.readText() != json) f.writeText(json)
             env.putIfAbsent("FEX_DISKCACHE", "1")
-            log("FEX 配置: ~/.fex-emu/Config.json 已就绪（$note；FEX_DISKCACHE=1）")
+            val tabInUse = active.isNotEmpty()
+            log(
+                "FEX 配置: ~/.fex-emu/Config.json 已就绪（" +
+                    (if (tabInUse) "FEX 配置页 fex_active.conf ${active.size} 项已并入" else "容器预设档四档语义") +
+                    "；FEX_DISKCACHE=1；env 通道 FEX_* 同值双保险）"
+            )
         }.onFailure { log("⚠ FEX 配置写入失败：${it.message}（不影响启动，env 侧档位仍生效）") }
     }
 
@@ -1194,7 +1240,10 @@ object WineEnvironment {
         env: MutableMap<String, String>,
         container: ContainerData,
         wineDir: File? = null,
-        log: (String) -> Unit = {}
+        log: (String) -> Unit = {},
+        // v3.3.40【性能】：调用方（RootfsLauncher）可传入启动链已算好的
+        // conf 快照 —— probeLine + source 不再把全部 conf 文件读两遍。
+        precomputedConf: Map<String, String>? = null
     ) {
         // v3.3.39：conf 统一到 APK 内部 —— 未装 /opt 生态包不再旁路：
         // App 内部 anwind-conf/（assets 种子 + UI 编辑 + 生态一次性导入）
@@ -1204,7 +1253,7 @@ object WineEnvironment {
         // 依赖生态包存在）。
         ApkConfStore.ensure(null)
         log(ApkConfStore.probeLine(wineDir))
-        val conf = readOptConfs(wineDir)
+        val conf = precomputedConf ?: readOptConfs(wineDir)
         // locale.conf → LANG/LC_ALL 已上移 buildBaseEnv（v3.2.29：语言
         // 唯一来源 locale.conf（现统一源）；conf/*.conf 若显式 export LANG/
         // LC_ALL，走下方通用 conf 覆盖逻辑，容器 env= 仍最高优先）。

@@ -344,7 +344,10 @@ object RootfsLauncher {
                         }
                     }
                     if (!serverAlive) break
-                    Thread.sleep(3000)
+                    // v3.3.40【性能】：3s → 10s —— 每 3s 全量扫 /proc（读每个
+                    // 进程的 cmdline）在长会话里是持续的系统调用负载；
+                    // tabtip 拉起后 10s 内被杀同样可靠（它只在启动早期出现）。
+                    Thread.sleep(10000)
                 }
             } catch (_: InterruptedException) {
             } catch (_: Throwable) {
@@ -1144,7 +1147,14 @@ object RootfsLauncher {
             //     tar 包自动解包 + 套层/槽位 opt/ 候选）—— 修复"生态包放了
             //     但 conf/locale.conf/前缀解包注册全旁路"的设备侧根因。
             OptEcosystemSupport.ensure(resolved.wineDir) { sink.stamp(it) }
-            WineEnvironment.applyOptConfEnv(env, container, resolved.wineDir) { sink.stamp(it) }
+            // v3.3.40【性能】：conf 只读一遍 —— probeLine 诊断 + source
+            // 共用同一份快照（旧版 applyOptConfEnv 内部把全部 conf 读两遍：
+            // probeLine 一次 + readOptConfs 一次）。
+            val confSnapshot = ApkConfStore.mergedConfMap(resolved.wineDir)
+            WineEnvironment.applyOptConfEnv(
+                env, container, resolved.wineDir,
+                { sink.stamp(it) }, confSnapshot
+            )
             // v3.3.2：MIDI 音色库探测（配合 wine 0010-midimap-fluidsynth
             // 补丁；rootfs 有 .sf2 时设 WINE_MIDI_SOUNDFONT，无则零动作）
             WineEnvironment.applyMidiSoundfontEnv(env) { sink.stamp(it) }
@@ -1953,7 +1963,11 @@ object RootfsLauncher {
     }
 
     private fun unregisterSession(key: String) {
-        synchronized(sessions) { sessions.remove(key) }
+        val removed = synchronized(sessions) { sessions.remove(key) }
+        // v3.3.40【性能】：会话日志改为缓冲写（SessionLogSink.close 落盘
+        // 残余行 —— 旧版每行 open/close 文件，chatty wine stderr 时上千次
+        // 文件打开/关闭）。
+        removed?.sink?.close()
     }
 
     /** 回收超量会话（对齐旧版 trimSessions）。 */
@@ -1962,6 +1976,7 @@ object RootfsLauncher {
             val eldest = sessions.entries.firstOrNull() ?: break
             eldest.value.finishIfRunning()
             sessions.remove(eldest.key)
+            eldest.value.sink.close()
         }
     }
 

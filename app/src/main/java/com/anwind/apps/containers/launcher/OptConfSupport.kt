@@ -220,6 +220,25 @@ object OptConfSupport {
     }
 
     // ------------------------------------------------------------------
+    // FEX 配置（v3.3.40：assets-ck 的 fex_env_vars/fex_presets 接入 ——
+    // [FexConfSupport] 的写入后端；与 DY 配置同一套 conf 存储）
+    // ------------------------------------------------------------------
+
+    /**
+     * 删除 fex_active.conf（FEX 页「重置默认」—— 启动链回落容器预设档 /
+     * 变量默认值）。@return null 成功 / 错误消息。
+     */
+    fun removeFexActive(): String? {
+        if (!ApkConfStore.ensure(null)) return "App 内部 conf 目录不可用"
+        return try {
+            val f = ApkConfStore.confFile(FexConfSupport.ACTIVE_CONF)
+            if (f.isFile && !f.delete()) "fex_active.conf 删除失败（权限/占用）" else null
+        } catch (e: Exception) {
+            e.message ?: e.javaClass.simpleName
+        }
+    }
+
+    // ------------------------------------------------------------------
     // 内部：行式 conf 解析（键名提取；解析器与启动链同源）
     // ------------------------------------------------------------------
 

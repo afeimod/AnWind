@@ -6,6 +6,7 @@ import android.view.Surface
 import android.view.TextureView
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
@@ -27,6 +28,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Backspace
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.PowerSettingsNew
+import androidx.compose.material.icons.outlined.AccountCircle
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -39,6 +42,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -111,6 +115,16 @@ fun LockScreenLayer(
     onClearPin: () -> Unit,
     onUnlock: () -> Unit
 ) {
+    // v3.3.40（用户需求 5）：Win7 主题 → 经典登录界面（截图同款：用户头像 +
+    // 用户名 + 切换用户 + Windows 徽标 + 右下角红色电源按钮；尺寸全 dp ——
+    // 全局 UI 缩放下整体生效）
+    if (theme.variant == com.anwind.core.theme.WindowsVariant.WIN7) {
+        Win7LockScreen(
+            theme, lockWallpaperUri, desktopWallpaperUri,
+            pinHash, onClearPin, onUnlock
+        )
+        return
+    }
     // 上滑手势累计量：向上滑超过阈值触发解锁，同时让内容跟随手指上移（跟手体验）
     var dragUpPx by remember { mutableFloatStateOf(0f) }
     // v2.17：密码面板（声明需在 BackHandler 之前，供其闭包引用）
@@ -293,6 +307,274 @@ fun LockScreenLayer(
                 },
                 onForgot = {
                     // 连续输错的兜底：清除密码并解锁（设置里可重新设置）
+                    onClearPin()
+                    showPinPanel = false
+                    onUnlock()
+                },
+                onCancel = {
+                    showPinPanel = false
+                    dragUpPx = 0f
+                }
+            )
+        }
+    }
+}
+
+// ============================================================
+// v3.3.40：Windows 7 经典登录界面（用户需求 5 —— 按截图重制）
+//
+// 截图对照（win7simu 锁屏页）：
+//  - 蓝色 Win7 壁纸全屏（轻遮罩，保留壁纸亮度）；
+//  - 中央：用户头像玻璃相框（96dp）+ 用户名 + 「切换用户」玻璃按钮；
+//  - 底部中央：四色 Windows 徽标 + 产品名文字；
+//  - 右下角：红色电源按钮（径向渐变）—— 弹出 关闭所有窗口；
+//  - 交互：点击任意处 / 上滑 / 点击头像 = 登录（设置 PIN 时弹数字面板）。
+// ============================================================
+@Composable
+private fun Win7LockScreen(
+    theme: com.anwind.core.theme.WinTheme,
+    lockWallpaperUri: String?,
+    desktopWallpaperUri: String?,
+    pinHash: String?,
+    onClearPin: () -> Unit,
+    onUnlock: () -> Unit
+) {
+    val app = remember { com.anwind.AnWindApp.get() }
+    val userName by app.settingsStore.userName.collectAsState(initial = "AnWind")
+    val userAvatar by app.settingsStore.userAvatar.collectAsState(initial = "")
+    var showPinPanel by remember { mutableStateOf(false) }
+    var dragUpPx by remember { mutableFloatStateOf(0f) }
+    val hasPin = !pinHash.isNullOrEmpty()
+
+    // 切换用户：本地头像循环（截图同款演示语义 —— Guest 账户图轮换）
+    val switchableAvatars = remember { listOf("", "🧳", "👤", "🧑‍💻", "🧑‍🎓") }
+    var avatarIndex by remember { mutableIntStateOf(0) }
+    val shownAvatar = userAvatar.ifBlank { switchableAvatars[avatarIndex] }
+
+    fun requestUnlock() {
+        if (hasPin) showPinPanel = true else onUnlock()
+    }
+
+    BackHandler(enabled = true) {
+        if (showPinPanel) showPinPanel = false
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black)
+            .pointerInput(hasPin) {
+                detectVerticalDragGestures(
+                    onVerticalDrag = { change, amount ->
+                        if (!showPinPanel) {
+                            change.consume()
+                            if (amount < 0) dragUpPx -= amount
+                        }
+                    },
+                    onDragEnd = {
+                        if (!showPinPanel) {
+                            val threshold = 120.dp.toPx()
+                            if (dragUpPx > threshold) requestUnlock() else dragUpPx = 0f
+                        }
+                    }
+                )
+            }
+            .pointerInput(hasPin) {
+                detectTapGestures(
+                    onTap = {
+                        if (!showPinPanel) requestUnlock()
+                    }
+                )
+            }
+    ) {
+        val unlockDenominatorPx = with(LocalDensity.current) { 480.dp.toPx() }
+        val unlockProgress = (dragUpPx / unlockDenominatorPx).coerceIn(0f, 1f)
+
+        // ===== 壁纸（Win7 登录屏不压暗 —— 截图的亮蓝壁纸） =====
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .graphicsLayer {
+                    translationY = -unlockProgress * 180f
+                    alpha = 1f - unlockProgress * 0.85f
+                }
+        ) {
+            when {
+                lockWallpaperUri?.startsWith("video://") == true ->
+                    LockVideoWallpaper(
+                        path = lockWallpaperUri.removePrefix("video://"),
+                        modifier = Modifier.fillMaxSize()
+                    )
+                else -> WallpaperLayer(
+                    themeWallpaper = theme.wallpaperAsset,
+                    customWallpaperUri = lockWallpaperUri?.takeIf { it.startsWith("file://") }
+                        ?: desktopWallpaperUri,
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
+            // 轻遮罩（Win7 登录屏明亮，仅 12% —— 截图同款观感）
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.12f))
+            )
+        }
+
+        // ===== 中央：用户头像玻璃相框 + 用户名 + 切换用户（截图同款） =====
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            modifier = Modifier
+                .align(Alignment.Center)
+                .fillMaxWidth()
+                .padding(bottom = 48.dp)
+                .graphicsLayer { translationY = -unlockProgress * 320f }
+        ) {
+            // 用户头像相框（Win7：白色玻璃 + 高光描边，点击 = 登录）
+            Box(
+                modifier = Modifier
+                    .size(112.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(
+                        androidx.compose.ui.graphics.Brush.verticalGradient(
+                            listOf(
+                                Color.White.copy(alpha = 0.55f),
+                                Color.White.copy(alpha = 0.25f)
+                            )
+                        )
+                    )
+                    .border(2.dp, Color.White.copy(alpha = 0.85f), RoundedCornerShape(8.dp))
+                    .clickable { requestUnlock() },
+                contentAlignment = Alignment.Center
+            ) {
+                if (shownAvatar.isNotBlank()) {
+                    Text(
+                        shownAvatar,
+                        fontSize = 52.sp,
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                        modifier = Modifier.size(88.dp)
+                    )
+                } else {
+                    Icon(
+                        Icons.Outlined.AccountCircle,
+                        contentDescription = L("用户"),
+                        tint = Color(0xFF16324E).copy(alpha = 0.85f),
+                        modifier = Modifier.size(84.dp)
+                    )
+                }
+            }
+            Spacer(Modifier.height(14.dp))
+            // 用户名（白字 + 投影 —— 截图同款）
+            Text(
+                userName,
+                color = Color.White,
+                fontSize = 26.sp,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.padding(1.dp)
+            )
+            Spacer(Modifier.height(18.dp))
+            // 「切换用户」玻璃按钮（点击轮换头像 —— win7simu 同款演示语义）
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(4.dp))
+                    .background(
+                        androidx.compose.ui.graphics.Brush.verticalGradient(
+                            listOf(
+                                Color.White.copy(alpha = 0.38f),
+                                Color.White.copy(alpha = 0.16f)
+                            )
+                        )
+                    )
+                    .border(1.dp, Color.White.copy(alpha = 0.65f), RoundedCornerShape(4.dp))
+                    .clickable {
+                        avatarIndex = (avatarIndex + 1) % switchableAvatars.size
+                    }
+                    .padding(horizontal = 26.dp, vertical = 8.dp)
+            ) {
+                Text(
+                    L("切换用户"),
+                    color = Color.White,
+                    fontSize = 14.sp
+                )
+            }
+        }
+
+        // ===== 底部中央：Windows 徽标 + 产品名（截图同款） =====
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(bottom = 36.dp)
+                .graphicsLayer { alpha = 1f - unlockProgress }
+        ) {
+            WindowsFlagLogo(size = 34.dp)
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "AnWind",
+                color = Color.White.copy(alpha = 0.95f),
+                fontSize = 15.sp,
+                fontWeight = FontWeight.Medium
+            )
+        }
+
+        // ===== 右下角：红色电源按钮（截图同款） =====
+        var powerMenuOpen by remember { mutableStateOf(false) }
+        Box(
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(end = 28.dp, bottom = 36.dp)
+                .size(46.dp)
+                .graphicsLayer { alpha = 1f - unlockProgress }
+                .clip(CircleShape)
+                .background(
+                    androidx.compose.ui.graphics.Brush.radialGradient(
+                        listOf(Color(0xFFE2574C), Color(0xFFB02418), Color(0xFF7A1410))
+                    )
+                )
+                .border(1.dp, Color.White.copy(alpha = 0.5f), CircleShape)
+                .clickable { powerMenuOpen = true },
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                Icons.Default.PowerSettingsNew,
+                contentDescription = L("电源"),
+                tint = Color.White,
+                modifier = Modifier.size(22.dp)
+            )
+            androidx.compose.material3.DropdownMenu(
+                expanded = powerMenuOpen,
+                onDismissRequest = { powerMenuOpen = false }
+            ) {
+                androidx.compose.material3.DropdownMenuItem(
+                    text = { Text(L("关闭所有窗口")) },
+                    leadingIcon = {
+                        Icon(
+                            Icons.Default.PowerSettingsNew, null,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    },
+                    onClick = {
+                        powerMenuOpen = false
+                        com.anwind.core.window.WindowManager.get().closeAll()
+                    }
+                )
+                androidx.compose.material3.DropdownMenuItem(
+                    text = { Text(L("锁定")) },
+                    leadingIcon = { Icon(Icons.Default.Lock, null, modifier = Modifier.size(16.dp)) },
+                    onClick = { powerMenuOpen = false }
+                )
+            }
+        }
+
+        // ===== PIN 密码面板（有密码时） =====
+        if (showPinPanel) {
+            PinUnlockPanel(
+                theme = theme,
+                pinHash = pinHash,
+                onVerified = {
+                    showPinPanel = false
+                    onUnlock()
+                },
+                onForgot = {
                     onClearPin()
                     showPinPanel = false
                     onUnlock()

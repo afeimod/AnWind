@@ -67,12 +67,34 @@ object WineRuntime {
     ).firstOrNull { it.isFile && it.canExecute() }
 
     /**
-     * 解析容器对应的 wine 运行时（resolve + detect + pick 一步到位）。
-     *
-     * @param container 容器配置（wine= / backend= 字段）
-     * @return 解析结果；错误时抛出 [IllegalStateException]（调用方转用户提示）。
+     * v3.3.40【性能】：resolve 结果缓存 —— 一次启动链此前要做 3 次
+     * resolve（precheckRun → submitLaunch 预检 → launch），每次重复
+     * readGlobalConfKey 全文件读取 + ELF 头随机读 + box64 三候选探测。
+     * 缓存键 = 容器名 + wine 槽位 + 后端；槽位目录/主程序失效即自愈。
+     * [invalidateCache] 在 wine 安装/删除/换默认时显式清（同槽位重装
+     * 可能换 ELF 形态）。
      */
+    private val resolveCache =
+        java.util.concurrent.ConcurrentHashMap<String, Resolved>()
+
+    /** wine 槽位变化（安装/删除/默认切换）后调用。 */
+    fun invalidateCache() {
+        resolveCache.clear()
+        globalConfSnapshot = null
+    }
+
     fun resolve(container: ContainerData): Resolved {
+        val cacheKey = "${container.name}|${container.wine.trim()}|${container.backend.id}"
+        resolveCache[cacheKey]?.let { cached ->
+            if (cached.wineDir.isDirectory && cached.wineBinary.isFile) {
+                return cached
+            }
+            resolveCache.remove(cacheKey)
+        }
+        return resolveUncached(container).also { resolveCache[cacheKey] = it }
+    }
+
+    private fun resolveUncached(container: ContainerData): Resolved {
         // ---- 1) wine 目录（容器 wine= → 全局 default_wine= → /usr/opt/wine） ----
         val wineDir = resolveWineDir(container)
             ?: throw IllegalStateException(buildString {
@@ -154,11 +176,19 @@ object WineRuntime {
         return globalDir
     }
 
+    /** 全局 container.conf 快照（mtime 键；v3.3.40【性能】：resolve×3 不再各读全文件一遍）。 */
+    @Volatile
+    internal var globalConfSnapshot: Pair<Long, List<String>>? = null
+
     /** 读全局 container.conf 的指定键（与 CLI conf_read 同源）。 */
     private fun readGlobalConfKey(key: String): String {
         val f = File(ContainerManager.GLOBAL_CONF)
         if (!f.isFile) return ""
-        f.readLines().forEach { raw ->
+        val mtime = runCatching { f.lastModified() }.getOrDefault(0L)
+        val lines = globalConfSnapshot?.takeIf { it.first == mtime }?.second
+            ?: runCatching { f.readLines() }.getOrDefault(emptyList())
+                .also { globalConfSnapshot = mtime to it }
+        lines.forEach { raw ->
             val line = raw.trim()
             if (line.startsWith("$key=")) return line.removePrefix("$key=").trim()
         }

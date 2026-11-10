@@ -1,9 +1,0 @@
-{
-  "bundles": {
-    "rootfs.tzst": {
-      "url": "https://api.github.com/repos/Tux-And-Wine/wfp-winfusion/releases/assets/677160005",
-      "sha256": "bb801aa01b078c9033556acdf84ccfdd5c2c75cb67a185ec23f4afdbe05884da",
-      "size": 78316716
-    }
-  }
-}

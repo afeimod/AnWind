@@ -143,10 +143,16 @@ fun Taskbar(
 // 恒列在任务栏（非激活态渲染，MICA_11 主题一直是这个语义），点击
 // 经由既有 wm.taskbarClick() → focus() 恢复显示。
 
-/** 任务栏固定应用（v2.15：加入扫雷；v3.2.23：加入 wine-containers ——
- *  它注册了 pinnedToTaskbar=true 却不在硬编码集合里，最小化后无从恢复） */
+/**
+ * 任务栏固定应用（v3.2.23：加入 wine-containers —— 它注册了
+ * pinnedToTaskbar=true 却不在硬编码集合里，最小化后无从恢复）。
+ *
+ * v3.3.40（用户需求 5）：**移除扫雷** —— 用户明确要求“去掉下方状态的
+ * 扫雷图标”；扫雷仍留在开始菜单（pinnedToTaskbar=false，开始菜单/
+ * 桌面搜索照常可达）。
+ */
 private val TASKBAR_PINNED_IDS =
-    setOf("browser", "file_explorer", "settings", "minesweeper", "wine-containers")
+    setOf("browser", "file_explorer", "settings", "wine-containers")
 
 @Composable
 private fun rememberPinnedApps(): List<com.anwind.core.window.AppDef> =

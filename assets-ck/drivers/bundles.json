@@ -1,9 +1,0 @@
-{
-  "bundles": {
-    "mesa-26.2.0.tzst": {
-      "url": "https://api.github.com/repos/Tux-And-Wine/wfp-winfusion/releases/assets/620715547",
-      "sha256": "23ac541f04e6b9ee39d0fb75b6ff94916b54cdd59e286661792ad3e5cf121bec",
-      "size": 8528944
-    }
-  }
-}

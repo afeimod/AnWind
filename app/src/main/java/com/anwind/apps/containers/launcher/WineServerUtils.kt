@@ -77,6 +77,17 @@ object WineServerUtils {
     private const val HEALTH_PROBE_TIMEOUT_SECONDS = 6L
 
     /**
+     * v3.3.40：wineserver 存活性快查（供 [JsonRegistry] 等零进程路径判断
+     * 是否需要先收尾 —— server 在跑时它的注册表内存缓存会异步回写，
+     * 直接改 user.reg/system.reg 文件必须先停服务；不在跑则零动作）。
+     *
+     * 判据与 [findStaleWineServers] 同源（cmdline 含 wineserver 且 cwd 在
+     * $WINEPREFIX/.wineserver/ 下 —— 仅本前缀维度，不会误判其他容器）。
+     */
+    fun isServerRunning(prefixPath: String): Boolean =
+        findStaleWineServers(prefixPath).isNotEmpty()
+
+    /**
      * 结束指定容器的 wine 会话并等待退出（注册表随之落盘）。
      *
      * v3.3.1：内部升级为三段式 —— `-k`/`-w` 优雅停止（健康 server：注册表

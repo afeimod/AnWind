@@ -271,46 +271,45 @@ object WineLocaleSupport {
         }
         log("已安装 CJK 字体: $src → drive_c/windows/Fonts/$dstName")
 
-        // ---- 注册表：单次 regedit /s 导入（v3.2.23 用户问题 6） ----
-        // 此前逐条 wine reg add —— 中/日/韩合计 9~13 次 wine 进程拉起
-        //（每次都要过 server 握手 + reg 客户端初始化，arm64ec 上首建
-        // 前缀白白多花十几秒）。改为与 WineRegistry.ensureDllOverrides
-        // 同一模式：REGEDIT4 文本写入 C:\anwind\，一个 wine 进程导入
-        // 全部键值。
+        // ---- 注册表：v3.3.40【JSON 打入】→ JsonRegistry 直写（零 wine 进程；
+        //      旧链路 v2.2.23 是“生成 .reg + 单次 regedit /s”，v3.2 之前更是
+        //      逐键 wine reg add —— 9~13 次进程拉起）----
         val prefixRegDir = File(prefix, "drive_c/anwind")
         prefixRegDir.mkdirs()
-        val reg = buildString {
-            appendLine("REGEDIT4")
-            appendLine()
-            appendLine("[HKEY_LOCAL_MACHINE\\Software\\Microsoft\\Windows NT\\CurrentVersion\\Fonts]")
-            fun font(name: String) = appendLine("\"$name (TrueType)\"=\"$dstName\"")
-            font("SimSun"); font("NSimSun"); font("SimHei"); font("Microsoft YaHei")
-            font("Microsoft YaHei UI"); font("Microsoft JhengHei")     // 繁中
-            if (needJp) { font("MS Gothic"); font("MS PGothic"); font("MS UI Gothic") }
-            if (needKr) { font("Malgun Gothic"); font("Gulim") }
-            appendLine()
-            appendLine("[HKEY_LOCAL_MACHINE\\Software\\Microsoft\\Windows NT\\CurrentVersion\\FontSubstitutes]")
-            appendLine("\"MS Shell Dlg\"=\"Microsoft YaHei\"")
-            appendLine("\"MS Shell Dlg 2\"=\"Microsoft YaHei\"")
-            appendLine("\"SimSun-ExtB\"=\"SimSun\"")
+        val fontsValues = org.json.JSONArray()
+        fun font(name: String) {
+            fontsValues.put(
+                org.json.JSONObject().put("name", "$name (TrueType)")
+                    .put("type", "sz").put("data", dstName)
+            )
         }
-        val regFile = File(prefixRegDir, "cjk-fonts.reg")
-        regFile.writeText(reg)
-
-        val ok = runCatching {
-            val cmd = NativeShellExecutor.create()
-                .setCommand(*WineRuntime.wineCommand(resolved).toTypedArray(),
-                    "regedit", "/s", "C:\\anwind\\cjk-fonts.reg")
-                .putEnv(env)
-                .putEnv("WINEPREFIX", container.prefixPath)
-                .setWorkingDir(WineEnvironment.RUNTIME_DIR)
-                .exec()
-            val finished = cmd.waitFor(60, TimeUnit.SECONDS)
-            if (!finished) {
-                runCatching { cmd.stopAndWait(true, 5, TimeUnit.SECONDS) }
-                false
-            } else cmd.waitFor() == 0
-        }.getOrDefault(false)
+        font("SimSun"); font("NSimSun"); font("SimHei"); font("Microsoft YaHei")
+        font("Microsoft YaHei UI"); font("Microsoft JhengHei")     // 繁中
+        if (needJp) { font("MS Gothic"); font("MS PGothic"); font("MS UI Gothic") }
+        if (needKr) { font("Malgun Gothic"); font("Gulim") }
+        val subValues = org.json.JSONArray()
+            .put(org.json.JSONObject().put("name", "MS Shell Dlg").put("type", "sz").put("data", "Microsoft YaHei"))
+            .put(org.json.JSONObject().put("name", "MS Shell Dlg 2").put("type", "sz").put("data", "Microsoft YaHei"))
+            .put(org.json.JSONObject().put("name", "SimSun-ExtB").put("type", "sz").put("data", "SimSun"))
+        val edits = org.json.JSONArray()
+            .put(
+                org.json.JSONObject()
+                    .put("hive", "HKLM")
+                    .put("key", "Software\\Microsoft\\Windows NT\\CurrentVersion\\Fonts")
+                    .put("values", fontsValues)
+            )
+            .put(
+                org.json.JSONObject()
+                    .put("hive", "HKLM")
+                    .put("key", "Software\\Microsoft\\Windows NT\\CurrentVersion\\FontSubstitutes")
+                    .put("values", subValues)
+            )
+        runCatching {
+            File(prefixRegDir, "cjk-fonts.json").writeText(edits.toString(2))
+        }
+        val ok = JsonRegistry.apply(
+            File(container.prefixPath), resolved, container, env, edits, log
+        ) == null
         if (ok) {
             runCatching { fontMarker(prefix).createNewFile() }
             log("CJK 字体注册完成（SimSun/微软雅黑 等已指向 $dstName；MS Shell Dlg 默认字体替换为微软雅黑）")
@@ -402,33 +401,29 @@ object WineLocaleSupport {
             log("警告: 用户字体复制进前缀失败（${it.message}）")
             return
         }
-        // 注册表：按文件名（去扩展名）注册 —— wine GDI 按注册表枚举字体
+        // 注册表：v3.3.40【JSON 打入】→ JsonRegistry 直写（零 wine 进程）
+        // —— 按文件名（去扩展名）注册，wine GDI 按注册表枚举字体
         val regDir = File(prefix, "drive_c/anwind")
         regDir.mkdirs()
-        val reg = buildString {
-            appendLine("REGEDIT4")
-            appendLine()
-            appendLine("[HKEY_LOCAL_MACHINE\\Software\\Microsoft\\Windows NT\\CurrentVersion\\Fonts]")
-            fonts.forEach { f ->
-                appendLine("\"${f.nameWithoutExtension} (TrueType)\"=\"${f.name}\"")
-            }
+        val values = org.json.JSONArray()
+        fonts.forEach { f ->
+            values.put(
+                org.json.JSONObject().put("name", "${f.nameWithoutExtension} (TrueType)")
+                    .put("type", "sz").put("data", f.name)
+            )
         }
-        val regFile = File(regDir, "user-fonts.reg")
-        regFile.writeText(reg)
-        val ok = runCatching {
-            val cmd = NativeShellExecutor.create()
-                .setCommand(*WineRuntime.wineCommand(resolved).toTypedArray(),
-                    "regedit", "/s", "C:\\anwind\\user-fonts.reg")
-                .putEnv(env)
-                .putEnv("WINEPREFIX", container.prefixPath)
-                .setWorkingDir(WineEnvironment.RUNTIME_DIR)
-                .exec()
-            val finished = cmd.waitFor(60, TimeUnit.SECONDS)
-            if (!finished) {
-                runCatching { cmd.stopAndWait(true, 5, TimeUnit.SECONDS) }
-                false
-            } else cmd.waitFor() == 0
-        }.getOrDefault(false)
+        val edits = org.json.JSONArray().put(
+            org.json.JSONObject()
+                .put("hive", "HKLM")
+                .put("key", "Software\\Microsoft\\Windows NT\\CurrentVersion\\Fonts")
+                .put("values", values)
+        )
+        runCatching {
+            File(regDir, "user-fonts.json").writeText(edits.toString(2))
+        }
+        val ok = JsonRegistry.apply(
+            File(container.prefixPath), resolved, container, env, edits, log
+        ) == null
         if (ok) {
             log("用户字体已注册进 wine（×${fonts.size}：${fonts.joinToString(", ") { it.name }}）")
         } else {

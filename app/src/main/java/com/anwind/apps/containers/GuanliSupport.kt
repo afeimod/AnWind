@@ -6,6 +6,7 @@ import android.os.Build
 import com.anwind.apps.containers.launcher.NativeShellExecutor
 import com.anwind.apps.containers.launcher.WineEnvironment
 import com.anwind.apps.containers.launcher.WineRuntime
+import com.anwind.apps.containers.launcher.JsonRegistry
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
@@ -160,17 +161,30 @@ object GuanliSupport {
      * load_driver_versions 同规则：显示名去后缀，按名排序）。
      * 目录不存在返回空表（UI 显示"默认/不使用"两项 + 提示）。
      */
+    // v3.3.40【性能】：scanOpt 结果 10s TTL 缓存 —— 一次 freshSession 启动
+    // 链 + 图形驱动页装载会各扫 7 个 /opt 子目录（zink/dxvk1/vkord3d/
+    // fexcore/wrapper/tz/yuzu），UI 页每次进tab又扫；目录 listFiles 在大
+    // 目录上不便宜。缓存后同进程内重复扫描归零；10s 过期保证新装 tar 包
+    // 仍能被及时发现。
+    private val scanOptCache = java.util.concurrent.ConcurrentHashMap<String, Pair<Long, List<OptTar>>>()
+
     fun scanOpt(sub: String): List<OptTar> {
+        val now = System.currentTimeMillis()
+        scanOptCache[sub]?.let { (t, cached) ->
+            if (now - t < 10_000L) return cached
+        }
         val dir = File(OPT_ROOT, sub)
-        if (!dir.isDirectory) return emptyList()
-        return dir.listFiles { f ->
-            f.isFile && (f.name.endsWith(".tar.gz") || f.name.endsWith(".tar.xz") || f.name.endsWith(".tar.bz2"))
-        }.orEmpty()
-            .map { f ->
-                val disp = f.name.replace(Regex("\\.tar\\.(gz|xz|bz2)$"), "")
-                OptTar(disp, f.name, f.absolutePath)
-            }
-            .sortedBy { it.display }
+        val out = if (!dir.isDirectory) emptyList() else
+            dir.listFiles { f ->
+                f.isFile && (f.name.endsWith(".tar.gz") || f.name.endsWith(".tar.xz") || f.name.endsWith(".tar.bz2"))
+            }.orEmpty()
+                .map { f ->
+                    val disp = f.name.replace(Regex("\\.tar\\.(gz|xz|bz2)$"), "")
+                    OptTar(disp, f.name, f.absolutePath)
+                }
+                .sortedBy { it.display }
+        scanOptCache[sub] = now to out
+        return out
     }
 
     /**
@@ -251,7 +265,14 @@ object GuanliSupport {
             }
             mut
         }
-        pathConf.writeText(out.joinToString("\n") + "\n")
+        val outText = out.joinToString("\n") + "\n"
+        // v3.3.40【性能】：内容无变化跳过写（旧版每次启动无条件重写
+        // path.conf + 读回镜像 —— ICD 值稳定时纯写放大）。
+        if (outText == lines.joinToString("\n") + "\n") {
+            log("path.conf 已是目标状态（VK_ICD_FILENAMES 未变化，跳过重写）")
+        } else {
+            pathConf.writeText(outText)
+        }
         log(
             "path.conf 已同步：VK_ICD_FILENAMES → " +
                 (if (icdPath.isNullOrBlank()) "（注释：loader 默认搜索）" else icdPath) +
@@ -265,11 +286,14 @@ object GuanliSupport {
             com.anwind.apps.containers.launcher.ApkConfStore.ensure(null)
             val apkPath = com.anwind.apps.containers.launcher.ApkConfStore.confFile("path.conf")
             apkPath.parentFile?.mkdirs()
-            val tmp = File(apkPath.parentFile, "path.conf.anwind-tmp")
-            tmp.writeText(out.joinToString("\n") + "\n")
-            if (!tmp.renameTo(apkPath)) {
-                tmp.copyTo(apkPath, overwrite = true)
-                tmp.delete()
+            // v3.3.40【性能】：内容一致跳过（同上）
+            if (!apkPath.isFile || apkPath.readText() != outText) {
+                val tmp = File(apkPath.parentFile, "path.conf.anwind-tmp")
+                tmp.writeText(outText)
+                if (!tmp.renameTo(apkPath)) {
+                    tmp.copyTo(apkPath, overwrite = true)
+                    tmp.delete()
+                }
             }
         }
         null
@@ -498,6 +522,8 @@ object GuanliSupport {
 
         /** 从本地 tar 包安装：解压到 /usr/opt/<槽位名> + 写 .anwind-wine-info。 */
         fun installFromTar(tarPath: String, slotName: String, arch: String): String? {
+            // v3.3.40：同槽位重装可能换 ELF 形态 —— resolve 缓存失效
+            runCatching { WineRuntime.invalidateCache() }
             val f = File(tarPath)
             if (!f.isFile) return "文件不存在：$tarPath"
             val name = slotName.trim().ifEmpty {
@@ -612,6 +638,7 @@ object GuanliSupport {
 
         /** 删除 wine 槽位。@return null 成功。 */
         fun deleteWine(slotName: String): String? {
+            runCatching { WineRuntime.invalidateCache() }
             val dir = File(ContainerManager.WINE_OPT_DIR, slotName)
             if (!dir.isDirectory) return "槽位不存在：$slotName"
             if (dir.parentFile?.canonicalPath != File(ContainerManager.WINE_OPT_DIR).canonicalPath)
@@ -627,6 +654,7 @@ object GuanliSupport {
 
         /** 设置全局默认 wine 槽位（default_wine=）。@return null 成功。 */
         fun setDefaultWine(slotName: String): String? {
+            runCatching { WineRuntime.invalidateCache() }
             val f = File(ContainerManager.GLOBAL_CONF)
             return try {
                 f.parentFile?.mkdirs()
@@ -664,37 +692,49 @@ object GuanliSupport {
             val prefix = File(container.prefixPath)
             if (!File(prefix, "system.reg").isFile) return "容器前缀尚未构建（先运行 wineboot 或启动一次容器）"
             if (exeName.isBlank() || !exeName.contains('.')) return "请填写完整的 exe 文件名（如 game.exe）"
-            val key = "AppDefaults\\\\${exeName.replace("\\", "\\\\")}\\\\DllOverrides"
-            val reg = File(prefix, "drive_c/anwind").apply { mkdirs() }.let { File(it, "appdefaults.reg") }
-            reg.writeText(
-                buildString {
-                    appendLine("REGEDIT4")
-                    appendLine()
-                    appendLine("[HKEY_CURRENT_USER\\Software\\Wine\\$key]")
-                    if (dlls.isEmpty()) {
-                        appendLine("\"d3d9\"=\"-\"")
-                        appendLine("\"d3d11\"=\"-\"")
-                        appendLine("\"dxgi\"=\"-\"")
-                        appendLine("\"ddraw\"=\"-\"")
-                    } else {
-                        dlls.forEach { (dll, order) -> appendLine("\"$dll\"=\"$order\"") }
-                    }
-                }
-            )
             val resolved = runCatching { WineRuntime.resolve(container) }.getOrNull()
                 ?: return "wine 运行时解析失败（wine 未安装？）"
             val env = WineEnvironment.buildBaseEnv(container, resolved.wineDir).toMutableMap()
             env["WINEPREFIX"] = container.prefixPath
+            // v3.3.40【JSON 打入】：AppDefaults 的 DLL 加载序覆盖改为 JSON
+            // 描述经 [JsonRegistry] 直接合并进 user.reg（旧链路：生成
+            // appdefaults.reg + `wine regedit /s` 客户端，1~3s）；空表 =
+            // 清除该 exe 的全部覆盖（逐值 JSON delete）。
+            val keyPath = "Software\\Wine\\AppDefaults\\${exeName.replace("\\", "\\\\")}\\DllOverrides"
+            val values = org.json.JSONArray()
+            if (dlls.isEmpty()) {
+                listOf("d3d9", "d3d11", "dxgi", "ddraw").forEach {
+                    values.put(org.json.JSONObject().put("name", it).put("type", "delete"))
+                }
+            } else {
+                dlls.forEach { (dll, order) ->
+                    values.put(
+                        org.json.JSONObject().put("name", dll)
+                            .put("type", "sz").put("data", order)
+                    )
+                }
+            }
+            val edits = org.json.JSONArray().put(
+                org.json.JSONObject()
+                    .put("hive", "HKCU")
+                    .put("key", keyPath)
+                    .put("values", values)
+            )
             return try {
-                val cmd = NativeShellExecutor.create()
-                    .setCommand(*WineRuntime.wineCommand(resolved).toTypedArray(), "regedit", "/s", "C:\\anwind\\appdefaults.reg")
-                    .putEnv(env)
-                    .setWorkingDir(WineEnvironment.RUNTIME_DIR)
-                    .exec()
-                val ok = cmd.waitFor(60, TimeUnit.SECONDS)
-                if (ok && cmd.waitFor() == 0) null else "注册表导入失败（详见会话日志）"
+                val err = JsonRegistry.apply(
+                    File(container.prefixPath), resolved, container, env, edits
+                )
+                err ?: run {
+                    // JSON 文本留档（审计可读）
+                    runCatching {
+                        val dir = File(container.prefixPath, "drive_c/anwind")
+                        dir.mkdirs()
+                        File(dir, "appdefaults.json").writeText(edits.toString(2))
+                    }
+                    null
+                }
             } catch (e: Exception) {
-                "注册表导入异常：${e.message}"
+                "注册表 JSON 直写异常：${e.message}"
             }
         }
 

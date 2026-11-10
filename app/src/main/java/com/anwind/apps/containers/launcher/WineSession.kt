@@ -60,6 +60,10 @@ internal class SessionLogSink(
     private val buffer = StringBuilder()
     private val fileLock = Any()
 
+    // v3.3.40【性能】：缓冲文件写（见 log() 内注释）
+    private var writer: java.io.BufferedWriter? = null
+    private var pendingLines = 0
+
     /** 注册到 RootfsLauncher.lastLogs 的内存缓冲（UI 读取）。 */
     val text: StringBuilder get() = buffer
 
@@ -78,13 +82,43 @@ internal class SessionLogSink(
         }
         logFile?.let { f ->
             synchronized(fileLock) {
-                runCatching { f.appendText(line + "\n") }
+                // v3.3.40【性能】：缓冲写 —— 旧版 f.appendText 每行
+                // open/write/close（chatty wine stderr 一次会话动辄数千次
+                // 文件打开）；现懒开一个 BufferedWriter，32 行或 close()
+                // 时落盘（进程意外死亡最多丢尾部 32 行，会话日志的内存
+                // 缓冲仍有全量）。
+                try {
+                    if (writer == null) {
+                        writer = java.io.BufferedWriter(
+                            java.io.FileWriter(f, true), 8 * 1024
+                        )
+                    }
+                    writer?.let { w -> w.write(line); w.newLine() }
+                    pendingLines++
+                    if (pendingLines >= 32) flushLocked()
+                } catch (_: Exception) {
+                    writer = null
+                }
             }
         }
     }
 
     /** 带时间戳的决策行（启动链各步骤）。 */
     fun stamp(line: String) = log("[${stamp()}] $line")
+
+    /** 会话收尾：落盘残余缓冲行（幂等）。 */
+    fun close() {
+        synchronized(fileLock) {
+            runCatching { writer?.flush() }
+            runCatching { writer?.close() }
+            writer = null
+        }
+    }
+
+    private fun flushLocked() {
+        runCatching { writer?.flush() }
+        pendingLines = 0
+    }
 
     companion object {
         private const val MAX_BUFFER = 16384

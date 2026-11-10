@@ -72,6 +72,11 @@ fun StartMenu(
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    // v3.3.40（用户需求 5）：Win7 主题 → 经典双栏开始菜单（截图同款）
+    if (theme.variant == com.anwind.core.theme.WindowsVariant.WIN7) {
+        StartMenuWin7Root(theme, onDismiss, modifier)
+        return
+    }
     val wm = remember { WindowManager.get() }
     val context = LocalContext.current
     val app = remember { AnWindApp.get() }

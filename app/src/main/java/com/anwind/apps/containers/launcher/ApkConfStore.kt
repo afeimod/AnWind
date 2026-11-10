@@ -366,45 +366,39 @@ object ApkConfStore {
     // ------------------------------------------------------------------
 
     /**
-     * 合并读：App 内部 conf + /opt 生态 conf，**逐文件 mtime 新者胜**；
-     * 文件内逐行 KEY=VALUE，同名键后载入文件覆盖（sh source 语义）。
+     * v3.3.40【去 /opt/conf 依赖 · 性能】：合并读改为【只读 App 内部
+     * anwind-conf 目录】（权威源；启动链零 /opt 探测、零 mtime 比对 —— 旧版
+     * 每次启动 optRoot 五候选探测 + 双源逐文件 stat/读两遍）。
+     * 终端侧的 /opt 生态仍可改值：写通道 [syncOut] 恒双向（UI 写 → /opt
+     * 镜像），生态首装的存量值由 [importFromEcosystemOnce] 一次性导入。
+     * 文件内逐行 KEY=VALUE，同名键后写覆盖（sh source 语义不变）。
      *
-     * @param wineDir 当前 wine 槽位（/opt 候选探测用；null = 仅 rootfs 候选）
-     * @return 键值映射（两源全无 → 空 map）
+     * @param wineDir 保留形参（兼容旧调用点；不再参与读取）
+     * @return 键值映射（无 conf → 空 map）
      */
     fun mergedConfMap(wineDir: File?): Map<String, String> {
         ensure(null)
-        val ecoConf = WineEnvironment.optRoot(wineDir)?.let { File(it, "conf") }
-        // 文件清单：固定顺序 + 双源其余 *.conf 按名兜底（排除 SKIP）
         val names = LinkedHashMap<String, Unit>()
         FIXED_ORDER.forEach { names[it] = Unit }
-        val extras = buildList {
-            File(CONF_DIR).listFiles { f -> f.isFile && f.name.endsWith(".conf") }
-                ?.forEach { add(it.name) }
-            ecoConf?.listFiles { f -> f.isFile && f.name.endsWith(".conf") }
-                ?.forEach { add(it.name) }
-        }
-        extras.sorted().forEach { if (it !in SKIP) names.putIfAbsent(it, Unit) }
+        File(CONF_DIR).listFiles { f -> f.isFile && f.name.endsWith(".conf") }
+            ?.sortedBy { it.name }
+            ?.forEach { if (it.name !in SKIP) names.putIfAbsent(it.name, Unit) }
 
         val out = LinkedHashMap<String, String>()
         for (name in names.keys) {
-            val picked = pickByFreshness(
-                File(CONF_DIR, name),
-                ecoConf?.let { File(it, name) }
-            ) ?: continue
-            parseConfLines(picked).forEach { (k, v) -> out[k] = v }
+            val f = File(CONF_DIR, name)
+            if (!f.isFile) continue
+            parseConfLines(f).forEach { (k, v) -> out[k] = v }
         }
         return out
     }
 
     /**
-     * locale.conf 合并读（mtime 新者胜；校验同 readOptLocale）。
+     * locale.conf 读（v3.3.40：只读 App 内部；校验同 readOptLocale）。
      */
     fun mergedLocale(wineDir: File?): String? {
         ensure(null)
-        val eco = WineEnvironment.optRoot(wineDir)
-        val f = pickByFreshness(localeFile(), eco?.let { File(it, "locale.conf") })
-            ?: return null
+        val f = localeFile()
         if (!f.isFile) return null
         val raw = runCatching { f.readLines().firstOrNull() }.getOrNull() ?: return null
         val value = raw.trim().trim('"', '\'')
@@ -415,19 +409,14 @@ object ApkConfStore {
     }
 
     /**
-     * 启动链诊断行（会话日志可见：哪一侧胜出、各多少键）。
+     * 启动链诊断行（v3.3.40：不再触发第二次 mergedConfMap 全量读 ——
+     * 旧版 probeLine + applyOptConfEnv 每次启动把全部 conf 读两遍）。
      */
     fun probeLine(wineDir: File?): String {
         ensure(null)
-        val eco = WineEnvironment.optRoot(wineDir)
         val apkDir = File(CONF_DIR)
         val apkCount = apkDir.listFiles { f -> f.isFile && f.name.endsWith(".conf") }?.size ?: 0
-        val merged = mergedConfMap(wineDir)
-        val ecoTxt = eco?.let {
-            val c = File(it, "conf").listFiles { f -> f.isFile && f.name.endsWith(".conf") }?.size ?: 0
-            "$it（conf $c 项）"
-        } ?: "未安装（App 内部 conf 独立生效）"
-        return "conf 源: App 内部 $apkDir（$apkCount 文件，权威源）+ /opt 生态 $ecoTxt → 合并 ${merged.size} 键（逐文件 mtime 新者胜）"
+        return "conf 源: App 内部 $apkDir（$apkCount 文件，唯一权威；不读 /opt —— 释放启动时间；写透同步 /opt 保留）"
     }
 
     /** 双源按 mtime 取新（仅存在一个时取那一个；都不存在 null）。 */

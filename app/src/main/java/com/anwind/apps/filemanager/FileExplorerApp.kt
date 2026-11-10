@@ -13,6 +13,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
@@ -42,6 +43,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.FileProvider
@@ -439,6 +441,196 @@ private fun FileExplorerContent(scope: WindowContentScope) {
      * C 盘（/data/data/com.anwind/files）独立成段；D/E 盘显示专属段；
      * 其余 /storage/emulated/0 下路径沿用「内部存储」。
      */
+    // ===== v3.3.40：右键 / 长按上下文菜单（用户需求 4 —— 移动/复制/重命名/
+    //       解压等常用操作；真鼠标右键 + 触屏长按双通道） =====
+    val cs = rememberCoroutineScope()
+    val ctxMenu = remember { FileMenuState() }
+    var renameTarget by remember { mutableStateOf<File?>(null) }
+    var renameText by remember { mutableStateOf("") }
+    var propsTarget by remember { mutableStateOf<File?>(null) }
+    var propsData by remember { mutableStateOf<FileOps.Props?>(null) }
+    var deleteTarget by remember { mutableStateOf<File?>(null) }
+    // 选择模式（壁纸/文本/exe 等）不弹菜单 —— 不干扰既有选择语义
+    val menuAllowed = pickMode.isEmpty()
+
+    fun closeCtx() { ctxMenu.close() }
+
+    /** 打开单项菜单（真右键带精确位置 / 长按用近似左上角）。 */
+    fun openFileMenu(file: File, offset: DpOffset) {
+        ctxMenu.open(file, offset)
+    }
+
+    fun runOp(op: () -> String?) {
+        cs.launch { runFileOp(context, op) { refresh() } }
+    }
+
+    /** 单项菜单条目（Win7 资源管理器同款集合）。 */
+    fun fileEntries(file: File): List<FileMenuEntry> {
+        val dir = file.isDirectory
+        val ext = file.extension.lowercase()
+        val canExtract = !dir && FileOps.isArchive(ext)
+        val unsupportedArchive = !dir && FileOps.isUnsupportedArchive(ext)
+        return buildList {
+            add(FileMenuEntry("打开", "📂") {
+                closeCtx()
+                if (dir) openFolder(file)
+                else openRealFile(context, file)
+            })
+            add(FileMenuEntry(separator = true))
+            add(FileMenuEntry("剪切", "✂️") {
+                closeCtx()
+                FileOps.Clipboard.set(FileOps.Clipboard.Mode.CUT, listOf(file))
+                toastResult(context, "已剪切：${file.name}（在目标文件夹右键粘贴）")
+            })
+            add(FileMenuEntry("复制", "📋") {
+                closeCtx()
+                FileOps.Clipboard.set(FileOps.Clipboard.Mode.COPY, listOf(file))
+                toastResult(context, "已复制：${file.name}（在目标文件夹右键粘贴）")
+            })
+            if (dir) {
+                add(FileMenuEntry(
+                    "粘贴", "📥",
+                    enabled = FileOps.Clipboard.hasContent()
+                ) {
+                    closeCtx()
+                    val cur = currentRealDir
+                    if (cur == null || !cur.isDirectory) {
+                        toastResult(context, "请先进入一个文件夹再粘贴")
+                        return@FileMenuEntry
+                    }
+                    val (mode, files) = FileOps.Clipboard.pending() ?: return@FileMenuEntry
+                    runOp { FileOps.copyIn(files, cur, move = mode == FileOps.Clipboard.Mode.CUT) }
+                })
+            }
+            add(FileMenuEntry("重命名", "✏️") {
+                closeCtx()
+                renameTarget = file
+                renameText = file.name
+            })
+            add(FileMenuEntry("删除", "🗑️") {
+                closeCtx()
+                deleteTarget = file
+            })
+            if (canExtract || unsupportedArchive) {
+                add(FileMenuEntry(separator = true))
+                add(
+                    FileMenuEntry(
+                        "解压到此处", "📦",
+                        enabled = canExtract
+                    ) {
+                        closeCtx()
+                        val parent = file.parentFile ?: return@FileMenuEntry
+                        // 解到以压缩包名命名的子文件夹（Windows 资源管理器同款）
+                        val dest = File(parent, file.nameWithoutExtension)
+                        runCatching { dest.mkdirs() }
+                        toastResult(context, "开始解压：${file.name}（大文件请稍候）")
+                        runOp {
+                            val err = FileOps.extract(file, dest)
+                            if (err == null) "解压完成 ✓ → ${dest.name}/" else err
+                        }
+                    }
+                )
+            }
+            if (!dir) {
+                add(FileMenuEntry(separator = true))
+                add(FileMenuEntry("添加到压缩文件（.zip）", "🗜️") {
+                    closeCtx()
+                    toastResult(context, "开始压缩：${file.name}.zip")
+                    runOp {
+                        val err = FileOps.zipTo(file)
+                        if (err == null) "压缩完成 ✓" else err
+                    }
+                })
+            }
+            add(FileMenuEntry(separator = true))
+            add(FileMenuEntry("属性", "ℹ️") {
+                closeCtx()
+                cs.launch {
+                    val data = withContext(Dispatchers.IO) { FileOps.props(file) }
+                    propsData = data
+                    propsTarget = file
+                }
+            })
+        }
+    }
+
+    /** 空白区菜单条目（新建 / 粘贴 / 刷新）。 */
+    fun bgEntries(): List<FileMenuEntry> = buildList {
+        add(FileMenuEntry("新建文件夹", "📁") {
+            closeCtx()
+            val cur = currentRealDir
+            if (cur == null || !cur.isDirectory) {
+                toastResult(context, "请先进入一个文件夹")
+                return@FileMenuEntry
+            }
+            runOp {
+                val made = FileOps.mkdir(File(cur, "新建文件夹"))
+                if (made != null) null else "新建文件夹失败（权限）"
+            }
+        })
+        add(FileMenuEntry("新建文本文档", "📄") {
+            closeCtx()
+            val cur = currentRealDir
+            if (cur == null || !cur.isDirectory) {
+                toastResult(context, "请先进入一个文件夹")
+                return@FileMenuEntry
+            }
+            runOp {
+                val made = FileOps.newTextFile(cur)
+                if (made != null) null else "新建文本文档失败（权限）"
+            }
+        })
+        add(FileMenuEntry(separator = true))
+        add(FileMenuEntry("粘贴", "📥", enabled = FileOps.Clipboard.hasContent()) {
+            closeCtx()
+            val cur = currentRealDir
+            if (cur == null || !cur.isDirectory) {
+                toastResult(context, "请先进入一个文件夹再粘贴")
+                return@FileMenuEntry
+            }
+            val (mode, files) = FileOps.Clipboard.pending() ?: return@FileMenuEntry
+            runOp { FileOps.copyIn(files, cur, move = mode == FileOps.Clipboard.Mode.CUT) }
+        })
+        add(FileMenuEntry("刷新", "🔄") {
+            closeCtx()
+            refresh()
+        })
+    }
+
+    /** 单项点击路由（网格/列表共用 —— 旧版两分支重复 40 行同逻辑）。 */
+    val onFileOpen: (File) -> Unit = { file ->
+        if (file.isDirectory) openFolder(file)
+        else if (wallpaperPick && isImageExtension(file.extension)) {
+            setWallpaperAndClose(file)
+        } else if (wallpaperPick && isVideoExtension(file.extension)) {
+            setWallpaperAndClose(file, isVideo = true)
+        } else if (lockWallpaperPick && isImageExtension(file.extension)) {
+            setLockWallpaperAndClose(file, isVideo = false)
+        } else if (lockWallpaperVideoPick && isVideoExtension(file.extension)) {
+            setLockWallpaperAndClose(file, isVideo = true)
+        } else if (driverPick) {
+            if (isDriverPackageFile(file.name)) pickAndClose(file)
+            else Toast.makeText(context, "请选择驱动包（zip / tar / tar.gz / tar.xz / tar.bz2 / tzst）", Toast.LENGTH_SHORT).show()
+        } else if (textPick) {
+            if (isTextExtension(file.extension)) pickAndClose(file)
+            else Toast.makeText(context, "请选择文本文件（txt/log/md/json/xml 等）", Toast.LENGTH_SHORT).show()
+        } else if (imagePick) {
+            if (isImageExtension(file.extension)) pickAndClose(file)
+            else Toast.makeText(context, "请选择图片文件（jpg/png/webp/gif 等）", Toast.LENGTH_SHORT).show()
+        } else if (dirPick) {
+            Toast.makeText(context, "目录选择模式：请点上方「选定此目录」回传当前文件夹", Toast.LENGTH_SHORT).show()
+        } else if (exePick) {
+            if (isExecutableExtension(file.extension)) pickAndClose(file)
+            else Toast.makeText(context, "请选择程序文件（exe/bat/msi/cmd/com）", Toast.LENGTH_SHORT).show()
+        } else if (bootVideoPick) {
+            if (isVideoExtension(file.extension)) setBootVideoAndClose(file)
+            else Toast.makeText(context, "请选择视频文件（mp4/webm/mkv 等）", Toast.LENGTH_SHORT).show()
+        } else if (mediaPick) {
+            if (isMediaExtension(file.extension)) pickAndClose(file)
+            else Toast.makeText(context, "请选择音频或视频文件", Toast.LENGTH_SHORT).show()
+        } else openRealFile(context, file)
+    }
+
     fun breadcrumbOf(dir: File?): String {
         if (dir == null || isThisPcHome) return "此电脑"
         val p = dir.absolutePath
@@ -687,13 +879,26 @@ private fun FileExplorerContent(scope: WindowContentScope) {
             }
             }
 
-            // ===== 文件区 =====
+            // ===== 文件区（v3.3.40：空白区右键 → 新建/粘贴/刷新菜单） =====
             Box(
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxHeight()
                     .padding(8.dp)
+                    .fileAreaGestures { off ->
+                        if (menuAllowed) ctxMenu.open(null, off, background = true)
+                    }
             ) {
+                // v3.3.40：空白区菜单锚（1dp 隐形 Box —— DropdownMenu 锚定用）
+                Box(modifier = Modifier.size(1.dp)) {
+                    FileCtxMenu(
+                        expanded = ctxMenu.background,
+                        onDismiss = { closeCtx() },
+                        offset = ctxMenu.offset,
+                        entries = bgEntries(),
+                        theme = theme
+                    )
+                }
                 // v3.3.8：权限门禁细化 —— C 盘（应用内部存储）与首页无需所有
                 // 文件权限；浏览外部存储路径（/storage/emulated/0 下）且未授权
                 // 时才拦截（首页内 D/E 盘点击时经 onRequestPermission 兜底）
@@ -713,78 +918,21 @@ private fun FileExplorerContent(scope: WindowContentScope) {
                 } else if (realItems.isEmpty()) {
                     EmptyState(theme, "此文件夹为空")
                 } else if (isGridView) {
-                    RealFileGrid(realItems, theme) { file ->
-                        if (file.isDirectory) openFolder(file)
-                        else if (wallpaperPick && isImageExtension(file.extension)) {
-                            setWallpaperAndClose(file)
-                        } else if (wallpaperPick && isVideoExtension(file.extension)) {
-                            // v2.18：壁纸模式点击视频 → 设为动态桌面壁纸
-                            setWallpaperAndClose(file, isVideo = true)
-                        } else if (lockWallpaperPick && isImageExtension(file.extension)) {
-                            setLockWallpaperAndClose(file, isVideo = false)
-                        } else if (lockWallpaperVideoPick && isVideoExtension(file.extension)) {
-                            setLockWallpaperAndClose(file, isVideo = true)
-                        } else if (driverPick) {
-                            // v3.3.17：驱动包选择（容器管理「➕ 安装驱动」）——
-                            // 完整路径回传给发起窗口安装（旧版误用 textPick 提示选 txt/log）
-                            if (isDriverPackageFile(file.name)) pickAndClose(file)
-                            else Toast.makeText(context, "请选择驱动包（zip / tar / tar.gz / tar.xz / tar.bz2 / tzst）", Toast.LENGTH_SHORT).show()
-                        } else if (textPick) {
-                            if (isTextExtension(file.extension)) pickAndClose(file)
-                            else Toast.makeText(context, "请选择文本文件（txt/log/md/json/xml 等）", Toast.LENGTH_SHORT).show()
-                        } else if (imagePick) {
-                            if (isImageExtension(file.extension)) pickAndClose(file)
-                            else Toast.makeText(context, "请选择图片文件（jpg/png/webp/gif 等）", Toast.LENGTH_SHORT).show()
-                        } else if (dirPick) {
-                            Toast.makeText(context, "目录选择模式：请点上方「选定此目录」回传当前文件夹", Toast.LENGTH_SHORT).show()
-                        } else if (exePick) {
-                            // v3.2.13：容器运行窗口的文件选择 —— 完整路径回填
-                            if (isExecutableExtension(file.extension)) pickAndClose(file)
-                            else Toast.makeText(context, "请选择程序文件（exe/bat/msi/cmd/com）", Toast.LENGTH_SHORT).show()
-                        } else if (bootVideoPick) {
-                            // v3.2.14：启动动画选择 —— 视频文件直接设为启动动画
-                            if (isVideoExtension(file.extension)) setBootVideoAndClose(file)
-                            else Toast.makeText(context, "请选择视频文件（mp4/webm/mkv 等）", Toast.LENGTH_SHORT).show()
-                        } else if (mediaPick) {
-                            if (isMediaExtension(file.extension)) pickAndClose(file)
-                            else Toast.makeText(context, "请选择音频或视频文件", Toast.LENGTH_SHORT).show()
-                        } else openRealFile(context, file)
-                    }
+                    RealFileGrid(
+                        realItems, theme,
+                        menuAllowed = menuAllowed,
+                        menuState = ctxMenu,
+                        entriesFor = { f -> fileEntries(f) },
+                        onClick = onFileOpen
+                    )
                 } else {
-                    RealFileList(realItems, theme) { file ->
-                        if (file.isDirectory) openFolder(file)
-                        else if (wallpaperPick && isImageExtension(file.extension)) {
-                            setWallpaperAndClose(file)
-                        } else if (wallpaperPick && isVideoExtension(file.extension)) {
-                            setWallpaperAndClose(file, isVideo = true)
-                        } else if (lockWallpaperPick && isImageExtension(file.extension)) {
-                            setLockWallpaperAndClose(file, isVideo = false)
-                        } else if (lockWallpaperVideoPick && isVideoExtension(file.extension)) {
-                            setLockWallpaperAndClose(file, isVideo = true)
-                        } else if (driverPick) {
-                            // v3.3.17：驱动包选择（列表视图分支，与网格视图同逻辑）
-                            if (isDriverPackageFile(file.name)) pickAndClose(file)
-                            else Toast.makeText(context, "请选择驱动包（zip / tar / tar.gz / tar.xz / tar.bz2 / tzst）", Toast.LENGTH_SHORT).show()
-                        } else if (textPick) {
-                            if (isTextExtension(file.extension)) pickAndClose(file)
-                            else Toast.makeText(context, "请选择文本文件（txt/log/md/json/xml 等）", Toast.LENGTH_SHORT).show()
-                        } else if (imagePick) {
-                            if (isImageExtension(file.extension)) pickAndClose(file)
-                            else Toast.makeText(context, "请选择图片文件（jpg/png/webp/gif 等）", Toast.LENGTH_SHORT).show()
-                        } else if (dirPick) {
-                            Toast.makeText(context, "目录选择模式：请点上方「选定此目录」回传当前文件夹", Toast.LENGTH_SHORT).show()
-                        } else if (exePick) {
-                            if (isExecutableExtension(file.extension)) pickAndClose(file)
-                            else Toast.makeText(context, "请选择程序文件（exe/bat/msi/cmd/com）", Toast.LENGTH_SHORT).show()
-                        } else if (bootVideoPick) {
-                            // v3.2.14：启动动画选择（列表视图分支，与网格视图同逻辑）
-                            if (isVideoExtension(file.extension)) setBootVideoAndClose(file)
-                            else Toast.makeText(context, "请选择视频文件（mp4/webm/mkv 等）", Toast.LENGTH_SHORT).show()
-                        } else if (mediaPick) {
-                            if (isMediaExtension(file.extension)) pickAndClose(file)
-                            else Toast.makeText(context, "请选择音频或视频文件", Toast.LENGTH_SHORT).show()
-                        } else openRealFile(context, file)
-                    }
+                    RealFileList(
+                        realItems, theme,
+                        menuAllowed = menuAllowed,
+                        menuState = ctxMenu,
+                        entriesFor = { f -> fileEntries(f) },
+                        onClick = onFileOpen
+                    )
                 }
             }
         }
@@ -811,6 +959,113 @@ private fun FileExplorerContent(scope: WindowContentScope) {
             )
         }
     }
+
+        // ===== v3.3.40：右键菜单操作对话框层（重命名 / 属性 / 删除确认） =====
+        renameTarget?.let { target ->
+            Win7MiniDialog(
+                title = "重命名",
+                theme = theme,
+                onDismiss = { renameTarget = null }
+            ) {
+                Column(Modifier.padding(horizontal = 16.dp, vertical = 10.dp)) {
+                    Text(
+                        "新名称（保持扩展名：${target.extension.ifEmpty { "无" } }）",
+                        fontSize = 11.sp, color = theme.secondaryTextColor
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    androidx.compose.material3.OutlinedTextField(
+                        value = renameText,
+                        onValueChange = { renameText = it },
+                        singleLine = true,
+                        textStyle = androidx.compose.ui.text.TextStyle(fontSize = 13.sp),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    Row(horizontalArrangement = Arrangement.End, modifier = Modifier.fillMaxWidth()) {
+                        Text(
+                            "取消", fontSize = 12.sp, color = theme.secondaryTextColor,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(4.dp))
+                                .clickable { renameTarget = null }
+                                .padding(horizontal = 12.dp, vertical = 6.dp)
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            "确定", fontSize = 12.sp, color = Color.White,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(4.dp))
+                                .background(theme.accentColor)
+                                .clickable {
+                                    val f = target
+                                    renameTarget = null
+                                    runOp { FileOps.rename(f, renameText) }
+                                }
+                                .padding(horizontal = 12.dp, vertical = 6.dp)
+                        )
+                    }
+                }
+            }
+        }
+
+        propsTarget?.let { _ ->
+            propsData?.let { d ->
+                Win7MiniDialog(
+                    title = "属性 — ${d.name}",
+                    theme = theme,
+                    onDismiss = { propsTarget = null; propsData = null },
+                    width = 340.dp
+                ) {
+                    Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
+                        PropRow("名称", d.name, theme)
+                        PropRow("类型", d.type, theme)
+                        PropRow("位置", d.location, theme)
+                        PropRow("大小", d.sizeText, theme)
+                        PropRow("修改时间", d.modified, theme)
+                        PropRow("属性", if (d.writable) "可读写" else "只读", theme)
+                    }
+                }
+            }
+        }
+
+        deleteTarget?.let { target ->
+            Win7MiniDialog(
+                title = "删除",
+                theme = theme,
+                onDismiss = { deleteTarget = null }
+            ) {
+                Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
+                    Text(
+                        if (target.isDirectory) "确定删除文件夹「${target.name}」及其全部内容？"
+                        else "确定删除「${target.name}」？",
+                        fontSize = 13.sp,
+                        color = if (theme.isDark) Color.White else Color.Black
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    Row(horizontalArrangement = Arrangement.End, modifier = Modifier.fillMaxWidth()) {
+                        Text(
+                            "取消", fontSize = 12.sp, color = theme.secondaryTextColor,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(4.dp))
+                                .clickable { deleteTarget = null }
+                                .padding(horizontal = 12.dp, vertical = 6.dp)
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            "删除", fontSize = 12.sp, color = Color.White,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(4.dp))
+                                .background(Color(0xFFE81123))
+                                .clickable {
+                                    val f = target
+                                    deleteTarget = null
+                                    runOp { FileOps.delete(f) }
+                                }
+                                .padding(horizontal = 12.dp, vertical = 6.dp)
+                        )
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -1163,7 +1418,15 @@ private fun PermissionRequiredState(theme: com.anwind.core.theme.WinTheme, onGra
 // ============================================================
 
 @Composable
-private fun RealFileGrid(items: List<File>, theme: com.anwind.core.theme.WinTheme, onClick: (File) -> Unit) {
+private fun RealFileGrid(
+    items: List<File>,
+    theme: com.anwind.core.theme.WinTheme,
+    // v3.3.40：右键/长按菜单（用户需求 4）—— menuAllowed=false（选择模式）时零挂载
+    menuAllowed: Boolean = false,
+    menuState: FileMenuState? = null,
+    entriesFor: ((File) -> List<FileMenuEntry>)? = null,
+    onClick: (File) -> Unit
+) {
     LazyVerticalGrid(
         columns = GridCells.Adaptive(minSize = 100.dp),
         verticalArrangement = Arrangement.spacedBy(4.dp),
@@ -1178,14 +1441,25 @@ private fun RealFileGrid(items: List<File>, theme: com.anwind.core.theme.WinThem
                 imagePath = if (!item.isDirectory && isImageExtension(item.extension)) item.absolutePath else null,
                 // v3.3.31：exe/dll/ico 等展示文件内嵌真实图标（PE 资源 RT_GROUP_ICON）
                 exePath = if (!item.isDirectory && isPeIconExtension(item.extension)) item.absolutePath else null,
-                theme = theme
+                theme = theme,
+                menuAllowed = menuAllowed,
+                menuFile = item,
+                menuState = menuState,
+                entriesFor = entriesFor
             ) { onClick(item) }
         }
     }
 }
 
 @Composable
-private fun RealFileList(items: List<File>, theme: com.anwind.core.theme.WinTheme, onClick: (File) -> Unit) {
+private fun RealFileList(
+    items: List<File>,
+    theme: com.anwind.core.theme.WinTheme,
+    menuAllowed: Boolean = false,
+    menuState: FileMenuState? = null,
+    entriesFor: ((File) -> List<FileMenuEntry>)? = null,
+    onClick: (File) -> Unit
+) {
     LazyColumn {
         items(items, key = { it.absolutePath }) { item ->
             FileListRow(
@@ -1195,7 +1469,11 @@ private fun RealFileList(items: List<File>, theme: com.anwind.core.theme.WinThem
                 imagePath = if (!item.isDirectory && isImageExtension(item.extension)) item.absolutePath else null,
                 // v3.3.31：exe/dll/ico 等展示文件内嵌真实图标
                 exePath = if (!item.isDirectory && isPeIconExtension(item.extension)) item.absolutePath else null,
-                theme = theme
+                theme = theme,
+                menuAllowed = menuAllowed,
+                menuFile = item,
+                menuState = menuState,
+                entriesFor = entriesFor
             ) { onClick(item) }
         }
     }
@@ -1206,16 +1484,31 @@ private fun FileGridCell(
     name: String, isDir: Boolean, extension: String, sizeText: String,
     imagePath: String? = null,
     exePath: String? = null,
-    theme: com.anwind.core.theme.WinTheme, onClick: () -> Unit
+    theme: com.anwind.core.theme.WinTheme,
+    // v3.3.40：右键/长按菜单（真鼠标右键 + 触屏长按双通道）
+    menuAllowed: Boolean = false,
+    menuFile: File? = null,
+    menuState: FileMenuState? = null,
+    entriesFor: ((File) -> List<FileMenuEntry>)? = null,
+    onClick: () -> Unit
 ) {
-    Column(
-        horizontalAlignment = Alignment.CenterHorizontally,
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(4.dp))
-            .clickable(onClick = onClick)
-            .padding(8.dp)
-    ) {
+    Box(Modifier.fillMaxWidth()) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(4.dp))
+                .let { m ->
+                    if (menuAllowed && menuState != null && menuFile != null) {
+                        m.fileItemGestures(
+                            onClick = onClick
+                        ) { off -> menuState.open(menuFile, off) }
+                    } else {
+                        m.clickable(onClick = onClick)
+                    }
+                }
+                .padding(8.dp)
+        ) {
         Box(
             modifier = Modifier.size(56.dp),
             contentAlignment = Alignment.Center
@@ -1253,6 +1546,17 @@ private fun FileGridCell(
             Spacer(Modifier.height(2.dp))
             Text(sizeText, color = theme.secondaryTextColor, fontSize = 9.sp)
         }
+        }
+        // v3.3.40：锚定在本项上的右键菜单（DropdownMenu 随宿主 Box 定位）
+        if (menuAllowed && menuFile != null && menuState != null && entriesFor != null) {
+            FileCtxMenu(
+                expanded = menuState.menuFor == menuFile && !menuState.background,
+                onDismiss = { menuState.close() },
+                offset = menuState.offset,
+                entries = entriesFor(menuFile),
+                theme = theme
+            )
+        }
     }
 }
 
@@ -1261,13 +1565,28 @@ private fun FileListRow(
     name: String, isDir: Boolean, extension: String, sizeText: String,
     imagePath: String? = null,
     exePath: String? = null,
-    theme: com.anwind.core.theme.WinTheme, onClick: () -> Unit
+    theme: com.anwind.core.theme.WinTheme,
+    // v3.3.40：右键/长按菜单（真鼠标右键 + 触屏长按双通道）
+    menuAllowed: Boolean = false,
+    menuFile: File? = null,
+    menuState: FileMenuState? = null,
+    entriesFor: ((File) -> List<FileMenuEntry>)? = null,
+    onClick: () -> Unit
 ) {
+    Box(Modifier.fillMaxWidth()) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(4.dp))
-            .clickable(onClick = onClick)
+            .let { m ->
+                if (menuAllowed && menuState != null && menuFile != null) {
+                    m.fileItemGestures(
+                        onClick = onClick
+                    ) { off -> menuState.open(menuFile, off) }
+                } else {
+                    m.clickable(onClick = onClick)
+                }
+            }
             .padding(horizontal = 12.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -1294,6 +1613,17 @@ private fun FileListRow(
         if (sizeText.isNotEmpty()) {
             Text(sizeText, color = theme.secondaryTextColor, fontSize = 11.sp)
         }
+    }
+    // v3.3.40：锚定在本项上的右键菜单
+    if (menuAllowed && menuFile != null && menuState != null && entriesFor != null) {
+        FileCtxMenu(
+            expanded = menuState.menuFor == menuFile && !menuState.background,
+            onDismiss = { menuState.close() },
+            offset = menuState.offset,
+            entries = entriesFor(menuFile),
+            theme = theme
+        )
+    }
     }
 }
 
@@ -1457,6 +1787,72 @@ private fun isDriverPackageFile(name: String): Boolean {
  * - APK → 系统安装器（FileProvider）
  * - PDF/其他 → 系统 ACTION_VIEW Intent（FileProvider）
  */
+
+// ============================================================
+// v3.3.40：右键菜单配套对话框（Win7 视觉：居中卡片 + 遮罩；主题色随主题）
+// ============================================================
+
+@Composable
+private fun Win7MiniDialog(
+    title: String,
+    theme: com.anwind.core.theme.WinTheme,
+    onDismiss: () -> Unit,
+    width: Dp = 300.dp,
+    content: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.32f))
+            .clickable(onClick = onDismiss),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            modifier = Modifier
+                .width(width)
+                .clip(RoundedCornerShape(6.dp))
+                .background(if (theme.isDark) Color(0xFF252525) else Color(0xFFF7F7F7))
+                .border(1.dp, theme.accentColor.copy(alpha = 0.5f), RoundedCornerShape(6.dp))
+        ) {
+            // 标题条
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(theme.accentColor.copy(alpha = if (theme.isDark) 0.55f else 0.9f))
+                    .padding(horizontal = 12.dp, vertical = 6.dp)
+            ) {
+                Text(title, color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+            }
+            content()
+        }
+    }
+}
+
+@Composable
+private fun PropRow(label: String, value: String, theme: com.anwind.core.theme.WinTheme) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 5.dp),
+        verticalAlignment = Alignment.Top
+    ) {
+        Text(
+            label,
+            fontSize = 12.sp,
+            color = theme.secondaryTextColor,
+            modifier = Modifier.width(72.dp)
+        )
+        Text(
+            value,
+            fontSize = 12.sp,
+            color = if (theme.isDark) Color.White else Color.Black,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f)
+        )
+    }
+}
+
 private fun openRealFile(context: Context, file: File) {
     val ext = file.extension.lowercase()
     try {

@@ -2083,7 +2083,10 @@ private fun GuanliAdvancedPage(
         ) {
             // v3.3.8（用户问题 1）：新增「🌐 生态配置」—— 容器编辑页 opt 组
             // 只留 locale，cores.conf / env.conf 全部移入此处（读写能力不变）
-            listOf("⚡ DY配置", "📦 Box配置", "🍷 Wine安装", "📊 MANGOHUD配置", "🌐 生态配置")
+            // v3.3.40（用户需求 1）：新增「🧬 FEX配置」—— assets-ck 的
+            // fex_env_vars/fex_presets 接入（放在 DY 配置旁边；15 个 FEX_*
+            // 官方变量全量开放编辑，写入 fex_active.conf 启动链 source）。
+            listOf("⚡ DY配置", "🧬 FEX配置", "📦 Box配置", "🍷 Wine安装", "📊 MANGOHUD配置", "🌐 生态配置")
                 .forEachIndexed { i, label ->
                     Tab(
                         selected = tab == i,
@@ -2102,9 +2105,10 @@ private fun GuanliAdvancedPage(
         ) {
             when (tab) {
                 0 -> DyConfigTab(sel = sel, onSaved = onRefresh)
-                1 -> BoxConfigTab()
-                2 -> WineInstallTab(onRefresh = onRefresh)
-                3 -> MangoHudTab(
+                1 -> FexConfigTab(onSaved = onRefresh)
+                2 -> BoxConfigTab()
+                3 -> WineInstallTab(onRefresh = onRefresh)
+                4 -> MangoHudTab(
                     containers = containers,
                     sel = sel,
                     onMango = onMango,
@@ -2115,7 +2119,7 @@ private fun GuanliAdvancedPage(
                         }
                     }
                 )
-                4 -> OptEcoConfigTab()
+                5 -> OptEcoConfigTab()
             }
         }
     }
@@ -2165,13 +2169,13 @@ private fun OptEcoConfigTab() {
         return
     }
 
-    GGroup("/opt 生态状态") {
-        GNote(rootLabel + "\n本页读写 /opt/conf 的 cores.conf 与 env.conf（启动链 source 的同一份，保存后下次启动生效）")
+    GGroup("conf 生态状态（App 内部 · 唯一权威）") {
+        GNote(rootLabel + "\n本页读写 App 内部 anwind-conf 的 cores.conf 与 env.conf —— v3.3.40 起启动链只读这一份（不再读 /opt/conf，释放启动时间）；保存后写透同步到 /opt 生态（终端链同值）")
     }
 
     if (!detected) {
-        GGroup("cores.conf / env.conf（未生效）") {
-            GNote("未检测到 /opt 生态 —— 请先把生态包解到 rootfs/opt（conf/ + locale.conf + prefix/ + dxvk1/）后重进本页")
+        GGroup("cores.conf / env.conf（暂不可用）") {
+            GNote("App 内部 conf 目录不可用（/data/data/com.anwind/files/anwind-conf）—— 请检查内部存储权限/空间后重进本页")
         }
         return
     }
@@ -2359,7 +2363,7 @@ private fun DyConfigTab(
     }
 
     // ---- 预设配置（wineguanli DynarecEditor 预设组） ----
-    GGroup("预设配置（全局 /opt/conf，所有容器共用）") {
+    GGroup("预设配置（全局 App 内部 conf，所有容器共用）") {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("预设:", fontSize = gsp(13.sp), color = themeFg())
             Spacer(Modifier.width(gdp(8.dp)))
@@ -2529,7 +2533,7 @@ private fun DyConfigTab(
                 if (err == null) {
                     android.widget.Toast.makeText(
                         context,
-                        "DY 配置已写入 /opt/conf/dynarec_active.conf" +
+                        "DY 配置已写入 App 内部 dynarec_active.conf（启动链 source 生效；已写透 /opt 生态）" +
                             (if (cleaned > 0) "（并清理 $cleaned 个容器的旧覆盖）" else ""),
                         android.widget.Toast.LENGTH_SHORT
                     ).show()
@@ -2541,9 +2545,207 @@ private fun DyConfigTab(
         }
     }
     GNote(
-        "写入 /opt/conf/dynarec_active.conf（wineguanli.py 同款，启动链 source 生效，" +
-            "优先级高于 Box64 预设；各容器 env= 里的旧 DY 覆盖已随应用自动清理" +
+        "写入 App 内部 anwind-conf/dynarec_active.conf（wineguanli.py 同款，启动链 source 生效，" +
+            "优先级高于 Box64 预设；各容器 env= 里的旧 DY 覆盖已随应用自动清理；写透 /opt 保留" +
             (sel?.let { "；当前容器 ${it.name}" } ?: "") + "）"
+    )
+}
+
+// ===========================================================================
+// 🧬 FEX 配置（v3.3.40：用户需求 1 —— assets-ck 的 fex_env_vars/fex_presets
+// 接入，“放在 dy 配置旁边”）
+//
+// WinFusion（同源项目）assets 内置 `builtin/fex_env_vars.json`（变量定义
+// 表：name/values/toggleSwitch/editText/defaultValue）+ `fex_presets.json`
+//（stability/compatibility/intermediate/performance 四档）—— AnWind 的
+// assets-ck 一直带着这两份资产却没有任何代码消费。本页把它补全：
+//  - 定义表逐行渲染控件（0/1 变量 → 启用勾选；多值变量 → 候选下拉；
+//    editText 变量（FEX_MAXINST）→ 编辑框）—— WinFusion
+//    FEXPresetEditDialogFragment 同款交互，wineguanli DY 配置同款布局；
+//  - 四档预设一键装载（Assets 内置，不可删改）+ 「自定义」态；
+//  - 应用 = 整文件重写 App 内部 fex_active.conf（启动链
+//    applyOptConfEnv source 全部 *.conf 时自动 export —— 与 DY 配置
+//    完全同一条生效链路；写透同步 /opt 生态由 ApkConfStore.syncOut）；
+//  - 优先级：FEX 配置页（conf，全局）> 容器预设档（applyFexPresetEnv，
+//    putIfAbsent 在链路前段）> 变量默认值；容器 env= 仍最高（用户显式
+//    FEX_*= 不被 conf 覆盖）；
+//  - 双通道：[WineEnvironment.ensureFexConfigFile] 会把本页值同步映射进
+//    $HOME/.fex-emu/Config.json（libwow64fex 的实证通道）。
+//  - arm64ec 后端（FEX 转译 x86_64/i386 PE）是这些变量的消费者；box64
+//    后端下 FEX_* 变量被忽略（写上也无害）。
+// ===========================================================================
+
+@Composable
+private fun FexConfigTab(onSaved: () -> Unit) {
+    val context = LocalContext.current
+    val cs = rememberCoroutineScope()
+
+    // 定义表（assets 只读）+ 当前值快照 —— 改值即刷新
+    var loaded by remember { mutableStateOf(false) }
+    var defs by remember { mutableStateOf<List<com.anwind.apps.containers.launcher.FexConfSupport.FexVarDef>>(emptyList()) }
+    var presets by remember { mutableStateOf<List<Pair<String, List<Pair<String, String>>>>>(emptyList()) }
+    var current by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
+    var presetSel by remember { mutableStateOf("自定义") }
+    var busyMsg by remember { mutableStateOf<String?>(null) }
+
+    // 装配：active 值 → 与四档预设比对（全等 = 选中该档；缺文件 = 预装
+    // 兼容档做初始展示，不落盘 —— 点「应用配置」才写）
+    fun reload() {
+        loaded = true
+        defs = com.anwind.apps.containers.launcher.FexConfSupport.loadVarDefs(context)
+        presets = com.anwind.apps.containers.launcher.FexConfSupport.loadPresets(context)
+            .entries.map { it.key to it.value }
+        val active = com.anwind.apps.containers.launcher.FexConfSupport.activeValues()
+        val matched = presets.firstOrNull { (_, items) ->
+            defs.all { d ->
+                val want = items.firstOrNull { it.first == d.name }?.second ?: d.defaultValue
+                active[d.name] == want || (active[d.name] == null && want == d.defaultValue)
+            }
+        }?.first
+        presetSel = matched?.let { com.anwind.apps.containers.launcher.FexConfSupport.PRESET_LABELS[it] ?: it } ?: "自定义"
+        current = defs.associate { d ->
+            d.name to (active[d.name]
+                ?: presets.firstOrNull { it.first == matched }?.second
+                    ?.firstOrNull { it.first == d.name }?.second
+                ?: d.defaultValue)
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        withContext(Dispatchers.IO) { reload() }
+    }
+
+    if (!loaded) {
+        Box(Modifier.fillMaxWidth().padding(gdp(24.dp)), contentAlignment = Alignment.Center) {
+            CircularProgressIndicator(modifier = Modifier.size(gdp(26.dp)), strokeWidth = gdp(2.5.dp))
+        }
+        return
+    }
+
+    fun setVar(name: String, value: String) {
+        current = current.toMutableMap().apply { put(name, value) }
+        presetSel = "自定义"
+    }
+
+    fun applyPreset(id: String) {
+        presets.firstOrNull { it.first == id }?.second?.let { items ->
+            current = current.toMutableMap().apply {
+                items.forEach { (k, v) -> if (containsKey(k)) put(k, v) }
+            }
+        }
+    }
+
+    // ---- 预设（assets 四档；wineguanli DY 页同款交互） ----
+    GGroup("FEX 预设（assets 内置四档，全局所有容器共用）") {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("预设:", fontSize = gsp(13.sp), color = themeFg())
+            Spacer(Modifier.width(gdp(8.dp)))
+            GComboBox(
+                options = listOf("自定义") + presets.map { (id, _) ->
+                    com.anwind.apps.containers.launcher.FexConfSupport.PRESET_LABELS[id] ?: id
+                },
+                selected = presetSel,
+                onSelect = { label ->
+                    presetSel = label
+                    val id = presets.firstOrNull { (pid, _) ->
+                        (com.anwind.apps.containers.launcher.FexConfSupport.PRESET_LABELS[pid] ?: pid) == label
+                    }?.first
+                    if (id != null) applyPreset(id)
+                },
+                width = 168.dp
+            )
+            Spacer(Modifier.weight(1f))
+            GSmallButton("重置默认", GuanliColors.grey, Modifier) {
+                cs.launch(Dispatchers.IO) {
+                    // 恢复 = 删除 fex_active.conf（启动链回落容器预设档/默认值）
+                    val err = com.anwind.apps.containers.launcher.OptConfSupport.removeFexActive()
+                    withContext(Dispatchers.Main) {
+                        busyMsg = err
+                        if (err == null) {
+                            reload()
+                            android.widget.Toast.makeText(
+                                context, "已恢复默认（fex_active.conf 已删除；点『应用配置』前预设档生效）",
+                                android.widget.Toast.LENGTH_SHORT
+                            ).show()
+                        }
+                    }
+                }
+            }
+        }
+        GNote("预设值来自 assets/anwind/fex/fex_presets.json（WinFusion 同源四档）；匹配当前生效值自动选中对应档")
+    }
+
+    // ---- 变量列表（WinFusion fex_env_vars.json 定义表全量） ----
+    GGroup("FEX 变量（15 项官方参数；0/1 变量勾选启用，多值变量下拉，数字变量编辑）") {
+        defs.forEach { d ->
+            val cur = current[d.name] ?: d.defaultValue
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(gdp(4.dp)))
+                    .background(GuanliColors.rowAlt)
+                    .border(gdp(0.5.dp), themeSec().copy(alpha = 0.12f), RoundedCornerShape(gdp(4.dp)))
+                    .padding(horizontal = gdp(10.dp), vertical = gdp(6.dp)),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    d.name, fontSize = gsp(12.sp), fontWeight = FontWeight.Bold, color = themeFg(),
+                    maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = true)
+                )
+                if (d.values.toSet() == setOf("0", "1")) {
+                    GCheckRow("启用", cur == "1") { on ->
+                        setVar(d.name, if (on) "1" else "0")
+                    }
+                } else if (d.values.size > 1) {
+                    GComboBox(
+                        options = d.values,
+                        selected = cur,
+                        onSelect = { v -> setVar(d.name, v) },
+                        width = 96.dp
+                    )
+                } else {
+                    OutlinedTextField(
+                        value = cur,
+                        onValueChange = { v -> setVar(d.name, v.filter { it.isDigit() }.take(6)) },
+                        singleLine = true,
+                        textStyle = androidx.compose.ui.text.TextStyle(fontSize = gsp(11.sp)),
+                        modifier = Modifier.width(gdp(84.dp)).height(gdp(40.dp))
+                    )
+                }
+            }
+        }
+        GNote(
+            "定义表 = assets/anwind/fex/fex_env_vars.json（FEX_TSOENABLED / FEX_MULTIBLOCK / FEX_MAXINST / " +
+                "FEX_HOSTFEATURES / FEX_SMC_CHECKS 等 15 项 —— WinFusion assets-ck 同源）"
+        )
+    }
+
+    // ---- 应用配置（整文件重写 fex_active.conf） ----
+    GSmallButton("✅ 应用配置", GuanliColors.blueFab, Modifier.fillMaxWidth().height(gdp(44.dp))) {
+        cs.launch(Dispatchers.IO) {
+            val ordered = defs.mapNotNull { d -> current[d.name]?.let { d.name to it } }
+            val err = com.anwind.apps.containers.launcher.FexConfSupport.writeActive(ordered)
+            withContext(Dispatchers.Main) {
+                if (err == null) {
+                    android.widget.Toast.makeText(
+                        context,
+                        "FEX 配置已写入 App 内部 fex_active.conf（下次启动 wine 生效；含 .fex-emu/Config.json 双通道）",
+                        android.widget.Toast.LENGTH_SHORT
+                    ).show()
+                    onSaved()
+                } else {
+                    busyMsg = err
+                }
+            }
+        }
+    }
+    if (busyMsg != null) {
+        Text(busyMsg ?: "", fontSize = gsp(11.sp), color = GuanliColors.red)
+    }
+    GNote(
+        "写入 App 内部 anwind-conf/fex_active.conf（启动链 source 生效，优先级高于容器预设档、低于容器 env=；" +
+            "arm64ec 后端消费 —— box64 后端忽略 FEX_* 无害）"
     )
 }
 
