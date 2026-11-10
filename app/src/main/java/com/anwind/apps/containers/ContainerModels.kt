@@ -114,7 +114,8 @@ enum class Box64Preset(
 /**
  * 渲染器选择。
  *
- * AUTO       : 不强制指定，走 Mesa 默认（aarch64 上通常为 freedreno/turnip）
+ * AUTO       : Vulkan 优先（aarch64 → zink+turnip，WinlatorXR/Linbox 同款；
+ *              无 Vulkan 可用时逐级回退 freedreno → softpipe）
  * ZINK       : OpenGL-on-Vulkan（配 DXVK/VKD3D 时推荐）
  * FREEDRENO  : Adreno 驱动（msm/kgsl）
  * SOFTPIPE   : 软渲染兜底（无 GPU 加速时；rootfs 的 aarch64/x86_64
@@ -440,8 +441,18 @@ data class ContainerData(
     }
 
     companion object {
-        const val DEFAULT_SCREEN = "native"
-        const val DEFAULT_GALLIUM = "auto"
+        // v3.4.0【性能大修 A3】：新容器默认虚拟分辨率 1280x720（对标
+        // Linbox-WinEmu 默认档）—— 2K 屏 native 全物理分辨率渲染的像素量
+        // 是 720p 的 4~6 倍，softpipe/zink 都被像素流水线拖死；默认 720p +
+        // 窗口拉伸上屏，性能档差距直接拉平。主桌面（AnWind 自身 UI）分辨率
+        // 不受影响；旧容器 screen=native 显式值保持不变。
+        const val DEFAULT_SCREEN = "1280x720"
+        // v3.4.0【性能大修 A1】：默认图形档 auto → zink（强制 Vulkan）。
+        // 旧 auto 在 aarch64 选 freedreno GL，Android 沙箱无 /dev/dri 权限
+        // 的设备上回落 softpipe 纯软渲染（“不到 proot 一半”的灾难级根源）；
+        // WinlatorXR/Linbox/MiceWine 生态全部默认 zink+turnip Vulkan。
+        // auto 语义同步改为“Vulkan 优先”（见 applyGpuEnv）。
+        const val DEFAULT_GALLIUM = "zink"
 
         /** v3.2.15：帧率限制/DPI 缺省值。 */
         const val FRAME_DEFAULT = "0"

@@ -137,11 +137,14 @@ fun LockScreenLayer(
         if (showPinPanel) showPinPanel = false
     }
 
-    // 每秒刷新时钟
+    // 每秒刷新时钟（v3.4.0【性能大修】：X11 真全屏会话期间锁屏时钟
+    // 停跳（浮层不可见），桌面重组静止 —— 见 DesktopPerfGovernor）
     var tick by remember { mutableLongStateOf(System.currentTimeMillis()) }
     LaunchedEffect(Unit) {
         while (true) {
-            tick = System.currentTimeMillis()
+            if (com.anwind.core.desktop.DesktopPerfGovernor.shouldTick()) {
+                tick = System.currentTimeMillis()
+            }
             delay(1000)
         }
     }

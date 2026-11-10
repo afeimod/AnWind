@@ -1881,6 +1881,18 @@ object RootfsLauncher {
             cores = "0"
             log("仙剑四兼容：未配置 cores，本次自动单核（多核竞态崩溃规避，CPU核心 页可改回）")
         }
+        // v3.4.0【性能大修】：CPU 亲和默认开启 —— cores/cores.conf 均未
+        // 配置时自动探测大核簇（cpufreq max_freq 最高组，Winlator 性能模式
+        // 同款思路）并钉核：wine 默认跑在调度器随手分的小核上，是
+        // “bionic 不到 proot 一半”的重要级供应商；探测失败（无 sysfs/
+        // 单簇 SoC）保持系统调度零风险。容器 CPU核心 页显式配置仍最高优。
+        if (cores.isEmpty()) {
+            val autoBig = WineEnvironment.autoPrimaryCores()
+            if (autoBig.isNotEmpty()) {
+                cores = autoBig.joinToString(",")
+                log("CPU 亲和默认开启：未配置 cores，自动钉大核簇 cpu$cores（/sys cpufreq 探测；容器「CPU核心」页可改回）")
+            }
+        }
         if (cores.isEmpty()) return command
         val total = Runtime.getRuntime().availableProcessors()
         val parsed = WineEnvironment.parseCoreSpec(cores)

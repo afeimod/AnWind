@@ -3913,7 +3913,10 @@ private fun NewContainerDialog(
     var name by remember { mutableStateOf("") }
     var arch by remember { mutableStateOf("x86_64") }
     var wine by remember { mutableStateOf("") }
-    var res by remember { mutableStateOf("全屏") }
+    // v3.4.0【性能大修 A3】：新建容器默认 1280x720（对标 Linbox 默认档）——
+    // 2K 屏 native 全物理分辨率渲染像素量是 720p 的 4~6 倍，默认档被像素
+    // 流水线拖死；用户仍可选"全屏"（native）。主桌面 UI 分辨率不受影响。
+    var res by remember { mutableStateOf("1280x720") }
     var lang by remember { mutableStateOf(ContainerLangs.DEFAULT) }
     var frame by remember { mutableStateOf("默认(不限制)") }
     var error by remember { mutableStateOf<String?>(null) }

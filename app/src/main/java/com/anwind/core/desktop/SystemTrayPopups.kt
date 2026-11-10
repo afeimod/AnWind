@@ -751,11 +751,14 @@ fun TrayClockSettingsFlyout(
     val showSeconds by app.settingsStore.showSeconds.collectAsState(initial = false)
     val time24 by app.settingsStore.timeFormat24h.collectAsState(initial = true)
 
-    // 实时预览时钟
+    // 实时预览时钟（v3.4.0【性能大修】：X11 真全屏会话期间降载不写 tick，
+    // 桌面重组静止 —— 见 DesktopPerfGovernor）
     var tick by remember { mutableStateOf(System.currentTimeMillis()) }
     LaunchedEffect(Unit) {
         while (true) {
-            tick = System.currentTimeMillis()
+            if (com.anwind.core.desktop.DesktopPerfGovernor.shouldTick()) {
+                tick = System.currentTimeMillis()
+            }
             delay(1000)
         }
     }

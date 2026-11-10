@@ -89,10 +89,14 @@ fun Taskbar(
 ) {
     var tick by remember { mutableStateOf(0L) }
 
-    // 每秒刷新时钟
+    // 每秒刷新时钟（v3.4.0【性能大修】：X11 真全屏会话期间主桌面降载，
+    // 时钟不写 tick → 桌面 Compose 重组静止，让 CPU 给 wine/box64 ——
+    // 手机 launcher 被全屏应用覆盖时的同款退位语义）
     LaunchedEffect(Unit) {
         while (true) {
-            tick = System.currentTimeMillis()
+            if (com.anwind.core.desktop.DesktopPerfGovernor.shouldTick()) {
+                tick = System.currentTimeMillis()
+            }
             kotlinx.coroutines.delay(1000)
         }
     }

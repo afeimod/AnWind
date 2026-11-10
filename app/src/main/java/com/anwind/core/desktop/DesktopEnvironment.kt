@@ -110,6 +110,11 @@ fun DesktopEnvironment(
     LaunchedEffect(Unit) { wm.observe { wmRevision++ } }
     val anyTrueFullscreen = remember(wmRevision) { wm.anyTrueFullscreen() }
 
+    // v3.4.0【性能大修】：主桌面 launcher 式降载 —— X11 真全屏会话期间，
+    // 桌面 1Hz 时钟重组（任务栏/托盘/锁屏）与自动锁屏轮询全部让位给
+    // wine/box64 游戏线程（详见 DesktopPerfGovernor）。
+    SideEffect { DesktopPerfGovernor.update(anyTrueFullscreen) }
+
     // 启动音效
     LaunchedEffect(theme.variant) {
         if (soundEnabled) {
@@ -122,7 +127,10 @@ fun DesktopEnvironment(
         if (!lockEnabled || autoLockMinutes <= 0) return@LaunchedEffect
         val timeoutMs = autoLockMinutes * 60_000L
         while (true) {
-            if (!LockController.locked && AutoLockController.idleMs() >= timeoutMs) {
+            // v3.4.0【性能大修】：X11 全屏会话期间不自动锁屏（游戏没有
+            // "桌面空闲"概念，锁屏盖在游戏上是双重伤害 —— 桌面降载的一部分）
+            if (!DesktopPerfGovernor.quiesced &&
+                !LockController.locked && AutoLockController.idleMs() >= timeoutMs) {
                 LockController.lock()
             }
             delay(5_000)

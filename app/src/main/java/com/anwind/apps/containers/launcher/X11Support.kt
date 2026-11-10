@@ -189,6 +189,19 @@ object X11Support {
         if (now - lastServiceStartAt < SERVICE_START_DEBOUNCE_MS) return
         lastServiceStartAt = now
 
+        // ---- v3.4.0【性能大修】：X server 前台主进程化（第一铲）----
+        //      裸 app_process 是 App 的 phantom 子进程：Android 12+ 按
+        //      "被 AMS 跟踪的进程"调整 cgroup/冻结，它不在名单 —— 但
+        //      fork 瞬间继承父进程所处的前台/后台 cgroup。旧链路把
+        //      KeepAliveService 留到 X 窗口广播（ACTION_START）之后才起，
+        //      冷启动窗口期 App 可能已因切后台被降组 → X server 生在
+        //      background cgroup 里（top-app 限流差一个数量级 ——
+        //      "bionic 不到 proot 一半"的重要级供应商）。
+        //      现在在 exec app_process【之前】先把前台服务立起来，把 App
+        //      钉回前台态，fork 继承 top-app 组；后续 wine/box64 同样受益。
+        runCatching { com.anwind.apps.x11.X11KeepAliveService.start(context) }
+            .onFailure { log("警告: X11 前台常驻服务提前启动失败（继续拉起 X 服务）: ${it.message}") }
+
         // ---- XKB 键盘数据就位（X 服务初始化必需；脚本 tar -xzf 的
         //      职责由 XkbExtractor 原生承接） ----
         val xkbRoot = ensureXkbData(log)

@@ -237,7 +237,17 @@ object WineEnvironment {
             "auto" else container.gallium.trim().lowercase()
         val gallium = when (raw) {
             "llvmpipe" -> "softpipe"
-            "auto" -> if (isAarch64() && hasDrmAccess()) "freedreno" else "softpipe"
+            // v3.4.0【性能大修 A1】：auto = Vulkan 优先（WinlatorXR/Linbox
+            // 同款）。旧逻辑 aarch64 有 /dev/dri 才 freedreno、否则 softpipe
+            // —— 沙箱无 dri 权限的设备上 32 位游戏/全部 GL 画面被 CPU
+            // 光栅化（“不到 proot 一半”的灾难级主供应商）。新逻辑：aarch64
+            // 一律 zink（Turnip 经 kgsl/DRM 均可达，无需 /dev/dri 权限），
+            // 仅当 Vulkan 生态完全不可探测时逐级回退 freedreno → softpipe。
+            "auto" -> when {
+                isAarch64() && hasVulkanIcd() -> "zink"
+                isAarch64() && hasDrmAccess() -> "freedreno"
+                else -> "softpipe"
+            }
             else -> raw
         }
         when (gallium) {
@@ -247,11 +257,12 @@ object WineEnvironment {
                 env["ZINK_DEBUG"] = "compact"
                 // Turnip 崩溃规避仅此一项（sysmem 已撤销，见上）
                 env.putIfAbsent("TU_DEBUG", "noconform")
-                // v3.3.37（WinlatorXR XServerDisplayActivity:2381-2382 同款）：
-                // kopper 禁用 —— zink 不自建 X11 swapchain，交换链提交交给
-                // wine 的 GLX/X11 呈现路径（走 kopper 时呈现节奏不受控，
-                // 是闪屏/帧率不稳的来源之一）。
-                env.putIfAbsent("LIBGL_KOPPER_DISABLE", "true")
+                // v3.4.0【性能大修】：撤销 LIBGL_KOPPER_DISABLE=true。
+                //   v3.3.37 参照 WinlatorXR XServerDisplayActivity 设入，
+                //   但 kopper 是 zink 的 GLX 主路径 —— 禁用它等于砍断
+                //   GLX 直呈现，每帧退回 X11 putimage 慢路径，GL 游戏
+                //   帧率被砍（用户“不到 proot 一半”的重要级供应商）。
+                //   用户 env= LIBGL_KOPPER_DISABLE=true 仍可自行恢复。
             }
             "freedreno" -> {
                 env["GALLIUM_DRIVER"] = "freedreno"
@@ -270,6 +281,22 @@ object WineEnvironment {
         File("/dev/dri/renderD128").canRead() ||
             File("/dev/dri/card0").canRead() ||
             File("/dev/kgsl-3d0").canRead()
+    } catch (_: Exception) {
+        false
+    }
+
+    /**
+     * v3.4.0 A1：Vulkan ICD 可达性探测 —— rootfs 自带 Mesa Turnip 的
+     * freedreno_icd.aarch64.json（或任意已装用户槽位 ICD）存在即视为
+     * Vulkan 可用。kgsl 路径（/dev/kgsl-3d0）无需 /dev/dri 权限，Adreno
+     * 设备上 zink+turnip 开箱即达；Mali 设备 rootfs ICD 虽在但 turnip
+     * 建不出设备 —— auto 档会在运行失败时由用户显式改 freedreno/softpipe。
+     */
+    private fun hasVulkanIcd(): Boolean = try {
+        val icdRoot = File("$RFS_USR/share/vulkan/icd.d")
+        (icdRoot.isDirectory &&
+            icdRoot.listFiles { f -> f.name.endsWith(".json") }?.isNotEmpty() == true) ||
+            hasDrmAccess()
     } catch (_: Exception) {
         false
     }
@@ -680,7 +707,8 @@ object WineEnvironment {
         arch: WineRuntime.Arch,
         wineDir: File,
         userEnv: String = "",
-        @Suppress("UNUSED_PARAMETER") fexMode: Boolean = false
+        // v3.4.0 A2：FEX 模式开关重新生效（默认 wowbox64 / FEXMODE → FEX）
+        fexMode: Boolean = false
     ) {
         // v3.3.37：WINEESYNC 0→1（对齐 WinlatorXR XServerDisplayActivity:1748-1751
         // —— 未设即强制 1；同为 bionic 直跑环境，esync 是线程密集型 32 位
@@ -734,8 +762,22 @@ object WineEnvironment {
         }
         if (userHodll != null) {
             env["HODLL"] = userHodll
-        } else if (probeEmulatorDll(wineDir, "libwow64fex.dll")) {
-            env["HODLL"] = "libwow64fex.dll"
+        } else {
+            // v3.4.0【性能大修 A2】：32 位 wow64 仿真器 DLL 探测序列重写 ——
+            // 不再单锁 libwow64fex.dll（FEX 解释器）。对齐 WinlatorXR
+            // BionicProgramLauncherComponent 语义：FEX 模式 → libwow64fex；
+            // 默认 → wowbox64（box64 DYNAREC，对 32 位 DDraw/D3D 游戏实测
+            // 明显快于 FEX 解释执行）。wowbox64.dll 缺席时回退 libwow64fex，
+            // 两者皆无则不注入（旧语义）。用户 env=/启动参数 HODLL= 仍最高优。
+            val fexPreferred = fexMode
+            val wowbox = probeEmulatorDll(wineDir, "wowbox64.dll")
+            val fex = probeEmulatorDll(wineDir, "libwow64fex.dll")
+            env["HODLL"] = when {
+                fexPreferred && fex -> "libwow64fex.dll"
+                wowbox -> "wowbox64.dll"
+                fex -> "libwow64fex.dll"
+                else -> return
+            }
         }
     }
 
@@ -876,6 +918,32 @@ object WineEnvironment {
             }
         }
         return out
+    }
+
+    /**
+     * v3.4.0【性能大修】：大核簇自动探测（CPU 亲和默认开启的依据）。
+     *
+     * 读 /sys/devices/system/cpu/cpu<N>/cpufreq/cpuinfo_max_freq 分簇，
+     * max_freq 最高的一簇 = 大核（高通/联发科旗舰大小核布局通用启发式，
+     * Winlator 性能模式同款思路）。三重安全边界：
+     *  - 任一 cpu 的 sysfs 条目缺失/不可读 → 无法可靠比较 → 返回空
+     *    （保持系统默认调度，零绑定零风险）；
+     *  - 单簇 SoC（全部同频）→ 绑定无收益且丢核 → 返回空；
+     *  - big 簇即全部核心（≤1 核设备）→ 返回空。
+     */
+    fun autoPrimaryCores(): List<Int> {
+        val total = Runtime.getRuntime().availableProcessors()
+        if (total <= 1) return emptyList()
+        val freqs = (0 until total).mapNotNull { cpu ->
+            runCatching {
+                File("/sys/devices/system/cpu/cpu$cpu/cpufreq/cpuinfo_max_freq")
+                    .readText().trim().toLongOrNull()?.let { cpu to it }
+            }.getOrNull()
+        }
+        if (freqs.size < total) return emptyList()
+        val maxFreq = freqs.maxOf { it.second }
+        val big = freqs.filter { it.second >= maxFreq }.map { it.first }
+        return if (big.size >= total) emptyList() else big.sorted()
     }
 
     // ------------------------------------------------------------------
