@@ -272,6 +272,19 @@ custom_patch() {
 # 用户"0.3.8 对 32 兼容速度快"的正解在 wine 侧（HODLL=libwow64fex.dll
 # + libarm64fex.dll 注入，见 WineEnvironment.kt）而非 box32。上游 option
 # 原文即 "experimental, do not use"，保持 OFF。
+# v3.3.36（box64-build-log-aarch64(6).zip 实证）：交付构建本身已全绿
+# （0.3.8 100% Built target box64 + install() 冒烟 1/2、2/2 通过），
+# "还是构建报错"的真凶在 CI 工作流 build-box64-bionic.yml 步骤 5.7
+# 源码级冒烟：它只给冒烟树打 0001，却用"0001 命中"门控 RELR 断言 ——
+# v3.3.34 拆分后 elfparser 修复在 0002/0003，冒烟树必然缺失 →
+# relr_ok() 解引用未重定位裸指针 SIGSEGV（本仓沙箱 v0.3.8 树完整复现
+# Signal 11）；尾部"补丁在源"再 grep 0001 里的 6fffe000（拆分后必不
+# 在）双保险全炸 —— 对全部 ref 回归，0.3.8 只是首个踩中的。修复在
+# 两个工作流（bionic + glibc 形态）：冒烟/克隆步改为与 custom_patch()
+# 同款逐补丁门禁（0001 默认 fuzz / 其余 --fuzz=0），断言按落地补丁组
+# 分别激活（0001→静态 shm；0002/0003→RELR）。glibc 工作流另修 CWD
+# bug（cd box64 后 patch -d box64 解析为 box64/box64，v3.2.19 起补丁
+# 从未真正应用）。本配方 custom_patch() 无需改动。
 args="-DANDROID=ON -DBAD_SIGNAL=ON -DARM_DYNAREC=ON -DNOLOADADDR=ON"
 
 # 运行时配套闭包（见头部【deps 说明】：非编译期依赖，是保证

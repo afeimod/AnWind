@@ -72,24 +72,49 @@ jobs:
           git pull origin $BOX64_REF
         fi
 
-        # v3.2.19：应用 0001 shm 补丁（与 bionic-rootfs 配方链同源）。
-        # glibc 形态下补丁只激活 x64syscall.c 的
-        # #if defined(__linux__) case 29/30/31/67 转发（静态链接
-        # x86_64 程序的 shm 不再 ENOSYS，glibc libc 直供）；ANDROID
-        # 专属段（android_shmem.c / GOM 桥接）在非 ANDROID 构建编译
-        # 为空、private 头走 GO 原分支 —— 行为安全，已在 x86_64 宿主
-        # 沙箱实跑验证（动态/静态 shm 冒烟均 ANWIND_SMOKE_OK）。
-        # vanilla 上游若 hunk 漂移，patch --dry-run 失败即构建失败
-        #（早暴露优于静默丢弃补丁）。
-        SHMEM_PATCH="${GITHUB_WORKSPACE}/bionic-rootfs/projects/box64/0001-anwind-android-shmem-native.patch"
-        if [[ -f "${SHMEM_PATCH}" ]]; then
-          echo "=== 应用 0001-anwind-android-shmem-native.patch ==="
-          patch -d box64 -p1 --dry-run < "${SHMEM_PATCH}"
-          patch -d box64 -p1 -N --no-backup-if-mismatch < "${SHMEM_PATCH}"
-          echo "  [OK] 静态 x86_64 程序 shm syscall 转发已入链"
-        else
-          echo "警告: 未找到 0001-anwind-android-shmem-native.patch，跳过（静态 shm 将 ENOSYS）"
-        fi
+        # v3.3.36：与 bionic 工作流 / 交付配方 custom_patch() 同策略 —— 逐补丁
+        # 门禁应用完整补丁集（0001 默认 fuzz / 其余 --fuzz=0，按源码布局
+        # 自选择，各自独立成立/跳过）。v3.2.19 起本步只打 0001 有两处坑：
+        #   ① v3.3.34 补丁拆分后 elfparser.c 的 ANDROID RELR 修复在
+        #      0002（v0.4.2+）/0003（v0.3.2..v0.4.1）—— 只打 0001 的 glibc
+        #      形态 box64 加载 bionic 链接的 x86_64 wine unix .so（NDK lld
+        #      → DT_ANDROID_RELR 打包重定位）时重定位静默跳过 → wineboot
+        #      SIGSEGV 同根因复发（glibc box64 的 elfparser 同样要认
+        #      Android 标签：被仿形的 .so 来自 rootfs 的 bionic wine 包）；
+        #   ② 本步先 cd box64 再 patch -d box64 —— 实际解析为
+        #      box64/box64（不存在），v3.2.19 起补丁从未真正应用过
+        #      （-e 语义下该行必失败，本工作流对全部版本早已不可用）。
+        # 补丁的 ANDROID 专属段（android_shmem.c / GOM 桥接）在非
+        # ANDROID 构建编译为空、private 头走 GO 原分支 —— 行为安全，
+        # x86_64 宿主沙箱已实跑验证（动态/静态 shm 冒烟均 ANWIND_SMOKE_OK）。
+        BOX64_PATCHDIR="${GITHUB_WORKSPACE}/bionic-rootfs/projects/box64"
+        PATCH_0001_OK=0
+        PATCH_RELR_OK=0
+        for _p in "${BOX64_PATCHDIR}"/[0-9][0-9][0-9][0-9]-*.patch; do
+          [[ -f "${_p}" ]] || continue
+          _b="$(basename "${_p}")"
+          case "${_b}" in
+            0001-*) _fm="" ;;
+            *)      _fm="--fuzz=0" ;;
+          esac
+          if patch -d "${GITHUB_WORKSPACE}/box64" -p1 ${_fm} --dry-run < "${_p}" >/dev/null 2>&1; then
+            patch -d "${GITHUB_WORKSPACE}/box64" -p1 -N --no-backup-if-mismatch ${_fm} < "${_p}"
+            case "${_b}" in
+              0001-*)        PATCH_0001_OK=1 ;;
+              0002-*|0003-*) PATCH_RELR_OK=1 ;;
+            esac
+            echo "  [OK] 已应用 ${_b}"
+          else
+            echo "  [--] ${_b} 不适用于 ${BOX64_REF}（按设计跳过，与交付配方 custom_patch 同语义）"
+          fi
+        done
+        # 与交付构建同款硬保障：0001 任何 v0.3.2+ 树都应命中；
+        # elfparser.c RELR 孪生 0002/0003 必中其一（bionic wine 兼容线）。
+        [[ "${PATCH_0001_OK}" == "1" ]] \
+          || { echo "::error::核心补丁 0001 未命中 ${BOX64_REF}（任何 v0.3.2+ 树都应命中），请核查源码树形态"; exit 1; }
+        [[ "${PATCH_RELR_OK}" == "1" ]] \
+          || { echo "::error::elfparser.c 的 Android RELR 补丁（0002/0003）一个都没命中 ${BOX64_REF} —— 加载 bionic x86_64 wine 将 wineboot SIGSEGV，请核查源码树形态"; exit 1; }
+        echo "  [OK] 静态 x86_64 程序 shm syscall 转发 + ANDROID RELR 重定位均已入链"
 
     - name: 获取版本和日期信息
       id: version_info
