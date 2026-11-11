@@ -1,10 +1,6 @@
 package com.anwind.core.window
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.interaction.collectIsPressedAsState
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -326,6 +322,15 @@ fun WindowChrome(
 
                 // 标题栏右侧控制按钮组
                 if (state.launchMode == LaunchMode.FLOATING) {
+                    // v3.3.42：应用自定义标题栏按钮（X11 桌面用其放"隐藏
+                    // 底部控制条"按钮 —— 隐藏后游戏画面占满更大区域）。
+                    // 渲染在菜单按钮左侧，保持与 Win7/Win11 标题栏一致的
+                    // "图标按钮在右、关闭键最右"观感。
+                    appDef?.titleBarExtraButtons?.forEach { btn ->
+                        ControlButton(icon = btn.icon(), theme = theme) {
+                            btn.onClick(chromeContext)
+                        }
+                    }
                     // v3.1.7：应用菜单按钮（最小化左边）—— AppDef.onMenuButton
                     // 定义即显示（X11 桌面用它调出 X11 设置菜单；此前只能
                     // 长按标题栏 3 秒，难发现且易误触）。
@@ -616,7 +621,6 @@ private fun BoxScope.ResizeHandles(
     )
 }
 
-
 @Composable
 private fun ControlButton(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
@@ -624,107 +628,38 @@ private fun ControlButton(
     isClose: Boolean = false,
     onClick: () -> Unit
 ) {
-    // v3.4.5（Win7 1:1 重制，用户："win7 主题写的太烂"）：
-    // Win7 Aero 真实形态 —— 细线符号 + 透明玻璃底，**默认态无任何颜色**
-    //（旧版"红色关闭钮"是 macOS 皮，图一失真主因）；按下态才显色：
-    // 关闭 = 红玻璃渐变，最小/最大 = 蓝玻璃渐变 + 描边。
-    // 符号自绘（[Win7CaptionSymbol]）：– / 空心方框 / ✕ 全部 1.4dp 细线
-    //（Material 粗图标 → 图一"方块粗箭头"失真根除）。宽 29dp 贴角组。
-    // 非 Aero 主题维持旧形态（46dp + Material 图标）。
+    // v3.3.40（用户需求 5）：Win7 Aero 资源管理器式按钮 —— 玻璃渐变底 +
+    // 高光描边 + 底线（悬停/按下的按压态交给默认 press 透明度）；关闭键
+    // 红调。其余主题维持旧无边框形态。
     val aero = theme.windowChrome == com.anwind.core.theme.WindowChrome.AERO && !theme.isDark
-    val sym = when {
-        isClose -> CaptionSym.CLOSE
-        icon.name == "Minimize" -> CaptionSym.MIN
-        else -> CaptionSym.MAX
-    }
-    if (!aero) {
-        Box(
-            modifier = Modifier
-                .size(width = 46.dp, height = theme.windowTitleBarHeight)
-                .pointerInput(Unit) { detectTapGestures(onTap = { onClick() }) },
-            contentAlignment = Alignment.Center
-        ) {
-            Icon(
-                imageVector = icon,
-                contentDescription = null,
-                tint = if (isClose) Color(0xFF9E2A21) else Color(0xFF16324E),
-                modifier = Modifier.size(12.dp)
-            )
-        }
-        return
-    }
-    val interaction = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
-    val pressedState by interaction.collectIsPressedAsState()
     Box(
         modifier = Modifier
-            .size(width = 29.dp, height = theme.windowTitleBarHeight)
-            .background(
-                when {
-                    !pressedState -> androidx.compose.ui.graphics.Brush.verticalGradient(
-                        listOf(Color(0x14FFFFFF), Color(0x0A000000))
-                    )
-                    isClose -> androidx.compose.ui.graphics.Brush.verticalGradient(
-                        listOf(Color(0xFFF8BBA4), Color(0xFFDE6F5A))
-                    )
-                    else -> androidx.compose.ui.graphics.Brush.verticalGradient(
-                        listOf(Color(0xFFEAF6FD), Color(0xFFBFD9F2))
-                    )
-                }
-            )
+            .size(width = 46.dp, height = theme.windowTitleBarHeight)
             .then(
-                if (pressedState)
-                    Modifier.border(
-                        1.dp,
-                        if (isClose) Color(0xFFB4472F) else Color(0xFF8FB3D9),
+                if (aero) Modifier
+                    .background(
+                        androidx.compose.ui.graphics.Brush.verticalGradient(
+                            if (isClose) listOf(Color(0xFFF6D9D5), Color(0xFFE9A9A0))
+                            else listOf(Color(0xFFF7FAFD), Color(0xFFD9E8F5))
+                        )
+                    )
+                    .border(
+                        0.5.dp,
+                        if (isClose) Color(0xFFC96A5F) else Color(0xFF9AB6D4),
                         RectangleShape
                     )
                 else Modifier
             )
-            .clickable(
-                interactionSource = interaction,
-                indication = null,
-                onClick = onClick
-            ),
+            .pointerInput(Unit) {
+                detectTapGestures(onTap = { onClick() })
+            },
         contentAlignment = Alignment.Center
     ) {
-        Win7CaptionSymbol(
-            symbol = sym,
-            color = if (pressedState && isClose) Color.White else Color(0xFF1F3F5F)
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = if (isClose) Color(0xFF9E2A21) else Color(0xFF16324E),
+            modifier = Modifier.size(12.dp)
         )
-    }
-}
-
-/** Aero 标题按钮细线符号类型（v3.4.5）。 */
-private enum class CaptionSym { MIN, MAX, CLOSE }
-
-/** Win7 细线符号：–（下沿短横）/ 空心方框 / ✕ 两斜线（1.4dp 线宽）。 */
-@Composable
-private fun Win7CaptionSymbol(symbol: CaptionSym, color: Color) {
-    androidx.compose.foundation.Canvas(modifier = Modifier.size(width = 14.dp, height = 12.dp)) {
-        val u = size.width / 14f
-        when (symbol) {
-            CaptionSym.MIN ->
-                drawLine(
-                    color, Offset(2.2f * u, 8.6f * u), Offset(11.8f * u, 8.6f * u),
-                    strokeWidth = 1.6f * u
-                )
-            CaptionSym.MAX ->
-                drawRect(
-                    color,
-                    topLeft = Offset(2.2f * u, 2.4f * u),
-                    size = androidx.compose.ui.geometry.Size(9.6f * u, 7.6f * u),
-                    style = Stroke(width = 1.3f * u)
-                )
-            CaptionSym.CLOSE -> {
-                drawLine(
-                    color, Offset(3.4f * u, 3.0f * u), Offset(10.6f * u, 9.2f * u),
-                    strokeWidth = 1.4f * u
-                )
-                drawLine(
-                    color, Offset(10.6f * u, 3.0f * u), Offset(3.4f * u, 9.2f * u),
-                    strokeWidth = 1.4f * u
-                )
-            }
-        }
     }
 }

@@ -14,8 +14,8 @@ import android.view.WindowManager as AndroidWindowManager
 import android.widget.FrameLayout
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.ButtonDefaults
@@ -26,7 +26,6 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
@@ -96,6 +95,13 @@ fun X11Surface(scope: WindowContentScope) {
     // v2.25：LoriePreferences（不可观察）→ X11UiPrefs（可观察镜像），
     // 供附加键盘栏显隐 / keepScreenOn / 屏幕方向驱动副作用
     LaunchedEffect(prefs) { prefs?.let { X11UiPrefs.initIfNeed(it) } }
+
+    // v3.3.42（用户需求 4）：底部控制条隐藏态 —— 进程内首次进入时从
+    // SharedPreferences 恢复（标题栏「隐藏/显示」按钮写入）。
+    LaunchedEffect(Unit) { X11UiPrefs.loadControlBarHidden(context) }
+
+    // v3.3.42：控制条是否隐藏（标题栏按钮可随时切换）
+    val controlBarHidden = X11UiPrefs.controlBarHidden
 
     // 智能鼠标桥与手柄层（随 LorieView 实例创建，见 factory）
     var touchBridge by remember { mutableStateOf<SmartTouchBridge?>(null) }
@@ -366,39 +372,6 @@ fun X11Surface(scope: WindowContentScope) {
                 WaitingPanel(connState)
             }
 
-            // ===== v3.4.5（用户需求 4）：控制条隐藏切换片（顶部中央） =====
-            // 连接后显示；点击切换 X11UiPrefs.toolbarHidden。隐藏态时片
-            // 收窄为小 ⌄（不遮画面边缘菜单）；显示态为宽片带「⌃ 隐藏设置栏」
-            // 提示。真全屏时不显示（画面独占，返回键退出）。
-            if (connState == X11WindowController.State.Connected && !isTrueFs) {
-                Box(
-                    Modifier
-                        .matchParentSize()
-                        .padding(top = 2.dp),
-                    contentAlignment = Alignment.TopCenter
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(8.dp))
-                            .background(Color(0x88000000))
-                            .border(0.5.dp, Color(0x66FFFFFF), RoundedCornerShape(8.dp))
-                            .clickable(
-                                interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
-                                indication = null
-                            ) { X11UiPrefs.toolbarHidden = !X11UiPrefs.toolbarHidden }
-                            .padding(horizontal = if (X11UiPrefs.toolbarHidden) 8.dp else 14.dp)
-                            .padding(vertical = 3.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            if (X11UiPrefs.toolbarHidden) "⌄" else "⌃ 隐藏设置栏",
-                            color = Color(0xFFE8F0F8),
-                            fontSize = 11.sp
-                        )
-                    }
-                }
-            }
-
             // ===== v2.25 附加键盘栏（showAdditionalKbd；连接后显示，真全屏时
             //      隐藏，imePadding 使其贴在输入法上沿） =====
             if (connState == X11WindowController.State.Connected &&
@@ -419,20 +392,30 @@ fun X11Surface(scope: WindowContentScope) {
         // v2.22.5 fix13：真全屏时隐藏控制条（用户需求：点"全屏"后底部菜单
         // 消失，画面独占整个窗口；按返回键退出全屏后控制条重新出现 ——
         // BackHandler 已在本 Composable 顶部处理）。
-        // v3.4.5（用户需求 4）：toolbarHidden 隐藏态 —— 游戏时隐藏整条
-        //   分辨率/切窗/键盘栏，画面多吃一整条高度；重开窗口/重启进程回
-        //   默认显示（会话级选择，不写持久层）。切换入口 = 画面顶部中央
-        //   的 ⌃/⌄ 玻璃片（上方 Box 内）。
-        if (connState == X11WindowController.State.Connected && prefs != null && !isTrueFs &&
-            !X11UiPrefs.toolbarHidden
-        ) {
-            ControlBar(
-                scope = scope,
-                prefs = prefs,
-                lorieView = lorieViewRef,
-                isTrueFs = isTrueFs,
-                resState = resState
-            )
+        // v3.3.42（用户需求 4）：标题栏「隐藏」按钮可把控制条整条收起，
+        // 画面区（游戏）因此获得整窗高度；收起后底部留一条 3dp 细条，
+        // 轻点即恢复（不必回到标题栏找按钮）。
+        if (connState == X11WindowController.State.Connected && prefs != null && !isTrueFs) {
+            if (!controlBarHidden) {
+                ControlBar(
+                    scope = scope,
+                    prefs = prefs,
+                    lorieView = lorieViewRef,
+                    isTrueFs = isTrueFs,
+                    resState = resState
+                )
+            } else {
+                // 收起态：底部 3dp 细条（半透明，点击恢复控制条）
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(3.dp)
+                        .background(Color(0x33000000))
+                        .clickable {
+                            X11UiPrefs.saveControlBarHidden(context, false)
+                        }
+                )
+            }
         }
     }
 
@@ -774,6 +757,16 @@ internal class SmartTouchBridge(private val context: Context, private val view: 
     private var twoMoved = false
     private var lastTwoY = 0f
     private var scrollAccum = 0f
+
+    /**
+     * v3.3.42：本手势出现过的最大手指数。
+     *
+     * 对齐上游 termux-x11 `mouseButtonFromPointerCount()`：
+     * 1 指 = 左键、2 指 = 右键、**3 指 = 中键**。旧实现只区分 1/2 指，
+     * 三指轻点被当成"两指手势"吞掉 —— wine/游戏里的中键（自动瞄准、
+     * 打开链接新标签）无法触发。
+     */
+    private var maxPointers = 0
 
     // 双击吸附（X 坐标）
     private var lastTapX = -1f; private var lastTapY = -1f
@@ -1182,6 +1175,7 @@ internal class SmartTouchBridge(private val context: Context, private val view: 
                 curX = downX; curY = downY
                 downAt = android.os.SystemClock.uptimeMillis()
                 moved = false
+                maxPointers = 1
                 diagDowns++
                 val p = snapPoint(downX, downY)
                 // v3.2.9（用户问题 3 根修）：恢复上游"先定位后点击"两段式。
@@ -1225,6 +1219,8 @@ internal class SmartTouchBridge(private val context: Context, private val view: 
                     twoMoved = false
                     scrollAccum = 0f
                     lastTwoY = (event.getY(0) + event.getY(1)) / 2f
+                    // v3.3.42：记录本手势最大手指数（三指轻点 = 中键，上游同款）
+                    if (event.pointerCount > maxPointers) maxPointers = event.pointerCount
                     if (pressedLeft) {
                         sendButton(InputStub.BUTTON_LEFT, false)
                         pressedLeft = false
@@ -1275,6 +1271,11 @@ internal class SmartTouchBridge(private val context: Context, private val view: 
                                 }
                                 scrollAccum -= steps * wheelStep
                             }
+                            // v3.3.42：双指阶段同步当前位置 —— 后续双指/三指
+                            // 轻点的右键/中键必须落在手指当前位置（旧实现沿用
+                            // 单指阶段的旧坐标，点空白处时右键跑到别处）。
+                            curX = event.getX(0); curY = event.getY(0)
+                            if (event.pointerCount > maxPointers) maxPointers = event.pointerCount
                         }
                     }
                     else -> {}
@@ -1284,35 +1285,24 @@ internal class SmartTouchBridge(private val context: Context, private val view: 
             MotionEvent.ACTION_POINTER_UP -> {
                 if (mode == Mode.TWO) {
                     // 双指轻点（未滑动、时间短）→ 右键单击
+                    // 三指轻点 → 中键单击（上游 termux-x11 同款语义）
                     // v3.2.9：先绝对定位再点击（按钮坐标被 native 丢弃，
                     // 同左键 tap 根修；两条消息 FIFO 保序）
                     if (!twoMoved && android.os.SystemClock.uptimeMillis() - twoStartAt < 320L) {
                         val p = toXpx(curX, curY)
                         val px = p[0]
                         val py = p[1]
+                        val middle = maxPointers >= 3
                         postSend {
                             if (LorieView.connected()) {
                                 view.sendMouseEvent(px, py, InputStub.BUTTON_UNDEFINED, false, false)
-                                view.sendMouseEvent(0f, 0f, InputStub.BUTTON_RIGHT, true, true)
-                                view.sendMouseEvent(0f, 0f, InputStub.BUTTON_RIGHT, false, true)
+                                val btn = if (middle) InputStub.BUTTON_MIDDLE else InputStub.BUTTON_RIGHT
+                                view.sendMouseEvent(0f, 0f, btn, true, true)
+                                view.sendMouseEvent(0f, 0f, btn, false, true)
                             }
                         }
                     }
                     mode = Mode.TWO_DONE
-                    // v3.4.5（触摸修复）：双指手势后残留 MOVE 已在 TWO_DONE
-                    // 态被吞掉 —— 剩余手指的拖动完全无反应（linbox 蓝本：
-                    // 双指轻点后剩余手指可继续单指拖拽）。双指结束 → 剩余
-                    // 指数 ≥1 时重入单指 ONE 态并把起点对齐剩余指针（避免
-                    // 残留手指的下一 MOVE 突然大跳：curX/curY 还是双指前
-                    // 的旧值）。POINTER_UP 事件的 pointerCount 仍含正在
-                    // 抬起的那根 —— 剩余指针 = 除 actionIndex 外的第一根。
-                    val liftIdx = event.actionIndex
-                    val remainIdx = (0 until event.pointerCount).firstOrNull { it != liftIdx }
-                    if (remainIdx != null) {
-                        mode = Mode.ONE
-                        curX = event.getX(remainIdx)
-                        curY = event.getY(remainIdx)
-                    }
                 }
             }
 
@@ -1442,9 +1432,26 @@ internal class SmartTouchBridge(private val context: Context, private val view: 
                 val id = event.getPointerId(0)
                 val vx = event.x; val vy = event.y
                 val p = dtToX(vx, vy)
+                // v3.3.42：清槽位前先给**上一手势遗留的活跃触摸**补发
+                // TouchEnd —— 旧实现直接 Arrays.fill(-1) 把旧槽位静默丢掉，
+                // X 侧仍认为那根手指按着（touch 仿真按钮 1 卡按 → 之后一切
+                // 点击被 dix 丢弃，"点不动"）。补发 End 后 X 侧状态干净。
+                val stale = IntArray(10)
+                var staleCount = 0
                 synchronized(dtLock) {
+                    for (i in dtIds.indices) {
+                        if (dtIds[i] != -1) stale[staleCount++] = i
+                    }
                     java.util.Arrays.fill(dtIds, -1)
                     dtIds[0] = id; dtX[0] = vx; dtY[0] = vy
+                }
+                if (staleCount > 0) {
+                    val n = staleCount
+                    postSend {
+                        if (LorieView.connected()) {
+                            for (i in 0 until n) view.sendTouchEvent(XI_TOUCH_END, stale[i], 0, 0)
+                        }
+                    }
                 }
                 // v3.3.8：无 WM 多窗口堆叠时点击置前（模拟模式同款，fire-and-forget）
                 X11WindowOps.raiseAt(p[0], p[1])
@@ -1563,6 +1570,7 @@ internal class SmartTouchBridge(private val context: Context, private val view: 
                 curX = downX; curY = downY
                 downAt = android.os.SystemClock.uptimeMillis()
                 moved = false
+                maxPointers = 1
                 diagDowns++
             }
 
@@ -1575,6 +1583,8 @@ internal class SmartTouchBridge(private val context: Context, private val view: 
                     twoMoved = false
                     scrollAccum = 0f
                     lastTwoY = (event.getY(0) + event.getY(1)) / 2f
+                    // v3.3.42：记录最大手指数（三指轻点 = 中键，上游同款）
+                    if (event.pointerCount > maxPointers) maxPointers = event.pointerCount
                     // 拖拽中落下第二根手指 → 结束拖拽（真实触控板习惯）
                     if (padPressed) { sendButton(InputStub.BUTTON_LEFT, false); padPressed = false }
                 }
@@ -1622,6 +1632,9 @@ internal class SmartTouchBridge(private val context: Context, private val view: 
                                 }
                                 scrollAccum -= steps * wheelStep
                             }
+                            // v3.3.42：同步当前位置（三指轻点的中键落点用）
+                            curX = event.getX(0); curY = event.getY(0)
+                            if (event.pointerCount > maxPointers) maxPointers = event.pointerCount
                         }
                     }
                     else -> {}
@@ -1630,23 +1643,19 @@ internal class SmartTouchBridge(private val context: Context, private val view: 
 
             MotionEvent.ACTION_POINTER_UP -> {
                 if (mode == Mode.TWO) {
-                    // 双指轻点（未滑动、时间短）→ 右键单击（当前 X 指针位置）
+                    // 双指轻点（未滑动、时间短）→ 右键单击
+                    // 三指轻点 → 中键单击（上游 termux-x11 同款语义）
                     if (!twoMoved && android.os.SystemClock.uptimeMillis() - twoStartAt < 320L) {
-                        sendButton(InputStub.BUTTON_RIGHT, true)
-                        sendButton(InputStub.BUTTON_RIGHT, false)
+                        val middle = maxPointers >= 3
+                        if (middle) {
+                            sendButton(InputStub.BUTTON_MIDDLE, true)
+                            sendButton(InputStub.BUTTON_MIDDLE, false)
+                        } else {
+                            sendButton(InputStub.BUTTON_RIGHT, true)
+                            sendButton(InputStub.BUTTON_RIGHT, false)
+                        }
                     }
                     mode = Mode.TWO_DONE
-                    // v3.4.5（触摸修复，与模拟模式同款）：双指结束后剩余
-                    // 手指的 MOVE 被 TWO_DONE 吞掉（触控板双指轻点后剩余
-                    // 手指滑 = 应继续相对移动光标）。重入 ONE 态并对齐
-                    // 剩余指针坐标，防下一 MOVE 大跳。
-                    val liftIdx = event.actionIndex
-                    val remainIdx = (0 until event.pointerCount).firstOrNull { it != liftIdx }
-                    if (remainIdx != null) {
-                        mode = Mode.ONE
-                        curX = event.getX(remainIdx)
-                        curY = event.getY(remainIdx)
-                    }
                 }
             }
 
@@ -1671,6 +1680,17 @@ internal class SmartTouchBridge(private val context: Context, private val view: 
                             sendButton(InputStub.BUTTON_LEFT, true)
                             sendButton(InputStub.BUTTON_LEFT, false)
                         }
+                    } else if (padPressed) {
+                        // v3.3.42 关键修复：**拖拽结束必须释放按下的左键**。
+                        // 旧实现只在"轻点"分支里处理 padPressed → 轻点拖拽
+                        // （tapToMove）按下左键后，一旦手指滑动过 slop 再抬起，
+                        // 抬起分支因 moved=true 被跳过 → 左键**永久卡在按下**
+                        // （此后所有点击都变成拖拽，窗口乱跑；且 X 侧按钮
+                        // 长期卡按，后续点击全部失灵）。上游 termux-x11 的
+                        // 触控板策略在 ACTION_UP 统一 sendMouseUp —— 同款语义。
+                        sendButton(InputStub.BUTTON_LEFT, false)
+                        padPressed = false
+                        diagResyncs++
                     }
                 }
                 mode = Mode.IDLE

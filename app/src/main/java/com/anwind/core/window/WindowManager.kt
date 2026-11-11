@@ -197,15 +197,6 @@ class WindowManager {
         }
     }
 
-    /** v3.4.5（Win7 1:1）：显示桌面 —— 全部窗口最小化（任务栏最右端 Aero 条）。 */
-    fun minimizeAll() {
-        var touched = false
-        _windows.forEach {
-            if (!it.isMinimized) { it.isMinimized = true; touched = true }
-        }
-        if (touched) notifyChanged()
-    }
-
     fun toggleMaximize(windowId: String) {
         _windows.firstOrNull { it.id == windowId }?.let { w ->
             if (w.isMaximized) {

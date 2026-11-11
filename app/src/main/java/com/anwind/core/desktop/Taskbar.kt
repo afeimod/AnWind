@@ -27,7 +27,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.shadow
-import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
@@ -761,38 +760,17 @@ private fun TaskbarAero7(
         modifier = modifier
             .fillMaxWidth()
             .height(taskbarHeight)
-            // v3.4.5（Win7 1:1）：Aero 玻璃任务栏精确渐变（Win7Simu 截图
-            // 基准）—— 顶部辉光亮线 → 深蓝玻璃主体 → 底部更深；整体
-            // 半透明（桌面壁纸透光）。四段模拟真实 Aero 光照曲线。
             .background(
                 Brush.verticalGradient(
-                    listOf(
-                        Color(0xE08CA6BD),   // 顶缘玻璃辉光
-                        Color(0xEE3E5A72),   // 上段深蓝玻璃
-                        Color(0xF2263850),   // 中段
-                        Color(0xF81A2A3E)    // 底段最深（贴屏幕底）
-                    )
+                    listOf(Color(0xCC35586E), Color(0xCC22374A), Color(0xD0162A3C))
                 )
             )
     ) {
-        // 顶缘 1px 高光（Aero 玻璃上沿收光）
         Box(
             Modifier
                 .fillMaxWidth()
                 .height(1.dp)
-                .background(
-                    Brush.horizontalGradient(
-                        listOf(Color(0x59CBE4F7), Color(0xCCF2FAFF), Color(0x59CBE4F7))
-                    )
-                )
-        )
-        // 底缘 1px 暗线（玻璃下沿收边）
-        Box(
-            Modifier
-                .fillMaxWidth()
-                .height(1.dp)
-                .align(Alignment.BottomCenter)
-                .background(Color(0x40000000))
+                .background(Color(0x809FCBF0))
         )
         Row(
             modifier = Modifier
@@ -842,17 +820,7 @@ private fun TaskbarAero7(
                 }
             }
 
-            // ===== 托盘（v3.4.5：Win7 形态 —— 时钟区前竖分隔线） =====
-            Box(
-                Modifier
-                    .width(1.dp)
-                    .height(taskbarHeight - 14.dp)
-                    .background(
-                        Brush.verticalGradient(
-                            listOf(Color(0x00FFFFFF), Color(0x59FFFFFF), Color(0x00FFFFFF))
-                        )
-                    )
-            )
+            // ===== 托盘 =====
             ModernEraTray(
                 theme = theme,
                 height = taskbarHeight,
@@ -865,56 +833,20 @@ private fun TaskbarAero7(
                 iconTint = Color.White,
                 clockColor = Color.White
             )
-            // ===== v3.4.5（Win7 1:1）：显示桌面细条（任务栏最右端，Aero
-            // 标志性收边 —— 6dp 宽斜纹玻璃条，点击 = 显示桌面） =====
-            val wmInst = wm
-            Box(
-                Modifier
-                    .width(6.dp)
-                    .height(taskbarHeight)
-                    .background(
-                        Brush.verticalGradient(
-                            listOf(Color(0x33FFFFFF), Color(0x14FFFFFF))
-                        )
-                    )
-                    .border(0.5.dp, Color(0x33FFFFFF))
-                    .clickable(
-                        interactionSource = remember { MutableInteractionSource() },
-                        indication = null
-                    ) { wmInst.minimizeAll() }
-            )
         }
     }
 }
 
-/**
- * Win7 开始圆球（v3.4.5 · 1:1 重制，Win7Simu 截图基准）：
- * - 球体四层径向渐变：左上高光白 → 亮蓝 → 主蓝 → 深蓝右下（真实
- *   Aero 球的偏心光照，中心偏左上）；
- * - 内嵌【四色旗】（红绿蓝黄四格 —— Win7 球内不是白旗，这是旧版
- *   最大失真点；用 [Win7Icons.flagPathCells] 波浪错位四格）；
- * - 双光环：贴球细亮环 + 外扩散光环（渐隐）；
- * - 按下态：整体加深 + 球心亮环。
- */
+/** Win7 开始圆球：径向渐变蓝球 + 白旗 + 外光环 */
 @Composable
 private fun AeroStartOrb(size: Dp, pressed: Boolean, onClick: () -> Unit) {
-    // v3.4.5：Dp→px（Brush 径向渐变的 center/radius 是像素坐标，须
-    // 经 LocalDensity 换算；Composable 作用域无 Dp.toPx 直达）
-    val orbPx = with(androidx.compose.ui.platform.LocalDensity.current) { size.toPx() }
     Box(
         modifier = Modifier
             .size(size)
             .clip(CircleShape)
             .background(
                 Brush.radialGradient(
-                    colorStops = arrayOf(
-                        0.0f to Color(0xFFF3F9FF),   // 左上高光
-                        0.18f to Color(0xFF9BD7FF),  // 亮蓝
-                        0.55f to Color(0xFF1E7BE0), // 主蓝
-                        1.0f to Color(0xFF0A3C86)   // 深蓝右下
-                    ),
-                    center = Offset(orbPx * 0.35f, orbPx * 0.32f),
-                    radius = orbPx * 0.75f
+                    listOf(Color(0xFF6FD0FF), Color(0xFF1E7BE0), Color(0xFF0B3E8F))
                 )
             )
             .clickable(
@@ -924,41 +856,7 @@ private fun AeroStartOrb(size: Dp, pressed: Boolean, onClick: () -> Unit) {
             ),
         contentAlignment = Alignment.Center
     ) {
-        // 球面高光弧（左上弦月）
-        Box(
-            Modifier
-                .matchParentSize()
-                .drawBehind {
-                    drawArc(
-                        Brush.sweepGradient(
-                            listOf(Color(0x00FFFFFF), Color(0x80FFFFFF), Color(0x00FFFFFF))
-                        ),
-                        startAngle = 190f, sweepAngle = 120f, useCenter = false,
-                        topLeft = Offset(0f, 0f),
-                        size = this.size,
-                        style = Stroke(width = 2.dp.toPx())
-                    )
-                }
-        )
-        // 四色旗（Win7 球内是四色 Windows 旗）
-        Box(
-            Modifier
-                .size(size * 0.44f)
-                .drawBehind {
-                    // this.size（DrawScope 尺寸，px）—— 外层参数名 size:Dp
-                    // 会遮蔽，必须显式 this
-                    val u = this.size.minDimension / 24f
-                    Win7Icons.flagPathCells(u).forEach { (rect, color) ->
-                        drawRoundRect(
-                            color = color,
-                            topLeft = rect.topLeft,
-                            size = rect.size,
-                            cornerRadius = CornerRadius(1.2f * u)
-                        )
-                    }
-                }
-        )
-        // 内圈细亮环
+        // 光环
         Box(
             Modifier
                 .size(size - 5.dp)
@@ -966,33 +864,18 @@ private fun AeroStartOrb(size: Dp, pressed: Boolean, onClick: () -> Unit) {
                 .background(Color.Transparent)
                 .drawBehind {
                     drawCircle(
-                        Color(0x8CBFE3FF),
+                        Color(0x66BFE3FF),
                         style = Stroke(width = 1.5.dp.toPx())
                     )
                 }
         )
-        // 外扩散光环
-        Box(
-            Modifier
-                .matchParentSize()
-                .drawBehind {
-                    drawCircle(
-                        Brush.radialGradient(
-                            colorStops = arrayOf(
-                                0.68f to Color(0x009CD8FF),
-                                0.85f to Color(0x4D9CD8FF),
-                                1.0f to Color(0x009CD8FF)
-                            )
-                        )
-                    )
-                }
-        )
+        WindowsFlagLogo(size = size * 0.32f, monochrome = Color.White)
         if (pressed) {
             Box(
                 Modifier
                     .size(size)
                     .clip(CircleShape)
-                    .background(Color(0x33000000))
+                    .background(Color(0x33FFFFFF))
             )
         }
     }

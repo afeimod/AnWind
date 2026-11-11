@@ -569,7 +569,11 @@ object WineEnvironment {
      * 优先级：全部 putIfAbsent —— opt conf（applyOptConfEnv 在后）与
      * 容器 env=（applyExtraEnv 在最后）均可逐项覆盖。
      */
-    fun applyPerfBaselineEnv(env: MutableMap<String, String>, log: (String) -> Unit = {}) {
+    fun applyPerfBaselineEnv(
+        env: MutableMap<String, String>,
+        log: (String) -> Unit = {},
+        container: ContainerData? = null
+    ) {
         // Mesa / 呈现
         env.putIfAbsent("MESA_VK_WSI_PRESENT_MODE", "mailbox")
         env.putIfAbsent("MESA_NO_ERROR", "1")
@@ -594,6 +598,17 @@ object WineEnvironment {
             "GST_PLUGIN_FEATURE_RANK",
             "ximagesink:3000,avdec_wmav1:512,avdec_wmav2:512,avdec_wmapro:512"
         )
+        // v3.3.42（用户："速度还是不够"）：**性能档**启用 wine 的 FSR 1.0
+        // 全屏升采样（WINE_FULLSCREEN_FSR=1）。
+        //   原理: wine 的 X11 驱动在窗口被放大时可用 FSR 1.0 以较低内部分
+        //   辨率渲染再上采样 —— GPU 负载按面积比下降（1080p→720p 约 -55%）
+        //   而观感损失有限；这是 Winlator/Mobox 系"性能档"的同款旋钮。
+        //   仅在【性能档】默认开启（其余档位画面锐度优先，不擅自降质）；
+        //   用户可用容器 env= / opt conf 随时覆盖（putIfAbsent）。
+        if (container?.preset == Box64Preset.PERFORMANCE) {
+            env.putIfAbsent("WINE_FULLSCREEN_FSR", "1")
+            log("性能档附加：WINE_FULLSCREEN_FSR=1（FSR 1.0 全屏升采样，GPU 负载按面积比下降）")
+        }
         log(
             "性能基线（WinlatorXR 容器调优串移植）：mailbox 呈现 + GL NO_ERROR + " +
                 "DXVK 异步编译/状态缓存 + WINEDEBUG=-all（opt conf / 容器 env= 可逐项覆盖）"

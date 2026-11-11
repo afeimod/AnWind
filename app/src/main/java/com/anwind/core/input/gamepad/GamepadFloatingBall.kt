@@ -40,6 +40,7 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.anwind.AnWindApp
@@ -73,13 +74,40 @@ import kotlin.math.roundToInt
  *
  * 生命周期：gamepadEnabled=false 时整体退场（含球）——「关闭手柄」即
  * 完全退出，设置页/通知快捷开关可重新开启。
+ *
+ * ===================== v3.3.42（用户问题 3）三处修复 =====================
+ *
+ * 1. **z 序（菜单被手柄按钮盖住 + 菜单点击失效）**
+ *    旧结构：整个 GamepadFloatingBall（含全屏捕获层）挂在手柄覆盖层的
+ *    **第一** 个子位 → 捕获层/菜单/球全部压在摇杆与 ABXY 按钮**之下**：
+ *      - 菜单被按钮视觉覆盖（设备实测截图：M 按钮正好压在「手柄设置」上）；
+ *      - 按钮的 pointerInput 先命中 → 菜单四项点击全部被按钮吃掉；
+ *      - 菜单被裁到屏幕右缘之外（球在右上角，菜单向右溢出）。
+ *    现结构（见 GamepadOverlay）：
+ *      ① 全屏捕获层（最底）→ ② 手柄元素（中）→ ③ 菜单 + 悬浮球（最顶）。
+ *    展开态提升到 [GamepadController.ballMenuExpanded]，让捕获层与菜单
+ *    可以分层渲染。
+ *
+ * 2. **位置（菜单溢出屏幕 / 与球错位）**
+ *    旧算法用估算高度 + 固定"球下方"定位，球贴右缘时菜单必然溢出屏幕
+ *    右缘（被裁掉一截，"位置不对"）。新算法：
+ *      - 水平：球右侧放不下时**翻到球的左侧**，否则以球心居中；
+ *      - 垂直：球下方放不下时翻到球上方；
+ *      - 两向都放不下时钳制进屏幕内（永不溢出）；
+ *      - 菜单高度用 **实测值**（onGloballyPositioned 回填），不再用估算。
+ *
+ * 3. **点击（菜单点不动）**
+ *    z 序修正后菜单位于手柄元素之上，点击直达菜单项；同时菜单/球的
+ *    命中矩形照旧登记（registerMenuHit / registerToolbarHit）+ 触控板
+ *    直通区，X11 触摸桥与触控板路由都不会把落在菜单上的手指当屏幕手势。
  */
 @Composable
 fun GamepadFloatingBall(onPersistConfig: () -> Unit) {
     val app = AnWindApp.get()
     val scope = rememberCoroutineScope()
 
-    var expanded by remember { mutableStateOf(false) }
+    // v3.3.42：展开态提升到控制器（跨层共享，见类 KDoc）
+    val expanded = GamepadController.ballMenuExpanded
     var pressed by remember { mutableStateOf(false) }
     var dragOffset by remember { mutableStateOf(Offset.Zero) }
 
@@ -105,6 +133,7 @@ fun GamepadFloatingBall(onPersistConfig: () -> Unit) {
     DisposableEffect(Unit) {
         onDispose {
             TrackpadRouter.registerPassthrough("gpBall", null)
+            GamepadController.clearMenuHit()
         }
     }
 
@@ -114,6 +143,11 @@ fun GamepadFloatingBall(onPersistConfig: () -> Unit) {
         val freeHpx = with(density) { (maxHeight - ballSize).toPx() }
         val menuWpx = with(density) { menuWidth.toPx() }
         val ballPx = with(density) { ballSize.toPx() }
+        val gapPx = with(density) { 10.dp.toPx() }
+        val marginPx = with(density) { 8.dp.toPx() }
+
+        val screenWpxTotal = with(density) { maxWidth.toPx() }
+        val screenHpxTotal = with(density) { maxHeight.toPx() }
 
         // 球左上角（px）：基准（归一化）+ 拖动瞬态，钳制在屏内
         fun clampedPos(): Offset {
@@ -124,77 +158,47 @@ fun GamepadFloatingBall(onPersistConfig: () -> Unit) {
 
         val pos = clampedPos()
 
-        // ==============================================================
-        // v3.4.5（用户：菜单位置不对 + 撞进右侧按键弧区）：菜单定位重写。
-        // 旧版：菜单中心对球心，仅 coerce 屏内 —— 球在右上角时菜单贴死
-        // 屏右缘（圆角被截断，截图实证），且向下展开正撞进 M/3/U 按键
-        // 弧区（截图实证 y:145-435 压满按键列）。
-        // 新版三步：
-        //  1) 水平【向内展开】：球在右半屏 → 菜单右缘对球右缘（向左），
-        //     左半屏 → 菜单左缘对球左缘（向右），永不贴边截断；
-        //  2) 垂直两候选（球下 / 球上）：矩形级碰撞检测 —— 候选菜单矩形
-        //     四角+中心共 5 点任一落在手柄元素命中区内则判碰撞（点级采样
-        //     对圆钮足够）；默认侧碰撞 → 翻另一侧，另一侧也碰撞 → 保持
-        //     默认（用户拖球后可让位）；
-        //  3) 碰撞检测仅在菜单展开时计算一次（expanded 状态翻转处）。
-        // ==============================================================
-        fun menuOverlapsElements(left: Float, top: Float, w: Float, h: Float): Boolean {
-            if (!GamepadController.hasElementHits()) return false
-            val right = left + w
-            val bottom = top + h
-            val pts = arrayOf(
-                left to top, right to top, left to bottom, right to bottom,
-                (left + right) / 2f to (top + bottom) / 2f
-            )
-            return pts.any { (x, y) -> GamepadController.isOverPadElement(x, y) }
-        }
+        // ===== v3.3.42：菜单定位（实测高度 + 两向翻转 + 屏内钳制）=====
+        // 菜单实测尺寸（onGloballyPositioned 回填；首帧为 0 → 用估算兜底）
+        var menuMeasured by remember { mutableStateOf(IntSize.Zero) }
+        val menuHpx = if (menuMeasured.height > 0) menuMeasured.height.toFloat()
+            else menuHeightEstimate(density)
 
-        val menuHpx = menuHeightEstimate(density)
-        val menuPad = with(density) { 10.dp.toPx() }
-        val screenWpxTotal = with(density) { maxWidth.toPx() }
-        val screenHpxTotal = with(density) { maxHeight.toPx() }
+        val ballLeft = pos.x
+        val ballTop = pos.y
+        val ballRight = ballLeft + ballPx
+        val ballBottom = ballTop + ballPx
 
-        // 1) 水平向内展开（左/右半屏）
-        val menuLeft = if (pos.x + ballPx / 2f < screenWpxTotal / 2f) {
-            // 球在左半屏：菜单左缘对球左缘（向右展开），右缘不越屏
-            pos.x.coerceIn(0f, (screenWpxTotal - menuWpx).coerceAtLeast(0f))
+        // 水平：右侧放不下 → 翻到球的左侧；否则以球心居中并钳制进屏
+        val rightFits = ballRight + gapPx + menuWpx <= screenWpxTotal - marginPx
+        val menuLeft = if (!rightFits) {
+            // 左侧优先（球贴右缘时的 Win7 菜单习惯），仍越界则钳制
+            (ballLeft - gapPx - menuWpx).coerceAtLeast(marginPx)
         } else {
-            // 球在右半屏：菜单右缘对球右缘（向左展开），左缘不越屏
-            (pos.x + ballPx - menuWpx).coerceIn(0f, (screenWpxTotal - menuWpx).coerceAtLeast(0f))
+            (ballLeft + ballPx / 2f - menuWpx / 2f)
+                .coerceIn(marginPx, (screenWpxTotal - menuWpx - marginPx).coerceAtLeast(marginPx))
         }
 
-        // 2) 垂直避让：默认上半屏向下弹 / 下半屏向上弹，碰撞则翻侧
-        val ballCenterY = pos.y + ballPx / 2f
-        val belowTop = pos.y + ballPx + menuPad
-        val aboveTop = pos.y - menuPad - menuHpx
-        val preferBelow = ballCenterY < screenHpxTotal / 2f
+        // 垂直：下方放不下 → 翻到球上方；两向都放不下 → 钳制进屏
+        val belowTop = ballBottom + gapPx
+        val aboveTop = ballTop - gapPx - menuHpx
         val menuTop = when {
-            preferBelow && menuOverlapsElements(menuLeft, belowTop, menuWpx, menuHpx) &&
-                !menuOverlapsElements(menuLeft, aboveTop, menuWpx, menuHpx) && aboveTop >= 0f -> aboveTop
-            !preferBelow && menuOverlapsElements(menuLeft, aboveTop, menuWpx, menuHpx) &&
-                !menuOverlapsElements(menuLeft, belowTop, menuWpx, menuHpx) &&
-                belowTop + menuHpx <= screenHpxTotal -> belowTop
-            else -> if (preferBelow) belowTop else aboveTop
-        }
-
-        // ===== v3.2.24（用户问题 2）：点菜单外任意处收起的透明捕获层 =====
-        // 【z 序修复】必须声明在菜单与悬浮球【之前】：Compose 的 Box 子
-        // 件按声明顺序绘制 z 序（后声明者在上）。v3.2.23 把它放在最后 →
-        // 全屏捕获层盖在菜单上方，四个菜单项的点击全部被它拦截 →
-        // “悬浮球四个按键没有一个能用”（点击只触发收起，onClick 永不执行）。
-        // 现在顺序：捕获层（最底）→ 菜单（中）→ 悬浮球（最顶，展开时
-        // 仍可拖动/点击）。
-        if (expanded) {
-            Box(
-                Modifier
-                    .fillMaxSize()
-                    .pointerInput(Unit) {
-                        detectTapGestures { expanded = false }
-                    }
+            belowTop + menuHpx <= screenHpxTotal - marginPx -> belowTop
+            aboveTop >= marginPx -> aboveTop
+            else -> belowTop.coerceIn(
+                marginPx,
+                (screenHpxTotal - menuHpx - marginPx).coerceAtLeast(marginPx)
             )
         }
 
-        // ===== 展开的控制菜单（在捕获层之上，点击直达菜单项） =====
+        // ===== 展开的控制菜单（最顶层：不被手柄元素遮挡，点击直达菜单项） =====
+        // v3.3.42：菜单收起时清空菜单命中矩形 —— 否则菜单离开组合后那块
+        // 区域仍被 isOverPadUi 判为"手柄 UI"，落在其中的正常触摸会被
+        // X11 触摸桥剥离（点不动）。
+        DisposableEffect(expanded) {
+            if (!expanded) GamepadController.clearMenuHit()
+            onDispose { }
+        }
         if (expanded) {
             Column(
                 modifier = Modifier
@@ -209,35 +213,42 @@ fun GamepadFloatingBall(onPersistConfig: () -> Unit) {
                         val b = it.boundsInWindowCompat()
                         GamepadController.registerMenuHit(b.left, b.top, b.right, b.bottom)
                         TrackpadRouter.registerPassthrough("gpBall", b)
+                        // v3.3.42：回填实测尺寸（用于翻转判定，消除估算误差）
+                        val size = it.size
+                        if (size.width > 0 && size.height > 0 &&
+                            (size.width != menuMeasured.width || size.height != menuMeasured.height)
+                        ) {
+                            menuMeasured = size
+                        }
                     }
             ) {
                 BallMenuItem("🎮", if (GamepadController.visible) "收起手柄" else "显示手柄") {
                     GamepadController.releaseAllKeys()
                     GamepadController.visible = !GamepadController.visible
                     onPersistConfig()
-                    expanded = false
+                    GamepadController.ballMenuExpanded = false
                 }
                 BallMenuItem("⚙", "手柄设置") {
                     GamepadController.releaseAllKeys()
                     GamepadController.settingsOpen = true
-                    expanded = false
+                    GamepadController.ballMenuExpanded = false
                 }
                 BallMenuItem("✎", "编辑布局") {
                     GamepadController.releaseAllKeys()
                     GamepadController.editMode = !GamepadController.editMode
                     if (!GamepadController.editMode) GamepadController.selectElement(null)
-                    expanded = false
+                    GamepadController.ballMenuExpanded = false
                 }
                 BallMenuItem("✕", "关闭手柄", danger = true) {
                     GamepadController.releaseAllKeys()
                     GamepadController.editMode = false
-                    expanded = false
+                    GamepadController.ballMenuExpanded = false
                     scope.launch { app.settingsStore.setGamepadEnabled(false) }
                 }
             }
         }
 
-        // ===== 悬浮球本体 =====
+        // ===== 悬浮球本体（最顶层） =====
         Box(
             modifier = Modifier
                 .offset { IntOffset(pos.x.roundToInt(), pos.y.roundToInt()) }
@@ -284,12 +295,12 @@ fun GamepadFloatingBall(onPersistConfig: () -> Unit) {
                             pressed = true
                             try { awaitRelease() } finally { pressed = false }
                         },
-                        onTap = { expanded = !expanded }
+                        onTap = { GamepadController.ballMenuExpanded = !GamepadController.ballMenuExpanded }
                     )
                 }
                 .pointerInput(Unit) {
                     detectDragGestures(
-                        onDragStart = { expanded = false },
+                        onDragStart = { GamepadController.ballMenuExpanded = false },
                         onDrag = { change, amount ->
                             change.consume()
                             dragOffset += amount
@@ -317,6 +328,25 @@ fun GamepadFloatingBall(onPersistConfig: () -> Unit) {
             )
         }
     }
+}
+
+/**
+ * v3.3.42：展开态的**全屏捕获层**（点菜单外任意处收起）。
+ *
+ * 刻意与菜单/悬浮球**分层渲染**：本层置于手柄覆盖层的最底（手柄元素
+ * 之下），元素先命中（按钮可正常按），非元素区域才落到本层收起菜单；
+ * 菜单与球则置于最顶层，不再被按钮遮挡、点击直达菜单项。
+ */
+@Composable
+fun GamepadDismissCaptureLayer() {
+    if (!GamepadController.ballMenuExpanded) return
+    Box(
+        Modifier
+            .fillMaxSize()
+            .pointerInput(Unit) {
+                detectTapGestures { GamepadController.ballMenuExpanded = false }
+            }
+    )
 }
 
 /** 菜单项行。 */
@@ -362,6 +392,6 @@ private fun BallMenuItem(
     }
 }
 
-/** 菜单高度估算（4 行 × ~42dp + 边距），用于下半屏时菜单翻到球上方。 */
+/** 菜单高度估算（4 行 × ~42dp + 边距），仅在实测值到达前兜底。 */
 private fun menuHeightEstimate(density: androidx.compose.ui.unit.Density): Float =
     with(density) { 190.dp.toPx() }

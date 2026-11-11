@@ -319,40 +319,8 @@ android {
         //     管理 FEX 配置页两处帮助文案全部改指 assets builtin/ —— 与
         //     启动链 presetEnvVars 的 builtin/fex_presets.json、WinFusion
         //     assets/builtin 布局完全同源，单一权威路径。
-        // v3.4.5（源码包 v3.4.5，App v2.38.44 / versionCode 107）——
-        //   用户 2026-11-11 六大需求轮（"1:1 复刻 Win7，不是随便"）：
-        //   ①【proton9.0 arm64ec 构建修复】：winegstreamer/unixlib.c:285
-        //     #error Bad arch —— proton 树 gst registry 分支只认
-        //     __x86_64__/__i386__，arm64ec（unix 侧 aarch64）触发硬错。
-        //     0021 补丁加 __aarch64__ 分支（proton_10.0 官方修法逐行
-        //     同款）；proton_9.0 全树扫描仅此一处 arch 地雷；补丁经
-        //     干净应用/幂等/异树容错三重验证。
-        //   ②【Win7 1:1 重制】（用户："win7 主题写的太烂，要 1:1 复刻"）：
-        //     AeroStartOrb 四色旗（白旗→红绿蓝黄四格）+ 四层偏心径向
-        //     渐变球体 + 双光环；任务栏四段 Aero 玻璃渐变 + 顶底缘光
-        //     收边 + 托盘前竖分隔线 + 最右端显示桌面条（新增
-        //     WindowManager.minimizeAll）；标题按钮细线符号重制（–/空心
-        //     方框/✕ 1.4dp 自绘 + 透明玻璃底默认态 + 按下才显色 —— 红色
-        //     关闭钮 mac 皮根除）；文件管理器此电脑视图 Win7 化（蓝色
-        //     组标题+分组渐隐线、3D 拟物硬盘/文件夹图标自绘、凹槽
-        //     容量条+蓝渐变填充）；新增 Win7Icons.kt 拟物图标库。
-        //   ③【虚拟手柄】悬浮球菜单被挡/点击失灵根修（声明顺序调换，
-        //     球+菜单+捕获层全 z 序置顶）；菜单定位重写（向内展开 +
-        //     手柄元素碰撞避让，不贴边不撞按键弧区）；设置面板居中
-        //     （太靠下）；.vgp 配置文件保存/读取（Virtual GamePad
-        //     三字母，SAF 全位置读写）。
-        //   ④【X11 触摸修复】（linbox-winemu 蓝本）：模拟/触控板两模式
-        //     双指结束后剩余手指 MOVE 被 TWO_DONE 吞 → 重入 ONE 态并
-        //     对齐剩余指针（双指轻点后剩余手指可继续拖拽）。
-        //   ⑤【X11 控制条隐藏】画面顶部中央 ⌃/⌄ 玻璃片，隐藏底部
-        //     分辨率/切窗/键盘栏让游戏画面更大（会话级状态）。
-        //   ⑥【构建对照结论】mesa 26.2.1（zink+freedreno+turnip 全在 +
-        //     SONAME 软链齐）≥ WinFusion 26.2.0；box64 v0.4.4 ≥ 0.4.3；
-        //     wine hangover-11.16 > wine-10.10；性能 env 键全套已对齐
-        //     （mailbox/NO_ERROR/esync/DXVK_ASYNC/GPL 缓存…）。设备侧
-        //     "缺 zink" = 旧 rootfs 包，重跑构建即带。
-        versionCode = 107
-        versionName = "2.38.44"
+        versionCode = 106
+        versionName = "2.38.43"
         // v3.4.3（源码包 v3.4.3，App v2.38.42 / versionCode 105）——
         //   用户交付 assets-ck 资产包 + WinFusion 参考源码（「assets-ck
         //   我发了，源码也发了…特别是 arm64ec wine 和 x86_64 wine 的

@@ -2,8 +2,30 @@ package com.anwind.core.window
 
 import android.content.Context
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+
+/**
+ * 标题栏附加按钮（v3.3.42）。
+ *
+ * 供需要在标题栏（非菜单、非最小化/最大化/关闭）放置专属按钮的应用使用 ——
+ * 例如 X11 桌面用它在标题栏放"隐藏底部控制条"按钮，让游戏画面占满更大区域。
+ */
+data class TitleBarExtraButton(
+    /**
+     * 按钮图标（Material Icon）。
+     *
+     * 刻意做成 **函数** 而非常量：图标可随状态变化（如 X11 的
+     * "隐藏/显示底部控制条"按钮在隐藏态显示"显示"图标）。
+     * 该函数在组合期被调用，可安全读取 Compose 状态。
+     */
+    val icon: () -> ImageVector,
+    /** 无障碍描述 / 调试用名。 */
+    val label: String,
+    /** 点击回调（Context 供弹窗/启动器使用）。 */
+    val onClick: (Context) -> Unit
+)
 
 /**
  * 应用定义：注册到 AppRegistry 中，桌面/开始菜单/任务栏从中读取。
@@ -22,6 +44,8 @@ import androidx.compose.ui.unit.dp
  *                                最小化按钮左侧显示菜单按钮；X11 桌面
  *                                用它调出 X11 设置菜单，替代难发现的
  *                                长按手势）
+ * @property titleBarExtraButtons 标题栏附加按钮（v3.3.42：渲染在菜单按钮
+ *                                左侧；X11 桌面用它放"隐藏控制条"按钮）
  * @property content       该应用的 Composable 内容，接收 WindowContentScope 参数
  */
 data class AppDef(
@@ -35,6 +59,7 @@ data class AppDef(
     val pinnedToDesktop: Boolean = true,
     val onTitleBarLongPress: ((Context) -> Unit)? = null,
     val onMenuButton: ((Context) -> Unit)? = null,
+    val titleBarExtraButtons: List<TitleBarExtraButton> = emptyList(),
     val content: @Composable (WindowContentScope) -> Unit
 )
 

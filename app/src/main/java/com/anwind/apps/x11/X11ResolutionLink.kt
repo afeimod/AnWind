@@ -201,8 +201,15 @@ object X11ResolutionLink {
      * fix19：值可携带 "fitwin" 标记（如 "1024x768 fitwin"，glibc-runner
      * -F/--fitwin 产生）→ 同步置位 windowStretch；其余情况归 false。
      * 旧版 App 解析带标记值：regex 照样提取 WxH，行为不变（向后兼容）。
+     *
+     * v3.3.42：区分**来源**（握手 vs App 内手动）——
+     *   旧实现里手动在控制条设的分辨率也走本函数，fromGame 被置 true →
+     *   ① 控制条弹出误导性 Toast「X11 分辨率 → 1280x720（glibc-runner
+     *   握手成功）」（用户根本没跑 glibc-runner）；
+     *   ② 状态条把手动设置标成"游戏分辨率"（X: 1280x720 高亮为游戏来源）。
+     *   现在手动路径走 [setManual]，来源标记为 App 自身。
      */
-    fun apply(valueRaw: String) {
+    fun apply(valueRaw: String, fromGameSource: Boolean = true) {
         val value = valueRaw.trim().lowercase()
         val wantStretch = value.contains("fitwin")
         // fix28：解析出的握手宽高（native 为 0 = 未知，供缩屏下限跳过）
@@ -224,7 +231,7 @@ object X11ResolutionLink {
                     return
                 }
                 hsW = w; hsH = h
-                Triple("exact", "${w}x${h}", true)
+                Triple("exact", "${w}x${h}", fromGameSource)
             }
         }
 
@@ -291,10 +298,10 @@ object X11ResolutionLink {
     }
 
     /** 供控制条手动切换回"跟随窗口"。 */
-    fun setNative() = apply("native")
+    fun setNative() = apply("native", fromGameSource = false)
 
     /** 供控制条手动设置固定分辨率。 */
-    fun setExact(w: Int, h: Int) = apply("${w}x${h}")
+    fun setExact(w: Int, h: Int) = apply("${w}x${h}", fromGameSource = false)
 
     /**
      * v2.25：手动切换"缩放"模式（LoriePreferences 原生 scaled 档）——

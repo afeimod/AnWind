@@ -35,7 +35,6 @@ import androidx.compose.runtime.produceState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -659,6 +658,37 @@ private fun FileExplorerContent(scope: WindowContentScope) {
 
     Column(modifier = Modifier.fillMaxSize()) {
 
+        // ===== v3.3.42（用户问题 2：Windows 7 界面 1:1 复刻）=====
+        // Win7 主题（windowChrome = AERO）下改用 **Win7 Aero 版式**：
+        // 命令行（Aero 圆钮 + 地址栏 + 搜索框）+ 组织栏 + 左侧导航树
+        // + 「硬盘 / 可移动存储设备」分组（带容量条）—— 与用户提供的
+        // Win7 Simu 参考图逐项对齐；其余主题（Win10/11/XP/95）维持
+        // 现有新式版式不动。
+        val isWin7 = theme.windowChrome == com.anwind.core.theme.WindowChrome.AERO
+
+        // 窗口标题：Win7 下「计算机」（与 Win7 资源管理器同款），其余「此电脑」
+        LaunchedEffect(isWin7, isThisPcHome) {
+            runCatching {
+                scope.onTitleChange(if (isWin7) "计算机" else "此电脑")
+            }
+        }
+
+        if (isWin7) {
+            // ===== Win7 命令行（Aero 圆钮 + 地址栏 + 搜索框）=====
+            Win7CommandRow(
+                addressText = if (isThisPcHome) "计算机" else breadcrumbOf(currentRealDir),
+                canBack = backStack.isNotEmpty(),
+                canForward = forwardStack.isNotEmpty(),
+                onBack = { goBack() },
+                onForward = { goForward() },
+                searchHint = if (isThisPcHome) "搜索 计算机" else "搜索 ${breadcrumbOf(currentRealDir)}"
+            )
+            // ===== Win7「组织」栏 =====
+            Win7OrganizeBar(
+                onOrganize = { /* Win7 组织菜单：属性入口 */ openSystemProperties(context) },
+                onSystemProperties = { openSystemProperties(context) }
+            )
+        } else {
         // ===== 顶部工具栏 =====
         Row(
             modifier = Modifier
@@ -738,6 +768,7 @@ private fun FileExplorerContent(scope: WindowContentScope) {
                 apkPickerLauncher.launch(arrayOf("application/vnd.android.package-archive"))
             }
         }
+        } // end else（非 Win7 主题的新式工具栏）
 
         // ===== v2.14 壁纸选择模式横幅（v2.17：兼容锁屏壁纸/锁屏视频壁纸；
         //       v2.19：新增云音乐 image/dir 选择模式） =====
@@ -811,6 +842,49 @@ private fun FileExplorerContent(scope: WindowContentScope) {
 
         // ===== 主体：左侧栏 + 文件区 =====
         Row(modifier = Modifier.weight(1f)) {
+            // ===== v3.3.42：Win7 主题用 Aero 导航树（快速访问 / 计算机）=====
+            if (isWin7) {
+                if (showSidebar) {
+                    Box(
+                        modifier = Modifier
+                            .width(if (isNarrow) 150.dp else 196.dp)
+                            .fillMaxHeight()
+                            .background(Color(0xFFFFFFFF))
+                    ) {
+                        Win7NavPane(
+                            items = buildWin7NavItems(
+                                isThisPcHome = isThisPcHome,
+                                currentPath = currentRealDir?.absolutePath,
+                                storageRoot = storageRoot,
+                                internalFiles = File("/data/data/com.anwind/files"),
+                                driveD = File("/storage/emulated/0/Download"),
+                                driveE = File("/storage/emulated/0/exagear"),
+                                onHome = { goHome() },
+                                onOpen = { f ->
+                                    if (f == internalFiles) openFolder(f)
+                                    else if (f == driveD) {
+                                        if (hasAllFilesAccess) openFolder(f) else requestAllFilesAccess()
+                                    } else if (f == driveE) {
+                                        if (!hasAllFilesAccess) requestAllFilesAccess()
+                                        else {
+                                            if (!f.isDirectory) runCatching { f.mkdirs() }
+                                            openFolder(f)
+                                        }
+                                    } else openFolder(f)
+                                }
+                            )
+                        )
+                        // 导航树右侧的分隔线（Win7 窗格分隔）
+                        Box(
+                            modifier = Modifier
+                                .align(Alignment.CenterEnd)
+                                .width(1.dp)
+                                .fillMaxHeight()
+                                .background(Color(0xFFDCDCDC))
+                        )
+                    }
+                }
+            } else {
             // ===== 左侧导航栏（窄屏可收起；v3.3.8：200→172dp + 行距收紧） =====
             if (showSidebar) {
             Column(
@@ -879,6 +953,7 @@ private fun FileExplorerContent(scope: WindowContentScope) {
                 }
             }
             }
+            } // end else（非 Win7 主题的新式侧栏）
 
             // ===== 文件区（v3.3.40：空白区右键 → 新建/粘贴/刷新菜单） =====
             Box(
@@ -909,13 +984,27 @@ private fun FileExplorerContent(scope: WindowContentScope) {
                     PermissionRequiredState(theme) { requestAllFilesAccess() }
                 } else if (isThisPcHome) {
                     // ===== 此电脑 首页 =====
-                    ThisPcHomeView(
-                        storageRoot = storageRoot,
-                        theme = theme,
-                        hasAllFilesAccess = hasAllFilesAccess,
-                        onRequestPermission = { requestAllFilesAccess() },
-                        onOpenFolder = { openFolder(it) }
-                    )
+                    if (isWin7) {
+                        // v3.3.42：Win7 版式 —— 「硬盘 / 可移动存储设备」
+                        // 分组 + 容量条（与 Win7 计算机窗口同款）
+                        Win7ThisPcPane(
+                            storageRoot = storageRoot,
+                            internalFiles = File("/data/data/com.anwind/files"),
+                            driveD = File("/storage/emulated/0/Download"),
+                            driveE = File("/storage/emulated/0/exagear"),
+                            hasAllFilesAccess = hasAllFilesAccess,
+                            onRequestPermission = { requestAllFilesAccess() },
+                            onOpenFolder = { openFolder(it) }
+                        )
+                    } else {
+                        ThisPcHomeView(
+                            storageRoot = storageRoot,
+                            theme = theme,
+                            hasAllFilesAccess = hasAllFilesAccess,
+                            onRequestPermission = { requestAllFilesAccess() },
+                            onOpenFolder = { openFolder(it) }
+                        )
+                    }
                 } else if (realItems.isEmpty()) {
                     EmptyState(theme, "此文件夹为空")
                 } else if (isGridView) {
@@ -1166,40 +1255,13 @@ private data class SpecialFolder(val name: String, val icon: String, val file: F
 @Composable
 private fun SectionHeader(title: String) {
     val theme = LocalWinTheme.current
-    // v3.4.5（Win7 1:1）：组标题 = 蓝色文字 + 右侧延伸分组细线
-    //（Win7 资源管理器“文件夹 (5)/设备和驱动器”同款；Win7Simu 截图
-    // 基准：字色 #1E6EB8，线为同色 1px 渐隐）
-    val win7ish = theme.variant == com.anwind.core.theme.WindowsVariant.WIN7
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 4.dp)
-    ) {
-        Text(
-            text = title,
-            color = if (win7ish) Color(0xFF1E6EB8) else
-                if (theme.isDark) Color.White else Color.Black,
-            fontSize = 13.sp,
-            fontWeight = FontWeight.SemiBold
-        )
-        Spacer(Modifier.width(8.dp))
-        Box(
-            Modifier
-                .weight(1f)
-                .height(1.dp)
-                .background(
-                    if (win7ish) Brush.horizontalGradient(
-                        listOf(Color(0x991E6EB8), Color(0x331E6EB8), Color.Transparent)
-                    ) else Brush.horizontalGradient(
-                        listOf(
-                            if (theme.isDark) Color(0x33FFFFFF) else Color(0x33808080),
-                            Color.Transparent
-                        )
-                    )
-                )
-        )
-    }
+    Text(
+        text = title,
+        color = if (theme.isDark) Color.White else Color.Black,
+        fontSize = 13.sp,
+        fontWeight = FontWeight.SemiBold,
+        modifier = Modifier.padding(vertical = 4.dp)
+    )
 }
 
 @Composable
@@ -1213,16 +1275,19 @@ private fun SpecialFolderCell(folder: SpecialFolder, theme: com.anwind.core.them
             .clickable(onClick = onClick)
             .padding(5.dp)
     ) {
-        // v3.4.5（Win7 1:1）：Win7 拟物文件夹（背片+前片+高光线，自绘
-        // Canvas）替代 Material 扁平 Folder 图标；emoji 改叠前片中央
-        // 小字（Win7 快捷文件夹的封面预览位）
+        // 文件夹图标（黄色 Win11 风格；v3.3.8：56→38dp）
         Box(
             modifier = Modifier
-                .size(42.dp),
+                .size(38.dp),
             contentAlignment = Alignment.Center
         ) {
-            com.anwind.core.desktop.Win7Icons.Folder(size = 42.dp)
-            Text(text = folder.icon, fontSize = 12.sp)
+            Icon(
+                Icons.Default.Folder, null,
+                tint = Color(0xFFDCA84A),
+                modifier = Modifier.size(38.dp)
+            )
+            // 在图标中央叠一个 emoji 标识（符合 Win11 的文件夹封面预览风格）
+            Text(text = folder.icon, fontSize = 13.sp)
         }
         Spacer(Modifier.height(3.dp))
         Text(
@@ -1263,7 +1328,6 @@ private fun DriveCell(
     val usedGB = totalGB - availGB
     val usagePct = if (totalGB > 0) (usedGB.toFloat() / totalGB.toFloat()).coerceIn(0f, 1f) else 0f
 
-    val win7ish = theme.variant == com.anwind.core.theme.WindowsVariant.WIN7
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -1272,18 +1336,12 @@ private fun DriveCell(
             .padding(vertical = 5.dp, horizontal = 4.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        // v3.4.5（Win7 1:1）：3D 拟物硬盘（金属盘体+高光+LED+标签条，
-        // Win7Icons 自绘）替代 Material Storage 扁平图标；非 Win7 主题
-        // 维持旧观感（Material 图标可继续代表现代主题的简约）。
-        if (win7ish) {
-            com.anwind.core.desktop.Win7Icons.HardDisk(size = 42.dp)
-        } else {
-            Icon(
-                Icons.Default.Storage, null,
-                tint = if (theme.isDark) Color(0xFF9CC4E8) else Color(0xFF0078D4),
-                modifier = Modifier.size(36.dp)
-            )
-        }
+        // 驱动器图标（v3.3.8：48→36dp 缩小）
+        Icon(
+            Icons.Default.Storage, null,
+            tint = if (theme.isDark) Color(0xFF9CC4E8) else Color(0xFF0078D4),
+            modifier = Modifier.size(36.dp)
+        )
         Spacer(Modifier.width(10.dp))
         Column(modifier = Modifier.weight(1f)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1305,47 +1363,21 @@ private fun DriveCell(
             }
             Spacer(Modifier.height(4.dp))
             if (exists) {
-                // v3.4.5（Win7 1:1）：容量条 = 凹槽（浅灰槽 + 1px 内描边）
-                // + 蓝渐变填充（#4BC0F0→#1B7FC4，满色阶上端亮）——
-                // Win7 磁盘条的凹槽质感；非 Win7 主题保持纯色薄条。
-                if (win7ish) {
+                // 容量条
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(5.dp)
+                        .clip(RoundedCornerShape(3.dp))
+                        .background(theme.cardBackgroundColor)
+                ) {
                     Box(
                         modifier = Modifier
-                            .fillMaxWidth()
-                            .height(10.dp)
-                            .clip(RoundedCornerShape(2.dp))
-                            .background(Color(0xFFE9EEF3))
-                            .border(1.dp, Color(0xFF9AA9B6))
-                            .padding(1.dp)
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth(usagePct)
-                                .fillMaxHeight()
-                                .clip(RoundedCornerShape(1.dp))
-                                .background(
-                                    Brush.horizontalGradient(
-                                        listOf(Color(0xFF4BC0F0), Color(0xFF1B7FC4))
-                                    )
-                                )
-                        )
-                    }
-                } else {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(5.dp)
+                            .fillMaxWidth(usagePct)
+                            .fillMaxHeight()
                             .clip(RoundedCornerShape(3.dp))
-                            .background(theme.cardBackgroundColor)
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth(usagePct)
-                                .fillMaxHeight()
-                                .clip(RoundedCornerShape(3.dp))
-                                .background(theme.accentColor)
-                        )
-                    }
+                            .background(theme.accentColor)
+                    )
                 }
                 Spacer(Modifier.height(3.dp))
                 Text(
@@ -2108,6 +2140,23 @@ private val AUDIO_FILE_EXTS = setOf("mp3", "wav", "ogg", "m4a", "flac", "aac", "
 
 /** 视频文件扩展名（与媒体播放器一致） */
 private val VIDEO_FILE_EXTS = setOf("mp4", "avi", "mov", "mkv", "3gp", "webm", "ts", "m4v", "flv")
+
+/**
+ * v3.3.42（用户问题 2）：Win7「系统属性」入口 ——
+ * Win7 计算机窗口的「组织 / 系统属性」按钮打开系统属性对话框；
+ * AnWind 无独立系统属性窗，用内置「系统信息」应用承接（同款信息面）。
+ */
+private fun openSystemProperties(context: Context) {
+    runCatching {
+        WindowManager.get().open(
+            "sysinfo",
+            "系统属性",
+            LaunchMode.FLOATING
+        )
+    }.onFailure {
+        Toast.makeText(context, "系统信息窗口打开失败", Toast.LENGTH_SHORT).show()
+    }
+}
 
 private fun formatSize(len: Long): String = when {
     len < 1024 -> "$len B"

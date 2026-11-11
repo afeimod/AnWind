@@ -259,6 +259,20 @@ object GamepadController {
     /** 设置悬浮窗是否打开 */
     var settingsOpen by mutableStateOf(false)
 
+    /**
+     * v3.3.42：悬浮球菜单的展开状态（提到控制器，供跨层共享）。
+     *
+     * 旧实现把 expanded 放在 GamepadFloatingBall 的组合局部状态里，导致
+     * 「全屏捕获层（点外部收起）」与「菜单本体」必须同处一个 Composable，
+     * 进而整个悬浮球（含捕获层）只能待在手柄覆盖层的**最底层** ——
+     * 手柄按钮（摇杆/ABXY）画在其上，把菜单盖住并吃掉菜单点击
+     * （设备实测：菜单四项点不动、且菜单被裁到屏幕右缘外）。
+     *
+     * 现在把展开态提到这里：捕获层留在最底（点外部收起），
+     * 菜单 + 悬浮球提到最顶（不被手柄元素遮挡、可点）。
+     */
+    var ballMenuExpanded by mutableStateOf(false)
+
     /** 编辑模式：元素可直接拖动定位，显示删除角标 */
     var editMode by mutableStateOf(false)
 
@@ -633,6 +647,17 @@ object GamepadController {
     /** 展开菜单布局后登记命中矩形（GamepadFloatingBall 调用） */
     fun registerMenuHit(l: Float, t: Float, r: Float, b: Float) {
         menuHitRect = floatArrayOf(l, t, r, b)
+    }
+
+    /**
+     * 清除展开菜单命中矩形（菜单收起 / 悬浮球离场时调用）。
+     *
+     * v3.3.42：不能用 registerMenuHit(0,0,0,0) 代替 —— 零尺寸矩形在
+     * isOverPadUi 的 ±HIT_MARGIN_PX 外扩下仍会命中屏幕左上角一小块区域
+     * （该区域内的正常触摸会被 X11 触摸桥误剥离 → 点不动）。必须置 null。
+     */
+    fun clearMenuHit() {
+        menuHitRect = null
     }
 
     /** 手柄隐藏/离开组合时清空工具条命中（对齐 clearElementHits 生命周期） */

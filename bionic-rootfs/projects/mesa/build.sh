@@ -45,6 +45,8 @@ agreementTargetFile="${srcDir}/mesa/docs/license.rst"
 patchOptional=1
 args="
   --wrap-mode=nofallback
+  -Dbuildtype=release
+  -Doptimization=3
   -Dplatform-sdk-version=${api}
   -Dplatforms=x11
   -Degl-native-platform=x11
@@ -264,4 +266,61 @@ install() {
   # 重跑 build-bionic-rootfs / build-Allmesa 即可带上；运行侧启用 =
   # 容器图形驱动选 zink（App: applyGpuEnv / 脚本: apply_gpu_env，含
   # ZINK_DESCRIPTORS=lazy + KOPPER 禁用 + mailbox 呈现全套）。
+
+  # ============================================================
+  # v3.3.42（用户："rootfs 缺失的 zink 构建 libegl 等构建"）——
+  # 构建产物硬校验：zink 与 libEGL/libGLESv2 必须真的在包里
+  # ============================================================
+  # 【背景】`-Dgallium-drivers=...,zink` 只是【请求】zink：meson 侧
+  # zink 有多条前置条件（zink 属 gallium driver，依赖 Vulkan loader +
+  # 目标平台的 winsys；GLX=dri 形态还要求 xcb-present），任一条不满足时
+  # meson 可能只给 warning 而不中断 —— 结果：rootfs 里 libEGL 有了、
+  # 但**没有 zink 驱动**（EGL 只能落到 softpipe 软渲染 → 所有走 GL 的
+  # 游戏/D3D 老程序"慢得离谱"，正是用户"速度还是不够"的头号嫌疑）。
+  # 本块把"请求"升级为"验收"：缺 zink / 缺 libEGL 一律 **构建失败**，
+  # 宁可在 CI 炸掉，也不要再让"没有 zink 的 rootfs"静默流出去。
+  # ============================================================
+  local _libDir="${destDir}/${prefix}/lib"
+  local _missing=""
+  for _so in libEGL.so libGLESv2.so libGL.so; do
+    [[ -e "${_libDir}/${_so}" ]] || _missing="${_missing} ${_so}"
+  done
+  if [[ -n "${_missing}" ]]; then
+    echo "::error::mesa 产物缺失 GL 入口库:${_missing}"
+    echo "   目录: ${_libDir}"
+    echo "   影响: wine/wined3d 与所有 GL 程序无 GL/GLES 入口（EGL 缺失时"
+    echo "         直接退化为无图形加速）"
+    ls -la "${_libDir}" 2>/dev/null | head -30
+    return 1
+  fi
+  echo "mesa GL 入口库校验通过（libEGL.so / libGLESv2.so / libGL.so）"
+
+  # zink 验收：驱动名以字符串形式注册在 DRI megadriver（libgallium_dri.so）
+  # 或独立驱动库里；两种形态都覆盖。
+  if [[ "$targetArch" == "aarch64" ]]; then
+    local _zinkFound=0
+    for _cand in "${_libDir}"/libgallium_dri.so "${_libDir}"/libgallium*.so "${_libDir}"/libdri_*.so; do
+      [[ -e "$_cand" ]] || continue
+      if grep -qa "zink" "$_cand" 2>/dev/null; then
+        _zinkFound=1
+        echo "mesa zink 校验通过（$(basename "$_cand") 内含 zink 驱动）"
+        break
+      fi
+    done
+    if [[ "${_zinkFound}" != "1" ]]; then
+      echo "::error::mesa 产物【缺少 zink 驱动】—— rootfs 的 libEGL/libGLESv2 无 zink！"
+      echo "   后果: EGL/GL 只能落到 softpipe 软渲染（或无适配器）——走 GL 的"
+      echo "         游戏/D3D 老程序全部软渲染，帧率极低（用户反馈的"
+      echo "         \"速度还是不够\"根因之一）。"
+      echo "   前置条件复核（缺一即 zink 被 meson 静默丢弃）："
+      echo "     1) vulkan-icd-loader（zink 依赖 Vulkan loader）—— 本配方 deps 已含；"
+      echo "     2) -Dfreedreno-kmds=msm,kgsl（kgsl 决定 with_dri_platform=pseudo-drm，"
+      echo "        zink 的 winsys/zink/drm 由此挂载）—— 本配方已设；"
+      echo "     3) libxcb 的 xcb-present（GLX=dri + zink 需要）—— libxcb 配方全扩展已建；"
+      echo "     4) -Dbuildtype=release（无优化 = 软渲染更慢）—— 本配方已显式设置。"
+      echo "   排查: 在 meson 配置输出里搜 \"zink\"，确认是否被 disabled。"
+      ls -la "${_libDir}" 2>/dev/null | head -30
+      return 1
+    fi
+  fi
 }

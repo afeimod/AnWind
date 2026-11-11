@@ -1,9 +1,13 @@
 package com.anwind.apps.x11
 
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.unit.dp
 import com.anwind.core.window.AppDef
 import com.anwind.core.window.LaunchMode
+import com.anwind.core.window.TitleBarExtraButton
 import com.anwind.core.window.WindowContentScope
 
 /**
@@ -17,6 +21,11 @@ import com.anwind.core.window.WindowContentScope
  *   （见 X11WindowController：广播 → 开窗 → 取 fd → LorieView 渲染）；
  * - 等待连接页提供"兼容全屏模式"按钮，可拉起独立全屏 Activity
  *   （com.termux.x11.MainActivity，保留作排障兜底）。
+ *
+ * v3.3.42（用户需求 4）：标题栏新增「隐藏底部控制条」按钮 ——
+ * 隐藏窗口下方的分辨率/切窗/键盘/游戏全屏/全屏设置栏，让 X11 画面
+ * （游戏画面）占满更大区域；隐藏态在画面底部保留一条 3dp 的
+ * 「▾ 显示设置栏」细条，轻点即可恢复（不必回到标题栏）。
  */
 val X11App = AppDef(
     id = "x11",
@@ -30,7 +39,20 @@ val X11App = AppDef(
     onTitleBarLongPress = { _ -> X11SettingsBridge.requestShow() },
     // v3.1.7：标题栏菜单按钮（最小化左边）—— 一键调出 X11 设置菜单
     // （旧入口只有长按标题栏 3 秒，难发现且易和拖动窗口冲突）
-    onMenuButton = { _ -> X11SettingsBridge.requestShow() }
+    onMenuButton = { _ -> X11SettingsBridge.requestShow() },
+    // v3.3.42：标题栏「隐藏/显示底部设置栏」按钮（图标随状态变化）
+    titleBarExtraButtons = listOf(
+        TitleBarExtraButton(
+            label = "隐藏/显示底部设置栏",
+            icon = {
+                if (X11UiPrefs.controlBarHidden) Icons.Default.Visibility
+                else Icons.Default.VisibilityOff
+            },
+            onClick = { ctx ->
+                X11UiPrefs.saveControlBarHidden(ctx, !X11UiPrefs.controlBarHidden)
+            }
+        )
+    )
 ) { scope ->
     X11Surface(scope)
 }

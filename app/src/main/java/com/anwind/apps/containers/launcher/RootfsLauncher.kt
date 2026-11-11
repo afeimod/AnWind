@@ -1138,7 +1138,7 @@ object RootfsLauncher {
             // 共用：mailbox 呈现 / GL NO_ERROR / DXVK 异步编译与状态缓存 /
             // WINEDEBUG=-all / esync 等）—— 全部 putIfAbsent，opt conf 与
             // 容器 env= 在其后仍可逐项覆盖。
-            WineEnvironment.applyPerfBaselineEnv(env) { sink.stamp(it) }
+            WineEnvironment.applyPerfBaselineEnv(env, { sink.stamp(it) }, container)
 
             // v3.3.37：DXVK 真激活 —— v3.2.27 撤销全部 DllOverrides 后，
             // wine 默认加载序（builtin 优先）从未真正加载过解压进

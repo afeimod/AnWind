@@ -1357,6 +1357,50 @@ PCMBSF
     done < <(grep '^@ stdcall -syscall ' dlls/ntdll/ntdll.spec 2>/dev/null | grep -v ' Nt\| Zw')
     [[ "${_ec_syscall_missing}" == "1" ]] && return 1
   fi
+
+  # g) v3.3.41：proton_9.0 arm64ec 第五批炸点 —— winegstreamer unixlib.c 的
+  #    GStreamer registry 架构判定只有 x86 两支，aarch64 unix 侧直落
+  #    `#error Bad arch`（CI wine-build-log-arm64ec (8).zip 实证链条终点）：
+  #      dlls/winegstreamer/unixlib.c:285:2: error: Bad arch
+  #      dlls/winegstreamer/unixlib.c:288:25: error: use of undeclared identifier 'arch'
+  #      make: *** [Makefile:205664: dlls/winegstreamer/unixlib.o] Error 1
+  #    【机制】unixlib.c 带 `#pragma makedep unix` → unix 侧库对象，由 host
+  #    编译器编译；arm64ec 形态 unix 侧 = aarch64（aarch64-linux-android28-
+  #    clang），既非 __x86_64__ 也非 __i386__ → #else 分支触发。#else 里
+  #    arch 变量未声明 → 连带 "undeclared identifier 'arch'"。
+  #    x86_64 形态没事（unix 侧 = x86_64）；proton_10.0+ 没事（Valve 已把
+  #    aarch64 分支补上）→ 门控自动跳过。
+  #    【修法】逐字回移 Valve proton_10.0 的 aarch64 分支
+  #    （/registry.aarch64.bin —— 该文件名由 unix 侧 gstreamer 自身 arch
+  #    决定，与 PE 侧目标架构无关）。
+  if [[ -f dlls/winegstreamer/unixlib.c ]] \
+     && grep -q '#error Bad arch' dlls/winegstreamer/unixlib.c 2>/dev/null; then
+    if grep -q 'defined(__aarch64__)' dlls/winegstreamer/unixlib.c 2>/dev/null; then
+      echo "winegstreamer registry 架构判定已含 aarch64（proton_10.0+ 形态），跳过"
+    else
+      echo "应用 winegstreamer unixlib aarch64 架构分支修复（proton_9.0 树 unix 侧 = aarch64）"
+      if patch --silent --forward -p1 --fuzz=0 \
+           < "${wsDir}/projects/${pjName}/0022-fix-winegstreamer-unixlib-arch-proton.patch.proton"; then
+        echo "已修复 winegstreamer unixlib 架构判定（aarch64 → /registry.aarch64.bin）"
+      else
+        echo "⚠️ winegstreamer 架构分支补丁未应用（树差异，继续构建）"
+        echo "    若编译报 dlls/winegstreamer/unixlib.c 的 Bad arch，请核查该补丁锚点"
+      fi
+    fi
+  else
+    echo "ℹ️ winegstreamer unixlib 无 Bad arch 判定（非 proton_9.0 形态或已修复），跳过"
+  fi
+  # 【硬校验】unix 侧为 aarch64 时，架构判定必须含 aarch64 分支 ——
+  # 防锚点漂移静默落空（漏修必炸于 dlls/winegstreamer/unixlib.o）
+  if [[ "${args}" == *"--enable-archs=arm64ec,"* ]] \
+     && [[ -f dlls/winegstreamer/unixlib.c ]] \
+     && grep -q '#error Bad arch' dlls/winegstreamer/unixlib.c 2>/dev/null \
+     && ! grep -q 'defined(__aarch64__)' dlls/winegstreamer/unixlib.c 2>/dev/null; then
+    echo "::error::0022 补丁未生效（winegstreamer/unixlib.c 的 registry 架构判定仍无 aarch64 分支）！"
+    echo "   arm64ec 编译趟必炸于 dlls/winegstreamer/unixlib.o（#error Bad arch + undeclared identifier 'arch'，CI 实证）"
+    echo "   请核查源码树形态与补丁锚点：projects/${pjName}/0022-fix-winegstreamer-unixlib-arch-proton.patch.proton"
+    return 1
+  fi
   # h) v3.3.19：0013 rpcrt4 EC thunks 生效硬校验（CI wine-build-log-arm64ec.zip
   #    实证 cstub.o / cproxy.o 阵亡：v3.2.25 版 THUNK_ENTRY 宏对 cpsf.h 的
   #    表达式参数（32*(block)+n）做 ##num 粘贴只取首 token，"NdrProxyForwarding
