@@ -85,7 +85,11 @@ args="
   --with-xxf86vm
 "
 
-deps="pthread-stub alsa-lib fontconfig freetype gnutls gstreamer ffmpeg pulseaudio xkeyboard-config libxkbcommon mesa vulkan-headers vulkan-icd-loader xorgproto libxcb xtrans libX11 libXext libXrender libXfixes libXi libXrandr libXcursor libXinerama libXcomposite libXxf86vm libandroid-shmem"
+# v3.4.7：alsa-plugins（pulse 桥）入列 —— winealsa 在 Android 的
+# 唯一现实出口（/dev/snd 不存在；libasound 默认 PCM → pulse 插件
+# → rootfs 守护 → sles-sink）。用户实证 "nopulse 用 alsa 但 alsa
+# 没补全依赖" 的缺口补全；详见 projects/alsa-plugins/build.sh。
+deps="pthread-stub alsa-lib alsa-plugins fontconfig freetype gnutls gstreamer ffmpeg pulseaudio xkeyboard-config libxkbcommon mesa vulkan-headers vulkan-icd-loader xorgproto libxcb xtrans libX11 libXext libXrender libXfixes libXi libXrandr libXcursor libXinerama libXcomposite libXxf86vm libandroid-shmem"
 
 # 静默编译：wine 的 make 会回显每条完整编译/链接命令（ccache 全路径），
 # 单包就曾刷出 11.7 万行日志；-s 只关命令回显，编译器/链接器报错照常输出，

@@ -209,9 +209,20 @@ object ContainerLangs {
 // 容器音频模式（container.conf 的 audio= 键，v2.26 新增）
 // ---------------------------------------------------------------------------
 
-/** 容器音频模式（音频由 rootfs 自带 PulseAudio 承载，与 Termux 侧隔离）。 */
+/**
+ * 容器音频模式（音频由 rootfs 自带 PulseAudio 承载，与 Termux 侧隔离）。
+ *
+ * v3.4.7 新增 [ALSA] 档（用户 2026-11-11："保证正常使用 pulse 或者
+ * nopulse 使用 alsa，查看 rootfs 是不是没有相关编译构建"）：wine 侧
+ * 注册表 [Software\\Wine\\Drivers] Audio=alsa → 只用 winealsa →
+ * libasound 默认 PCM（rootfs /etc/asound.conf 全局指向 alsa-plugins
+ * pulse 桥）→ 同一 rootfs 守护 → module-sles-sink。pulse 驱动无声的
+ * 游戏换此档排除驱动层；守护与 PULSE_SERVER 与 pulse 档同源（alsa
+ * 桥需要同一守护在跑）。
+ */
 enum class ContainerAudio(val id: String, val label: String, val desc: String) {
     PULSE("pulse", "PulseAudio", "rootfs 自带 PulseAudio（unix socket 隔离，推荐）"),
+    ALSA("alsa", "ALSA（pulse 桥）", "winealsa 经 alsa-plugins pulse 桥接入同一守护（兼容备选：pulse 驱动无声时换用）"),
     OFF("off", "禁用", "关闭容器音频（不出声也不拉起服务）");
 
     companion object {

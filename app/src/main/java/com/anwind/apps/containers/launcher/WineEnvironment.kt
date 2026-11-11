@@ -874,6 +874,19 @@ object WineEnvironment {
             env["HODLL"] = "libwow64fex.dll"
         } else if (wowboxMode && probeEmulatorDll(wineDir, "wowbox64.dll")) {
             env["HODLL"] = "wowbox64.dll"
+        } else if (!fexMode && !wowboxMode &&
+            !probeEmulatorDll(wineDir, "libwow64fex.dll") &&
+            probeEmulatorDll(wineDir, "wowbox64.dll")
+        ) {
+            // v3.4.7【32 位闪退兜底】（用户 2026-11-11：“有些 32 游戏不用
+            // wowbox64 却闪退了”）：两档都未勾选时此前完全靠 wine 内部缺省
+            // —— 而 0010/0011 补丁树的内部缺省就是 libwow64fex.dll；FEX
+            // 栈未随包发行（fexcore 未安装）时该 dll 在包内缺席 → 32 位
+            // wow64 进程装载器找不到 x86 仿真 dll → 死于 c0000135 秒退。
+            // 本兜底只在“libwow64fex 缺席 + wowbox64 在场”时注入后者
+            //（纯可用性判断，不改用户勾选语义；用户勾选/env= 仍最高优，
+            // libwow64fex 在场时维持 wine 内部缺省不受影响）。
+            env["HODLL"] = "wowbox64.dll"
         }
     }
 

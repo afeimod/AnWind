@@ -386,8 +386,52 @@ android {
         //     x86_64-unix .so 必须走 box64 pulse 包装器）；ApkConfStore
         //     一次性外科迁移注释旧激活行（备份 env.conf.pre-v346.bak）；
         //     PULSE_SERVER/PULSE_LATENCY_MSEC 链路核对无恙。
-        versionCode = 108
-        versionName = "2.38.45"
+        // v3.4.7（源码包 v3.4.7，App v2.38.46 / versionCode 109）——
+        //   用户 2026-11-11 四问题轮（新日志 + CI 构建日志实证）：
+        //   ①【wowbox64 无声之 alsa 补全】（用户："你用了 nopulse 但是
+        //     alsa 没有补全依赖肯定没有声音，根本没有点用声音驱动，
+        //     保证正常使用 pulse 或者 nopulse 使用 alsa，查看 rootfs
+        //     是不是没有相关编译构建"）—— rootfs 此前只有 alsa-lib：
+        //     Android 无 /dev/snd/*，winealsa→libasound 默认 PCM 无任何
+        //     后端可用（用户诊断完全正确）。修复：bionic-rootfs 新增
+        //     alsa-plugins 项目（pulse 桥，双源下载防 xiph 式宕机）+
+        //     /etc/asound.conf 全局默认 PCM/Ctl 指向 pulse；wine 与
+        //     hangover-wine deps 均入列；容器/会话新增 audio=alsa 档
+        //     （ContainerAudio.ALSA，UI 自动出现第三档）：守护同源拉起
+        //     （alsa 桥需要它）+ PULSE_SERVER 注入 + 注册表
+        //     [Software\Wine\Drivers] Audio=alsa（WineRegistry.
+        //     ensureAudioDriver 显式落位 —— pulse/alsa/空 三态，写
+        //     sanitizeRegistryHygiene ③b 步，防前缀残留旧值漂移）；
+        //     anwind-wine audio_setup 同步 alsa 分支 + pactl sink 诊断
+        //     （守护在但 sinks=0 → module-sles-sink 未加载，无声根因
+        //     日志一眼可见）。winealsa→libasound→pulse 插件→守护→
+        //     module-sles-sink→Android 扬声器 —— audio=alsa 从摆设变实路。
+        //   ②【proton9.0 arm64ec CI 构建阵亡根修】：本轮日志实证非编译
+        //     错误 —— libogg 1.3.6 源码下载三连杀（downloads.xiph.org
+        //     瞬时断流 + SSL unexpected eof；Debian pool 404 —— 1.3.6
+        //     已从 pool 撤下；"整表重试一次"后仍全灭 → 构建中止）。
+        //     libogg/libopus 备源表三级化：+ OSUOSL 官方 xiph 镜像
+        //     （实测 200）+ GitHub codeload 自动归档（tag 实测 200，
+        //     顶层目录名差异由框架 --strip-components=1 天然兼容）。
+        //   ③【32 位游戏闪退兜底】（用户："有些 32 游戏不用 wowbox64
+        //     却闪退了"）：0010/0011 补丁树的 wine 内部缺省
+        //     libwow64fex.dll 在 FEX 栈未随包发行（fexcore 未安装）的
+        //     wine 包里缺席 → 32 位 wow64 进程装载器找不到 x86 仿真 dll
+        //     → c0000135 秒退。WineEnvironment.applyWineCompatEnv 新增
+        //     纯可用性兜底：用户未勾选/env 未写 HODLL 且 libwow64fex.dll
+        //     缺席而 wowbox64.dll 在场 → 注入 HODLL=wowbox64.dll（勾选
+        //     语义/优先级不变；libwow64fex 在场时维持内部缺省零影响）。
+        //   ④【手柄配置去 SAF】（用户："保存和读取配置时候别调用安卓
+        //     文件管理器啊，直接保存到 download/anwind/gamepad，保存
+        //     直接调出输入名字然后确认或者取消，读取直接读取文件夹下的
+        //     vgp 文件"）：GamepadProfileIo 重写 —— SAF Create/OpenDocument
+        //     全部移除；固定目录 /storage/emulated/0/Download/anwind/
+        //     gamepad（File 直写，MANAGE_EXTERNAL_STORAGE 同游戏零拷贝
+        //     权限面）；保存=输入名字对话框（预填默认名/确认/取消，重名
+        //     覆盖）；读取=该目录 .vgp 列表点选（时间倒序+保存时间+空
+        //     目录指引）；结果气泡/持久化机制不变。
+        versionCode = 109
+        versionName = "2.38.46"
         // v3.4.3（源码包 v3.4.3，App v2.38.42 / versionCode 105）——
         //   用户交付 assets-ck 资产包 + WinFusion 参考源码（「assets-ck
         //   我发了，源码也发了…特别是 arm64ec wine 和 x86_64 wine 的

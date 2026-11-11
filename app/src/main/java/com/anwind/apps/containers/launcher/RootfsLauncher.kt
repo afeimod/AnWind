@@ -1217,11 +1217,21 @@ object RootfsLauncher {
                 )
             }
 
-            // 7) 音频（audio=off → 无声；pulse → 原生守护管理 + PULSE_SERVER）
+            // 7) 音频（audio=off → 无声；pulse → 原生守护管理 + PULSE_SERVER；
+            //    alsa → v3.4.7 桥档：守护同源 + 注册表 Audio=alsa 走 winealsa）
             when (container.audio) {
                 ContainerAudio.OFF -> {
                     WineEnvironment.applyAudioOff(env)
                     sink.stamp("音频=关闭")
+                }
+                ContainerAudio.ALSA -> {
+                    // v3.4.7（用户："保证正常使用 pulse 或者 nopulse 使用 alsa"）：
+                    // winealsa 在 Android 的唯一现实出口 = rootfs alsa-plugins
+                    // pulse 桥（/etc/asound.conf 全局默认 PCM）→ 同一守护 →
+                    // sles-sink。守护必须同源拉起（alsa 桥依赖它）。
+                    val server = PulseAudioManager.ensureServer { sink.stamp(it) }
+                    env["PULSE_SERVER"] = server
+                    sink.stamp("音频=ALSA→pulse桥($server)（winealsa 经 /etc/asound.conf → alsa-plugins → 守护）")
                 }
                 else -> {
                     val server = PulseAudioManager.ensureServer { sink.stamp(it) }

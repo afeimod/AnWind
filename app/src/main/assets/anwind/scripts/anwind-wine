@@ -489,6 +489,18 @@ detect_wine_arch() { # $1=wine 二进制 → 回显 aarch64|x86_64|unknown
 }
 
 # ---------- 音频自持（rootfs 自带 PulseAudio，unix socket 隔离） ----------
+# v3.4.7（用户 2026-11-11："保证正常使用 pulse 或者 nopulse 使用 alsa，
+# 查看 rootfs 是不是没有相关编译构建"）：
+#   - audio=alsa 新档：守护照常拉起（alsa-plugins pulse 桥需要同一
+#     守护），PULSE_SERVER 照常注入（alsa 插件随 PULSE_SERVER 寻址）；
+#     wine 侧驱动选择由 App 注册表直写 [Software\Wine\Drivers] Audio=
+#     alsa（RootfsLauncher → WineRegistry.ensureAudioDriver），rootfs
+#     /etc/asound.conf 把 libasound 默认 PCM 全局指向 pulse 桥
+#     （v3.4.7 rootfs 新增 alsa-plugins 项目）。
+#   - pulse 档不变：winepulse（aarch64 原生 libpulse）→ 守护 →
+#     module-sles-sink。
+#   - 新增 pactl 诊断：守护就位后数 sink —— sinks=0（module-sles-sink
+#     没起来）即无声根因，日志一眼可见，用户"看日志"诉求直接可判。
 audio_setup() {
     local _audio
     _audio="$(conf_read "$CONT_CONF" audio "pulse")"
@@ -497,7 +509,17 @@ audio_setup() {
             # 整体关闭：清掉继承的 PULSE_SERVER，wine 走无声/disabled
             unset PULSE_SERVER
             export PULSE_SERVER=""
+            log "音频=关闭（audio=off）"
             return 0
+            ;;
+        alsa)
+            # v3.4.7：alsa 档 —— 守护同源（alsa-plugins pulse 桥需要），
+            # wine 驱动侧由注册表 Audio=alsa 走 winealsa → libasound
+            # 默认 PCM → pulse 插件 → 守护 → sles-sink。
+            log "音频=ALSA→pulse桥（winealsa 经 /etc/asound.conf 全局默认 → alsa-plugins → 守护）"
+            ;;
+        pulse|*)
+            log "音频=PulseAudio（winepulse 原生链路 → 守护 → module-sles-sink）"
             ;;
     esac
 
@@ -523,6 +545,23 @@ audio_setup() {
         fi
         if [ -S "$_pa_sock" ]; then
             export PULSE_SERVER="unix:$_pa_sock"
+            # v3.4.7 音频链路诊断（用户"看日志"实证诉求）：pactl 数
+            # sink。守护在但 sinks=0 → module-sles-sink 未加载（加载失败
+            # / default.pa 缺行）→ 无论 wine 侧选 pulse 还是 alsa 桥都无
+            # 声 —— 此行让根因在会话日志里一眼可见。
+            local _sinks=""
+            if [ -x "$RFS_USR/bin/pactl" ]; then
+                _sinks="$(PULSE_SERVER="unix:$_pa_sock" "$RFS_USR/bin/pactl" \
+                    list sinks short 2>/dev/null | wc -l)"
+            fi
+            case "$_sinks" in
+                ''|0)
+                    log "⚠ 音频诊断: 守护在但无 sink（module-sles-sink 未加载）→ 本会话注定无声；对策: 重装含 pulseaudio 模块的 rootfs，或 anwind-container doctor"
+                    ;;
+                *)
+                    log "音频诊断: pulse 守护就绪（sinks=$_sinks — module-sles-sink 直连 Android 音频）"
+                    ;;
+            esac
             return 0
         fi
         # rootfs pulse 没起来 → 显式 TCP 兜底（仍是 rootfs 自己的实例）

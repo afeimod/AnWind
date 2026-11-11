@@ -1,6 +1,7 @@
 package com.anwind.apps.containers.launcher
 
 import android.content.Context
+import com.anwind.apps.containers.ContainerAudio
 import com.anwind.apps.containers.ContainerBackend
 import com.anwind.apps.containers.ContainerData
 import com.anwind.apps.containers.ContainerManager
@@ -1049,11 +1050,68 @@ object WineRegistry {
             }
             // ③ 全局 DllOverrides 注入
             ensureGlobalDllOverrides(context, resolved, container, env, log)
+            // ③b v3.4.7：音频驱动显式落位（[Software\\Wine\\Drivers] Audio
+            // = pulse / alsa / 空）。不写时 wine 自动探测（pulse 优先），
+            // 前缀里残留的旧值（winecfg 手改/生态包写入）会让驱动选择
+            // 漂移 —— 显式写与容器 audio= 档一致，pulse 无声时可切
+            // audio=alsa 桥档做驱动层排除（用户“保证正常使用 pulse 或者
+            // nopulse 使用 alsa”诉求）。
+            ensureAudioDriver(context, resolved, container, env, log)
             true
         }.getOrElse {
             log("⚠ 注册表卫生异常：${it.message}")
             false
         }
+    }
+
+    /**
+     * v3.4.7：容器 audio= 档 → wine 音频驱动注册表显式落位。
+     *
+     * HKCU\Software\Wine\Drivers 的 "Audio" 值（winecfg「音频」页同一
+     * 键）：
+     *  - PULSE → "pulse"（只用 winepulse —— aarch64 原生 libpulse 直连
+     *    rootfs 守护；winecfg 里“明明有音频端”但游戏无声时排除驱动漂移）；
+     *  - ALSA  → "alsa"（只用 winealsa → libasound 默认 PCM → rootfs
+     *    alsa-plugins pulse 桥（/etc/asound.conf）→ 同一守护 → sles-sink）；
+     *  - OFF  → ""（空 = 不加载任何音频驱动，完全无声）。
+     *
+     * JsonRegistry 直写 hive（与 [ensureGlobalDllOverrides] 同一通路，
+     * 幂等；首建前缀 user.reg 缺席时跳过 —— postPrefixBootChain 会再试）。
+     */
+    fun ensureAudioDriver(
+        context: Context?,
+        resolved: WineRuntime.Resolved?,
+        container: ContainerData,
+        env: Map<String, String>,
+        log: (String) -> Unit = {}
+    ): Boolean {
+        if (context == null) return false
+        if (!File(container.prefixPath, "user.reg").isFile) return true
+        val (value, human) = when (container.audio) {
+            ContainerAudio.ALSA -> "alsa" to "winealsa（经 alsa-plugins pulse 桥 → 守护 → sles-sink）"
+            ContainerAudio.OFF -> "" to "空（不加载音频驱动）"
+            else -> "pulse" to "winepulse（原生 libpulse → 守护 → sles-sink）"
+        }
+        val edits = org.json.JSONArray().put(
+            org.json.JSONObject()
+                .put("hive", "HKCU")
+                .put("key", "Software\\\\Wine\\\\Drivers")
+                .put("values", org.json.JSONArray().put(
+                    org.json.JSONObject()
+                        .put("name", "Audio")
+                        .put("type", "sz")
+                        .put("data", value)
+                ))
+        )
+        val err = JsonRegistry.apply(
+            File(container.prefixPath), resolved, container, env, edits
+        )
+        if (err != null) {
+            log("⚠ 音频驱动键写入失败：$err（下次启动自动重试）")
+            return false
+        }
+        log("音频驱动已落位 [Software\\\\Wine\\\\Drivers] Audio=${if (value.isEmpty()) "（空=禁用）" else value} —— $human")
+        return true
     }
 
 

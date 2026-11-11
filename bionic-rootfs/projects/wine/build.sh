@@ -99,7 +99,11 @@ args="
 #   （由 gst-plugins-base gl=enabled 提供，见 gstreamer 配方注释）。
 # ※ alsa：与 arm64ec 形态保持一致（winealsa unixlib 参与构建；
 #   CI 产物校验两形态都要求 winealsa.so 存在）。
-deps="pthread-stub alsa-lib fontconfig freetype gnutls gstreamer ffmpeg pulseaudio mesa vulkan-headers vulkan-icd-loader xkeyboard-config libxkbcommon xorgproto libxcb xtrans libX11 libXext libXrender libXfixes libXi libXrandr libXcursor libXinerama libXcomposite libXxf86vm libandroid-shmem"
+# ※ v3.4.7 新增 alsa-plugins（pulse 桥 + /etc/asound.conf 全局默认）：
+#   winealsa 在 Android 的唯一现实出口 —— /dev/snd 不存在，winealsa
+#   → libasound → pulse 插件 → rootfs 守护 → sles-sink（用户实证
+#   "nopulse 用 alsa 但 alsa 没补全依赖"的缺口补全）。
+deps="pthread-stub alsa-lib alsa-plugins fontconfig freetype gnutls gstreamer ffmpeg pulseaudio mesa vulkan-headers vulkan-icd-loader xkeyboard-config libxkbcommon xorgproto libxcb xtrans libX11 libXext libXrender libXfixes libXi libXrandr libXcursor libXinerama libXcomposite libXxf86vm libandroid-shmem"
 
 # 静默编译：wine 的 make 会回显每条完整编译/链接命令（ccache 全路径），
 # 单包就曾刷出 11.7 万行日志；-s 只关命令回显，编译器/链接器报错照常输出，
