@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
@@ -218,10 +219,14 @@ private fun AeroRoundButton(
     back: Boolean,
     onClick: () -> Unit
 ) {
-    val size = 30.dp
+    // v3.3.42 修正：局部变量不得命名为 size —— drawBehind 的接收者
+    // DrawScope 本身就有 size: Size 成员，局部 val size = 30.dp 会把它
+    // 遮蔽掉，于是 drawBehind { size.minDimension } 变成 Dp.minDimension
+    // → 编译期 "Unresolved reference: minDimension"（CI 实测）。
+    val btnSize = 30.dp
     Box(
         modifier = Modifier
-            .size(size)
+            .size(btnSize)
             .clip(CircleShape)
             .background(
                 Brush.verticalGradient(
@@ -362,7 +367,9 @@ internal fun Win7NavPane(
 
 @Composable
 private fun Win7NavNode(item: Win7NavItem, depth: Int) {
-    val indent = 6.dp + depth * 13.dp
+    // v3.3.42 修正：Int * Dp 无重载（"None of the following functions can
+    // be called"）—— 改成 Dp * Int（Dp 有 times(Int) 重载）。
+    val indent = 6.dp + 13.dp * depth
     val selectable = item.onClick != null
     Row(
         modifier = Modifier

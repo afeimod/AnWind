@@ -1370,6 +1370,15 @@ PCMBSF
   #    arch 变量未声明 → 连带 "undeclared identifier 'arch'"。
   #    x86_64 形态没事（unix 侧 = x86_64）；proton_10.0+ 没事（Valve 已把
   #    aarch64 分支补上）→ 门控自动跳过。
+  #    【与上游补丁的关系】上游已有等价补丁
+  #    0022-fix-proton9-winegstreamer-aarch64-registry.patch.beforehostbuild
+  #    （由 *.patch.beforehostbuild 循环在 pre_setup 前段套用，hunk 与本段
+  #    使用的兜底补丁逐字一致，均为 Valve proton_10.0 的 aarch64 分支）。
+  #    上游补丁的应用失败只打一行 warning、构建继续 —— 于是 log 8 那轮
+  #    又在 28 分钟后的 winegstreamer.o 上炸掉。本段的价值就在于此：
+  #    ① 兜底补丁（上游补丁被回退/改名/未命中时仍能救场）；
+  #    ② 末尾的【硬校验】把"补丁没生效"从 28 分钟后的一堆编译错误提前成
+  #       当场的 ::error::。
   #    【修法】逐字回移 Valve proton_10.0 的 aarch64 分支
   #    （/registry.aarch64.bin —— 该文件名由 unix 侧 gstreamer 自身 arch
   #    决定，与 PE 侧目标架构无关）。
@@ -1399,6 +1408,8 @@ PCMBSF
     echo "::error::0022 补丁未生效（winegstreamer/unixlib.c 的 registry 架构判定仍无 aarch64 分支）！"
     echo "   arm64ec 编译趟必炸于 dlls/winegstreamer/unixlib.o（#error Bad arch + undeclared identifier 'arch'，CI 实证）"
     echo "   请核查源码树形态与补丁锚点：projects/${pjName}/0022-fix-winegstreamer-unixlib-arch-proton.patch.proton"
+    echo "   以及上游等价补丁 projects/${pjName}/0022-fix-proton9-winegstreamer-aarch64-registry.patch.beforehostbuild"
+    echo "   （后者由 *.patch.beforehostbuild 循环套用，套用失败只告警 → 本硬校验即为此设）"
     return 1
   fi
   # h) v3.3.19：0013 rpcrt4 EC thunks 生效硬校验（CI wine-build-log-arm64ec.zip

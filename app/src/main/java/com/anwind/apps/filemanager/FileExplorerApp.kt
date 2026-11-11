@@ -844,6 +844,13 @@ private fun FileExplorerContent(scope: WindowContentScope) {
         Row(modifier = Modifier.weight(1f)) {
             // ===== v3.3.42：Win7 主题用 Aero 导航树（快速访问 / 计算机）=====
             if (isWin7) {
+                // v3.3.42 修正：这三个路径必须是【外层局部变量】—— 直接写在
+                // buildWin7NavItems(...) 的具名实参位置上时，onOpen = { f -> ... }
+                // _lambda 体里取不到它们（具名实参不进入 lambda 的作用域），
+                // CI 实测报 "Unresolved reference: internalFiles / driveD / driveE"。
+                val win7InternalFiles = File("/data/data/com.anwind/files")
+                val win7DriveD = File("/storage/emulated/0/Download")
+                val win7DriveE = File("/storage/emulated/0/exagear")
                 if (showSidebar) {
                     Box(
                         modifier = Modifier
@@ -856,15 +863,15 @@ private fun FileExplorerContent(scope: WindowContentScope) {
                                 isThisPcHome = isThisPcHome,
                                 currentPath = currentRealDir?.absolutePath,
                                 storageRoot = storageRoot,
-                                internalFiles = File("/data/data/com.anwind/files"),
-                                driveD = File("/storage/emulated/0/Download"),
-                                driveE = File("/storage/emulated/0/exagear"),
+                                internalFiles = win7InternalFiles,
+                                driveD = win7DriveD,
+                                driveE = win7DriveE,
                                 onHome = { goHome() },
                                 onOpen = { f ->
-                                    if (f == internalFiles) openFolder(f)
-                                    else if (f == driveD) {
+                                    if (f == win7InternalFiles) openFolder(f)
+                                    else if (f == win7DriveD) {
                                         if (hasAllFilesAccess) openFolder(f) else requestAllFilesAccess()
-                                    } else if (f == driveE) {
+                                    } else if (f == win7DriveE) {
                                         if (!hasAllFilesAccess) requestAllFilesAccess()
                                         else {
                                             if (!f.isDirectory) runCatching { f.mkdirs() }

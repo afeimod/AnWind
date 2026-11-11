@@ -473,12 +473,19 @@ dl_src() {
   #      backupUrls；
   #   2. 整张 URL 列表重试一轮（wget 自带 --tries=2 只覆盖单 URL 的连接
   #      级重试，覆盖不了"换源也不行、稍等再试就好"的瞬时故障）。
+  #   3. v3.3.42（CI 实证：x86_64 / arm64ec 两条 wine 构建全折在 libogg）：
+  #      downloads.xiph.org 会 302 跳到 ftp.osuosl.org，runner 到跳板的
+  #      TLS 频繁被中断（"unexpected eof while reading"）。这里把
+  #      downloads.xiph.org/releases/... 自动展开出 osuosl 主站
+  #      （同路径结构：/pub/xiph/releases/...），绕开那一跳 —— 对所有
+  #      xiph 源生效（libogg / libopus 等），无需逐个配方加兜底。
   local _urls=("$url")
   local _u
   if [[ -n "${backupUrls[*]:-}" ]]; then
     _urls+=("${backupUrls[@]}")
   fi
   # xorg.freedesktop.org → 追加 x.org 镜像（archive/individual → releases|pub/individual 同构）
+  # downloads.xiph.org   → 追加 osuosl 主站（绕开 302 跳板）
   local _expanded=()
   for _u in "${_urls[@]}"; do
     _expanded+=("$_u")
@@ -487,9 +494,22 @@ dl_src() {
         _expanded+=("${_u/#https:\/\/xorg.freedesktop.org\/archive/https://www.x.org/releases}")
         _expanded+=("${_u/#https:\/\/xorg.freedesktop.org\/archive/https://ftp.x.org/pub}")
         ;;
+      https://downloads.xiph.org/releases/*)
+        _expanded+=("${_u/#https:\/\/downloads.xiph.org\/releases/https://ftp.osuosl.org/pub/xiph/releases}")
+        ;;
     esac
   done
   _urls=("${_expanded[@]}")
+  # 去重：框架镜像展开与配方显式兜底可能给出同一 URL（xiph 的 osuosl
+  # 镜像就会被列出两次）——去重后日志更干净，也少一次无谓的 wget。
+  local _uniq=()
+  local _seen="|"
+  for _u in "${_urls[@]}"; do
+    [[ "${_seen}" == *"|${_u}|"* ]] && continue
+    _seen="${_seen}${_u}|"
+    _uniq+=("$_u")
+  done
+  _urls=("${_uniq[@]}")
 
   local _pass 
   for _pass in 1 2; do

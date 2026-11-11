@@ -4,7 +4,8 @@ url="${gnuMirrorURL}/libiconv/libiconv-${revision}.tar.gz"
 backupUrls=(
   "https://ftpmirror.gnu.org/libiconv/libiconv-${revision}.tar.gz"
   "https://mirrors.kernel.org/gnu/libiconv/libiconv-${revision}.tar.gz"
-  "http://deb.debian.org/debian/pool/main/libi/libiconv/libiconv_${revision}.orig.tar.gz"
+  # v3.3.42：删掉 Debian pool 兜底 —— Debian **没有独立的 libiconv 源码包**
+  # （libiconv 已并入 glibc），pool 实测该 URL 恒 404，等于白等一轮。
 )
 urlType="tar"
 arch="aarch64 x86_64"

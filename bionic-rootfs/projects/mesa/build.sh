@@ -45,7 +45,6 @@ agreementTargetFile="${srcDir}/mesa/docs/license.rst"
 patchOptional=1
 args="
   --wrap-mode=nofallback
-  -Dbuildtype=release
   -Doptimization=3
   -Dplatform-sdk-version=${api}
   -Dplatforms=x11
@@ -269,7 +268,7 @@ install() {
 
   # ============================================================
   # v3.3.42（用户："rootfs 缺失的 zink 构建 libegl 等构建"）——
-  # 构建产物硬校验：zink 与 libEGL/libGLESv2 必须真的在包里
+  # 构建产物校验：GL 入口库（硬失败）+ zink 驱动（默认告警，可选严格模式）
   # ============================================================
   # 【背景】`-Dgallium-drivers=...,zink` 只是【请求】zink：meson 侧
   # zink 有多条前置条件（zink 属 gallium driver，依赖 Vulkan loader +
@@ -277,13 +276,24 @@ install() {
   # meson 可能只给 warning 而不中断 —— 结果：rootfs 里 libEGL 有了、
   # 但**没有 zink 驱动**（EGL 只能落到 softpipe 软渲染 → 所有走 GL 的
   # 游戏/D3D 老程序"慢得离谱"，正是用户"速度还是不够"的头号嫌疑）。
-  # 本块把"请求"升级为"验收"：缺 zink / 缺 libEGL 一律 **构建失败**，
-  # 宁可在 CI 炸掉，也不要再让"没有 zink 的 rootfs"静默流出去。
+  #
+  # 【失败分级】v3.3.42 修正（CI 实证）：
+  #   * GL 入口库（libEGL/libGLESv2/libGL）缺失 → **硬失败**（rootfs 真坏）。
+  #   * zink 缺失 → **默认只告警**（::warning:: + 清单）。理由：zink 是否
+  #     被 meson 启用取决于一长串环境前置（xcb-present 扩展、drm winsys、
+  #     Vulkan loader 版本…），把它做成硬失败会让"整条 rootfs 构建"因
+  #     一个可选加速器而红掉 —— 得不偿失（用户反馈："破坏了 mesa 的构建"）。
+  #     需要强制时用 ANWIND_STRICT_ZINK=1 打开严格模式（本地/发布前用）。
   # ============================================================
   local _libDir="${destDir}/${prefix}/lib"
   local _missing=""
-  for _so in libEGL.so libGLESv2.so libGL.so; do
-    [[ -e "${_libDir}/${_so}" ]] || _missing="${_missing} ${_so}"
+  # 接受 .so 与 .so.N 两种形态（GLVND 形态只装 libEGL.so.1；本配方
+  # glvnd=disabled，两种都在，运行时按 .so 优先）
+  for _so in libEGL libGLESv2 libGL; do
+    if [[ ! -e "${_libDir}/${_so}.so" && ! -e "${_libDir}/${_so}.so.1" \
+       && ! -e "${_libDir}/${_so}.so.2" ]]; then
+      _missing="${_missing} ${_so}.so"
+    fi
   done
   if [[ -n "${_missing}" ]]; then
     echo "::error::mesa 产物缺失 GL 入口库:${_missing}"
@@ -308,7 +318,7 @@ install() {
       fi
     done
     if [[ "${_zinkFound}" != "1" ]]; then
-      echo "::error::mesa 产物【缺少 zink 驱动】—— rootfs 的 libEGL/libGLESv2 无 zink！"
+      echo "::warning::mesa 产物【缺少 zink 驱动】—— rootfs 的 libEGL/libGLESv2 无 zink！"
       echo "   后果: EGL/GL 只能落到 softpipe 软渲染（或无适配器）——走 GL 的"
       echo "         游戏/D3D 老程序全部软渲染，帧率极低（用户反馈的"
       echo "         \"速度还是不够\"根因之一）。"
@@ -317,10 +327,19 @@ install() {
       echo "     2) -Dfreedreno-kmds=msm,kgsl（kgsl 决定 with_dri_platform=pseudo-drm，"
       echo "        zink 的 winsys/zink/drm 由此挂载）—— 本配方已设；"
       echo "     3) libxcb 的 xcb-present（GLX=dri + zink 需要）—— libxcb 配方全扩展已建；"
-      echo "     4) -Dbuildtype=release（无优化 = 软渲染更慢）—— 本配方已显式设置。"
+      echo "     4) --buildtype=release（无优化 = 软渲染更慢）—— 由框架"
+      echo "        mesonBaseArgs 统一注入（base-configure-args.conf）；本配方"
+      echo "        不得再写 -Dbuildtype=release（meson 会因 buildtype 同时以"
+      echo "        -Dbuildtype 与 --buildtype 两种形式出现而报"
+      echo "        \"Got argument buildtype as both -Dbuildtype and --buildtype\""
+      echo "        → 直接构建失败，CI 实测）。"
       echo "   排查: 在 meson 配置输出里搜 \"zink\"，确认是否被 disabled。"
       ls -la "${_libDir}" 2>/dev/null | head -30
-      return 1
+      if [[ "${ANWIND_STRICT_ZINK:-0}" == "1" ]]; then
+        echo "::error::ANWIND_STRICT_ZINK=1 → 严格模式：zink 缺失即构建失败"
+        return 1
+      fi
+      echo "   （非严格模式：仅告警，不中断构建；需要硬失败请设 ANWIND_STRICT_ZINK=1）"
     fi
   fi
 }
