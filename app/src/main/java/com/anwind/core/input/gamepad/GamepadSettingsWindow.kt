@@ -28,7 +28,15 @@ import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
 /**
- * 虚拟手柄设置面板（v3.2.23 用户问题 4 重制）：
+ * 虚拟手柄设置面板（v3.2.23 用户问题 4 重制；v3.4.5 配置文件 + 居中）：
+ *
+ * **v3.4.5（用户："手柄配置界面太靠下" + 配置文件功能）**：
+ * - 面板从贴底（BottomCenter + 8dp）改为【屏幕居中稍偏上】—— 展开
+ *   的映射网格在视野中心，拇指不用下探；
+ * - 新增配置文件（.vgp = Virtual GamePad 三字母缩写，用户指定）：
+ *   「💾 保存.vgp」→ SAF 写入任意位置（建议 Download/）；「📂
+ *   读取.vgp」→ 选择 .vgp → 即时装载（元素/映射/球位全套）。文件
+ *   内容 = GamepadController.toJson() 同一 JSON（版本字段内含）。
  *
  * **旧版痛点**（用户反馈"映射界面太麻烦"）：右侧卡片 + 点元素 → 选中 →
  * 滚动到编辑区 → 点"按键映射"按钮 → 弹出二级全屏选择器 → 点分组 →
@@ -62,10 +70,63 @@ fun GamepadSettingsWindow(modifier: Modifier = Modifier) {
 
     val app = AnWindApp.get()
     val scope = rememberCoroutineScope()
+    val context = androidx.compose.ui.platform.LocalContext.current
     val elements = GamepadController.elements
 
     // 展开的元素行（v3.2.23：原地展开，单层结构；null = 全收起）
     var expandedId by remember { mutableStateOf<String?>(null) }
+
+    // v3.4.5：.vgp 配置文件读写（SAF）。保存用 CreateDocument（默认名
+    // 含时间戳），读取用 OpenDocument（宽松 MIME —— SAF 对未注册的
+    // 自定义后缀常报 octet-stream，多候选防滤空）。读入成功后立即
+    // 持久化进 DataStore（跨会话保留）。
+    var ioMsg by remember { mutableStateOf<String?>(null) }
+    val saveLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.CreateDocument("application/octet-stream")
+    ) { uri ->
+        if (uri != null) {
+            scope.launch {
+                val ok = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    runCatching {
+                        context.contentResolver.openOutputStream(uri)?.use { os ->
+                            os.write(GamepadController.toJson().toByteArray(Charsets.UTF_8))
+                        } ?: error("无法打开输出流")
+                    }.isSuccess
+                }
+                ioMsg = if (ok) "✅ 已保存 ${(uri.lastPathSegment ?: "配置").substringAfterLast('/')}"
+                else "❌ 保存失败（该位置不可写）"
+            }
+        }
+    }
+    val loadLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            scope.launch {
+                val json = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    runCatching {
+                        context.contentResolver.openInputStream(uri)?.use { ins ->
+                            ins.readBytes().toString(Charsets.UTF_8)
+                        } ?: ""
+                    }.getOrDefault("")
+                }
+                val loaded = json.isNotBlank() &&
+                    runCatching { GamepadController.loadFromJson(json); true }.getOrDefault(false)
+                if (loaded) {
+                    app.settingsStore.setGamepadConfig(json)
+                    ioMsg = "✅ 已读取 ${(uri.lastPathSegment ?: "配置").substringAfterLast('/')}"
+                } else {
+                    ioMsg = "❌ 无效 .vgp 文件"
+                }
+            }
+        }
+    }
+    LaunchedEffect(ioMsg) {
+        if (ioMsg != null) {
+            kotlinx.coroutines.delay(2400)
+            ioMsg = null
+        }
+    }
 
     fun persist() {
         scope.launch { app.settingsStore.setGamepadConfig(GamepadController.toJson()) }
@@ -110,10 +171,10 @@ fun GamepadSettingsWindow(modifier: Modifier = Modifier) {
         // ===== 底栏面板（贴底居中，最大宽 520dp，最大高 55%） =====
         Column(
             modifier = modifier
-                .align(Alignment.BottomCenter)
-                .padding(bottom = 8.dp)
+                .align(Alignment.Center)
+                .padding(bottom = 40.dp)
                 .widthIn(min = 300.dp, max = 520.dp)
-                .heightIn(max = 420.dp)
+                .heightIn(max = 460.dp)
                 .onGloballyPositioned {
                     TrackpadRouter.registerPassthrough("gpSettings", it.boundsInWindowCompat())
                 }
@@ -135,6 +196,20 @@ fun GamepadSettingsWindow(modifier: Modifier = Modifier) {
                 GpChip("经典", false, compact = true) { applyPreset("classic") }
                 GpChip("简单", false, compact = true) { applyPreset("simple") }
                 GpVDivider()
+                // v3.4.5：.vgp 配置文件（Virtual GamePad 三字母缩写）
+                GpChip("💾 保存.vgp", false, compact = true) {
+                    saveLauncher.launch("anwind-gamepad-${
+                        java.text.SimpleDateFormat("MMdd-HHmm", java.util.Locale.US)
+                            .format(java.util.Date())
+                    }.vgp")
+                }
+                GpChip("📂 读取.vgp", false, compact = true) {
+                    loadLauncher.launch(arrayOf(
+                        "application/octet-stream", "application/json",
+                        "application/vnd.oasis.opendocument.text", "text/plain"
+                    ))
+                }
+                GpVDivider()
                 GpChip("＋键", false, compact = true) { addElement(GamepadController.ElementType.BUTTON) }
                 GpChip("＋摇杆", false, compact = true) { addElement(GamepadController.ElementType.JOYSTICK) }
                 GpChip("＋十字", false, compact = true) { addElement(GamepadController.ElementType.DPAD) }
@@ -148,6 +223,19 @@ fun GamepadSettingsWindow(modifier: Modifier = Modifier) {
                 }
                 Spacer(Modifier.width(4.dp))
                 GpChip("完成", false, compact = true) { GamepadController.settingsOpen = false }
+            }
+
+            // ---- v3.4.5：保存/读取 .vgp 结果提示条 ----
+            if (ioMsg != null) {
+                Text(
+                    ioMsg ?: "",
+                    color = if (ioMsg.orEmpty().startsWith("✅")) Color(0xFF7FE8DC) else Color(0xFFFFB4B4),
+                    fontSize = 12.sp,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(Color(0x1AFFFFFF))
+                        .padding(horizontal = 12.dp, vertical = 4.dp)
+                )
             }
 
             // ---- 元素行列表（可滚动） ----

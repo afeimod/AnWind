@@ -35,6 +35,7 @@ import androidx.compose.runtime.produceState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -1165,13 +1166,40 @@ private data class SpecialFolder(val name: String, val icon: String, val file: F
 @Composable
 private fun SectionHeader(title: String) {
     val theme = LocalWinTheme.current
-    Text(
-        text = title,
-        color = if (theme.isDark) Color.White else Color.Black,
-        fontSize = 13.sp,
-        fontWeight = FontWeight.SemiBold,
-        modifier = Modifier.padding(vertical = 4.dp)
-    )
+    // v3.4.5（Win7 1:1）：组标题 = 蓝色文字 + 右侧延伸分组细线
+    //（Win7 资源管理器“文件夹 (5)/设备和驱动器”同款；Win7Simu 截图
+    // 基准：字色 #1E6EB8，线为同色 1px 渐隐）
+    val win7ish = theme.variant == com.anwind.core.theme.WindowsVariant.WIN7
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp)
+    ) {
+        Text(
+            text = title,
+            color = if (win7ish) Color(0xFF1E6EB8) else
+                if (theme.isDark) Color.White else Color.Black,
+            fontSize = 13.sp,
+            fontWeight = FontWeight.SemiBold
+        )
+        Spacer(Modifier.width(8.dp))
+        Box(
+            Modifier
+                .weight(1f)
+                .height(1.dp)
+                .background(
+                    if (win7ish) Brush.horizontalGradient(
+                        listOf(Color(0x991E6EB8), Color(0x331E6EB8), Color.Transparent)
+                    ) else Brush.horizontalGradient(
+                        listOf(
+                            if (theme.isDark) Color(0x33FFFFFF) else Color(0x33808080),
+                            Color.Transparent
+                        )
+                    )
+                )
+        )
+    }
 }
 
 @Composable
@@ -1185,19 +1213,16 @@ private fun SpecialFolderCell(folder: SpecialFolder, theme: com.anwind.core.them
             .clickable(onClick = onClick)
             .padding(5.dp)
     ) {
-        // 文件夹图标（黄色 Win11 风格；v3.3.8：56→38dp）
+        // v3.4.5（Win7 1:1）：Win7 拟物文件夹（背片+前片+高光线，自绘
+        // Canvas）替代 Material 扁平 Folder 图标；emoji 改叠前片中央
+        // 小字（Win7 快捷文件夹的封面预览位）
         Box(
             modifier = Modifier
-                .size(38.dp),
+                .size(42.dp),
             contentAlignment = Alignment.Center
         ) {
-            Icon(
-                Icons.Default.Folder, null,
-                tint = Color(0xFFDCA84A),
-                modifier = Modifier.size(38.dp)
-            )
-            // 在图标中央叠一个 emoji 标识（符合 Win11 的文件夹封面预览风格）
-            Text(text = folder.icon, fontSize = 13.sp)
+            com.anwind.core.desktop.Win7Icons.Folder(size = 42.dp)
+            Text(text = folder.icon, fontSize = 12.sp)
         }
         Spacer(Modifier.height(3.dp))
         Text(
@@ -1238,6 +1263,7 @@ private fun DriveCell(
     val usedGB = totalGB - availGB
     val usagePct = if (totalGB > 0) (usedGB.toFloat() / totalGB.toFloat()).coerceIn(0f, 1f) else 0f
 
+    val win7ish = theme.variant == com.anwind.core.theme.WindowsVariant.WIN7
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -1246,12 +1272,18 @@ private fun DriveCell(
             .padding(vertical = 5.dp, horizontal = 4.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        // 驱动器图标（v3.3.8：48→36dp 缩小）
-        Icon(
-            Icons.Default.Storage, null,
-            tint = if (theme.isDark) Color(0xFF9CC4E8) else Color(0xFF0078D4),
-            modifier = Modifier.size(36.dp)
-        )
+        // v3.4.5（Win7 1:1）：3D 拟物硬盘（金属盘体+高光+LED+标签条，
+        // Win7Icons 自绘）替代 Material Storage 扁平图标；非 Win7 主题
+        // 维持旧观感（Material 图标可继续代表现代主题的简约）。
+        if (win7ish) {
+            com.anwind.core.desktop.Win7Icons.HardDisk(size = 42.dp)
+        } else {
+            Icon(
+                Icons.Default.Storage, null,
+                tint = if (theme.isDark) Color(0xFF9CC4E8) else Color(0xFF0078D4),
+                modifier = Modifier.size(36.dp)
+            )
+        }
         Spacer(Modifier.width(10.dp))
         Column(modifier = Modifier.weight(1f)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1273,21 +1305,47 @@ private fun DriveCell(
             }
             Spacer(Modifier.height(4.dp))
             if (exists) {
-                // 容量条
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(5.dp)
-                        .clip(RoundedCornerShape(3.dp))
-                        .background(theme.cardBackgroundColor)
-                ) {
+                // v3.4.5（Win7 1:1）：容量条 = 凹槽（浅灰槽 + 1px 内描边）
+                // + 蓝渐变填充（#4BC0F0→#1B7FC4，满色阶上端亮）——
+                // Win7 磁盘条的凹槽质感；非 Win7 主题保持纯色薄条。
+                if (win7ish) {
                     Box(
                         modifier = Modifier
-                            .fillMaxWidth(usagePct)
-                            .fillMaxHeight()
+                            .fillMaxWidth()
+                            .height(10.dp)
+                            .clip(RoundedCornerShape(2.dp))
+                            .background(Color(0xFFE9EEF3))
+                            .border(1.dp, Color(0xFF9AA9B6))
+                            .padding(1.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth(usagePct)
+                                .fillMaxHeight()
+                                .clip(RoundedCornerShape(1.dp))
+                                .background(
+                                    Brush.horizontalGradient(
+                                        listOf(Color(0xFF4BC0F0), Color(0xFF1B7FC4))
+                                    )
+                                )
+                        )
+                    }
+                } else {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(5.dp)
                             .clip(RoundedCornerShape(3.dp))
-                            .background(theme.accentColor)
-                    )
+                            .background(theme.cardBackgroundColor)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth(usagePct)
+                                .fillMaxHeight()
+                                .clip(RoundedCornerShape(3.dp))
+                                .background(theme.accentColor)
+                        )
+                    }
                 }
                 Spacer(Modifier.height(3.dp))
                 Text(

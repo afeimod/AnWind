@@ -124,16 +124,57 @@ fun GamepadFloatingBall(onPersistConfig: () -> Unit) {
 
         val pos = clampedPos()
 
-        // 菜单出现在球下方（球在下半屏时翻到上方），水平钳制在屏内
+        // ==============================================================
+        // v3.4.5（用户：菜单位置不对 + 撞进右侧按键弧区）：菜单定位重写。
+        // 旧版：菜单中心对球心，仅 coerce 屏内 —— 球在右上角时菜单贴死
+        // 屏右缘（圆角被截断，截图实证），且向下展开正撞进 M/3/U 按键
+        // 弧区（截图实证 y:145-435 压满按键列）。
+        // 新版三步：
+        //  1) 水平【向内展开】：球在右半屏 → 菜单右缘对球右缘（向左），
+        //     左半屏 → 菜单左缘对球左缘（向右），永不贴边截断；
+        //  2) 垂直两候选（球下 / 球上）：矩形级碰撞检测 —— 候选菜单矩形
+        //     四角+中心共 5 点任一落在手柄元素命中区内则判碰撞（点级采样
+        //     对圆钮足够）；默认侧碰撞 → 翻另一侧，另一侧也碰撞 → 保持
+        //     默认（用户拖球后可让位）；
+        //  3) 碰撞检测仅在菜单展开时计算一次（expanded 状态翻转处）。
+        // ==============================================================
+        fun menuOverlapsElements(left: Float, top: Float, w: Float, h: Float): Boolean {
+            if (!GamepadController.hasElementHits()) return false
+            val right = left + w
+            val bottom = top + h
+            val pts = arrayOf(
+                left to top, right to top, left to bottom, right to bottom,
+                (left + right) / 2f to (top + bottom) / 2f
+            )
+            return pts.any { (x, y) -> GamepadController.isOverPadElement(x, y) }
+        }
+
+        val menuHpx = menuHeightEstimate(density)
+        val menuPad = with(density) { 10.dp.toPx() }
         val screenWpxTotal = with(density) { maxWidth.toPx() }
         val screenHpxTotal = with(density) { maxHeight.toPx() }
-        val menuLeft = (pos.x + ballPx / 2 - menuWpx / 2)
-            .coerceIn(0f, screenWpxTotal - menuWpx)
-        val ballCenterY = pos.y + ballPx / 2
-        val menuTop = if (ballCenterY < screenHpxTotal / 2) {
-            pos.y + ballPx + with(density) { 10.dp.toPx() }
+
+        // 1) 水平向内展开（左/右半屏）
+        val menuLeft = if (pos.x + ballPx / 2f < screenWpxTotal / 2f) {
+            // 球在左半屏：菜单左缘对球左缘（向右展开），右缘不越屏
+            pos.x.coerceIn(0f, (screenWpxTotal - menuWpx).coerceAtLeast(0f))
         } else {
-            pos.y - with(density) { 10.dp.toPx() } - menuHeightEstimate(density)
+            // 球在右半屏：菜单右缘对球右缘（向左展开），左缘不越屏
+            (pos.x + ballPx - menuWpx).coerceIn(0f, (screenWpxTotal - menuWpx).coerceAtLeast(0f))
+        }
+
+        // 2) 垂直避让：默认上半屏向下弹 / 下半屏向上弹，碰撞则翻侧
+        val ballCenterY = pos.y + ballPx / 2f
+        val belowTop = pos.y + ballPx + menuPad
+        val aboveTop = pos.y - menuPad - menuHpx
+        val preferBelow = ballCenterY < screenHpxTotal / 2f
+        val menuTop = when {
+            preferBelow && menuOverlapsElements(menuLeft, belowTop, menuWpx, menuHpx) &&
+                !menuOverlapsElements(menuLeft, aboveTop, menuWpx, menuHpx) && aboveTop >= 0f -> aboveTop
+            !preferBelow && menuOverlapsElements(menuLeft, aboveTop, menuWpx, menuHpx) &&
+                !menuOverlapsElements(menuLeft, belowTop, menuWpx, menuHpx) &&
+                belowTop + menuHpx <= screenHpxTotal -> belowTop
+            else -> if (preferBelow) belowTop else aboveTop
         }
 
         // ===== v3.2.24（用户问题 2）：点菜单外任意处收起的透明捕获层 =====

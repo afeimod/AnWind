@@ -14,6 +14,7 @@ import android.view.WindowManager as AndroidWindowManager
 import android.widget.FrameLayout
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -25,6 +26,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
@@ -364,6 +366,39 @@ fun X11Surface(scope: WindowContentScope) {
                 WaitingPanel(connState)
             }
 
+            // ===== v3.4.5（用户需求 4）：控制条隐藏切换片（顶部中央） =====
+            // 连接后显示；点击切换 X11UiPrefs.toolbarHidden。隐藏态时片
+            // 收窄为小 ⌄（不遮画面边缘菜单）；显示态为宽片带「⌃ 隐藏设置栏」
+            // 提示。真全屏时不显示（画面独占，返回键退出）。
+            if (connState == X11WindowController.State.Connected && !isTrueFs) {
+                Box(
+                    Modifier
+                        .matchParentSize()
+                        .padding(top = 2.dp),
+                    contentAlignment = Alignment.TopCenter
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(Color(0x88000000))
+                            .border(0.5.dp, Color(0x66FFFFFF), RoundedCornerShape(8.dp))
+                            .clickable(
+                                interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                                indication = null
+                            ) { X11UiPrefs.toolbarHidden = !X11UiPrefs.toolbarHidden }
+                            .padding(horizontal = if (X11UiPrefs.toolbarHidden) 8.dp else 14.dp)
+                            .padding(vertical = 3.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            if (X11UiPrefs.toolbarHidden) "⌄" else "⌃ 隐藏设置栏",
+                            color = Color(0xFFE8F0F8),
+                            fontSize = 11.sp
+                        )
+                    }
+                }
+            }
+
             // ===== v2.25 附加键盘栏（showAdditionalKbd；连接后显示，真全屏时
             //      隐藏，imePadding 使其贴在输入法上沿） =====
             if (connState == X11WindowController.State.Connected &&
@@ -384,7 +419,13 @@ fun X11Surface(scope: WindowContentScope) {
         // v2.22.5 fix13：真全屏时隐藏控制条（用户需求：点"全屏"后底部菜单
         // 消失，画面独占整个窗口；按返回键退出全屏后控制条重新出现 ——
         // BackHandler 已在本 Composable 顶部处理）。
-        if (connState == X11WindowController.State.Connected && prefs != null && !isTrueFs) {
+        // v3.4.5（用户需求 4）：toolbarHidden 隐藏态 —— 游戏时隐藏整条
+        //   分辨率/切窗/键盘栏，画面多吃一整条高度；重开窗口/重启进程回
+        //   默认显示（会话级选择，不写持久层）。切换入口 = 画面顶部中央
+        //   的 ⌃/⌄ 玻璃片（上方 Box 内）。
+        if (connState == X11WindowController.State.Connected && prefs != null && !isTrueFs &&
+            !X11UiPrefs.toolbarHidden
+        ) {
             ControlBar(
                 scope = scope,
                 prefs = prefs,
@@ -1258,6 +1299,20 @@ internal class SmartTouchBridge(private val context: Context, private val view: 
                         }
                     }
                     mode = Mode.TWO_DONE
+                    // v3.4.5（触摸修复）：双指手势后残留 MOVE 已在 TWO_DONE
+                    // 态被吞掉 —— 剩余手指的拖动完全无反应（linbox 蓝本：
+                    // 双指轻点后剩余手指可继续单指拖拽）。双指结束 → 剩余
+                    // 指数 ≥1 时重入单指 ONE 态并把起点对齐剩余指针（避免
+                    // 残留手指的下一 MOVE 突然大跳：curX/curY 还是双指前
+                    // 的旧值）。POINTER_UP 事件的 pointerCount 仍含正在
+                    // 抬起的那根 —— 剩余指针 = 除 actionIndex 外的第一根。
+                    val liftIdx = event.actionIndex
+                    val remainIdx = (0 until event.pointerCount).firstOrNull { it != liftIdx }
+                    if (remainIdx != null) {
+                        mode = Mode.ONE
+                        curX = event.getX(remainIdx)
+                        curY = event.getY(remainIdx)
+                    }
                 }
             }
 
@@ -1581,6 +1636,17 @@ internal class SmartTouchBridge(private val context: Context, private val view: 
                         sendButton(InputStub.BUTTON_RIGHT, false)
                     }
                     mode = Mode.TWO_DONE
+                    // v3.4.5（触摸修复，与模拟模式同款）：双指结束后剩余
+                    // 手指的 MOVE 被 TWO_DONE 吞掉（触控板双指轻点后剩余
+                    // 手指滑 = 应继续相对移动光标）。重入 ONE 态并对齐
+                    // 剩余指针坐标，防下一 MOVE 大跳。
+                    val liftIdx = event.actionIndex
+                    val remainIdx = (0 until event.pointerCount).firstOrNull { it != liftIdx }
+                    if (remainIdx != null) {
+                        mode = Mode.ONE
+                        curX = event.getX(remainIdx)
+                        curY = event.getY(remainIdx)
+                    }
                 }
             }
 

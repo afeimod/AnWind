@@ -94,10 +94,13 @@ fun GamepadOverlay() {
         val screenWpx = with(LocalDensity.current) { maxWidth.toPx() }
         val screenHpx = with(LocalDensity.current) { maxHeight.toPx() }
 
-        // ===== v3.2.23（用户问题 4）：常驻悬浮球（替代旧迷你工具条） =====
-        GamepadFloatingBall(onPersistConfig = { persistConfig() })
-
         // ===== 手柄元素（v3.2.23：可单独收起 —— 悬浮球菜单；编辑模式强制显示） =====
+        // v3.4.5（用户：悬浮球菜单被挡/点击失灵）：声明顺序调整 ——
+        // Compose Box 子件按声明顺序绘制 z 序（后声明者在上）。旧序
+        // （悬浮球 → 元素）让摇杆/按钮绘制在悬浮球展开菜单【上方】，
+        // 菜单落在按键弧区时被 M/3/U 等球压住，点击被按键抢走
+        // （用户截图实证）。新序：元素先声明（底层）→ 悬浮球最后
+        // 声明（球 + 展开菜单 + 点外收起捕获层全部置顶，永不被挡）。
         val showElements = GamepadController.visible || GamepadController.editMode
         if (showElements) {
         // 元素离场（收起手柄/关闭手柄）时释放按键 + 清命中矩形，
@@ -153,6 +156,10 @@ fun GamepadOverlay() {
         }
 
         } // if (showElements)
+
+        // ===== v3.2.23（用户问题 4）→ v3.4.5 顺序调整：常驻悬浮球最后声明
+        // （球/菜单/捕获层全 z 序置顶 —— 菜单永不被手柄元素挡住） =====
+        GamepadFloatingBall(onPersistConfig = { persistConfig() })
     }
 }
 

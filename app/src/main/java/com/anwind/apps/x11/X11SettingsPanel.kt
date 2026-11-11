@@ -107,6 +107,15 @@ object X11UiPrefs {
     /** 附加键盘栏（X11 画面底部 ESC/TAB/方向键行）。 */
     var showAdditionalKbd by mutableStateOf(false)
 
+    /**
+     * v3.4.5（用户需求 4）：底部控制条（跟随窗口/固定分辨率/切窗/键盘/
+     * 游戏全屏/全屏）隐藏态 —— 游戏时隐藏让画面多吃一整条高度。会话级
+     * 内存态（窗口重开保持本轮选择，进程重启回默认显示；不经
+     * LoriePreferences —— 那是上游 termux-x11 键位，不混写）。切换
+     * 入口 = 画面顶部中央的小玻璃片（⌃/⌄）。
+     */
+    var toolbarHidden by mutableStateOf(false)
+
     /** 从 LoriePreferences 一次性同步（仅首次）。 */
     fun initIfNeed(prefs: Prefs) {
         if (initialized) return
