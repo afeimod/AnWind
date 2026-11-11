@@ -3,15 +3,19 @@ package com.anwind.core.input.gamepad
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -32,15 +36,19 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntOffset
-import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.anwind.AnWindApp
@@ -57,10 +65,19 @@ import kotlin.math.roundToInt
  * 炫彩半透明圆球（默认右上角，可拖到任意边缘）：
  *
  * - **单击**：展开/收起控制菜单（显示/收起手柄、手柄设置、编辑布局、
- *   关闭手柄）；
+ *   保存/读取 .vgp 配置、关闭手柄）；
  * - **拖动**：移动悬浮球位置（松手持久化进 gamepad_config v3 的
  *   ballX/ballY）；
  * - 菜单展开时点菜单外任意处收起（一次牺牲点击，不打扰底下窗口语义）。
+ *
+ * **v3.4.6（用户："保存和读取配置应该在悬浮球主菜单位置啊，不应该放
+ * 在编辑界面啊，因为读取配置后才可以编辑对应配置啊"）**：
+ * - 「保存配置 / 读取配置（.vgp）」从手柄设置面板顶栏（v3.4.5 位置，
+ * 编辑界面内）迁入**主菜单**——先读取配置、再编辑对应配置，层级与
+ * 实际流程一致（读写逻辑见 [rememberGamepadProfileIo]）；
+ * - 菜单列表重制（用户："换个好看好点击的方式"）：带标题头的圆角卡
+ * 片、每项配彩色圆底**矢量自绘图标**（Canvas 画线，零字体字形依赖）、
+ * 行高 ≥50dp 大触摸目标、分组细分隔线、危险项（关闭手柄）独立分区。
  *
  * 命中登记（缺一不可，否则球/菜单的触摸会被各输入层误吞或误穿透）：
  * - `GamepadController.registerToolbarHit`（球本体）：X11 智能触摸桥
@@ -74,40 +91,14 @@ import kotlin.math.roundToInt
  *
  * 生命周期：gamepadEnabled=false 时整体退场（含球）——「关闭手柄」即
  * 完全退出，设置页/通知快捷开关可重新开启。
- *
- * ===================== v3.3.42（用户问题 3）三处修复 =====================
- *
- * 1. **z 序（菜单被手柄按钮盖住 + 菜单点击失效）**
- *    旧结构：整个 GamepadFloatingBall（含全屏捕获层）挂在手柄覆盖层的
- *    **第一** 个子位 → 捕获层/菜单/球全部压在摇杆与 ABXY 按钮**之下**：
- *      - 菜单被按钮视觉覆盖（设备实测截图：M 按钮正好压在「手柄设置」上）；
- *      - 按钮的 pointerInput 先命中 → 菜单四项点击全部被按钮吃掉；
- *      - 菜单被裁到屏幕右缘之外（球在右上角，菜单向右溢出）。
- *    现结构（见 GamepadOverlay）：
- *      ① 全屏捕获层（最底）→ ② 手柄元素（中）→ ③ 菜单 + 悬浮球（最顶）。
- *    展开态提升到 [GamepadController.ballMenuExpanded]，让捕获层与菜单
- *    可以分层渲染。
- *
- * 2. **位置（菜单溢出屏幕 / 与球错位）**
- *    旧算法用估算高度 + 固定"球下方"定位，球贴右缘时菜单必然溢出屏幕
- *    右缘（被裁掉一截，"位置不对"）。新算法：
- *      - 水平：球右侧放不下时**翻到球的左侧**，否则以球心居中；
- *      - 垂直：球下方放不下时翻到球上方；
- *      - 两向都放不下时钳制进屏幕内（永不溢出）；
- *      - 菜单高度用 **实测值**（onGloballyPositioned 回填），不再用估算。
- *
- * 3. **点击（菜单点不动）**
- *    z 序修正后菜单位于手柄元素之上，点击直达菜单项；同时菜单/球的
- *    命中矩形照旧登记（registerMenuHit / registerToolbarHit）+ 触控板
- *    直通区，X11 触摸桥与触控板路由都不会把落在菜单上的手指当屏幕手势。
  */
 @Composable
 fun GamepadFloatingBall(onPersistConfig: () -> Unit) {
     val app = AnWindApp.get()
     val scope = rememberCoroutineScope()
+    val profileIo = rememberGamepadProfileIo(onPersistConfig)
 
-    // v3.3.42：展开态提升到控制器（跨层共享，见类 KDoc）
-    val expanded = GamepadController.ballMenuExpanded
+    var expanded by remember { mutableStateOf(false) }
     var pressed by remember { mutableStateOf(false) }
     var dragOffset by remember { mutableStateOf(Offset.Zero) }
 
@@ -116,7 +107,7 @@ fun GamepadFloatingBall(onPersistConfig: () -> Unit) {
     val baseY by rememberUpdatedState(GamepadController.ballPosY)
 
     val ballSize = 54.dp
-    val menuWidth = 216.dp
+    val menuWidth = 232.dp
 
     // 按压反馈
     val pressScale by animateFloatAsState(
@@ -133,7 +124,6 @@ fun GamepadFloatingBall(onPersistConfig: () -> Unit) {
     DisposableEffect(Unit) {
         onDispose {
             TrackpadRouter.registerPassthrough("gpBall", null)
-            GamepadController.clearMenuHit()
         }
     }
 
@@ -143,11 +133,6 @@ fun GamepadFloatingBall(onPersistConfig: () -> Unit) {
         val freeHpx = with(density) { (maxHeight - ballSize).toPx() }
         val menuWpx = with(density) { menuWidth.toPx() }
         val ballPx = with(density) { ballSize.toPx() }
-        val gapPx = with(density) { 10.dp.toPx() }
-        val marginPx = with(density) { 8.dp.toPx() }
-
-        val screenWpxTotal = with(density) { maxWidth.toPx() }
-        val screenHpxTotal = with(density) { maxHeight.toPx() }
 
         // 球左上角（px）：基准（归一化）+ 拖动瞬态，钳制在屏内
         fun clampedPos(): Offset {
@@ -158,97 +143,157 @@ fun GamepadFloatingBall(onPersistConfig: () -> Unit) {
 
         val pos = clampedPos()
 
-        // ===== v3.3.42：菜单定位（实测高度 + 两向翻转 + 屏内钳制）=====
-        // 菜单实测尺寸（onGloballyPositioned 回填；首帧为 0 → 用估算兜底）
-        var menuMeasured by remember { mutableStateOf(IntSize.Zero) }
-        val menuHpx = if (menuMeasured.height > 0) menuMeasured.height.toFloat()
-            else menuHeightEstimate(density)
-
-        val ballLeft = pos.x
-        val ballTop = pos.y
-        val ballRight = ballLeft + ballPx
-        val ballBottom = ballTop + ballPx
-
-        // 水平：右侧放不下 → 翻到球的左侧；否则以球心居中并钳制进屏
-        val rightFits = ballRight + gapPx + menuWpx <= screenWpxTotal - marginPx
-        val menuLeft = if (!rightFits) {
-            // 左侧优先（球贴右缘时的 Win7 菜单习惯），仍越界则钳制
-            (ballLeft - gapPx - menuWpx).coerceAtLeast(marginPx)
-        } else {
-            (ballLeft + ballPx / 2f - menuWpx / 2f)
-                .coerceIn(marginPx, (screenWpxTotal - menuWpx - marginPx).coerceAtLeast(marginPx))
+        // ==============================================================
+        // v3.4.5（用户：菜单位置不对 + 撞进右侧按键弧区）：菜单定位重写。
+        // 旧版：菜单中心对球心，仅 coerce 屏内 —— 球在右上角时菜单贴死
+        // 屏右缘（圆角被截断，截图实证），且向下展开正撞进 M/3/U 按键
+        // 弧区（截图实证 y:145-435 压满按键列）。
+        // 新版三步：
+        //  1) 水平【向内展开】：球在右半屏 → 菜单右缘对球右缘（向左），
+        //     左半屏 → 菜单左缘对球左缘（向右），永不贴边截断；
+        //  2) 垂直两候选（球下 / 球上）：矩形级碰撞检测 —— 候选菜单矩形
+        //     四角+中心共 5 点任一落在手柄元素命中区内则判碰撞（点级采样
+        //     对圆钮足够）；默认侧碰撞 → 翻另一侧，另一侧也碰撞 → 保持
+        //     默认（用户拖球后可让位）；
+        //  3) 碰撞检测仅在菜单展开时计算一次（expanded 状态翻转处）。
+        // ==============================================================
+        fun menuOverlapsElements(left: Float, top: Float, w: Float, h: Float): Boolean {
+            if (!GamepadController.hasElementHits()) return false
+            val right = left + w
+            val bottom = top + h
+            val pts = arrayOf(
+                left to top, right to top, left to bottom, right to bottom,
+                (left + right) / 2f to (top + bottom) / 2f
+            )
+            return pts.any { (x, y) -> GamepadController.isOverPadElement(x, y) }
         }
 
-        // 垂直：下方放不下 → 翻到球上方；两向都放不下 → 钳制进屏
-        val belowTop = ballBottom + gapPx
-        val aboveTop = ballTop - gapPx - menuHpx
+        val menuHpx = menuHeightEstimate(density)
+        val menuPad = with(density) { 10.dp.toPx() }
+        val screenWpxTotal = with(density) { maxWidth.toPx() }
+        val screenHpxTotal = with(density) { maxHeight.toPx() }
+
+        // 1) 水平向内展开（左/右半屏）
+        val menuLeft = if (pos.x + ballPx / 2f < screenWpxTotal / 2f) {
+            // 球在左半屏：菜单左缘对球左缘（向右展开），右缘不越屏
+            pos.x.coerceIn(0f, (screenWpxTotal - menuWpx).coerceAtLeast(0f))
+        } else {
+            // 球在右半屏：菜单右缘对球右缘（向左展开），左缘不越屏
+            (pos.x + ballPx - menuWpx).coerceIn(0f, (screenWpxTotal - menuWpx).coerceAtLeast(0f))
+        }
+
+        // 2) 垂直避让：默认上半屏向下弹 / 下半屏向上弹，碰撞则翻侧
+        val ballCenterY = pos.y + ballPx / 2f
+        val belowTop = pos.y + ballPx + menuPad
+        val aboveTop = pos.y - menuPad - menuHpx
+        val preferBelow = ballCenterY < screenHpxTotal / 2f
         val menuTop = when {
-            belowTop + menuHpx <= screenHpxTotal - marginPx -> belowTop
-            aboveTop >= marginPx -> aboveTop
-            else -> belowTop.coerceIn(
-                marginPx,
-                (screenHpxTotal - menuHpx - marginPx).coerceAtLeast(marginPx)
+            preferBelow && menuOverlapsElements(menuLeft, belowTop, menuWpx, menuHpx) &&
+                !menuOverlapsElements(menuLeft, aboveTop, menuWpx, menuHpx) && aboveTop >= 0f -> aboveTop
+            !preferBelow && menuOverlapsElements(menuLeft, aboveTop, menuWpx, menuHpx) &&
+                !menuOverlapsElements(menuLeft, belowTop, menuWpx, menuHpx) &&
+                belowTop + menuHpx <= screenHpxTotal -> belowTop
+            else -> if (preferBelow) belowTop else aboveTop
+        }
+
+        // ===== v3.2.24（用户问题 2）：点菜单外任意处收起的透明捕获层 =====
+        // 【z 序修复】必须声明在菜单与悬浮球【之前】：Compose 的 Box 子
+        // 件按声明顺序绘制 z 序（后声明者在上）。v3.2.23 把它放在最后 →
+        // 全屏捕获层盖在菜单上方，四个菜单项的点击全部被它拦截 →
+        // “悬浮球四个按键没有一个能用”（点击只触发收起，onClick 永不执行）。
+        // 现在顺序：捕获层（最底）→ 菜单（中）→ 悬浮球（最顶，展开时
+        // 仍可拖动/点击）。
+        if (expanded) {
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .pointerInput(Unit) {
+                        detectTapGestures { expanded = false }
+                    }
             )
         }
 
-        // ===== 展开的控制菜单（最顶层：不被手柄元素遮挡，点击直达菜单项） =====
-        // v3.3.42：菜单收起时清空菜单命中矩形 —— 否则菜单离开组合后那块
-        // 区域仍被 isOverPadUi 判为"手柄 UI"，落在其中的正常触摸会被
-        // X11 触摸桥剥离（点不动）。
-        DisposableEffect(expanded) {
-            if (!expanded) GamepadController.clearMenuHit()
-            onDispose { }
-        }
+        // ===== 展开的控制菜单（在捕获层之上，点击直达菜单项） =====
         if (expanded) {
             Column(
                 modifier = Modifier
                     .offset { IntOffset(menuLeft.roundToInt(), menuTop.roundToInt()) }
                     .width(menuWidth)
-                    .shadow(10.dp, RoundedCornerShape(18.dp))
-                    .clip(RoundedCornerShape(18.dp))
-                    .background(Color(0xE61E2836))
+                    .shadow(10.dp, RoundedCornerShape(20.dp))
+                    .clip(RoundedCornerShape(20.dp))
+                    .background(Color(0xF2162434))
                     .padding(vertical = 6.dp)
                     // 菜单登记：X11 触摸剥离 + 触控板直通（见类 KDoc）
                     .onGloballyPositioned {
                         val b = it.boundsInWindowCompat()
                         GamepadController.registerMenuHit(b.left, b.top, b.right, b.bottom)
                         TrackpadRouter.registerPassthrough("gpBall", b)
-                        // v3.3.42：回填实测尺寸（用于翻转判定，消除估算误差）
-                        val size = it.size
-                        if (size.width > 0 && size.height > 0 &&
-                            (size.width != menuMeasured.width || size.height != menuMeasured.height)
-                        ) {
-                            menuMeasured = size
-                        }
                     }
             ) {
-                BallMenuItem("🎮", if (GamepadController.visible) "收起手柄" else "显示手柄") {
+                // ---- 标题头（v3.4.6）：名称 + 组件数，一眼可辨 ----
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        "虚拟手柄",
+                        color = Color(0xFFEAF6FF),
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Spacer(Modifier.weight(1f))
+                    Text(
+                        "${GamepadController.elements.size} 组件",
+                        color = Color(0x99B8C7D9),
+                        fontSize = 11.sp
+                    )
+                }
+                BallMenuSectionDivider()
+
+                BallMenuItem(BallIconKind.GAMEPAD, if (GamepadController.visible) "收起手柄" else "显示手柄") {
                     GamepadController.releaseAllKeys()
                     GamepadController.visible = !GamepadController.visible
                     onPersistConfig()
-                    GamepadController.ballMenuExpanded = false
+                    expanded = false
                 }
-                BallMenuItem("⚙", "手柄设置") {
+                BallMenuItem(BallIconKind.SETTINGS, "手柄设置") {
                     GamepadController.releaseAllKeys()
                     GamepadController.settingsOpen = true
-                    GamepadController.ballMenuExpanded = false
+                    expanded = false
                 }
-                BallMenuItem("✎", "编辑布局") {
+                BallMenuItem(BallIconKind.EDIT, "编辑布局") {
                     GamepadController.releaseAllKeys()
                     GamepadController.editMode = !GamepadController.editMode
                     if (!GamepadController.editMode) GamepadController.selectElement(null)
-                    GamepadController.ballMenuExpanded = false
+                    expanded = false
                 }
-                BallMenuItem("✕", "关闭手柄", danger = true) {
+                BallMenuSectionDivider()
+
+                // ---- v3.4.6：配置文件（主菜单位置 —— 先读取，再编辑） ----
+                BallMenuItem(BallIconKind.SAVE, "保存配置", hint = ".vgp") {
+                    GamepadController.releaseAllKeys()
+                    profileIo.saveProfile()
+                    expanded = false
+                }
+                BallMenuItem(BallIconKind.FOLDER, "读取配置", hint = ".vgp") {
+                    GamepadController.releaseAllKeys()
+                    profileIo.loadProfile()
+                    expanded = false
+                }
+                BallMenuSectionDivider()
+
+                BallMenuItem(BallIconKind.CLOSE, "关闭手柄", danger = true) {
                     GamepadController.releaseAllKeys()
                     GamepadController.editMode = false
-                    GamepadController.ballMenuExpanded = false
+                    expanded = false
                     scope.launch { app.settingsStore.setGamepadEnabled(false) }
                 }
             }
         }
 
-        // ===== 悬浮球本体（最顶层） =====
+        // ===== 悬浮球本体 =====
         Box(
             modifier = Modifier
                 .offset { IntOffset(pos.x.roundToInt(), pos.y.roundToInt()) }
@@ -295,12 +340,12 @@ fun GamepadFloatingBall(onPersistConfig: () -> Unit) {
                             pressed = true
                             try { awaitRelease() } finally { pressed = false }
                         },
-                        onTap = { GamepadController.ballMenuExpanded = !GamepadController.ballMenuExpanded }
+                        onTap = { expanded = !expanded }
                     )
                 }
                 .pointerInput(Unit) {
                     detectDragGestures(
-                        onDragStart = { GamepadController.ballMenuExpanded = false },
+                        onDragStart = { expanded = false },
                         onDrag = { change, amount ->
                             change.consume()
                             dragOffset += amount
@@ -327,50 +372,79 @@ fun GamepadFloatingBall(onPersistConfig: () -> Unit) {
                 color = Color.White
             )
         }
+
+        // ===== v3.4.6：.vgp 保存/读取结果气泡（挂在球旁，2.4s 自动消失；
+        // 纯展示层 —— 无 pointerInput，不拦截底层触摸） =====
+        val ioMsg = profileIo.message.value
+        if (ioMsg != null) {
+            val toastHalfW = with(density) { 130.dp.toPx() }
+            val toastX = (pos.x + ballPx / 2f - toastHalfW)
+                .coerceIn(0f, (screenWpxTotal - toastHalfW * 2f).coerceAtLeast(0f))
+            val toastBelowY = pos.y + ballPx + 8f
+            val toastY = if (toastBelowY + with(density) { 40.dp.toPx() } <= screenHpxTotal) {
+                toastBelowY
+            } else {
+                (pos.y - 8f - with(density) { 40.dp.toPx() }).coerceAtLeast(0f)
+            }
+            Box(
+                Modifier.fillMaxSize(),
+                contentAlignment = Alignment.TopStart
+            ) {
+                GamepadIoToast(
+                    ioMsg,
+                    Modifier
+                        .offset { IntOffset(toastX.roundToInt(), toastY.roundToInt()) }
+                        .width(260.dp)
+                )
+            }
+        }
     }
 }
 
-/**
- * v3.3.42：展开态的**全屏捕获层**（点菜单外任意处收起）。
- *
- * 刻意与菜单/悬浮球**分层渲染**：本层置于手柄覆盖层的最底（手柄元素
- * 之下），元素先命中（按钮可正常按），非元素区域才落到本层收起菜单；
- * 菜单与球则置于最顶层，不再被按钮遮挡、点击直达菜单项。
- */
+/** 菜单分组之间的细分隔线（v3.4.6）。 */
 @Composable
-fun GamepadDismissCaptureLayer() {
-    if (!GamepadController.ballMenuExpanded) return
+private fun BallMenuSectionDivider() {
     Box(
         Modifier
-            .fillMaxSize()
-            .pointerInput(Unit) {
-                detectTapGestures { GamepadController.ballMenuExpanded = false }
-            }
+            .fillMaxWidth()
+            .padding(horizontal = 14.dp)
+            .height(1.dp)
+            .background(Color(0x14FFFFFF))
     )
 }
 
-/** 菜单项行。 */
+/**
+ * 菜单项行（v3.4.6 重制）：≥50dp 触摸目标 + 彩色圆底矢量图标 + 标题 +
+ * 可选 .vgp 后缀提示 + 按压反馈。图标全部 Canvas 自绘（[BallMenuIcon]）
+ * —— 不用 emoji / 文本字符，任何字体下渲染一致。
+ */
 @Composable
 private fun BallMenuItem(
-    icon: String,
+    icon: BallIconKind,
     label: String,
+    hint: String? = null,
     danger: Boolean = false,
     onClick: () -> Unit
 ) {
     var pressed by remember { mutableStateOf(false) }
+    val tint = icon.tint(danger)
+    val badgeBg by animateColorAsState(
+        targetValue = if (pressed) tint.copy(alpha = 0.38f) else tint.copy(alpha = 0.16f),
+        animationSpec = tween(120), label = "gpBadge"
+    )
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier
-            .padding(horizontal = 10.dp, vertical = 2.dp)
-            .clip(RoundedCornerShape(12.dp))
+            .padding(horizontal = 10.dp, vertical = 3.dp)
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
             .background(
                 when {
-                    pressed -> Color(0x33FFFFFF)
-                    danger -> Color(0x1FFF6B6B)
+                    pressed -> Color(0x1FFFFFFF)
+                    danger -> Color(0x14FF6B6B)
                     else -> Color.Transparent
                 }
             )
-            .padding(horizontal = 12.dp, vertical = 9.dp)
             .pointerInput(Unit) {
                 detectTapGestures(
                     onPress = {
@@ -380,18 +454,143 @@ private fun BallMenuItem(
                     onTap = { onClick() }
                 )
             }
+            .padding(horizontal = 10.dp, vertical = 8.dp),
+        // 触摸目标保障：图标圆底 36dp + 行内边距 → 行高 ≥52dp
+        horizontalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        Text(icon, fontSize = 16.sp, color = Color.White)
-        Spacer(Modifier.width(10.dp))
+        Box(
+            modifier = Modifier
+                .size(36.dp)
+                .clip(CircleShape)
+                .background(badgeBg),
+            contentAlignment = Alignment.Center
+        ) {
+            BallMenuIcon(icon, tint)
+        }
         Text(
             label,
             fontSize = 15.sp,
             fontWeight = FontWeight.Medium,
             color = if (danger) Color(0xFFFFB4B4) else Color(0xFFF2F6FF)
         )
+        if (hint != null) {
+            Spacer(Modifier.weight(1f))
+            Text(
+                hint,
+                fontSize = 11.sp,
+                color = Color(0x80B8C7D9)
+            )
+        }
     }
 }
 
-/** 菜单高度估算（4 行 × ~42dp + 边距），仅在实测值到达前兜底。 */
+/** 菜单图标类型（v3.4.6）。 */
+private enum class BallIconKind { GAMEPAD, SETTINGS, EDIT, SAVE, FOLDER, CLOSE }
+
+/** 图标配色（危险项统一红系）。 */
+private fun BallIconKind.tint(danger: Boolean): Color = if (danger) Color(0xFFFF8A80) else when (this) {
+    BallIconKind.GAMEPAD -> Color(0xFF2DD4BF)
+    BallIconKind.SETTINGS -> Color(0xFF9AD8F5)
+    BallIconKind.EDIT -> Color(0xFFFFD479)
+    BallIconKind.SAVE -> Color(0xFF7FE8DC)
+    BallIconKind.FOLDER -> Color(0xFF9AD8F5)
+    BallIconKind.CLOSE -> Color(0xFFFF8A80)
+}
+
+/**
+ * 22dp 线性图标（1.8dp 圆头笔画，Canvas 自绘 —— 零字体字形依赖）：
+ * 手柄 / 齿轮 / 铅笔 / 软盘 / 文件夹 / 关闭叉。
+ */
+@Composable
+private fun BallMenuIcon(kind: BallIconKind, tint: Color) {
+    Canvas(modifier = Modifier.size(22.dp)) {
+        val u = size.width / 22f
+        val s = Stroke(width = 1.8f * u, cap = StrokeCap.Round)
+        when (kind) {
+            // 手柄：圆角机身 + 左右摇杆圆点 + 中央十字
+            BallIconKind.GAMEPAD -> {
+                drawRoundRect(
+                    color = tint,
+                    topLeft = Offset(3.2f * u, 6.8f * u),
+                    size = Size(15.6f * u, 8.6f * u),
+                    cornerRadius = CornerRadius(4.2f * u, 4.2f * u),
+                    style = s
+                )
+                drawCircle(color = tint, radius = 1.15f * u, center = Offset(7.6f * u, 11.1f * u))
+                drawCircle(color = tint, radius = 1.15f * u, center = Offset(14.4f * u, 11.1f * u))
+                drawLine(tint, Offset(11f * u, 9.6f * u), Offset(11f * u, 12.6f * u), s.width)
+                drawLine(tint, Offset(9.5f * u, 11.1f * u), Offset(12.5f * u, 11.1f * u), s.width)
+            }
+            // 齿轮：外圈 + 中心孔 + 4 短齿辐
+            BallIconKind.SETTINGS -> {
+                drawCircle(color = tint, radius = 3.1f * u, center = Offset(11f * u, 11f * u), style = s)
+                drawCircle(color = tint, radius = 1.0f * u, center = Offset(11f * u, 11f * u))
+                val r1 = 4.6f * u
+                val r2 = 6.4f * u
+                for (a in 0..3) {
+                    val ang = Math.toRadians((45 + 90 * a).toDouble())
+                    val c = kotlin.math.cos(ang).toFloat()
+                    val sn = kotlin.math.sin(ang).toFloat()
+                    drawLine(
+                        tint,
+                        Offset(11f * u + r1 * c, 11f * u + r1 * sn),
+                        Offset(11f * u + r2 * c, 11f * u + r2 * sn),
+                        s.width
+                    )
+                }
+            }
+            // 铅笔：斜杆 + 笔尖两线
+            BallIconKind.EDIT -> {
+                drawLine(tint, Offset(6.4f * u, 15.6f * u), Offset(15.2f * u, 6.8f * u), s.width)
+                drawLine(tint, Offset(5.6f * u, 12.4f * u), Offset(9.6f * u, 16.4f * u), s.width)
+                drawLine(tint, Offset(5.6f * u, 12.4f * u), Offset(5.6f * u, 16.4f * u), s.width)
+                drawLine(tint, Offset(5.6f * u, 16.4f * u), Offset(9.6f * u, 16.4f * u), s.width)
+            }
+            // 软盘：外框 + 顶标贴 + 底读写窗
+            BallIconKind.SAVE -> {
+                drawRoundRect(
+                    color = tint,
+                    topLeft = Offset(4.2f * u, 4.2f * u),
+                    size = Size(13.6f * u, 13.6f * u),
+                    cornerRadius = CornerRadius(1.6f * u, 1.6f * u),
+                    style = s
+                )
+                drawLine(tint, Offset(8.2f * u, 4.6f * u), Offset(8.2f * u, 8.6f * u), s.width)
+                drawLine(tint, Offset(13.2f * u, 4.6f * u), Offset(13.2f * u, 8.6f * u), s.width)
+                drawLine(tint, Offset(8.2f * u, 8.6f * u), Offset(13.2f * u, 8.6f * u), s.width)
+                drawRoundRect(
+                    color = tint,
+                    topLeft = Offset(7.8f * u, 11.4f * u),
+                    size = Size(6.4f * u, 6.0f * u),
+                    cornerRadius = CornerRadius(1.0f * u, 1.0f * u),
+                    style = s
+                )
+            }
+            // 文件夹：经典折角轮廓
+            BallIconKind.FOLDER -> {
+                val p = Path().apply {
+                    moveTo(3.4f * u, 6.4f * u)
+                    lineTo(9.2f * u, 6.4f * u)
+                    lineTo(11.2f * u, 8.6f * u)
+                    lineTo(18.6f * u, 8.6f * u)
+                    lineTo(18.6f * u, 16.0f * u)
+                    lineTo(3.4f * u, 16.0f * u)
+                    close()
+                }
+                drawPath(p, color = tint, style = s)
+            }
+            // 关闭：两斜线
+            BallIconKind.CLOSE -> {
+                drawLine(tint, Offset(7.2f * u, 7.2f * u), Offset(14.8f * u, 14.8f * u), s.width)
+                drawLine(tint, Offset(14.8f * u, 7.2f * u), Offset(7.2f * u, 14.8f * u), s.width)
+            }
+        }
+    }
+}
+
+/**
+ * 菜单高度估算（v3.4.6：标题头 + 6 项 + 3 分隔线 + 边距 ≈ 360dp），
+ * 用于下半屏时菜单翻到球上方 / 与手柄元素的碰撞检测。
+ */
 private fun menuHeightEstimate(density: androidx.compose.ui.unit.Density): Float =
-    with(density) { 190.dp.toPx() }
+    with(density) { 360.dp.toPx() }

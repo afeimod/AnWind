@@ -129,9 +129,49 @@ object ApkConfStore {
             // 2) 一次性生态导入（生态首次出现时；用户改过的 App 文件不动）
             runCatching { importFromEcosystemOnce() }
                 .onFailure { android.util.Log.w(TAG, "生态 conf 导入失败: ${it.message}") }
+            // 3) v3.4.6 一次性迁移：旧版 env.conf 残留的激活态
+            //    `export BOX64_NOPULSE=0`（设备实测会话日志实证导出该项）
+            //    —— 种子策略"目标存在即跳过"使其永不刷新。wowbox64/
+            //    arm64ec 线由此被 box64 的 pulse 包装干扰（部分游戏无声）。
+            runCatching { migrateLegacyNopulse() }
+                .onFailure { android.util.Log.w(TAG, "conf 迁移失败: ${it.message}") }
             ensured = true
             return true
         }
+    }
+
+    /**
+     * v3.4.6 一次性迁移（外科手术式，只动一行）：
+     *
+     * 旧版 env.conf 种子带激活态 `export BOX64_NOPULSE=0`，本版种子已改为
+     * 注释态（wowbox64/arm64ec 线由 anwind-wine 按后端自动注入
+     * BOX64_NOPULSE=1，box64 后端维持缺省 0）。设备上的旧 conf 因
+     * "目标存在即跳过"的种子策略从未刷新 —— 本迁移把【仍为激活态的该行】
+     * 注释掉并附说明；改动前先备份 `env.conf.pre-v346.bak`。
+     *
+     * - 用户自己写过的其它行一概不动（不是整文件替换）；
+     * - 用户如果本来就注释过/删过该行 → 无激活态 → 零改动；
+     * - 已备份过（bak 存在）→ 不重复备份（幂等）。
+     */
+    private fun migrateLegacyNopulse() {
+        val env = confFile("env.conf")
+        if (!env.isFile) return
+        val lines = runCatching { env.readLines() }.getOrNull() ?: return
+        val idx = lines.indexOfFirst { it.trim() == "export BOX64_NOPULSE=0" }
+        if (idx < 0) return
+        val bak = File(env.parentFile, "env.conf.pre-v346.bak")
+        if (!bak.isFile) {
+            runCatching { bak.writeText(lines.joinToString("\n") + "\n") }
+        }
+        val note = "#export BOX64_NOPULSE=0  # v3.4.6 注释：box64 后端缺省即 0；" +
+            "arm64ec/wowbox64 线由 anwind-wine 自动置 1（避免与 winepulse 原生 libpulse 冲突）"
+        val migrated = lines.toMutableList()
+        migrated[idx] = note
+        atomicWrite(env, migrated.joinToString("\n").let { if (it.isEmpty()) "" else "$it\n" })
+        android.util.Log.i(
+            TAG,
+            "env.conf 迁移：注释旧版激活态 export BOX64_NOPULSE=0（备份 env.conf.pre-v346.bak）"
+        )
     }
 
     /** assets 缺省落盘（仅缺失文件；locale.conf 在根目录）。 */

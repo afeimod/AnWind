@@ -1,6 +1,5 @@
 package com.anwind.apps.x11
 
-import android.content.Context
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -109,39 +108,13 @@ object X11UiPrefs {
     var showAdditionalKbd by mutableStateOf(false)
 
     /**
-     * v3.3.42：底部控制条（分辨率/切窗/键盘/游戏全屏/全屏）隐藏标志。
-     *
-     * 用户需求：X11 窗口上方加"隐藏"按钮，隐藏窗口下方的分辨率等设置栏，
-     * 让游戏画面占满更大区域（标题栏按钮一键切换，状态持久化）。
-     *
-     * 持久化落 X11 自己的 SharedPreferences（不占 LoriePreferences 的键位
-     * —— 那边是 termux-x11 的偏好域，改键会与上游冲突）。
+     * v3.4.5（用户需求 4）：底部控制条（跟随窗口/固定分辨率/切窗/键盘/
+     * 游戏全屏/全屏）隐藏态 —— 游戏时隐藏让画面多吃一整条高度。会话级
+     * 内存态（窗口重开保持本轮选择，进程重启回默认显示；不经
+     * LoriePreferences —— 那是上游 termux-x11 键位，不混写）。切换
+     * 入口 = 画面顶部中央的小玻璃片（⌃/⌄）。
      */
-    var controlBarHidden by mutableStateOf(false)
-
-    private const val SP_NAME = "anwind_x11_ui"
-    private const val SP_KEY_CONTROL_BAR_HIDDEN = "control_bar_hidden"
-
-    /** 读取持久化的控制条隐藏状态（进程内首次调用即可）。 */
-    fun loadControlBarHidden(context: Context): Boolean {
-        val v = try {
-            context.applicationContext.getSharedPreferences(SP_NAME, Context.MODE_PRIVATE)
-                .getBoolean(SP_KEY_CONTROL_BAR_HIDDEN, false)
-        } catch (_: Exception) {
-            false
-        }
-        controlBarHidden = v
-        return v
-    }
-
-    /** 写入控制条隐藏状态（标题栏按钮切换时调用）。 */
-    fun saveControlBarHidden(context: Context, hidden: Boolean) {
-        controlBarHidden = hidden
-        try {
-            context.applicationContext.getSharedPreferences(SP_NAME, Context.MODE_PRIVATE)
-                .edit().putBoolean(SP_KEY_CONTROL_BAR_HIDDEN, hidden).apply()
-        } catch (_: Exception) {}
-    }
+    var toolbarHidden by mutableStateOf(false)
 
     /** 从 LoriePreferences 一次性同步（仅首次）。 */
     fun initIfNeed(prefs: Prefs) {

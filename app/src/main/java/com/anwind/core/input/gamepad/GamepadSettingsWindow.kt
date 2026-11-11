@@ -1,7 +1,5 @@
 package com.anwind.core.input.gamepad
 
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -19,7 +17,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -32,6 +29,16 @@ import kotlin.math.roundToInt
 
 /**
  * 虚拟手柄设置面板（v3.2.23 用户问题 4 重制）：
+ *
+ * **v3.4.6（用户：“保存和读取配置应该在悬浮球主菜单位置啊，不应该放
+ * 在编辑界面啊，因为读取配置后才可以编辑对应配置啊”）**：
+ * 「💾 保存.vgp / 📂 读取.vgp」入口从本面板顶栏迁移到**悬浮球主菜单**
+ * （见 [GamepadFloatingBall] / [rememberGamepadProfileIo]）——
+ * 先在主菜单读取配置、再进本面板/编辑布局微调，层级与实际流程一致。
+ * 本面板专注元素编辑本身。
+ *
+ * **v3.4.5（历史）：配置界面居中**：面板从贴底（BottomCenter + 8dp）
+ * 改为【屏幕居中稍偏上】—— 展开的映射网格在视野中心，拇指不用下探。
  *
  * **旧版痛点**（用户反馈"映射界面太麻烦"）：右侧卡片 + 点元素 → 选中 →
  * 滚动到编辑区 → 点"按键映射"按钮 → 弹出二级全屏选择器 → 点分组 →
@@ -66,49 +73,15 @@ fun GamepadSettingsWindow(modifier: Modifier = Modifier) {
     val app = AnWindApp.get()
     val scope = rememberCoroutineScope()
     val elements = GamepadController.elements
-    val context = LocalContext.current
 
     // 展开的元素行（v3.2.23：原地展开，单层结构；null = 全收起）
     var expandedId by remember { mutableStateOf<String?>(null) }
 
+    // （v3.4.6：.vgp 保存/读取入口已迁至悬浮球主菜单 ——
+    //  GamepadFloatingBall + rememberGamepadProfileIo，不在本编辑界面）
+
     fun persist() {
         scope.launch { app.settingsStore.setGamepadConfig(GamepadController.toJson()) }
-    }
-
-    // ===== v3.3.42（用户问题 3）：配置文件保存 / 读取（.vgp） =====
-    // 保存：SAF CreateDocument（用户自选目录，建议名 anwind_gamepad.vgp）
-    // 读取：SAF OpenDocument（.vgp / json / 任意类型）
-    val saveLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.CreateDocument(GamepadConfigFile.MIME)
-    ) { uri ->
-        if (uri == null) return@rememberLauncherForActivityResult
-        scope.launch {
-            val ok = GamepadConfigFile.export(context, uri)
-            GamepadConfigFile.toast(
-                context, ok,
-                "手柄配置已保存（.${GamepadConfigFile.EXT}）",
-                "保存失败：$uri"
-            )
-        }
-    }
-    val loadLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.OpenDocument()
-    ) { uri ->
-        if (uri == null) return@rememberLauncherForActivityResult
-        scope.launch {
-            val json = GamepadConfigFile.import(context, uri)
-            val ok = GamepadConfigFile.applyConfig(json)
-            if (ok) {
-                // 套用后立即持久化（与面板内其它修改同款持久化路径）
-                persist()
-                GamepadController.releaseAllKeys()
-            }
-            GamepadConfigFile.toast(
-                context, ok,
-                "手柄配置已载入",
-                "配置文件无效或读取失败"
-            )
-        }
     }
 
     fun updateElement(id: String, transform: (GamepadController.PadElement) -> GamepadController.PadElement) {
@@ -147,18 +120,13 @@ fun GamepadSettingsWindow(modifier: Modifier = Modifier) {
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
-        // ===== v3.3.42（用户问题 3）：配置面板位置上移 =====
-        // 旧位置：贴底居中（bottom = 8dp）→ 正好压住经典布局里
-        // 十字键（0.38/0.72）、"≡" 按钮（0.50/0.82）等手柄元素
-        // （设备实测：配置界面太靠下，挡住手柄本体）。
-        // 新位置：顶部居中（top = 48dp）—— 落在摇杆/按钮所在的
-        // 屏幕下半区之上，两者互不遮挡；面板高度再按屏高 46% 封顶。
+        // ===== 底栏面板（贴底居中，最大宽 520dp，最大高 55%） =====
         Column(
             modifier = modifier
-                .align(Alignment.TopCenter)
-                .padding(top = 48.dp)
+                .align(Alignment.Center)
+                .padding(bottom = 40.dp)
                 .widthIn(min = 300.dp, max = 520.dp)
-                .heightIn(max = 420.dp)
+                .heightIn(max = 460.dp)
                 .onGloballyPositioned {
                     TrackpadRouter.registerPassthrough("gpSettings", it.boundsInWindowCompat())
                 }
@@ -192,22 +160,6 @@ fun GamepadSettingsWindow(modifier: Modifier = Modifier) {
                     if (!GamepadController.editMode) GamepadController.selectElement(null)
                 }
                 Spacer(Modifier.width(4.dp))
-                // v3.3.42（用户问题 3）：配置文件保存 / 读取（.vgp）
-                GpVDivider()
-                GpChip("💾 保存配置", false, compact = true) {
-                    saveLauncher.launch(GamepadConfigFile.DEFAULT_FILE_NAME)
-                }
-                GpChip("📂 读取配置", false, compact = true) {
-                    loadLauncher.launch(
-                        arrayOf(
-                            "application/octet-stream",
-                            "application/json",
-                            "text/plain",
-                            "*/*"
-                        )
-                    )
-                }
-                GpVDivider()
                 GpChip("完成", false, compact = true) { GamepadController.settingsOpen = false }
             }
 

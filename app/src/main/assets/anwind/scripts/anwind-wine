@@ -279,6 +279,43 @@ EOF
     return 0
 }
 
+# v3.4.6（用户："arm64ec 启动 wine 使用 wowbox64 模式时有些游戏没有声音，
+# 可能出现了冲突，或者 pulse 被屏蔽了"）：arm64ec 线 wowbox64 音频冲突修复。
+#
+# 背景：arm64ec 后端 = aarch64 wine 原生直跑（new WoW64），wine 的音频
+# unixlib（aarch64-unix/winepulse.so）原生 dlopen rootfs 的 arm64
+# libpulse —— 全程不经 box64。box64 在该后端只以一种形态参与：
+# HODLL/HODLL64=wowbox64.dll（进程内 box64-in-wow64，仿真器 DLL）。
+# 此时 BOX64_NOPULSE=0（box64 缺省，旧设备 conf 残留 export 亦为此值）
+# 允许 box64 在 wine 进程内加载/包装 pulse 库 —— 与 winepulse 的原生
+# libpulse 使用产生冲突（用户实测：部分游戏无声，"pulse 像被屏蔽"）。
+#
+# 修复：arm64ec 线显式 BOX64_NOPULSE=1（box64 官方语义：不加载
+# PulseAudio 库 —— native 与 x86_64 均不加载）。arm64ec 线的 x64/x86
+# Windows 代码经 wow64 thunk 走 wine 内建音频 → winepulse 原生链路，
+# 从不直接 dlopen unix libpulse，置 1 零副作用。
+#
+# 边界（顺序敏感）：
+# - 必须在 apply_opt_conf_env / apply_opt_conf_env_box64 之后执行 ——
+#   旧设备 App 内部 conf 残留 "export BOX64_NOPULSE=0"（ApkConfStore
+#   v3.4.6 迁移已注释，但终端侧 /opt/conf 仍可能有）会在此前覆盖；
+# - 容器 env= 已显式设置 BOX64_NOPULSE 时尊重用户值（cont_env_has，
+#   与 apply_opt_conf_env 同一道兜底）；
+# - box64 后端（x86_64 形态 wine）【不适用】：其 winepulse 是
+#   x86_64-unix .so，由 box64 仿真加载，pulse 走 box64 包装器转发到
+#   原生 arm64 libpulse —— 置 1 会直接断掉那条音频链路。arm64ec 守卫
+#   是硬边界。
+apply_arm64ec_audio_env() {
+    [ "$BACKEND" = "arm64ec" ] || return 0
+    if cont_env_has "BOX64_NOPULSE"; then
+        log "arm64ec 音频: 容器 env= 已显式设置 BOX64_NOPULSE，尊重用户值"
+        return 0
+    fi
+    export BOX64_NOPULSE=1
+    log "arm64ec 音频修复: BOX64_NOPULSE=1（wowbox64 进程内形态不加载 pulse 库，避免与 winepulse 原生 libpulse 冲突 —— 部分游戏无声根因；box64 后端不受影响）"
+    return 0
+}
+
 # opt/locale.conf → LC_ALL/LANG（参考脚本：export LC_ALL="$(cat /opt/locale.conf)"）
 apply_opt_locale() {
     local _lc=""
@@ -2093,6 +2130,7 @@ ensure_x11
 pick_backend
 case "$BACKEND" in box64|fexcore) apply_box64_env ;; esac
 apply_opt_conf_env_box64
+apply_arm64ec_audio_env
 apply_taskset_cores
 
 info "容器=$CONT_NAME 后端=$BACKEND wine形态=${WINE_ARCH:-?} DISPLAY=$DISPLAY WINEPREFIX=$WINEPREFIX"

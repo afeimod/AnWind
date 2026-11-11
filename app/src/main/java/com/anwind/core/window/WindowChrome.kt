@@ -1,6 +1,10 @@
 package com.anwind.core.window
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -12,6 +16,8 @@ import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Fullscreen
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Minimize
 import androidx.compose.material.icons.filled.FullscreenExit
@@ -322,30 +328,44 @@ fun WindowChrome(
 
                 // 标题栏右侧控制按钮组
                 if (state.launchMode == LaunchMode.FLOATING) {
-                    // v3.3.42：应用自定义标题栏按钮（X11 桌面用其放"隐藏
-                    // 底部控制条"按钮 —— 隐藏后游戏画面占满更大区域）。
-                    // 渲染在菜单按钮左侧，保持与 Win7/Win11 标题栏一致的
-                    // "图标按钮在右、关闭键最右"观感。
-                    appDef?.titleBarExtraButtons?.forEach { btn ->
-                        ControlButton(icon = btn.icon(), theme = theme) {
-                            btn.onClick(chromeContext)
-                        }
+                    // v3.4.6（用户：“隐藏状态栏的按钮怎么跑到显示界面了，
+                    // 应该在菜单按钮旁边才对”）：工具条开关按钮，紧邻菜单
+                    // 按钮左侧。AppDef.onToolbarToggleButton 定义即显示
+                    // （X11 桌面用它显示/隐藏底部控制条）。旧入口是 v3.4.5
+                    // 画面顶部中央的悬浮玻璃片 —— 既遮挡游戏画面，⌃/⌄
+                    // 字符又不在 Android 字体内（渲染成口口方块）。激活态
+                    // 在组合期间读取（X11UiPrefs.toolbarHidden 可观察），
+                    // 切换即时翻转载项箭头方向。
+                    appDef?.onToolbarToggleButton?.let { toggleAction ->
+                        val toolbarHidden = appDef.toolbarToggleActive()
+                        ControlButton(
+                            icon = if (toolbarHidden) Icons.Default.KeyboardArrowDown
+                            else Icons.Default.KeyboardArrowUp,
+                            aeroSym = if (toolbarHidden) CaptionSym.CHEVRON_DOWN
+                            else CaptionSym.CHEVRON_UP,
+                            theme = theme
+                        ) { toggleAction(chromeContext) }
                     }
                     // v3.1.7：应用菜单按钮（最小化左边）—— AppDef.onMenuButton
                     // 定义即显示（X11 桌面用它调出 X11 设置菜单；此前只能
                     // 长按标题栏 3 秒，难发现且易误触）。
                     appDef?.onMenuButton?.let { menuAction ->
-                        ControlButton(icon = Icons.Default.Menu, theme = theme) {
+                        ControlButton(
+                            icon = Icons.Default.Menu,
+                            aeroSym = CaptionSym.MENU,
+                            theme = theme
+                        ) {
                             menuAction(chromeContext)
                         }
                     }
-                    ControlButton(icon = Icons.Default.Minimize, theme = theme) { wm.minimize(state.id) }
+                    ControlButton(icon = Icons.Default.Minimize, aeroSym = CaptionSym.MIN, theme = theme) { wm.minimize(state.id) }
                     ControlButton(
                         icon = if (state.isMaximized) Icons.Default.FullscreenExit else Icons.Default.Fullscreen,
+                        aeroSym = CaptionSym.MAX,
                         theme = theme
                     ) { wm.toggleMaximize(state.id) }
                 }
-                ControlButton(icon = Icons.Default.Close, theme = theme, isClose = true) { wm.close(state.id) }
+                ControlButton(icon = Icons.Default.Close, aeroSym = CaptionSym.CLOSE, theme = theme, isClose = true) { wm.close(state.id) }
             }
             } // end if (!isTrueFs) — 真全屏时不渲染标题栏
 
@@ -621,45 +641,164 @@ private fun BoxScope.ResizeHandles(
     )
 }
 
+
 @Composable
 private fun ControlButton(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     theme: com.anwind.core.theme.WinTheme,
     isClose: Boolean = false,
+    aeroSym: CaptionSym? = null,
     onClick: () -> Unit
 ) {
-    // v3.3.40（用户需求 5）：Win7 Aero 资源管理器式按钮 —— 玻璃渐变底 +
-    // 高光描边 + 底线（悬停/按下的按压态交给默认 press 透明度）；关闭键
-    // 红调。其余主题维持旧无边框形态。
+    // v3.4.5（Win7 1:1 重制，用户："win7 主题写的太烂"）：
+    // Win7 Aero 真实形态 —— 细线符号 + 透明玻璃底，**默认态无任何颜色**
+    //（旧版"红色关闭钮"是 macOS 皮，图一失真主因）；按下态才显色：
+    // 关闭 = 红玻璃渐变，最小/最大 = 蓝玻璃渐变 + 描边。
+    // 符号自绘（[Win7CaptionSymbol]）：– / 空心方框 / ✕ 全部 1.4dp 细线
+    //（Material 粗图标 → 图一"方块粗箭头"失真根除）。宽 29dp 贴角组。
+    // 非 Aero 主题维持旧形态（46dp + Material 图标）。
+    //
+    // v3.4.6（用户："win7 的窗口控制标志都变成口口四方块了"）：
+    // Aero 符号不再靠 icon.name 字符串猜测 —— 旧逻辑非 "Minimize" 一律
+    // 画空心方块 → 菜单按钮 ☰ 也被画成口。调用方显式传 [aeroSym]；
+    // 未传时仅对历史调用点保留 name 推断兑底（Menu → ☰）。
     val aero = theme.windowChrome == com.anwind.core.theme.WindowChrome.AERO && !theme.isDark
+    val sym = aeroSym ?: when {
+        isClose -> CaptionSym.CLOSE
+        icon.name == "Minimize" -> CaptionSym.MIN
+        icon.name == "Menu" -> CaptionSym.MENU
+        else -> CaptionSym.MAX
+    }
+    if (!aero) {
+        Box(
+            modifier = Modifier
+                .size(width = 46.dp, height = theme.windowTitleBarHeight)
+                .pointerInput(Unit) { detectTapGestures(onTap = { onClick() }) },
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = if (isClose) Color(0xFF9E2A21) else Color(0xFF16324E),
+                modifier = Modifier.size(12.dp)
+            )
+        }
+        return
+    }
+    val interaction = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+    val pressedState by interaction.collectIsPressedAsState()
     Box(
         modifier = Modifier
-            .size(width = 46.dp, height = theme.windowTitleBarHeight)
-            .then(
-                if (aero) Modifier
-                    .background(
-                        androidx.compose.ui.graphics.Brush.verticalGradient(
-                            if (isClose) listOf(Color(0xFFF6D9D5), Color(0xFFE9A9A0))
-                            else listOf(Color(0xFFF7FAFD), Color(0xFFD9E8F5))
-                        )
+            .size(width = 29.dp, height = theme.windowTitleBarHeight)
+            .background(
+                when {
+                    !pressedState -> androidx.compose.ui.graphics.Brush.verticalGradient(
+                        listOf(Color(0x14FFFFFF), Color(0x0A000000))
                     )
-                    .border(
-                        0.5.dp,
-                        if (isClose) Color(0xFFC96A5F) else Color(0xFF9AB6D4),
+                    isClose -> androidx.compose.ui.graphics.Brush.verticalGradient(
+                        listOf(Color(0xFFF8BBA4), Color(0xFFDE6F5A))
+                    )
+                    else -> androidx.compose.ui.graphics.Brush.verticalGradient(
+                        listOf(Color(0xFFEAF6FD), Color(0xFFBFD9F2))
+                    )
+                }
+            )
+            .then(
+                if (pressedState)
+                    Modifier.border(
+                        1.dp,
+                        if (isClose) Color(0xFFB4472F) else Color(0xFF8FB3D9),
                         RectangleShape
                     )
                 else Modifier
             )
-            .pointerInput(Unit) {
-                detectTapGestures(onTap = { onClick() })
-            },
+            .clickable(
+                interactionSource = interaction,
+                indication = null,
+                onClick = onClick
+            ),
         contentAlignment = Alignment.Center
     ) {
-        Icon(
-            imageVector = icon,
-            contentDescription = null,
-            tint = if (isClose) Color(0xFF9E2A21) else Color(0xFF16324E),
-            modifier = Modifier.size(12.dp)
+        Win7CaptionSymbol(
+            symbol = sym,
+            color = if (pressedState && isClose) Color.White else Color(0xFF1F3F5F)
         )
+    }
+}
+
+/** Aero 标题按钮细线符号类型（v3.4.5；v3.4.6 增 ☰ 菜单/载项箭头）。 */
+private enum class CaptionSym { MIN, MAX, CLOSE, MENU, CHEVRON_UP, CHEVRON_DOWN }
+
+/**
+ * Win7 细线符号：–（下沿短横）/ 空心方框 / ✕ 两斜线 / ☰ 三横（菜单，
+ * v3.4.6 —— 旧逻辑把它画成空心方块，即用户看到的"口"）/ 载项箭头
+ * （工具条开关，替代字体外的 ⌃/⌄ 文本字符）。全部 ~1.4dp 细线，
+ * Canvas 自绘 —— 不依赖任何字体字形，永不出现口口方块。
+ */
+@Composable
+private fun Win7CaptionSymbol(symbol: CaptionSym, color: Color) {
+    androidx.compose.foundation.Canvas(modifier = Modifier.size(width = 14.dp, height = 12.dp)) {
+        val u = size.width / 14f
+        when (symbol) {
+            CaptionSym.MIN ->
+                drawLine(
+                    color, Offset(2.2f * u, 8.6f * u), Offset(11.8f * u, 8.6f * u),
+                    strokeWidth = 1.6f * u
+                )
+            CaptionSym.MAX ->
+                drawRect(
+                    color,
+                    topLeft = Offset(2.2f * u, 2.4f * u),
+                    size = androidx.compose.ui.geometry.Size(9.6f * u, 7.6f * u),
+                    style = Stroke(width = 1.3f * u)
+                )
+            CaptionSym.CLOSE -> {
+                drawLine(
+                    color, Offset(3.4f * u, 3.0f * u), Offset(10.6f * u, 9.2f * u),
+                    strokeWidth = 1.4f * u
+                )
+                drawLine(
+                    color, Offset(10.6f * u, 3.0f * u), Offset(3.4f * u, 9.2f * u),
+                    strokeWidth = 1.4f * u
+                )
+            }
+            // ☰ 菜单：三段等长细横线（Win7 细线风格的汉堡符号）
+            CaptionSym.MENU -> {
+                drawLine(
+                    color, Offset(2.6f * u, 3.1f * u), Offset(11.4f * u, 3.1f * u),
+                    strokeWidth = 1.4f * u
+                )
+                drawLine(
+                    color, Offset(2.6f * u, 6.0f * u), Offset(11.4f * u, 6.0f * u),
+                    strokeWidth = 1.4f * u
+                )
+                drawLine(
+                    color, Offset(2.6f * u, 8.9f * u), Offset(11.4f * u, 8.9f * u),
+                    strokeWidth = 1.4f * u
+                )
+            }
+            // 载项箭头（工具条开关）：控制条显示中 → 朝上（点击收起）；
+            // 已隐藏 → 朝下（点击展开）
+            CaptionSym.CHEVRON_UP -> {
+                drawLine(
+                    color, Offset(3.6f * u, 7.8f * u), Offset(7.0f * u, 4.4f * u),
+                    strokeWidth = 1.6f * u, cap = StrokeCap.Round
+                )
+                drawLine(
+                    color, Offset(7.0f * u, 4.4f * u), Offset(10.4f * u, 7.8f * u),
+                    strokeWidth = 1.6f * u, cap = StrokeCap.Round
+                )
+            }
+            CaptionSym.CHEVRON_DOWN -> {
+                drawLine(
+                    color, Offset(3.6f * u, 4.2f * u), Offset(7.0f * u, 7.6f * u),
+                    strokeWidth = 1.6f * u, cap = StrokeCap.Round
+                )
+                drawLine(
+                    color, Offset(7.0f * u, 7.6f * u), Offset(10.4f * u, 4.2f * u),
+                    strokeWidth = 1.6f * u, cap = StrokeCap.Round
+                )
+            }
+        }
     }
 }
