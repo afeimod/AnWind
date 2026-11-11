@@ -1,5 +1,6 @@
 package com.anwind.apps.containers.launcher
 
+import android.content.Context
 import com.anwind.apps.containers.ContainerBackend
 import com.anwind.apps.containers.ContainerData
 import com.anwind.apps.containers.ContainerManager
@@ -582,6 +583,7 @@ object WineRegistry {
         resolved: WineRuntime.Resolved,
         container: ContainerData,
         env: Map<String, String>,
+        context: Context? = null,
         vdResolution: String = "",
         log: (String) -> Unit = {}
     ): Boolean {
@@ -682,14 +684,18 @@ object WineRegistry {
             }
             if (lastCode == 0 || File(container.prefixPath, "system.reg").isFile) {
                 log("wineboot -i 完成（前缀 system.reg 已落盘）")
-                // v3.3.20（用户问题 3）：proton 树 wine.inf 的游戏 AppDefaults
-                // hack 兜底清除 —— 新 wine 包已在构建期剔除 wine.inf 的
-                // AppDefaults 行，但【存量 wine 包】（用户已安装的 proton_9/
-                // proton_10 等）的 wine.inf 仍带 31 条游戏 hack，wineboot 后
-                // 照样打进 user.reg。此处文件级清除 `[Software\\Wine\\
-                // AppDefaults\\...]` 注册表块，旧包建的前缀同样干净。
-                runCatching { sanitizeAppDefaults(File(container.prefixPath), log) }
-                    .onFailure { log("⚠ AppDefaults 注册表清理异常：${it.message}（不影响使用）") }
+                // v3.4.1【注册表大修】：wineboot 后立即注册表卫生 ——
+                // ① 段级清除 wine.inf（proton 树 31 条 Steam 游戏 hack）
+                //   打进 user.reg/system.reg 的全部 [Software\Wine\AppDefaults\*]
+                //   段（白名单保护：App 侧用户手动 per-exe 配置不误删）；
+                // ② 注入全局 [Software\Wine\DllOverrides]
+                //   （amstream/atl100/d3d8~d3d12core=native,builtin，
+                //   WinFusion 同款 —— 详见 ensureGlobalDllOverrides）。
+                // postPrefixBootChain 每次启动链同样幂等重跑 —— v3.3.20
+                // 只在首建前缀清一次 + v3.3.5 purge 一次性标记挡住存量段
+                // 的缺陷由此根治（wineboot -u 重写入的 hack 不再留存）。
+                runCatching { sanitizeRegistryHygiene(context, resolved, container, env, log) }
+                    .onFailure { log("⚠ 注册表卫生异常：${it.message}（不影响使用；postPrefixBootChain 会再试）") }
                 true
             } else {
                 log("wineboot -i 失败（退出码 $lastCode，159=SIGSYS/旧包fsync、1=加载失败、-1=超时强杀）")
@@ -703,7 +709,9 @@ object WineRegistry {
     }
 
     /**
-     * v3.3.20（用户问题 3）：清除 user.reg 里的游戏 AppDefaults 注册表块。
+     * v3.3.20（用户问题 3）→ v3.4.1【注册表大修】：清除前缀里的游戏
+     * AppDefaults 注册表块（兼容壳，内部委托 [stripAppDefaultsSections]
+     * —— 全面卫生见 [sanitizeRegistryHygiene]，本函数仅供旧调用点兼容）。
      *
      * 【根因】Valve proton 树的 loader/wine.inf.in 带 31 条 Steam 游戏兼容
      * hack（ActOfWar/BlackOps3/DIRT5/ffxvi/RDR2/Spider-Man 等的
@@ -712,51 +720,342 @@ object WineRegistry {
      * `[Software\\Wine\\AppDefaults\\<exe>]` 块 —— Android 上全是无关死配置
      * （官方 wine-11.0 / hangover-11.16 树零 AppDefaults 行，已实测核对）。
      *
-     * 构建期剔除（build.sh strip_wineinf_appdefaults）治新包；本函数文件级
-     * 清除【存量包建的前缀】：
-     *  * user.reg 块结构：`[Software\\Wine\\AppDefaults\\xxx.exe] <ts>` 头 +
-     *    `#time=...` + 若干值行，直到下一个 `[` 开头的块头；
-     *  * 只删 `Software\\Wine\\AppDefaults\\` 块（HKCU 侧），其余注册表
-     *    原样保留；
-     *  * 幂等：无匹配块 = no-op；前缀无 user.reg（异常形态）= no-op。
-     *
      * @return 清除的块数（0 = 本就干净）
      */
     fun sanitizeAppDefaults(prefix: File, log: (String) -> Unit = {}): Int {
-        val userReg = File(prefix, "user.reg")
-        if (!userReg.isFile) return 0
-        val lines = runCatching { userReg.readLines() }.getOrNull() ?: return 0
+        return stripAppDefaultsSections(File(prefix, "user.reg"), emptySet(), log)
+    }
+
+    /**
+     * v3.4.1【注册表大修】：段级剥除 [Software\\Wine\\AppDefaults\\<exe>…] 全部
+     * 子段（DllOverrides / Version / Direct3D 等 —— 含段头、#time、值行与
+     * hex 续行，直到下一个 '[' 段头）。
+     *
+     * 与 v3.3.20 版差异（用户实测反馈“构建前缀注册表又乱打”）：
+     *  * user.reg 与 system.reg 都清（proton wine.inf 的 HKCU/HKLM 两侧游戏
+     *    hack 均会落盘；生态包 /opt/prefix/user.reg 打入的 per-exe 加载序
+     *    同在打击范围）；
+     *  * [protectedExes] 白名单（管理器 per-exe 配置账本
+     *    drive_c/anwind/appdefaults.json）—— 用户手动配置的 exe 子树原样
+     *    保留，其余全部剥除；
+     *  * 幂等零标记 —— 干净文件零动作，每次启动链重跑（v3.3.20 的
+     *    “首建前缀清一次 + 换 wine 才再清”挡不住 wineboot -u 重导入的
+     *    缺陷由此根治，配合源头 wine.inf 剥除双保险）。
+     *
+     * @return 剥除的段数（0 = 本就干净）。
+     */
+    private fun stripAppDefaultsSections(
+        file: File,
+        protectedExes: Set<String>,
+        log: (String) -> Unit = {}
+    ): Int {
+        if (!file.isFile) return 0
+        val lines = runCatching { file.readLines() }.getOrNull() ?: return 0
+        val headerPrefix = "[Software\\\\Wine\\\\AppDefaults"
         val out = ArrayList<String>(lines.size)
         var skipping = false
         var removed = 0
         for (line in lines) {
             if (line.startsWith("[")) {
-                // 新块头：AppDefaults 块进入跳过态，其余块头结束跳过态
-                skipping = line.startsWith("[Software\\\\Wine\\\\AppDefaults\\\\")
-                if (skipping) removed++
-                else out.add(line)
+                if (line.startsWith(headerPrefix)) {
+                    // 段头：[Software\\Wine\\AppDefaults\\<exe>\\<子键>] 或裸
+                    // [Software\\Wine\\AppDefaults] —— exe 名取路径首段，
+                    // 白名单内整棵子树保留（用户 per-exe 配置不误删）
+                    val idx = line.indexOf("AppDefaults")
+                    val tail = if (idx >= 0) line.substring(idx + "AppDefaults".length) else ""
+                    val exe = if (tail.startsWith("\\\\"))
+                        tail.substring(2).substringBefore("\\\\").substringBefore(']').trim().lowercase()
+                    else ""
+                    skipping = exe !in protectedExes
+                    if (skipping) removed++ else out.add(line)
+                } else {
+                    skipping = false
+                    out.add(line)
+                }
             } else if (!skipping) {
                 out.add(line)
             }
         }
         if (removed == 0) return 0
-        // 先写临时文件再原子替换 —— wine 进程可能并发持有 user.reg
-        val tmp = File(prefix, ".user.reg.anwind-cleanup")
+        // 先写临时文件再原子替换 —— wine 进程可能并发持有注册表文件
+        val tmp = File(file.parentFile, ".${file.name}.anwind-cleanup")
         runCatching {
             tmp.writeText(out.joinToString("\n") + "\n")
-            if (!tmp.renameTo(userReg)) {
+            if (!tmp.renameTo(file)) {
                 // rename 失败（跨句柄占用等）回退直接写
-                tmp.copyTo(userReg, overwrite = true)
+                tmp.copyTo(file, overwrite = true)
                 tmp.delete()
             }
         }.onFailure {
             tmp.delete()
-            log("⚠ user.reg AppDefaults 清除写回失败：${it.message}")
+            log("⚠ ${file.name} AppDefaults 段剥除写回失败：${it.message}")
             return 0
         }
-        log("已清除 user.reg 的 ${removed} 个游戏 AppDefaults 注册表块（proton wine.inf 携带的 Steam 游戏兼容 hack，Android 上无用）")
         return removed
     }
+
+    /**
+     * v3.4.1【注册表大修】：管理器 per-exe 配置账本（白名单）读取。
+     *
+     * 新格式（累计式，GuanliSupport.applyDllOverrides v3.4.1 起维护）：
+     *   { "game.exe": { "d3d9": "native,builtin" } }
+     * 旧格式（v3.3.x 单条审计）：
+     *   [ {hive, key: "Software\Wine\AppDefaults\<exe>\DllOverrides", values} ]
+     *
+     * @return exe 名（小写）→ dll 加载序映射；读取失败返回空表（全部剥除）。
+     */
+    private fun readAppDefaultsLedger(prefix: File): Map<String, Map<String, String>> {
+        val f = File(prefix, "drive_c/anwind/appdefaults.json")
+        val text = runCatching { f.readText() }.getOrNull() ?: return emptyMap()
+        return runCatching {
+            val trimmed = text.trim()
+            when {
+                trimmed.startsWith("{") -> {
+                    val obj = org.json.JSONObject(trimmed)
+                    val out = LinkedHashMap<String, Map<String, String>>()
+                    for (exe in obj.keys()) {
+                        val m = obj.optJSONObject(exe) ?: continue
+                        val dlls = LinkedHashMap<String, String>()
+                        for (dll in m.keys()) dlls[dll] = m.optString(dll)
+                        if (dlls.isNotEmpty()) out[exe.lowercase()] = dlls
+                    }
+                    out
+                }
+                trimmed.startsWith("[") -> {
+                    val arr = org.json.JSONArray(trimmed)
+                    val out = LinkedHashMap<String, Map<String, String>>()
+                    for (i in 0 until arr.length()) {
+                        val o = arr.optJSONObject(i) ?: continue
+                        val exe = Regex("AppDefaults\\\\(.+?)\\\\DllOverrides")
+                            .find(o.optString("key"))?.groupValues?.get(1) ?: continue
+                        val dlls = LinkedHashMap<String, String>()
+                        val values = o.optJSONArray("values") ?: continue
+                        for (j in 0 until values.length()) {
+                            val v = values.optJSONObject(j) ?: continue
+                            if (v.optString("type") == "sz") {
+                                dlls[v.optString("name")] = v.optString("data")
+                            }
+                        }
+                        if (dlls.isNotEmpty()) out[exe.lowercase()] = dlls
+                    }
+                    out
+                }
+                else -> emptyMap()
+            }
+        }.getOrElse { emptyMap() }
+    }
+
+    /**
+     * v3.4.1【注册表大修·源头】：剥除 wine 包 wine.inf 的 AppDefaults 行
+     * （Valve proton 树 loader/wine.inf.in 的 31 条 Steam 游戏兼容 hack：
+     * Pentiment/rayne1/rayne2/RDR2/RelicCardinal/RiftApart 等 —— wineboot
+     * -i/-u 每次都会重导入，只清前缀永远追不上；此前“构建期剔除”仅治
+     * 新包，存量安装包由本函数在启动链就地根治）。
+     *
+     *  * 匹配口径：HKCU/HKM 起始 + 行含 "AppDefaults" —— 官方 wine-11.0 /
+     *    hangover-11.16 树零 AppDefaults 行（已实测核对），wine.inf 里出现
+     *    该词的 HKCU/HKM 行必为游戏 hack（INF 引号串的单/双反斜杠转义
+     *    两种形态均覆盖）；
+     *  * 幂等零标记 —— 干净 wine.inf 无匹配即零动作不写盘；
+     *  * wine 目录只读等故障只记日志不阻断（前缀侧每次启动段剥除兜底）。
+     *
+     * @return 剥除的行数（0 = 本就干净 / 无 wine.inf）。
+     */
+    private fun sanitizeWineInf(resolved: WineRuntime.Resolved, log: (String) -> Unit): Int {
+        val candidates = listOf(
+            File(resolved.wineDir, "share/wine/wine.inf"),
+            File(resolved.wineDir, "files/share/wine/wine.inf"),
+            File(resolved.wineDir, "share/default/wine.inf")
+        )
+        var total = 0
+        for (inf in candidates) {
+            if (!inf.isFile) continue
+            val text = runCatching { inf.readText() }.getOrNull() ?: continue
+            val sb = StringBuilder(text.length)
+            var removed = 0
+            text.lineSequence().forEach { line ->
+                val t = line.trimStart()
+                val isHack = (t.startsWith("HKCU,") || t.startsWith("HKLM,")) &&
+                    t.contains("AppDefaults")
+                if (isHack) removed++ else sb.append(line).append('\n')
+            }
+            if (removed > 0) {
+                runCatching {
+                    val tmp = File(inf.parentFile, ".${inf.name}.anwind-strip")
+                    tmp.writeText(sb.toString())
+                    if (!tmp.renameTo(inf)) {
+                        inf.writeText(sb.toString())
+                        tmp.delete()
+                    }
+                    total += removed
+                    log(
+                        "已剥除 ${inf.name} 的 $removed 行 AppDefaults 游戏 hack" +
+                            "（源头根治：wineboot -u 不再重导入 —— per-exe 块从此绝根）"
+                    )
+                }.onFailure { log("⚠ ${inf.name} 源头剥除失败：${it.message}（前缀侧每次启动仍会段剥除兜底）") }
+            }
+        }
+        return total
+    }
+
+    /**
+     * v3.4.1【注册表大修·注入】：全局 [Software\\Wine\\DllOverrides] 幂等落位
+     * —— WinFusion DirectXWrapperConfigure + WinComponentsConfigure 同款语义
+     * （参考源码与资产由用户提供）：
+     *
+     *  * assets builtin/wineprefix/wine_dll_overrides.json：
+     *    - default 段原样（dinput/dinput8/xinput1_1~1_4/xinput9_1_0/
+     *      xinputuap = "builtin,native"）；
+     *    - direct3d.dx8_11（d3d8/d3d9/d3d10/d3d10_1/d3d10core/d3d11/dxgi/
+     *      ddraw）与 direct3d.dx12（d3d12/d3d12core）固定 "native,builtin"
+     *      （由前缀内物理 dll 决定实际生效的实现，缺原生 dll 时自动回退
+     *      builtin —— 永远安全）；
+     *  * assets builtin/wineprefix/wincomponents/wincomponents.json：全部组件
+     *    dlnames（amstream/atl100/d3dcompiler_33~47/d3dx9_24~43/xactengine…/
+     *    wmvcore 等约 150 项）固定 "native,builtin"（AnWind 无组件开关 UI ——
+     *    WinFusion 默认全原生同款；restoreBuiltinDlls 只影响切回 builtin 的
+     *    语义，此处不参与）；
+     *  * 经 [JsonRegistry] 直写 user.reg（零 wine 进程拉起；只在值变化时
+     *    落盘；wineserver 在跑则先收尾落盘）。
+     *
+     * 用户实测对照（正确形态，区别于前缀里的 per-exe 垃圾）：
+     *   [Software\\Wine\\DllOverrides]
+     *   "amstream"="native,builtin"
+     *   "atl100"="native,builtin"
+     *   "d3d10"="native,builtin" …
+     *
+     * @return true 成功（含“无需变更”）。
+     */
+    fun ensureGlobalDllOverrides(
+        context: Context?,
+        resolved: WineRuntime.Resolved?,
+        container: ContainerData,
+        env: Map<String, String>,
+        log: (String) -> Unit = {}
+    ): Boolean {
+        if (context == null) {
+            log("⚠ 全局 DllOverrides 注入跳过：无 Context（APK 资产不可读；postPrefixBootChain 会再试）")
+            return false
+        }
+        if (!File(container.prefixPath, "user.reg").isFile) return true
+        val overrides = LinkedHashMap<String, String>()
+        try {
+            context.assets.open("builtin/wineprefix/wine_dll_overrides.json")
+                .bufferedReader().use { r ->
+                    val obj = org.json.JSONObject(r.readText())
+                    obj.optJSONObject("default")?.let { d ->
+                        for (k in d.keys()) overrides[k] = d.optString(k)
+                    }
+                    val d3d = obj.optJSONObject("direct3d")
+                    d3d?.optJSONArray("dx8_11")?.let { a ->
+                        for (i in 0 until a.length()) overrides.put(a.optString(i), "native,builtin")
+                    }
+                    d3d?.optJSONArray("dx12")?.let { a ->
+                        for (i in 0 until a.length()) overrides.put(a.optString(i), "native,builtin")
+                    }
+                }
+            context.assets.open("builtin/wineprefix/wincomponents/wincomponents.json")
+                .bufferedReader().use { r ->
+                    val obj = org.json.JSONObject(r.readText())
+                    for (identifier in obj.keys()) {
+                        obj.optJSONObject(identifier)?.optJSONArray("dlnames")?.let { a ->
+                            for (i in 0 until a.length()) overrides.put(a.optString(i), "native,builtin")
+                        }
+                    }
+                }
+        } catch (e: Exception) {
+            log("⚠ 全局 DllOverrides 资产解析失败：${e.message}")
+            return false
+        }
+        if (overrides.isEmpty()) return true
+        val values = org.json.JSONArray()
+        overrides.forEach { (dll, order) ->
+            values.put(
+                org.json.JSONObject()
+                    .put("name", dll)
+                    .put("type", "sz")
+                    .put("data", order)
+            )
+        }
+        val edits = org.json.JSONArray().put(
+            org.json.JSONObject()
+                .put("hive", "HKCU")
+                .put("key", "Software\\\\Wine\\\\DllOverrides")
+                .put("values", values)
+        )
+        val err = JsonRegistry.apply(
+            File(container.prefixPath), resolved, container, env, edits
+        )
+        if (err != null) {
+            log("⚠ 全局 DllOverrides 注入失败：$err（下次启动自动重试）")
+            return false
+        }
+        log(
+            "全局 [Software\\\\Wine\\\\DllOverrides] 已落位（${overrides.size} 项：dinput/xinput=builtin,native，" +
+                "direct3d(dx8_11/dx12)+全 wincomponents=native,builtin —— WinFusion 同款，原生 dll 缺席自动回退 builtin）"
+        )
+        return true
+    }
+
+    /**
+     * v3.4.1【注册表大修·卫生总入口】：每次启动链幂等重跑
+     * （首建 wineboot 后 / 每次会话启动前 / postPrefixBootChain 三处接线）。
+     *
+     * 顺序：
+     *  0. wineserver 收尾（注册表内存缓存落盘 —— 否则 server 异步回写会把
+     *     段剥除/JSON 直写整体覆盖，v3.3.20 清过仍被回写“打回原形”的
+     *     隐藏缺陷就在这）；
+     *  1. wine.inf 源头剥除（存量 proton 包的 31 条游戏 hack 就地根治，
+     *     wineboot -u 不再重导入）；
+     *  2. user.reg + system.reg 存量 AppDefaults 段剥除（白名单 = 管理器
+     *     per-exe 账本）；
+     *  3. 全局 [Software\\Wine\\DllOverrides] 注入（见
+     *     [ensureGlobalDllOverrides]）。
+     *
+     * @return true 卫生完成（含“本就干净”）。
+     */
+    fun sanitizeRegistryHygiene(
+        context: Context?,
+        resolved: WineRuntime.Resolved,
+        container: ContainerData,
+        env: Map<String, String>,
+        log: (String) -> Unit = {}
+    ): Boolean {
+        val prefix = File(container.prefixPath)
+        if (!File(prefix, "user.reg").isFile && !File(prefix, "system.reg").isFile) return true
+        return runCatching {
+            // 0) wineserver 一致性
+            if (WineServerUtils.isServerRunning(container.prefixPath)) {
+                log("注册表卫生：收尾 wineserver（内存缓存落盘，防回写覆盖直写）……")
+                runCatching { WineServerUtils.stop(resolved, container, env) }
+                    .onFailure { log("⚠ wineserver 收尾失败：${it.message}（继续，尽力而为）") }
+            }
+            // ① 源头：wine.inf 剥除
+            runCatching { sanitizeWineInf(resolved, log) }
+                .onFailure { log("⚠ wine.inf 源头剥除异常：${it.message}（不影响启动）") }
+            // ② 存量段：user.reg + system.reg
+            val protected = readAppDefaultsLedger(prefix).keys.map { it.lowercase() }.toSet()
+            var removed = 0
+            listOf("user.reg", "system.reg").forEach { name ->
+                removed += stripAppDefaultsSections(File(prefix, name), protected, log)
+            }
+            if (removed > 0) {
+                val keep = if (protected.isEmpty()) "（无）"
+                else "（保留：${protected.joinToString(",")}）"
+                log(
+                    "已剥除前缀 $removed 个 AppDefaults per-exe 段（user.reg/system.reg；wine.inf 与" +
+                        "生态包打入的游戏加载序垃圾，恢复 wine 全局默认加载序；管理器 per-exe 配置$keep 不受影响）"
+                )
+            }
+            // ③ 全局 DllOverrides 注入
+            ensureGlobalDllOverrides(context, resolved, container, env, log)
+            true
+        }.getOrElse {
+            log("⚠ 注册表卫生异常：${it.message}")
+            false
+        }
+    }
+
 
     /**
      * v3.2.1 ③：wine 加载器冒烟测试（`wine --version`，限时 60 秒）。

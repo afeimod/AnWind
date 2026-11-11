@@ -1150,16 +1150,18 @@ apply_android_safe_env() {
                 ;;
         esac
     fi
-    # arm64ec 形态仿真器 DLL 默认（v3.1.4 wine 包自带 FEX/box64 PE，
-    # 配方 pre_package 注入 lib/wine/aarch64-windows/）：上游
-    # official/proton 树默认 xtajit64 桩（只报不支持），hangover 树默认
-    # wowbox64 —— 有 FEX 就默认 FEX，用户 HODLL64/HODLL 优先。
-    if [ "${WINE_ARCH:-}" = "aarch64" ] && [ -d "$WINE_DIR/lib/wine/aarch64-windows" ]; then
-        [ -f "$WINE_DIR/lib/wine/aarch64-windows/libarm64ecfex.dll" ] \
-            && [ -z "${HODLL64:-}" ] && export HODLL64=libarm64ecfex.dll
-        [ -f "$WINE_DIR/lib/wine/aarch64-windows/libwow64fex.dll" ] \
-            && [ -z "${HODLL:-}" ] && export HODLL=libwow64fex.dll
-    fi
+    # v3.4.2【HODLL 对齐参考源码】：默认【不】注入 HODLL/HODLL64 ——
+    # wine 侧（0010/0011 补丁）无 HODLL 时的内部缺省即 libwow64fex/
+    # libarm64ecfex（hangover 树自带缺省），fex 运行默认直接 wine exe。
+    # 只有用户显式选择才注入：env= 写 HODLL=/HODLL64=（apply_extra_env
+    # 的小写归一已处理）或启动命令行前置 HODLL=xxx。v3.3.34/v3.4.0 的
+    # 默认注入已撤销 —— 会在用户未选择时改写 32 位模拟层（用户实测
+    # 「性能更差了」的直接嫌疑源）。
+    # 取值对齐参考源码 WinFusion（LaunchPlan 二选一）：HODLL=libwow64fex.dll
+    # 或 HODLL=wowbox64.dll（部分 32 位游戏需要后者 box64-in-wow64；
+    # App 侧勾选 FEX模式/wowbox64模式 即等价写入 env= —— 脚本路径用户
+    # 手写 env= HODLL=wowbox64.dll 同效）。dll 缺席请勿注入（32 位进程
+    # 死于 c0000135，不如留给 wine 内部缺省）。
 }
 
 # ---------- v3.3.37：全局性能基线（WinlatorXR 容器出厂调优串移植） ----------
@@ -1196,56 +1198,114 @@ apply_perf_baseline_env() {
 
 # ---------- v3.3.35：arm64ec 线性能档位（FEX_ 前缀环境变量） ----------
 apply_fex_preset_env() {
-    # 仅 aarch64 形态（arm64ec 原生 wine，32/64 位 PE 经 libwow64fex/
-    # libarm64ecfex 的 FEX 转译）—— BOX64_DYNAREC_* 在此线全空转
-    # （不经 box64），性能档改映射 FEX 配置层最高优先级的 FEX_* 环境
-    # 变量（App 原生链 WineEnvironment.applyFexPresetEnv 同款语义）。
-    # 事实链（FEX 官方 Config.json/wiki）：DisableL2Cache/DynamicL1Cache
-    # 默认 true（省内存换卡顿）→ 性能档反开；X87ReducedPrecision 默认
-    # false（x87 80 位精算）→ 32 位老游戏 x87 热路径提速项；
-    # VectorTSO/MemcpySetTSO 默认 false → 稳定/兼容档反开作兼容兜底。
-    # 未知变量名被旧 FEX 构建忽略，零副作用；opt conf（apply_opt_conf_env
-    # 在后）与容器 env=（apply_extra_env 在后）仍可覆盖。
+    # v3.4.3【FEX 预设 JSON 对齐】：四档 15 项 FEX_* 与 assets
+    # builtin/fex_presets.json（用户提供的 assets-ck 资产；App 侧
+    # WineEnvironment.applyFexPresetEnv 运行时读同一文件，WinFusion
+    # FEXPresetManager/LaunchPlan.buildEnv:226-228 同款表）逐项一致 ——
+    # 脚本路径无 APK assets 可读，表按 JSON 展开内联。
+    # 旧表每档仅 2-3 项：performance 档的 TSOENABLED=0（标量 TSO 关）/
+    # SMC_CHECKS=none（自修改代码检测关）/ VOLATILEMETADATA=0/
+    # HALFBARRIERTSOENABLED=0 才是 FEX 转译吞吐主旋钮，全部补齐；
+    # 稳定/兼容档旧「VECTORTSO=1 反向兜底」撤销（JSON 稳定档靠
+    # TSOENABLED=1 + HALFBARRIER=1 + SMC=mtrack 兜底）；
+    # X87REDUCEDPRECISION 按 JSON 全档 0（上游注明 may result in
+    # rendering bugs，WinFusion 四档全不开）。
+    # 未设才导出（opt conf / 容器 env= 在后仍可覆盖）；未知变量名被旧
+    # FEX 构建忽略，零副作用。仅 aarch64 形态（arm64ec 线，不经 box64）。
     [ "${WINE_ARCH:-}" != "aarch64" ] && return 0
     local _preset
     _preset="$(conf_read "$CONT_CONF" preset performance)"
     case "$_preset" in
         stability)
-            [ -z "${FEX_VECTORTSOENABLED:-}" ]    && export FEX_VECTORTSOENABLED=1
-            [ -z "${FEX_MEMCPYSETTSOENABLED:-}" ] && export FEX_MEMCPYSETTSOENABLED=1
-            info "性能档 arm64ec 线生效（FEX）：向量/REP-MOVS TSO 兜底（稳定优先）"
+            [ -z "${FEX_TSOENABLED:-}" ]                  && export FEX_TSOENABLED=1
+            [ -z "${FEX_VECTORTSOENABLED:-}" ]            && export FEX_VECTORTSOENABLED=0
+            [ -z "${FEX_HALFBARRIERTSOENABLED:-}" ]       && export FEX_HALFBARRIERTSOENABLED=1
+            [ -z "${FEX_MEMCPYSETTSOENABLED:-}" ]         && export FEX_MEMCPYSETTSOENABLED=0
+            [ -z "${FEX_X87REDUCEDPRECISION:-}" ]         && export FEX_X87REDUCEDPRECISION=0
+            [ -z "${FEX_MULTIBLOCK:-}" ]                  && export FEX_MULTIBLOCK=0
+            [ -z "${FEX_MAXINST:-}" ]                     && export FEX_MAXINST=5000
+            [ -z "${FEX_HOSTFEATURES:-}" ]                && export FEX_HOSTFEATURES=off
+            [ -z "${FEX_SMALLTSCSCALE:-}" ]               && export FEX_SMALLTSCSCALE=1
+            [ -z "${FEX_SMC_CHECKS:-}" ]                  && export FEX_SMC_CHECKS=mtrack
+            [ -z "${FEX_VOLATILEMETADATA:-}" ]            && export FEX_VOLATILEMETADATA=1
+            [ -z "${FEX_MONOHACKS:-}" ]                   && export FEX_MONOHACKS=1
+            [ -z "${FEX_HIDEHYPERVISORBIT:-}" ]           && export FEX_HIDEHYPERVISORBIT=0
+            [ -z "${FEX_DISABLEL2CACHE:-}" ]              && export FEX_DISABLEL2CACHE=0
+            [ -z "${FEX_DYNAMICL1CACHE:-}" ]              && export FEX_DYNAMICL1CACHE=0
+            info "性能档 arm64ec 线生效（FEX 预设 JSON·stability 档）：15 项完整注入（TSO 全开 + SMC=mtrack 兜底）"
             ;;
         compatibility)
-            [ -z "${FEX_VECTORTSOENABLED:-}" ]    && export FEX_VECTORTSOENABLED=1
-            info "性能档 arm64ec 线生效（FEX）：向量 TSO 兜底（兼容优先）"
+            [ -z "${FEX_TSOENABLED:-}" ]                  && export FEX_TSOENABLED=1
+            [ -z "${FEX_VECTORTSOENABLED:-}" ]            && export FEX_VECTORTSOENABLED=0
+            [ -z "${FEX_HALFBARRIERTSOENABLED:-}" ]       && export FEX_HALFBARRIERTSOENABLED=1
+            [ -z "${FEX_MEMCPYSETTSOENABLED:-}" ]         && export FEX_MEMCPYSETTSOENABLED=0
+            [ -z "${FEX_X87REDUCEDPRECISION:-}" ]         && export FEX_X87REDUCEDPRECISION=0
+            [ -z "${FEX_MULTIBLOCK:-}" ]                  && export FEX_MULTIBLOCK=1
+            [ -z "${FEX_MAXINST:-}" ]                     && export FEX_MAXINST=5000
+            [ -z "${FEX_HOSTFEATURES:-}" ]                && export FEX_HOSTFEATURES=off
+            [ -z "${FEX_SMALLTSCSCALE:-}" ]               && export FEX_SMALLTSCSCALE=1
+            [ -z "${FEX_SMC_CHECKS:-}" ]                  && export FEX_SMC_CHECKS=mtrack
+            [ -z "${FEX_VOLATILEMETADATA:-}" ]            && export FEX_VOLATILEMETADATA=1
+            [ -z "${FEX_MONOHACKS:-}" ]                   && export FEX_MONOHACKS=1
+            [ -z "${FEX_HIDEHYPERVISORBIT:-}" ]           && export FEX_HIDEHYPERVISORBIT=0
+            [ -z "${FEX_DISABLEL2CACHE:-}" ]              && export FEX_DISABLEL2CACHE=0
+            [ -z "${FEX_DYNAMICL1CACHE:-}" ]              && export FEX_DYNAMICL1CACHE=0
+            info "性能档 arm64ec 线生效（FEX 预设 JSON·compatibility 档）：15 项完整注入（标量 TSO 开）"
             ;;
         intermediate)
-            [ -z "${FEX_DISABLEL2CACHE:-}" ]      && export FEX_DISABLEL2CACHE=0
-            info "性能档 arm64ec 线生效（FEX）：JIT L2 cache 查找启用（进阶）"
+            [ -z "${FEX_TSOENABLED:-}" ]                  && export FEX_TSOENABLED=1
+            [ -z "${FEX_VECTORTSOENABLED:-}" ]            && export FEX_VECTORTSOENABLED=0
+            [ -z "${FEX_HALFBARRIERTSOENABLED:-}" ]       && export FEX_HALFBARRIERTSOENABLED=1
+            [ -z "${FEX_MEMCPYSETTSOENABLED:-}" ]         && export FEX_MEMCPYSETTSOENABLED=0
+            [ -z "${FEX_X87REDUCEDPRECISION:-}" ]         && export FEX_X87REDUCEDPRECISION=0
+            [ -z "${FEX_MULTIBLOCK:-}" ]                  && export FEX_MULTIBLOCK=1
+            [ -z "${FEX_MAXINST:-}" ]                     && export FEX_MAXINST=5000
+            [ -z "${FEX_HOSTFEATURES:-}" ]                && export FEX_HOSTFEATURES=off
+            [ -z "${FEX_SMALLTSCSCALE:-}" ]               && export FEX_SMALLTSCSCALE=1
+            [ -z "${FEX_SMC_CHECKS:-}" ]                  && export FEX_SMC_CHECKS=mtrack
+            [ -z "${FEX_VOLATILEMETADATA:-}" ]            && export FEX_VOLATILEMETADATA=1
+            [ -z "${FEX_MONOHACKS:-}" ]                   && export FEX_MONOHACKS=0
+            [ -z "${FEX_HIDEHYPERVISORBIT:-}" ]           && export FEX_HIDEHYPERVISORBIT=0
+            [ -z "${FEX_DISABLEL2CACHE:-}" ]              && export FEX_DISABLEL2CACHE=0
+            [ -z "${FEX_DYNAMICL1CACHE:-}" ]              && export FEX_DYNAMICL1CACHE=0
+            info "性能档 arm64ec 线生效（FEX 预设 JSON·intermediate 档）：15 项完整注入"
             ;;
         performance|*)
-            [ -z "${FEX_DISABLEL2CACHE:-}" ]      && export FEX_DISABLEL2CACHE=0
-            [ -z "${FEX_DYNAMICL1CACHE:-}" ]      && export FEX_DYNAMICL1CACHE=0
-            [ -z "${FEX_X87REDUCEDPRECISION:-}" ] && export FEX_X87REDUCEDPRECISION=1
-            info "性能档 arm64ec 线生效（FEX）：JIT L1/L2 全量缓存 + x87 64 位精算提速（渲染毛刺→降一档即回）"
+            [ -z "${FEX_TSOENABLED:-}" ]                  && export FEX_TSOENABLED=0
+            [ -z "${FEX_VECTORTSOENABLED:-}" ]            && export FEX_VECTORTSOENABLED=0
+            [ -z "${FEX_HALFBARRIERTSOENABLED:-}" ]       && export FEX_HALFBARRIERTSOENABLED=0
+            [ -z "${FEX_MEMCPYSETTSOENABLED:-}" ]         && export FEX_MEMCPYSETTSOENABLED=0
+            [ -z "${FEX_X87REDUCEDPRECISION:-}" ]         && export FEX_X87REDUCEDPRECISION=0
+            [ -z "${FEX_MULTIBLOCK:-}" ]                  && export FEX_MULTIBLOCK=1
+            [ -z "${FEX_MAXINST:-}" ]                     && export FEX_MAXINST=5000
+            [ -z "${FEX_HOSTFEATURES:-}" ]                && export FEX_HOSTFEATURES=off
+            [ -z "${FEX_SMALLTSCSCALE:-}" ]               && export FEX_SMALLTSCSCALE=1
+            [ -z "${FEX_SMC_CHECKS:-}" ]                  && export FEX_SMC_CHECKS=none
+            [ -z "${FEX_VOLATILEMETADATA:-}" ]            && export FEX_VOLATILEMETADATA=0
+            [ -z "${FEX_MONOHACKS:-}" ]                   && export FEX_MONOHACKS=1
+            [ -z "${FEX_HIDEHYPERVISORBIT:-}" ]           && export FEX_HIDEHYPERVISORBIT=0
+            [ -z "${FEX_DISABLEL2CACHE:-}" ]              && export FEX_DISABLEL2CACHE=0
+            [ -z "${FEX_DYNAMICL1CACHE:-}" ]              && export FEX_DYNAMICL1CACHE=0
+            info "性能档 arm64ec 线生效（FEX 预设 JSON·performance 档）：15 项完整注入（TSO 全关 + SMC=none + VOLATILEMETADATA=0 —— 转译吞吐主旋钮）"
             ;;
     esac
     # v3.3.37：FEX Config.json（WinlatorXR FEXCoreManager.java:110-118/241-243
     # 实证通道）：libwow64fex/libarm64ecfex 读 $HOME/.fex-emu/Config.json——
     # FEX_* 环境变量在部分构建上不生效，配置文件是参考实现验证过的通道，
-    # 双通道保险。按预设写（TSO 四档 + x87 + Multiblock=1），幂等。
+    # 双通道保险。v3.4.3：键值与 fex_presets.json 同源（11 键全量），
+    # 幂等。
     local _json
     case "$_preset" in
-        stability)      _json='{"Config":{"TSOEnabled":"1","HalfBarrierTSOEnabled":"1","VectorTSOEnabled":"0","MemcpySetTSOEnabled":"0","X87ReducedPrecision":"0","Multiblock":"1"}}' ;;
-        compatibility)  _json='{"Config":{"TSOEnabled":"1","VectorTSOEnabled":"0","MemcpySetTSOEnabled":"0","X87ReducedPrecision":"0","Multiblock":"1"}}' ;;
-        intermediate)   _json='{"Config":{"TSOEnabled":"0","VectorTSOEnabled":"0","MemcpySetTSOEnabled":"0","X87ReducedPrecision":"0","Multiblock":"1"}}' ;;
-        performance|*)  _json='{"Config":{"TSOEnabled":"0","VectorTSOEnabled":"0","MemcpySetTSOEnabled":"0","X87ReducedPrecision":"1","Multiblock":"1"}}' ;;
+        stability)      _json='{"Config":{"TSOEnabled":"1","VectorTSOEnabled":"0","HalfBarrierTSOEnabled":"1","MemcpySetTSOEnabled":"0","X87ReducedPrecision":"0","Multiblock":"0","DisableL2Cache":"0","DynamicL1Cache":"0","MaxInst":"5000","SmallTSCScale":"1","VolatileMetadata":"1"}}' ;;
+        compatibility)  _json='{"Config":{"TSOEnabled":"1","VectorTSOEnabled":"0","HalfBarrierTSOEnabled":"1","MemcpySetTSOEnabled":"0","X87ReducedPrecision":"0","Multiblock":"1","DisableL2Cache":"0","DynamicL1Cache":"0","MaxInst":"5000","SmallTSCScale":"1","VolatileMetadata":"1"}}' ;;
+        intermediate)   _json='{"Config":{"TSOEnabled":"1","VectorTSOEnabled":"0","HalfBarrierTSOEnabled":"1","MemcpySetTSOEnabled":"0","X87ReducedPrecision":"0","Multiblock":"1","DisableL2Cache":"0","DynamicL1Cache":"0","MaxInst":"5000","SmallTSCScale":"1","VolatileMetadata":"1"}}' ;;
+        performance|*)  _json='{"Config":{"TSOEnabled":"0","VectorTSOEnabled":"0","HalfBarrierTSOEnabled":"0","MemcpySetTSOEnabled":"0","X87ReducedPrecision":"0","Multiblock":"1","DisableL2Cache":"0","DynamicL1Cache":"0","MaxInst":"5000","SmallTSCScale":"1","VolatileMetadata":"0"}}' ;;
     esac
     if mkdir -p "${HOME%/}/.fex-emu" 2>/dev/null; then
         if [ ! -f "${HOME%/}/.fex-emu/Config.json" ] \
             || [ "$(cat "${HOME%/}/.fex-emu/Config.json" 2>/dev/null)" != "$_json" ]; then
             printf '%s\n' "$_json" > "${HOME%/}/.fex-emu/Config.json" 2>/dev/null \
-                && info "FEX 配置: ~/.fex-emu/Config.json 已写入（${_preset} 档；WinlatorXR FEXCoreManager 同款通道）"
+                && info "FEX 配置: ~/.fex-emu/Config.json 已写入（${_preset} 档，11 键全量 —— 与 fex_presets.json 同源）"
         fi
     fi
     # JIT 磁盘缓存（二次启动免重编译；参考实现 Proton11 容器默认）
@@ -1323,15 +1383,19 @@ apply_box64_env() {
         warn "box64 为 glibc 形态，但 rootfs 缺少 $RFS_USR/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1"
         warn "→ exec 将以 ENOENT 失败（表现为零输出/退出码 127）；执行 anwind-container install-box64 <新版 tar.gz>（含 glibc 运行库）或重建 rootfs"
     fi
-    # v3.3.21（用户定稿，设备实测）：SAFEFLAGS 全档 0 ——
-    #   用户在 Adreno 740 / Android 15 实测：box64 0.4.2 / 0.4.3 / 0.4.4
-    #   任一版本，SAFEFLAGS=0 全部可正常工作；设 1 或 2 反而崩（ntdll
-    #   早期初始化 SIGSEGV）。v3.2.17 的反向归因（0 导致崩溃）已证伪：
-    #   v3.3.27 设备日志 19:10 SAFEFLAGS=0 仍现同型崩溃、15:52 同环境
-    #   正常 —— 崩溃具有地址空间布局随机性，与 SAFEFLAGS 无关。
-    #   WinNative 预设的 1/2 值在本机不成立，全部改 0。
-    #   performance 档其余值对齐 box64 上游默认（BIGBLOCK=1 / FORWARD=128 /
-    #   X87DOUBLE=1）—— 用户实测可用配置。
+    # v3.4.3【box64 预设 JSON 对齐】：四档 11 项 BOX64_* 与 assets
+    # builtin/box64_presets.json（assets-ck 资产，App 侧
+    # WineEnvironment.applyBox64Env 运行时读同一文件；WinFusion
+    # Box64PresetManager/LaunchPlan.buildEnv:237-242 同款表）逐项一致 ——
+    # 补齐旧表缺的 BOX64_AVX 与 BOX64_UNITYPLAYER（稳定/兼容档 1，
+    # 进阶/性能档 0）。两处 AnWind 定稿覆写保留：
+    #  - SAFEFLAGS 恒 0：v3.3.21 用户设备定稿（Adreno 740 / Android 15
+    #    实测 1/2 触发 ntdll 早期 SIGSEGV；JSON 档位值 2/2/2/1 不适用
+    #    本机 —— 崩溃具地址空间布局随机性，与 SAFEFLAGS 无关，0 是
+    #    实测稳定值）；
+    #  - PERFORMANCE 档补 BOX64_MMAP32=1（WinlatorXR 同款）；
+    #  - +BOX64_PREFER_EMULATED=1（WinFusion x86_64 线同款：优先仿真库）。
+    # 容器 env= 的 BOX64_* 覆盖机制不变（下方 case 块）。
     case "$_preset" in
         stability)
             export BOX64_DYNAREC_SAFEFLAGS=0
@@ -1343,44 +1407,52 @@ apply_box64_env() {
             export BOX64_DYNAREC_FORWARD=128
             export BOX64_DYNAREC_CALLRET=0
             export BOX64_DYNAREC_WAIT=0
+            export BOX64_AVX=0
+            export BOX64_UNITYPLAYER=1
+            export BOX64_PREFER_EMULATED=1
             ;;
         compatibility)
-            export BOX64_DYNAREC_BIGBLOCK=0
             export BOX64_DYNAREC_SAFEFLAGS=0
             export BOX64_DYNAREC_FASTNAN=0
             export BOX64_DYNAREC_FASTROUND=0
             export BOX64_DYNAREC_X87DOUBLE=1
+            export BOX64_DYNAREC_BIGBLOCK=0
             export BOX64_DYNAREC_STRONGMEM=1
             export BOX64_DYNAREC_FORWARD=128
             export BOX64_DYNAREC_CALLRET=0
             export BOX64_DYNAREC_WAIT=1
+            export BOX64_AVX=0
+            export BOX64_UNITYPLAYER=1
+            export BOX64_PREFER_EMULATED=1
             ;;
         intermediate)
-            export BOX64_DYNAREC_BIGBLOCK=1
             export BOX64_DYNAREC_SAFEFLAGS=0
             export BOX64_DYNAREC_FASTNAN=1
             export BOX64_DYNAREC_FASTROUND=0
             export BOX64_DYNAREC_X87DOUBLE=1
+            export BOX64_DYNAREC_BIGBLOCK=1
             export BOX64_DYNAREC_STRONGMEM=0
             export BOX64_DYNAREC_FORWARD=128
-            export BOX64_DYNAREC_CALLRET=1
+            export BOX64_DYNAREC_CALLRET=0
             export BOX64_DYNAREC_WAIT=1
+            export BOX64_AVX=0
+            export BOX64_UNITYPLAYER=0
+            export BOX64_PREFER_EMULATED=1
             ;;
         performance|*)
-            # v3.3.37：WinlatorXR PERFORMANCE 档逐字对齐（BIGBLOCK=3 /
-            # FORWARD=512 / X87DOUBLE=0 / +MMAP32=1；仅 SAFEFLAGS 按用户
-            # 设备实测保持 0）。旧值 BIGBLOCK=1/FORWARD=128 是 v3.3.21
-            # 随机崩溃时代的保守化 —— 当年崩溃真因另在 RELR/地址布局。
-            export BOX64_DYNAREC_BIGBLOCK=3
             export BOX64_DYNAREC_SAFEFLAGS=0
             export BOX64_DYNAREC_FASTNAN=1
             export BOX64_DYNAREC_FASTROUND=1
             export BOX64_DYNAREC_X87DOUBLE=0
+            export BOX64_DYNAREC_BIGBLOCK=3
             export BOX64_DYNAREC_STRONGMEM=0
             export BOX64_DYNAREC_FORWARD=512
             export BOX64_DYNAREC_CALLRET=1
             export BOX64_DYNAREC_WAIT=1
+            export BOX64_AVX=0
+            export BOX64_UNITYPLAYER=0
             export BOX64_MMAP32=1
+            export BOX64_PREFER_EMULATED=1
             ;;
     esac
     # 容器 env 中允许覆盖 BOX64_*

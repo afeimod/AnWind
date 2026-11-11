@@ -114,8 +114,9 @@ enum class Box64Preset(
 /**
  * 渲染器选择。
  *
- * AUTO       : Vulkan 优先（aarch64 → zink+turnip，WinlatorXR/Linbox 同款；
- *              无 Vulkan 可用时逐级回退 freedreno → softpipe）
+ * AUTO       : 分层探测（v3.4.1）—— dri+msm（Adreno DRM 可达）→ freedreno
+ *              原生 GL；kgsl/Vulkan ICD 可达 → zink+turnip（无 dri 权限
+ *              设备的 GPU 加速主路）；均不可达 → softpipe 兜底
  * ZINK       : OpenGL-on-Vulkan（配 DXVK/VKD3D 时推荐）
  * FREEDRENO  : Adreno 驱动（msm/kgsl）
  * SOFTPIPE   : 软渲染兜底（无 GPU 加速时；rootfs 的 aarch64/x86_64
@@ -277,15 +278,26 @@ object ContainerFlags {
      * 槽位标成“强制DX11启动”，从未追加过任何参数）。 */
     const val DX11 = "dx11"
 
-    /** FEX 模式（wineguanli.py 高级启动选项）。v3.3.34 语义再修：
-     *  HODLL=libwow64fex.dll 已改为【默认注入】（WinlatorXR 对齐 ——
-     *  BionicProgramLauncherComponent 对 arm64EC 无条件设 HODLL），本
-     *  勾选不再承担门禁，仅作显式标记；用户 env=/启动参数的显式
-     *  HODLL=/hodll= 值仍最高优先（大小写不敏感归一为大写键）。 */
+    /** FEX 模式（wineguanli.py 高级启动选项）。v3.4.2 语义（对齐参考
+     *  源码 WinFusion LaunchPlan：HODLL 是用户设置项，不默认注入）：
+     *  勾选 → 注入 HODLL=libwow64fex.dll（dll 缺席则跳过）；不勾选 →
+     *  不注入，由 wine 内部缺省（0010/0011 补丁：libwow64fex/
+     *  libarm64ecfex）接管 —— fex 运行默认直接 wine exe。用户 env=/
+     *  启动参数的显式 HODLL=/hodll= 值仍最高优先（大小写归一为大写键）。 */
     const val FEXMODE = "fexmode"
 
+    /** wowbox64 模式。v3.4.2（用户：「wowbox64 模式别取消，加入选项，
+     *  部分 32 游戏需要」）：FEXMODE 的姊妹档 —— 勾选 → 注入
+     *  HODLL=wowbox64.dll（box64-in-wow64 32 位模拟层；dll 缺席则跳过）。
+     *  参考源码 WinFusion 的 HODLL 取值恰是这两个二选一
+     *  （LaunchPlan.buildEnv:224-225 / WineConfigure.fexDllsInstalled:
+     *  356-358：0=libwow64fex.dll，1=wowbox64.dll —— SettingKeys
+     *  ContainerFEXHodll）。默认不注入同 FEXMODE；与 FEXMODE 同时勾选
+     *  时 FEXMODE 优先（libwow64fex 在前）；显式 HODLL= 仍最高优先。 */
+    const val WOWBOXMODE = "wowboxmode"
+
     /** 全部合法开关（UI 勾选组展示顺序）。 */
-    val ALL = listOf(UNITY, OPENGL, F5TASK, IB, DEBUG, INDEPENDENT, CLOSESERVICE, FEXMODE, DX11)
+    val ALL = listOf(UNITY, OPENGL, F5TASK, IB, DEBUG, INDEPENDENT, CLOSESERVICE, FEXMODE, WOWBOXMODE, DX11)
 
     fun parse(csv: String?): Set<String> =
         csv?.split(',', ';').orEmpty()
@@ -441,18 +453,23 @@ data class ContainerData(
     }
 
     companion object {
-        // v3.4.0【性能大修 A3】：新容器默认虚拟分辨率 1280x720（对标
-        // Linbox-WinEmu 默认档）—— 2K 屏 native 全物理分辨率渲染的像素量
-        // 是 720p 的 4~6 倍，softpipe/zink 都被像素流水线拖死；默认 720p +
-        // 窗口拉伸上屏，性能档差距直接拉平。主桌面（AnWind 自身 UI）分辨率
-        // 不受影响；旧容器 screen=native 显式值保持不变。
-        const val DEFAULT_SCREEN = "1280x720"
-        // v3.4.0【性能大修 A1】：默认图形档 auto → zink（强制 Vulkan）。
-        // 旧 auto 在 aarch64 选 freedreno GL，Android 沙箱无 /dev/dri 权限
-        // 的设备上回落 softpipe 纯软渲染（“不到 proot 一半”的灾难级根源）；
-        // WinlatorXR/Linbox/MiceWine 生态全部默认 zink+turnip Vulkan。
-        // auto 语义同步改为“Vulkan 优先”（见 applyGpuEnv）。
-        const val DEFAULT_GALLIUM = "zink"
+        // v3.4.1【撤销 v3.4.0 A3 720p —— 用户明确指令】：新容器默认分辨率
+        // 回归 native（全屏全物理分辨率）。用户原话：“主桌面分辨率不要动”
+        // —— X11 运行时的性能压力不靠降桌面分辨率解决，靠 X server 前台
+        // 主进程化（X11KeepAliveService 先于 app_process exec 启动，fork
+        // 继承 top-app cgroup）+ 主桌面 launcher 式让位（DesktopPerfGovernor：
+        // X11 真全屏期间任务栏/托盘/锁屏 1Hz 重组与自动锁屏轮询全部静止）。
+        // v3.4.0 曾默认 1280x720 —— 视觉糊化 + 用户实测体验更差，撤销。
+        const val DEFAULT_SCREEN = "native"
+        // v3.4.1【A1 修正】：默认图形档回归 auto（v3.4.0 曾强制 zink ——
+        // 有 DRM msm 渲染节点的设备上原本 freedreno 原生 GL 更快，一刀切
+        // zink 反而降速，即用户实测“性能更差了”的供应商之一）。auto 语义
+        // 升级为分层探测（见 WineEnvironment.applyGpuEnv v3.4.1）：
+        //   dri+msm（Adreno DRM 可达）→ freedreno 原生 GL；
+        //   kgsl / Vulkan ICD 可达    → zink+turnip（无 dri 权限设备的
+        //                               GPU 加速主路 —— v3.4.0 A1 的本意）；
+        //   均不可达                  → softpipe 兜底。
+        const val DEFAULT_GALLIUM = "auto"
 
         /** v3.2.15：帧率限制/DPI 缺省值。 */
         const val FRAME_DEFAULT = "0"

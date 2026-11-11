@@ -725,11 +725,36 @@ object GuanliSupport {
                     File(container.prefixPath), resolved, container, env, edits
                 )
                 err ?: run {
-                    // JSON 文本留档（审计可读）
+                    // v3.4.1【注册表大修】：appdefaults.json 账本改为累计式
+                    // （exe → {dll → 加载序}）—— WineRegistry.sanitizeRegistryHygiene
+                    // 的 AppDefaults 段剥除白名单读取此文件，用户手动配置的
+                    // per-exe 子树不被存量段剥除误删；dlls 空（清除配置）=
+                    // 账本同步摘除该 exe（旧单条审计格式由读取侧兼容）。
                     runCatching {
                         val dir = File(container.prefixPath, "drive_c/anwind")
                         dir.mkdirs()
-                        File(dir, "appdefaults.json").writeText(edits.toString(2))
+                        val ledgerFile = File(dir, "appdefaults.json")
+                        val ledger = LinkedHashMap<String, org.json.JSONObject>()
+                        if (ledgerFile.isFile) {
+                            runCatching {
+                                val text = ledgerFile.readText().trim()
+                                if (text.startsWith("{")) {
+                                    val obj = org.json.JSONObject(text)
+                                    for (exe in obj.keys()) {
+                                        obj.optJSONObject(exe)?.let { ledger[exe] = it }
+                                    }
+                                }
+                            }
+                        }
+                        if (dlls.isEmpty()) ledger.remove(exeName)
+                        else {
+                            val inner = org.json.JSONObject()
+                            dlls.forEach { (dll, order) -> inner.put(dll, order) }
+                            ledger[exeName] = inner
+                        }
+                        val obj = org.json.JSONObject()
+                        ledger.forEach { (exe, inner) -> obj.put(exe, inner) }
+                        ledgerFile.writeText(obj.toString(2))
                     }
                     null
                 }

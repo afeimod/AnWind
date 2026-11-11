@@ -1,5 +1,6 @@
 package com.anwind.apps.containers.launcher
 
+import android.content.Context
 import com.anwind.apps.containers.Box64Preset
 import com.anwind.apps.containers.ContainerLangs
 import com.anwind.apps.containers.ContainerData
@@ -237,13 +238,19 @@ object WineEnvironment {
             "auto" else container.gallium.trim().lowercase()
         val gallium = when (raw) {
             "llvmpipe" -> "softpipe"
-            // v3.4.0【性能大修 A1】：auto = Vulkan 优先（WinlatorXR/Linbox
-            // 同款）。旧逻辑 aarch64 有 /dev/dri 才 freedreno、否则 softpipe
-            // —— 沙箱无 dri 权限的设备上 32 位游戏/全部 GL 画面被 CPU
-            // 光栅化（“不到 proot 一半”的灾难级主供应商）。新逻辑：aarch64
-            // 一律 zink（Turnip 经 kgsl/DRM 均可达，无需 /dev/dri 权限），
-            // 仅当 Vulkan 生态完全不可探测时逐级回退 freedreno → softpipe。
+            // v3.4.1【A1 修正·分层探测】（回滚 v3.4.0 的“一刀切 zink”）：
+            // 用户实测 v3.4.0 “性能更差了” —— 有 DRM msm 渲染节点权限的
+            // 设备上，v3.4.0 前的 freedreno 原生 GL（免 Vulkan 翻译层）本就
+            // 更快，一刀切 zink 反而降速。分层语义（每层都只比旧版更强）：
+            //   ① dri+msm（Adreno DRM 可达）→ freedreno 原生 GL
+            //     （v3.4.0 前的原生速度，dri 设备回归）；
+            //   ② kgsl / Vulkan ICD 可达 → zink+turnip（无 dri 权限设备的
+            //     GPU 加速主路 —— v3.4.0 A1 的本意：旧版这种情况回落
+            //     softpipe 纯软渲染，“不到 proot 一半”的灾难级根源）；
+            //   ③ 泛 dri → freedreno（v3.4.0 前旧语义兜底）；
+            //   ④ softpipe 兜底。
             "auto" -> when {
+                isAarch64() && hasMsmDrmAccess() -> "freedreno"
                 isAarch64() && hasVulkanIcd() -> "zink"
                 isAarch64() && hasDrmAccess() -> "freedreno"
                 else -> "softpipe"
@@ -257,12 +264,15 @@ object WineEnvironment {
                 env["ZINK_DEBUG"] = "compact"
                 // Turnip 崩溃规避仅此一项（sysmem 已撤销，见上）
                 env.putIfAbsent("TU_DEBUG", "noconform")
-                // v3.4.0【性能大修】：撤销 LIBGL_KOPPER_DISABLE=true。
-                //   v3.3.37 参照 WinlatorXR XServerDisplayActivity 设入，
-                //   但 kopper 是 zink 的 GLX 主路径 —— 禁用它等于砍断
-                //   GLX 直呈现，每帧退回 X11 putimage 慢路径，GL 游戏
-                //   帧率被砍（用户“不到 proot 一半”的重要级供应商）。
-                //   用户 env= LIBGL_KOPPER_DISABLE=true 仍可自行恢复。
+                // v3.4.1【回滚 v3.4.0】：恢复 LIBGL_KOPPER_DISABLE=true
+                //   （putIfAbsent —— 用户 env= 仍可覆盖改开）。v3.4.0 曾撤销
+                //   此变量，猜想 kopper 的 GLX 直呈现更快 —— 但 AnWind 的
+                //   X 服务（termux-x11/libXlorie 软渲染 X server）没有 DRI3
+                //   呈现通路，kopper 自建 swapchain 每帧反而多一次回读慢
+                //   路径（WinlatorXR XServerDisplayActivity 同款禁用语义，
+                //   用户参考源码保持一致）。GL 命令流依旧全速经 Vulkan →
+                //   GPU，只是不走 kopper 的 X 呈现支路。
+                env.putIfAbsent("LIBGL_KOPPER_DISABLE", "true")
             }
             "freedreno" -> {
                 env["GALLIUM_DRIVER"] = "freedreno"
@@ -292,6 +302,27 @@ object WineEnvironment {
      * 设备上 zink+turnip 开箱即达；Mali 设备 rootfs ICD 虽在但 turnip
      * 建不出设备 —— auto 档会在运行失败时由用户显式改 freedreno/softpipe。
      */
+    /**
+     * v3.4.1 A1：Adreno DRM 渲染节点探测（auto 档 freedreno 优先的依据）。
+     *
+     * /sys/class/drm/renderD*/device/driver 符号链接名 msm/adreno = Adreno
+     * DRM 可达 —— freedreno 原生 GL 免 Vulkan 翻译层，GL 游戏通常快于
+     * zink；有 dri 权限的设备（root / 宽松 ROM）由 auto 档回归 v3.4.0 前
+     * 的原生速度。读不到 sysfs（无 DRM 设备 / 节点）返回 false → auto
+     * 走 zink/softpipe 分支。
+     */
+    private fun hasMsmDrmAccess(): Boolean = try {
+        val drm = File("/sys/class/drm")
+        drm.listFiles { f -> f.name.startsWith("renderD") }?.any { node ->
+            runCatching {
+                val name = File(node, "device/driver").canonicalFile.name
+                name == "msm" || name == "adreno"
+            }.getOrDefault(false)
+        } == true
+    } catch (_: Exception) {
+        false
+    }
+
     private fun hasVulkanIcd(): Boolean = try {
         val icdRoot = File("$RFS_USR/share/vulkan/icd.d")
         (icdRoot.isDirectory &&
@@ -316,7 +347,15 @@ object WineEnvironment {
      * "Symbol ... not found" 起不来。gstreamer 插件路径同步指向包内
      * x86_64 版（rootfs 里的插件是 aarch64，x86_64 libgstreamer 加载不了）。
      */
-    fun applyBox64Env(env: MutableMap<String, String>, container: ContainerData, wineDir: File) {
+    fun applyBox64Env(
+        env: MutableMap<String, String>,
+        container: ContainerData,
+        wineDir: File,
+        // v3.4.3：预设 JSON 装载需要 Context（assets）；null = 跳过 JSON
+        // 走旧内联表（兼容旧调用点）。
+        context: Context? = null,
+        log: (String) -> Unit = {}
+    ) {
         // v3.2.24（用户问题 3，对齐 startwine.sh / startfex.sh）：
         //   export BOX64_PATH=$WINE_PATH/bin
         //   export BOX64_LD_LIBRARY_PATH=$WINEPATH/lib/wine/i386-unix:$WINEPATH/lib/wine/x86_64-unix
@@ -410,7 +449,35 @@ object WineEnvironment {
         //     由 wrapper 栈侧自行消费）。
         env.putIfAbsent("BOX64_DYNAREC", "1")
         env.putIfAbsent("BOX64_X11GLX", "1")
-        when (container.preset) {
+        // v3.4.3【box64 预设 JSON 对齐】：四档 BOX64_* 改由 assets
+        // builtin/box64_presets.json 派生（用户提供的 assets-ck 资产，
+        // WinFusion LaunchPlan.buildEnv:237-242 经 Box64PresetManager
+        // 展开的同一张表 —— x86_64 wine 线的调用与性能对齐）。旧表每档
+        // 9 项手抄值；JSON 表 11 项补齐 BOX64_AVX 与 BOX64_UNITYPLAYER
+        //（稳定/兼容档 1，进阶/性能档 0；容器 UNITY 勾选的 applyTuningEnv
+        // 在链路后段直接赋值，仍最高优）。两处 AnWind 定稿覆写保留：
+        //  - SAFEFLAGS 恒 0（v3.3.21 用户设备定稿：Adreno 740 /
+        //    Android 15 实测 1/2 触发 ntdll 早期 SIGSEGV —— JSON 档位值
+        //    2/2/2/1 不适用本机；flags 保守度对性能影响微小，稳定性优先）；
+        //  - PERFORMANCE 档补 BOX64_MMAP32=1（WinlatorXR 同款）。
+        // 资产缺席回落下方旧内联表（打包错误兜底，行为不劣于 v3.4.2）。
+        val bvars = presetEnvVars(context, "builtin/box64_presets.json", log)
+            [container.preset.name.lowercase()]
+        if (!bvars.isNullOrEmpty()) {
+            bvars.forEach { (k, v) -> env.putIfAbsent(k, v) }
+            env["BOX64_DYNAREC_SAFEFLAGS"] = "0"
+            if (container.preset == Box64Preset.PERFORMANCE) {
+                env.putIfAbsent("BOX64_MMAP32", "1")
+            }
+            // WinFusion x86_64 线同款（LaunchPlan.buildEnv:236）：优先仿真
+            // 库，避免 rootfs/系统原生同名库混载不可预期
+            env.putIfAbsent("BOX64_PREFER_EMULATED", "1")
+            log(
+                "box64 预设 JSON·${container.preset.name.lowercase()} 档生效：" +
+                    "${bvars.size} 项 BOX64_* 完整注入（+MMAP32/PREFER_EMULATED；" +
+                    "SAFEFLAGS=0 设备定稿覆写；opt conf / 容器 env= 仍可逐项覆盖）"
+            )
+        } else when (container.preset) {
             Box64Preset.STABILITY -> {
                 env["BOX64_DYNAREC_SAFEFLAGS"] = "0"
                 env["BOX64_DYNAREC_FASTNAN"] = "0"
@@ -550,35 +617,23 @@ object WineEnvironment {
      * HOME = rootfs/home（wine 进程家目录，全容器共享）；仅 arm64ec 线
      * 调用（HODLL 注入的 FEX DLL 才是消费者）。幂等：内容无变化不重写。
      */
-    fun ensureFexConfigFile(env: MutableMap<String, String>, container: ContainerData, log: (String) -> Unit = {}) {
-        // v3.3.40：FEX 配置页（fex_active.conf，[FexConfSupport]）值并入本
-        // 通道 —— env（FEX_* 经 applyOptConfEnv source）与 Config.json 双
-        // 通道同值，配置页成为唯一权威；未配置时回落容器预设档四档语义。
-        val presetDefaults = when (container.preset) {
-            Box64Preset.STABILITY -> mapOf(
-                "TSOEnabled" to "1", "HalfBarrierTSOEnabled" to "1",
-                "VectorTSOEnabled" to "0", "MemcpySetTSOEnabled" to "0",
-                "X87ReducedPrecision" to "0", "Multiblock" to "0"
-            )
-            Box64Preset.COMPATIBILITY -> mapOf(
-                "TSOEnabled" to "1", "HalfBarrierTSOEnabled" to "0",
-                "VectorTSOEnabled" to "0", "MemcpySetTSOEnabled" to "0",
-                "X87ReducedPrecision" to "0", "Multiblock" to "1"
-            )
-            Box64Preset.INTERMEDIATE -> mapOf(
-                "TSOEnabled" to "0", "HalfBarrierTSOEnabled" to "0",
-                "VectorTSOEnabled" to "0", "MemcpySetTSOEnabled" to "0",
-                "X87ReducedPrecision" to "0", "Multiblock" to "1"
-            )
-            Box64Preset.PERFORMANCE -> mapOf(
-                "TSOEnabled" to "0", "HalfBarrierTSOEnabled" to "0",
-                "VectorTSOEnabled" to "0", "MemcpySetTSOEnabled" to "0",
-                "X87ReducedPrecision" to "1", "Multiblock" to "1",
-                "DisableL2Cache" to "0", "DynamicL1Cache" to "0"
-            )
-        }
+    fun ensureFexConfigFile(
+        env: MutableMap<String, String>,
+        container: ContainerData,
+        log: (String) -> Unit = {},
+        context: Context? = null
+    ) {
+        // v3.4.3【根据 JSON 正确打】：presetDefaults 改由 assets
+        // builtin/fex_presets.json 派生（用户提供的 assets-ck 资产，
+        // WinFusion FEXPresetManager 同一张表 —— 四档各 15 项，含旧表
+        // 缺失的 SMALLTSCSCALE/MAXINST 等）。资产缺席（打包错误）回落
+        // 下方旧四档内联表，行为不劣于 v3.4.2。
+        val presetVars = presetEnvVars(context, "builtin/fex_presets.json", log)
+            [container.preset.name.lowercase()].orEmpty()
         // FEX 配置页 env 变量名 → Config.json 键（WinlatorXR FEXCoreManager
-        // 实证键位；未映射的 FEX_*（SMC_CHECKS/HOSTFEATURES 等）仅 env 通道）。
+        // 实证键位；未映射的 FEX_*（HOSTFEATURES/SMC_CHECKS/MONOHACKS/
+        // HIDEHYPERVISORBIT）仅 env 通道）。v3.4.3 +SmallTSCScale/
+        // +VolatileMetadata（JSON 表有值，Config 键为 FEX 官方命名）。
         val fexTabMap = mapOf(
             "FEX_TSOENABLED" to "TSOEnabled",
             "FEX_VECTORTSOENABLED" to "VectorTSOEnabled",
@@ -588,7 +643,38 @@ object WineEnvironment {
             "FEX_MULTIBLOCK" to "Multiblock",
             "FEX_DISABLEL2CACHE" to "DisableL2Cache",
             "FEX_DYNAMICL1CACHE" to "DynamicL1Cache",
-            "FEX_MAXINST" to "MaxInst"
+            "FEX_MAXINST" to "MaxInst",
+            "FEX_SMALLTSCSCALE" to "SmallTSCScale",
+            "FEX_VOLATILEMETADATA" to "VolatileMetadata"
+        )
+        val presetDefaults = LinkedHashMap<String, String>()
+        fexTabMap.forEach { (envName, cfgKey) ->
+            presetVars[envName]?.let { presetDefaults[cfgKey] = it }
+        }
+        if (presetDefaults.isEmpty()) presetDefaults.putAll(
+            when (container.preset) {
+                Box64Preset.STABILITY -> mapOf(
+                    "TSOEnabled" to "1", "HalfBarrierTSOEnabled" to "1",
+                    "VectorTSOEnabled" to "0", "MemcpySetTSOEnabled" to "0",
+                    "X87ReducedPrecision" to "0", "Multiblock" to "0"
+                )
+                Box64Preset.COMPATIBILITY -> mapOf(
+                    "TSOEnabled" to "1", "HalfBarrierTSOEnabled" to "0",
+                    "VectorTSOEnabled" to "0", "MemcpySetTSOEnabled" to "0",
+                    "X87ReducedPrecision" to "0", "Multiblock" to "1"
+                )
+                Box64Preset.INTERMEDIATE -> mapOf(
+                    "TSOEnabled" to "0", "HalfBarrierTSOEnabled" to "0",
+                    "VectorTSOEnabled" to "0", "MemcpySetTSOEnabled" to "0",
+                    "X87ReducedPrecision" to "0", "Multiblock" to "1"
+                )
+                Box64Preset.PERFORMANCE -> mapOf(
+                    "TSOEnabled" to "0", "HalfBarrierTSOEnabled" to "0",
+                    "VectorTSOEnabled" to "0", "MemcpySetTSOEnabled" to "0",
+                    "X87ReducedPrecision" to "1", "Multiblock" to "1",
+                    "DisableL2Cache" to "0", "DynamicL1Cache" to "0"
+                )
+            }
         )
         val active = runCatching { FexConfSupport.activeValues() }.getOrDefault(emptyMap())
         val conf = LinkedHashMap<String, String>(presetDefaults)
@@ -680,20 +766,31 @@ object WineEnvironment {
      *    本变量让 wine 10 系旧包【免重装免重编】跳过该探测；wine 11 树
      *    不读它，零影响。用户 env= 可覆盖（putIfAbsent 语义）。
      *
-     * ② HODLL64/HODLL（仅 arm64ec 形态）：arm64ec 跑 x86_64/i386 程序
-     *    靠仿真器 DLL —— 上游 official/proton 树默认是 xtajit64 桨（只报
-     *    不支持），hangover 树默认 wowbox64（需 box64 PE）。wine 包自带
-     *    libarm64ecfex + libwow64fex（FEX）：
-     *    - HODLL64=libarm64ecfex.dll —— arm64ec 运行必需（x64 仿真器
-     *      DLL），包内存在即注入；用户 HODLL64 覆盖优先。
-     *    - HODLL=libwow64fex.dll —— 【v3.3.34 改为默认注入】（WinlatorXR
-     *      BionicProgramLauncherComponent.java:399-405 对齐：arm64EC
-     *      无条件设 HODLL，fexcore→libwow64fex.dll、否则 wowbox64.dll）。
-     *      v3.2.29 的「勾选 FEX模式才注入」撤销：dll 存在即注入，勾选
-     *      项不再承担门禁（fexMode 形参保留仅调用点兼容）；用户 env=/
-     *      启动参数显式 HODLL= 仍最高优先。
-     *    - 【v3.3.34 大小写归一】wine 读【大写】HODLL/HODLL64 —— 用户在
-     *      env= 或启动参数写小写 hodll= 的值经 extractEnvTokenIgnoreCase
+     * ② HODLL64/HODLL（仅 arm64ec 形态）—— v3.4.2【对齐参考源码】：
+     *    【默认不注入任何 HODLL/HODLL64】。参考源码（WinFusion
+     *    LaunchPlan.buildEnv:222-228）里 HODLL 是【用户容器设置项】
+     *    （libwow64fex.dll / wowbox64.dll 二选一），从不按探测结果默认
+     *    注入，也从【不设置 HODLL64】。AnWind 的 0010/0011 补丁后 wine
+     *    无 HODLL 时的内部缺省就是 libwow64fex/libarm64ecfex
+     *    （hangover 树自带自己的缺省）—— App 侧默认注入是纯冗余，
+     *    而且有害：v3.3.34 的"默认 libwow64fex"、v3.4.0 A2 的
+     *    "默认 wowbox64"（把 32 位游戏从 FEX 强切到 box64-in-wow64）
+     *    都在用户未选择时改写了 32 位模拟层 —— 用户实测
+     *    "性能更差了"的直接嫌疑源（本轮两轮反馈撤销）。
+     *    现在注入恰是三处（fex 运行默认直接 wine exe，选择才前置）：
+     *    ① 用户显式 env=/启动参数 HODLL=/HODLL64=（大小写归一，最高优先）；
+     *    ② 勾选 FEX模式（用户在 UI 的 HODLL 选择）→ HODLL=libwow64fex.dll
+     *      （dll 缺席则跳过 —— 注入不存在的 dll 会让 32 位进程死于
+     *      c0000135，不如交给 wine 内部缺省）；
+     *    ③ 勾选 wowbox64模式（v3.4.2 用户：「wowbox64 模式别取消，加入
+     *      选项，部分 32 游戏需要」）→ HODLL=wowbox64.dll（box64-in-wow64
+     *      32 位模拟层，dll 缺席同样跳过）。参考源码 WinFusion 的 HODLL
+     *      取值恰是这两个二选一（LaunchPlan.buildEnv:224-225：
+     *      0=libwow64fex.dll，1=wowbox64.dll —— SettingKeys
+     *      ContainerFEXHodll）—— AnWind 拆成两个勾选档，同勾时
+     *      FEX模式 在前。
+     *    - 【v3.3.34 大小写归一保留】wine 读【大写】HODLL/HODLL64 ——
+     *      用户在 env= 或启动参数写小写 hodll= 的值经 extractEnvTokenIgnoreCase
      *      规范成大写键导出，不再"导出了但 wine 读不到"。
      *    【v3.2.10】official/proton 树已由 0010/0011 补丁移植了 HODLL/
      *    HODLL64 读取机制（对齐 hangover-11.16）：此前 vanilla 树根本不
@@ -707,8 +804,14 @@ object WineEnvironment {
         arch: WineRuntime.Arch,
         wineDir: File,
         userEnv: String = "",
-        // v3.4.0 A2：FEX 模式开关重新生效（默认 wowbox64 / FEXMODE → FEX）
-        fexMode: Boolean = false
+        // v3.4.2：FEX模式勾选 → 注入 HODLL=libwow64fex.dll；默认不注入
+        //（wine 内部缺省接管），撤销 v3.4.0 A2 的「默认 wowbox64」（用户
+        // 实测性能回退的直接嫌疑源）。
+        // wowbox64模式勾选 → HODLL=wowbox64.dll（用户：「wowbox64 模式别
+        // 取消，加入选项，部分 32 游戏需要」—— WinFusion ContainerFEXHodll
+        // 的另一个取值，两个 UI 档同参考源码的一对取值）。
+        fexMode: Boolean = false,
+        wowboxMode: Boolean = false
     ) {
         // v3.3.37：WINEESYNC 0→1（对齐 WinlatorXR XServerDisplayActivity:1748-1751
         // —— 未设即强制 1；同为 bionic 直跑环境，esync 是线程密集型 32 位
@@ -736,48 +839,39 @@ object WineEnvironment {
         // winedbg=n,b 可恢复调试器。
         env.putIfAbsent("WINEDLLOVERRIDES", "winedbg=d")
         if (arch != WineRuntime.Arch.AARCH64) return
-        // v3.3.34：【HODLL 三处修复】（用户："启动参数加 hodll=libwow64fex.dll
-        // 好像没有真正运行，好像也缺失 libarm64fex.dll 的使用"）
-        //
-        // ① 大小写归一：wine 的 get_cpu_dll_name / load_arm64ec_module 读的
-        //    是【大写】HODLL/HODLL64（0010/0011 补丁与 hangover ABI）。用户
-        //    在 env= 里写小写 hodll= 时旧链路照原样导出小写键 → wine 永远
-        //    读不到 → "没有真正运行"。现在对 userEnv 做【大小写不敏感】解析
-        //    并以规范大写键导出（applyExtraEnv 之后追加的小写键无害共存）。
-        // ② WinlatorXR 对齐（BionicProgramLauncherComponent.java:399-405）：
-        //    arm64EC 无条件设 HODLL（fexcore→libwow64fex.dll、否则
-        //    wowbox64.dll），不是可选项。v3.2.29 的「勾选 FEX模式才注入」
-        //    撤销 —— dll 存在即注入 HODLL=libwow64fex.dll（32 位 wow64
-        //    i386 进程走 FEX 仿真 DLL）；用户 env=/启动参数显式值仍最高优。
-        //    fexMode 形参保留仅为调用点兼容，不再参与门禁。
-        // ③ 探测目录拓宽：libarm64ecfex.dll / libwow64fex.dll 的落位随
-        //    wine 包形态而异（aarch64-windows 平铺 / arm64ec-windows /
-        //    x86_64-windows），逐一直通探测，不再只认单一目录。
+        // v3.4.2【HODLL 对齐参考源码·撤销全部默认注入】（用户两轮反馈：
+        // 「把默认的 HODLL=libwow64fex.dll 去掉，fex 运行默认直接 wine exe
+        //  的，只有我选择了 HODLL 才在前面加」；参考源码 WinFusion
+        // LaunchPlan.buildEnv:222-228 —— HODLL 是【用户容器设置项】，
+        // 从不默认注入、从不设 HODLL64）：
+        // ① 默认【不注入】HODLL/HODLL64 —— 0010/0011 补丁后 wine 内部缺省
+        //    即 libwow64fex/libarm64ecfex（hangover 树自带缺省），App 侧
+        //    注入纯冗余；v3.4.0 A2 的「默认 wowbox64」把 32 位游戏从 FEX
+        //    强切 box64-in-wow64 —— 用户实测「性能更差了」的直接嫌疑源。
+        // ② 大小写归一（v3.3.34 保留）：wine 的 get_cpu_dll_name /
+        //    load_arm64ec_module 读【大写】HODLL/HODLL64 —— 用户写小写
+        //    hodll= 的 token 经 extractEnvTokenIgnoreCase 规范成大写键导出，
+        //    不再「导出了但 wine 读不到」。
+        // ③ 恰三处注入（优先级：用户显式 > FEX模式 > wowbox64模式）：
+        //    a. 用户显式 env=/启动参数 HODLL=/HODLL64=（最高优）；
+        //    b. 勾选 FEX模式 → HODLL=libwow64fex.dll（dll 缺席跳过 —— 注入
+        //       不存在的 dll 会让 32 位进程死于 c0000135，不如交给内部缺省）；
+        //    c. 勾选 wowbox64模式（用户：「wowbox64 模式别取消，加入选项，
+        //       部分 32 游戏需要」）→ HODLL=wowbox64.dll（box64-in-wow64
+        //       32 位模拟层，dll 缺席同样跳过）。参考源码 WinFusion 的 HODLL
+        //       取值恰是这两个二选一（LaunchPlan.buildEnv:224-225 /
+        //       WineConfigure.fexDllsInstalled:356-358：0=libwow64fex.dll，
+        //       1=wowbox64.dll —— SettingKeys.ContainerFEXHodll）—— AnWind
+        //       拆成两个勾选档，同勾时 FEX模式 在前。
         val userHodll64 = extractEnvTokenIgnoreCase(userEnv, "HODLL64")
         val userHodll = extractEnvTokenIgnoreCase(userEnv, "HODLL")
-        if (userHodll64 != null) {
-            env["HODLL64"] = userHodll64
-        } else if (probeEmulatorDll(wineDir, "libarm64ecfex.dll")) {
-            env["HODLL64"] = "libarm64ecfex.dll"
-        }
+        userHodll64?.let { env["HODLL64"] = it }
         if (userHodll != null) {
             env["HODLL"] = userHodll
-        } else {
-            // v3.4.0【性能大修 A2】：32 位 wow64 仿真器 DLL 探测序列重写 ——
-            // 不再单锁 libwow64fex.dll（FEX 解释器）。对齐 WinlatorXR
-            // BionicProgramLauncherComponent 语义：FEX 模式 → libwow64fex；
-            // 默认 → wowbox64（box64 DYNAREC，对 32 位 DDraw/D3D 游戏实测
-            // 明显快于 FEX 解释执行）。wowbox64.dll 缺席时回退 libwow64fex，
-            // 两者皆无则不注入（旧语义）。用户 env=/启动参数 HODLL= 仍最高优。
-            val fexPreferred = fexMode
-            val wowbox = probeEmulatorDll(wineDir, "wowbox64.dll")
-            val fex = probeEmulatorDll(wineDir, "libwow64fex.dll")
-            env["HODLL"] = when {
-                fexPreferred && fex -> "libwow64fex.dll"
-                wowbox -> "wowbox64.dll"
-                fex -> "libwow64fex.dll"
-                else -> return
-            }
+        } else if (fexMode && probeEmulatorDll(wineDir, "libwow64fex.dll")) {
+            env["HODLL"] = "libwow64fex.dll"
+        } else if (wowboxMode && probeEmulatorDll(wineDir, "wowbox64.dll")) {
+            env["HODLL"] = "wowbox64.dll"
         }
     }
 
@@ -801,62 +895,117 @@ object WineEnvironment {
         listOf("lib/wine/aarch64-windows", "lib/wine/arm64ec-windows", "lib/wine/x86_64-windows")
             .any { File(File(wineDir, it), name).isFile }
 
+    // ------------------------------------------------------------------
+    // v3.4.3：assets builtin 预设 JSON（assets-ck 资产，WinFusion 同款）
+    // ------------------------------------------------------------------
+
+    /** v3.4.3：预设资产解析缓存（assets 随 APK 打包，进程内不变）。 */
+    private val presetJsonCache = HashMap<String, Map<String, Map<String, String>>>()
+
+    /**
+     * v3.4.3【预设 JSON 装载】：assets builtin 预设表（用户提供的 assets-ck
+     * 资产包，与参考源码 WinFusion 同款）→ 按档位的环境变量集合。
+     *
+     *  - "builtin/fex_presets.json"：四档（stability/compatibility/
+     *    intermediate/performance）各 15 项 FEX_* —— WinFusion
+     *    LaunchPlan.buildEnv:226-228 经 FEXPresetManager.getEnvVars
+     *    展开的同一张表（含 AnWind 旧表缺失的 TSOENABLED / SMC_CHECKS /
+     *    VOLATILEMETADATA / SMALLTSCSCALE / MAXINST / HOSTFEATURES /
+     *    MONOHACKS / HIDEHYPERVISORBIT —— 其中 performance 档
+     *    TSOENABLED=0 + SMC_CHECKS=none + VOLATILEMETADATA=0 是 FEX
+     *    转译吞吐的主旋钮，正是「arm64ec 性能问题大概率在这里」的缺口）；
+     *  - "builtin/box64_presets.json"：四档各 11 项 BOX64_*（含旧表缺的
+     *    AVX / UNITYPLAYER；WinFusion LaunchPlan.buildEnv:237-242 同款）。
+     *
+     * context 为 null 或资产缺失/坏 JSON（= 打包错误）时返回空表 ——
+     * 调用方回落旧内联表，行为不劣于 v3.4.2。
+     */
+    internal fun presetEnvVars(
+        context: Context?,
+        assetPath: String,
+        log: (String) -> Unit = {}
+    ): Map<String, Map<String, String>> {
+        if (context == null) return emptyMap()
+        synchronized(presetJsonCache) { presetJsonCache[assetPath]?.let { return it } }
+        val parsed = runCatching {
+            context.assets.open(assetPath).bufferedReader().use { r ->
+                val out = LinkedHashMap<String, Map<String, String>>()
+                val arr = org.json.JSONArray(r.readText())
+                for (i in 0 until arr.length()) {
+                    val preset = arr.optJSONObject(i) ?: continue
+                    val name = preset.optString("name").lowercase()
+                    val items = LinkedHashMap<String, String>()
+                    preset.optJSONArray("items")?.let { a ->
+                        for (j in 0 until a.length()) {
+                            val item = a.optJSONObject(j) ?: continue
+                            val k = item.optString("key")
+                            if (k.isNotBlank()) items[k] = item.optString("value")
+                        }
+                    }
+                    if (name.isNotBlank()) out[name] = items
+                }
+                out
+            }
+        }.getOrElse {
+            log("⚠ 预设资产解析失败：$assetPath（${it.message}）—— 回落旧内联档位表")
+            emptyMap()
+        }
+        synchronized(presetJsonCache) { presetJsonCache[assetPath] = parsed }
+        return parsed
+    }
+
     /**
      * v3.3.35：性能档位在 arm64ec 后端真正生效（用户："我的项目所有性能
-     * 都没有提升，全在最低性能"）。
-     *
-     * 根因：[Box64Preset] 此前只映射 BOX64_DYNAREC_* —— box64 后端专属
-     * 变量。arm64ec 后端（aarch64 wine 原生 exec，不经 box64，设备日志
-     * wine-10-20261109-215749 实证：后端=arm64ec、导出 67 项中无任何
-     * FEX_*）下四档预设全部空转 —— 32 位游戏跑在 libwow64fex 的 FEX
-     * 转译上，性能旋钮在 FEX 侧不在 box64 侧。
-     *
-     * 事实链（FEX 官方 Config.json / wiki：配置层最高优先级为 FEX_ 前缀
-     * 环境变量，libwow64fex 是 FEX PE 构建、走同一套 Config 层，wine
-     * 子进程继承宿主环境；未知变量名被忽略 —— 旧 FEX 构建零副作用）：
-     * - DisableL2Cache 默认 true（省内存，代价是 JIT L2 cache 查找被
-     *   关，引入卡顿）；DynamicL1Cache 默认 true（L1 按需扩缩，同样省
-     *   内存换卡顿）。游戏机内存充裕 —— 性能档反着开：L2 查找启用 +
-     *   L1 固定全量，消灭动态收缩型卡顿（进阶档仅开 L2）。
-     * - X87ReducedPrecision 默认 false（x87 内部 80 位精算）。32 位老
-     *   游戏（仙剑四一类 2007 年 x87 密集 D3D9）x87 路径热，降 64 位
-     *   精度是显著提速项；上游注明 may result in rendering bugs ——
-     *   仅性能档启用，出渲染毛刺降一档即回。
-     * - VectorTSOEnabled / MemcpySetTSOEnabled 默认 false（FEX 2406 起
-     *   默认只保标量 TSO）；稳定/兼容档反向打开 = 更接近 x86 硬件
-     *   语义（向量/REP MOVS 原子化），老多线程游戏兼容兜底，代价是
-     *   该类访存变慢 —— 与 box64 线 STRONGMEM 档位语义对称。
+     * 都没有提升，全在最低性能"）。v3.4.3【预设 JSON 注入】全面重写：
+     * 四档 FEX_* 改由 assets builtin/fex_presets.json 派生（用户提供的
+     * assets-ck 资产包，与参考源码 WinFusion FEXPresetManager /
+     * LaunchPlan.buildEnv:226-228 展开的同一张表）—— 旧表每档仅 2-3 项，
+     * 缺的正是主性能旋钮：
+     *  - performance 档 TSOENABLED=0（标量 TSO 关）、SMC_CHECKS=none
+     *    （自修改代码检测关）、VOLATILEMETADATA=0、HALFBARRIERTSO=0 ——
+     *    FEX 转译吞吐的主供应商；旧表只开了 L2/L1 cache，主旋钮全空转；
+     *  - 全档补齐 SMALLTSCSCALE=1 / MAXINST=5000 / MONOHACKS /
+     *    HOSTFEATURES=off / HIDEHYPERVISORBIT=0；
+     *  - 旧表 STABILITY/COMPATIBILITY 档 VECTORTSO=1 的「反向 TSO 兜底」
+     *    与 JSON 稳定档语义冲突（JSON 全档 VECTORTSO=0，稳定档靠
+     *    TSOENABLED=1 + HALFBARRIER=1 + SMC=mtrack 兜底）—— 按 JSON；
+     *  - X87ReducedPrecision JSON 全档 0（上游注明 may result in
+     *    rendering bugs，WinFusion 四档全不开）—— 旧表性能档 =1 撤销。
      *
      * 层级：opt conf（applyOptConfEnv）与容器 env=（applyExtraEnv 直接
      * 赋值）在其后执行 —— conf/用户显式 FEX_*= 仍可覆盖本预设值；
-     * putIfAbsent 仅防同函数内重复。
+     * putIfAbsent 仅防同函数内重复。资产缺席回落旧最小表（打包错误兜底）。
      */
     fun applyFexPresetEnv(
         env: MutableMap<String, String>,
         container: ContainerData,
-        log: (String) -> Unit = {}
+        log: (String) -> Unit = {},
+        context: Context? = null
     ) {
-        when (container.preset) {
-            Box64Preset.STABILITY -> {
-                env.putIfAbsent("FEX_VECTORTSOENABLED", "1")
-                env.putIfAbsent("FEX_MEMCPYSETTSOENABLED", "1")
-                log("性能档 arm64ec 线生效（FEX）：向量/REP-MOVS TSO 兜底（稳定优先）")
+        val presetName = container.preset.name.lowercase()
+        val vars = presetEnvVars(context, "builtin/fex_presets.json", log)[presetName]
+        if (vars.isNullOrEmpty()) {
+            when (container.preset) {
+                Box64Preset.STABILITY -> {
+                    env.putIfAbsent("FEX_VECTORTSOENABLED", "1")
+                    env.putIfAbsent("FEX_MEMCPYSETTSOENABLED", "1")
+                }
+                Box64Preset.COMPATIBILITY -> env.putIfAbsent("FEX_VECTORTSOENABLED", "1")
+                Box64Preset.INTERMEDIATE -> env.putIfAbsent("FEX_DISABLEL2CACHE", "0")
+                Box64Preset.PERFORMANCE -> {
+                    env.putIfAbsent("FEX_DISABLEL2CACHE", "0")
+                    env.putIfAbsent("FEX_DYNAMICL1CACHE", "0")
+                }
             }
-            Box64Preset.COMPATIBILITY -> {
-                env.putIfAbsent("FEX_VECTORTSOENABLED", "1")
-                log("性能档 arm64ec 线生效（FEX）：向量 TSO 兜底（兼容优先）")
-            }
-            Box64Preset.INTERMEDIATE -> {
-                env.putIfAbsent("FEX_DISABLEL2CACHE", "0")
-                log("性能档 arm64ec 线生效（FEX）：JIT L2 cache 查找启用（进阶）")
-            }
-            Box64Preset.PERFORMANCE -> {
-                env.putIfAbsent("FEX_DISABLEL2CACHE", "0")
-                env.putIfAbsent("FEX_DYNAMICL1CACHE", "0")
-                env.putIfAbsent("FEX_X87REDUCEDPRECISION", "1")
-                log("性能档 arm64ec 线生效（FEX）：JIT L1/L2 全量缓存 + x87 64 位精算提速（渲染毛刺→降一档即回）")
-            }
+            log("⚠ FEX 预设 JSON 缺席（builtin/fex_presets.json）—— arm64ec 线回落旧最小表（打包错误，请反馈）")
+            return
         }
+        vars.forEach { (k, v) -> env.putIfAbsent(k, v) }
+        log(
+            "性能档 arm64ec 线生效（FEX 预设 JSON·$presetName 档）：${vars.size} 项 FEX_* 完整注入" +
+                "（TSOENABLED/SMC_CHECKS/VOLATILEMETADATA/SMALLTSCSCALE 等主旋钮在内 —— WinFusion 同款；" +
+                "opt conf / 容器 env= 仍可逐项覆盖）"
+        )
     }
 
     // ------------------------------------------------------------------

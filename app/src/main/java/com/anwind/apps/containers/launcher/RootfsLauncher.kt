@@ -765,30 +765,32 @@ object RootfsLauncher {
             // 2) 运行时目录兜底（rootfs tmp / X11 socket / XDG / 前缀 / logs）
             WineEnvironment.ensureRuntimeDirs(container)
 
-            // 2.5) v3.3.20（用户问题 3）：存量前缀的游戏 AppDefaults 注册表
-            //      兜底清除 —— proton 树 wine 包的 wine.inf 带 31 条 Steam
-            //      游戏 hack（atiadlxx/winxp/xinput 等），已建好的前缀里
-            //      user.reg 照样带着这些垃圾块。标记文件记录清除时的 wine
-            //      目录名：未清过 / 换过 wine → 清一次（幂等，干净前缀秒过）。
-            //      新前缀由 initializePrefixIfNeeded 的 wineboot 后清理覆盖。
-            runCatching {
-                val marker = File(container.prefixPath, ".anwind-appdefaults-clean")
-                val markerVal = if (marker.isFile) marker.readText().trim() else ""
-                if (markerVal != resolved.wineDir.name) {
-                    val removed = WineRegistry.sanitizeAppDefaults(
-                        File(container.prefixPath)
-                    ) { sink.stamp(it) }
-                    marker.parentFile?.mkdirs()
-                    marker.writeText(resolved.wineDir.name)
-                    if (removed > 0) {
-                        sink.stamp("（前缀垃圾注册表已清（$removed 块）；换 wine 运行时后会再检查一次）")
-                    }
-                }
-            }.onFailure { sink.stamp("⚠ AppDefaults 兜底清理跳过：${it.message}（不影响启动）") }
+            // 2.5) v3.4.1【注册表大修】：本位置（env 未建）不再做注册表卫生
+            //      —— 统一移到 3 步 env 就绪后执行
+            //      （WineRegistry.sanitizeRegistryHygiene 需要 env 收尾
+            //      wineserver）。旧 v3.3.20 “标记文件 + 换 wine 才清一次”
+            //      与 v3.3.5 一次性 purge 标记挡不住 wineboot -u 重导入的
+            //      缺陷由此根治（用户实测：v3.4.0 前缀里照样躺着
+            //      Pentiment/rayne1/RDR2/RiftApart 等 31 个 per-exe 块）。
 
             // 3) 基础环境（隔离白名单）+ WINEPREFIX
             val env = LinkedHashMap(WineEnvironment.buildBaseEnv(container, resolved.wineDir))
             env["WINEPREFIX"] = container.prefixPath
+
+            // 3.6) v3.4.1【注册表卫生·每次启动幂等重跑】
+            //      ① wine.inf 源头剥除（proton 树 31 条游戏 hack 就地根治，
+            //        wineboot -u 不再重导入）；
+            //      ② user.reg + system.reg 存量 AppDefaults 段剥除（白名单 =
+            //        管理器 per-exe 账本，用户配置不误删）；
+            //      ③ 全局 [Software\\Wine\\DllOverrides] 注入（WinFusion 同款：
+            //        dinput/xinput=builtin,native，direct3d + 全 wincomponents
+            //        =native,builtin）。
+            //      详见 [WineRegistry.sanitizeRegistryHygiene]。
+            runCatching {
+                WineRegistry.sanitizeRegistryHygiene(context, resolved, container, env) { sink.stamp(it) }
+            }.onFailure {
+                sink.stamp("⚠ 注册表卫生跳过：${it.message}（不影响启动；postPrefixBootChain 会再试）")
+            }
 
             // 3.5) v3.3.7 wine 补丁状态检测（noexec 回退 / locale）—— 存量
             //      wine 包缺配方补丁时给出【可照做】的重装指引，不再让用户
@@ -1073,8 +1075,13 @@ object RootfsLauncher {
             ) {
                 // v3.1.4：wineDir 参数 —— wine 包自带的 x86_64-bionic 依赖闭包
                 // 目录进 BOX64_LD_LIBRARY_PATH（缺它 box64 加载 wine unix .so
-                // 直接 "Symbol ... not found"）
-                WineEnvironment.applyBox64Env(env, container, resolved.wineDir)
+                // 直接 "Symbol ... not found"）；v3.4.3：+context/log ——
+                // 四档 BOX64_* 改由 assets builtin/box64_presets.json 派生
+                //（assets-ck 资产，WinFusion 同款表，含 AVX/UNITYPLAYER）。
+                WineEnvironment.applyBox64Env(
+                    env, container, resolved.wineDir,
+                    context = context, log = { sink.stamp(it) }
+                )
                 // v3.3.21（用户定稿）：前缀构建会话不再强制 SAFEFLAGS=2 ——
                 //   用户实测（Adreno 740 / Android 15，box64 0.4.2-0.4.4）：
                 //   SAFEFLAGS=1 / 2 反而触发 ntdll 早期初始化 SIGSEGV，
@@ -1097,16 +1104,18 @@ object RootfsLauncher {
                 }
             }
 
-            // 6b) Android 安全默认 + arm64ec 仿真器 DLL（v3.1.4）：
-            //     WINEESYNC/WINEFSYNC=0（fsync 探测 SIGSYS 兜底）、
-            //     HODLL64=libarm64ecfex（存在即注入）、
-            //     HODLL=libwow64fex（v3.3.34 起默认注入，WinlatorXR 对齐；
-            //     用户 env=/启动参数显式值最高优 —— 启动参数提取的 token
-            //     追加在 userEnv 尾部参与同一套解析）
+            // 6b) Android 安全默认（v3.1.4）：WINEESYNC/WINEFSYNC=0 等
+            //     沙箱守卫 + HODLL 显式注入（v3.4.2 对齐参考源码 WinFusion
+            //     LaunchPlan）：默认【不】注入 HODLL/HODLL64 —— wine 内部
+            //     缺省（0010/0011 补丁：libwow64fex/libarm64ecfex）接管
+            //     默认路径；仅用户 env=/启动参数显式值，或勾选 FEX模式 →
+            //     HODLL=libwow64fex.dll / wowbox64模式 → HODLL=wowbox64.dll
+            //    （启动参数提取的 token 追加在 userEnv 尾部参与同一套解析）
             WineEnvironment.applyWineCompatEnv(
                 env, resolved.arch, resolved.wineDir,
                 container.env + if (argEnvTokens.isEmpty()) "" else " " + argEnvTokens.joinToString(" "),
-                fexMode = container.hasFlag(com.anwind.apps.containers.ContainerFlags.FEXMODE)
+                fexMode = container.hasFlag(com.anwind.apps.containers.ContainerFlags.FEXMODE),
+                wowboxMode = container.hasFlag(com.anwind.apps.containers.ContainerFlags.WOWBOXMODE)
             )
 
             // v3.3.35：arm64ec 线性能档位 —— BOX64_DYNAREC_* 在此线全空转
@@ -1117,8 +1126,12 @@ object RootfsLauncher {
             // 的实证通道：libwow64fex/libarm64ecfex 读 $HOME/.fex-emu/
             // Config.json（FEX_* env 在部分构建上不生效，双通道保险）。
             if (resolved.backend == ContainerBackend.ARM64EC) {
-                WineEnvironment.applyFexPresetEnv(env, container) { sink.stamp(it) }
-                WineEnvironment.ensureFexConfigFile(env, container) { sink.stamp(it) }
+                // v3.4.3：预设 JSON 注入（assets builtin/fex_presets.json ——
+                // 用户提供的 assets-ck 资产，WinFusion FEXPresetManager
+                // 同一张表；旧表每档仅 2-3 项，performance 档的 TSOENABLED=0/
+                // SMC_CHECKS=none/VOLATILEMETADATA=0 主旋钮全缺）。
+                WineEnvironment.applyFexPresetEnv(env, container, { sink.stamp(it) }, context)
+                WineEnvironment.ensureFexConfigFile(env, container, { sink.stamp(it) }, context)
             }
 
             // v3.3.37：全局性能基线（WinlatorXR 容器出厂调优串移植，两线
@@ -1164,8 +1177,7 @@ object RootfsLauncher {
             // 存量乱码文件移入 .anwind/quarantine 供人工甄别，不自动删除）
             quarantineHomeGarbageFiles { sink.stamp(it) }
 
-            // v3.2.10（用户问题：syswow64 无法生成）：恢复 wineboot 会话的
-            // HODLL64/HODLL 注入，撤销 v3.1.6 的移除。
+            // v3.2.10（用户问题：syswow64 无法生成）→ v3.4.2 改写：
             // 【v3.1.6 误判复盘】当时以为"前缀创建只执行 aarch64 PE"，把
             // proton10 arm64ec 前缀构建挂死归嫌疑于仿真器早期加载而剥离了
             // HODLL64/HODLL。实际两条都不成立：
@@ -1175,19 +1187,26 @@ object RootfsLauncher {
             //      "00dc:err:environ:init_peb starting ...syswow64\rundll32.exe
             //       in experimental wow64 mode"后紧跟
             //      "err:wow:load_64bit_module failed to load dll c0000135"）。
-            //      32 位进程 wow64 初始化需要 CPU 仿真 dll；剥离环境变量 +
-            //      vanilla 树找 xtajit.dll → 进程即死 → Wow64Install 段从未
-            //      执行 → C:\windows\syswow64 整个目录没有内容。
+            //      32 位进程 wow64 初始化需要 CPU 仿真 dll；vanilla 树找
+            //      xtajit.dll → 进程即死 → Wow64Install 段从未执行 →
+            //      C:\windows\syswow64 整个目录没有内容。
             //   2. v3.1.6 时代的 proton10（vanilla wine-10）根本没有读取
             //      HODLL64/HODLL 的代码，注入与否对当时的挂死毫无影响（挂死
             //      根因是 bionic 堆标记/预加载器/esync，已由 v3.2.x 修复）。
-            // 【现在】0010/0011 补丁把 HODLL/HODLL64 机制移植进 official/
-            // proton 树（对齐 hangover-11.16）：前缀构建会话【必须】注入，
-            // 否则 syswow64 依旧是空目录。构建完成后的游戏/程序会话照常注入。
+            // 【现在·v3.4.2】0010/0011 补丁已把 HODLL/HODLL64 机制连同
+            // 内部缺省值（HODLL 未设 → libwow64fex；HODLL64 未设 →
+            // libarm64ecfex）移植进 official/proton 树（对齐
+            // hangover-11.16）—— 前缀构建会话【无需 App 侧注入】，
+            // 32 位 rundll32 由 wine 内部缺省仿真器支撑，syswow64 正常
+            // 生成；勾选 FEX模式/wowbox64模式或显式 HODLL=/HODLL64=
+            // 时以用户值为准（6b 步 applyWineCompatEnv 已注入同一份 env，
+            // wineboot/游戏会话共用，无需分支重复）。
             if (wineArgs.firstOrNull() == "wineboot") {
                 sink.stamp(
-                    "前缀构建会话：保持 HODLL64/HODLL 仿真器注入" +
-                        "（Wow64Install 段需 32 位 rundll32；剥离会导致 syswow64 为空）"
+                    "前缀构建会话：32 位 rundll32 由 wine 内部缺省仿真器支撑" +
+                        "（0010/0011 补丁缺省 libwow64fex/libarm64ecfex；勾选 FEX模式" +
+                        "/wowbox64模式或显式 HODLL=/HODLL64= 时以用户值为准）" +
+                        "—— syswow64 正常生成"
                 )
                 // v3.2.0（用户诉求 4）：前缀构建画面指引 —— 构建已包 explorer
                 // 虚拟桌面（见 buildCommand），mono/gecko 等安装提示框从此在
@@ -1259,6 +1278,7 @@ object RootfsLauncher {
                     // 虚拟桌面与握手分辨率一致（无分辨率时维持旧“当前屏幕”语义）
                     WineRegistry.initializePrefixIfNeeded(
                         resolved, container, env,
+                        context = context,
                         vdResolution = resolution
                     ) { line ->
                         sink.stamp(line)
@@ -1538,7 +1558,8 @@ object RootfsLauncher {
      *     可视信号保持运行，并登记为容器会话）。启动形态：
      *     - arm64ec → `wine taskmgr`；x86_64 → `box64 wine taskmgr`
      *       （wineCommand 自动包装）；FEX 勾选 → env 带
-     *       HODLL=libwow64fex.dll（startfex.sh 同款）。
+     *       HODLL=libwow64fex.dll；wowbox64 勾选 → HODLL=wowbox64.dll
+     *      （startfex.sh 同款取值对；未勾选时不带 —— wine 内部缺省）。
      */
     /**
      * v3.3.2：rootfs/home 顶层的乱码文件移入隔离区（不删除）。
@@ -1676,15 +1697,16 @@ object RootfsLauncher {
         }.onFailure {
             sink.stamp("警告: /opt/prefix 预置资产注入异常: ${it.message}（下次启动自动重试）")
         }
-        // v3.3.5（用户诉求：arm64ec 前缀不应存在 AppDefaults DllOverrides
-        // —— 设备截图实证生态包 user.reg 打入了 s2_mp64_ship.exe /
-        // ShadowOfWar.exe 等游戏的加载序）：存量键值一次性 regedit 清洗
-        // （"值"=- 删除语法，恢复 wine 默认 DLL 加载序）；/opt/prefix
-        // 导入侧同步剥段（normalizeRegForBionic）—— 双保险。
+        // v3.3.5 → v3.4.1【注册表大修】：旧一次性 purge（标记挡住存量段）
+        // 升级为全量注册表卫生（幂等每次重跑）：wineserver 收尾落盘 →
+        // wine.inf 源头剥除 → user.reg/system.reg AppDefaults 段剥除
+        // （管理器 per-exe 账本白名单）→ 全局 [Software\\Wine\\DllOverrides]
+        // 注入（WinFusion 同款）。/opt/prefix 导入侧同步剥段
+        // （normalizeRegForBionic）—— 双保险。
         runCatching {
-            WineRegistry.purgeAppDefaultsDllOverrides(resolved, container, env, prefixLog)
+            WineRegistry.sanitizeRegistryHygiene(context, resolved, container, env, prefixLog)
         }.onFailure {
-            sink.stamp("警告: AppDefaults DllOverrides 清洗异常: ${it.message}（下次启动自动重试）")
+            sink.stamp("警告: 注册表卫生异常: ${it.message}（下次启动自动重试）")
         }
         run {
             // v3.1：dosdevices 兑底 —— 缺失时某些精简 wine 构建不建盘符，
@@ -1735,7 +1757,7 @@ object RootfsLauncher {
             val tmCmd = WineRuntime.wineCommand(resolved) + listOf("taskmgr")
             prefixLog(
                 "解压与注册全部完成 → 启动 taskmgr（${tmCmd.joinToString(" ")}" +
-                    (env["HODLL"]?.let { "，HODLL=$it（FEX 模式）" } ?: "") + "）—— 前缀就绪，容器可正常使用"
+                    (env["HODLL"]?.let { "，HODLL=$it（用户选择：FEX模式/wowbox64模式/显式注入）" } ?: "") + "）—— 前缀就绪，容器可正常使用"
             )
             runCatching {
                 val tmExecutor = NativeShellExecutor.create()

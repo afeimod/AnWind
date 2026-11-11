@@ -1289,7 +1289,8 @@ private fun BasicSettingsTab(
                 ContainerFlags.OPENGL to "OpenGL驱动 (opengl3)",
                 ContainerFlags.UNITY to "Unity单线程渲染 (-force-gfx-direct)",
                 ContainerFlags.F5TASK to "F5任务管理器 (随容器启动)",
-                ContainerFlags.FEXMODE to "FEX模式(HODLL=libwow64fex.dll, 默认已注入)",
+                ContainerFlags.FEXMODE to "FEX模式(勾选才注入HODLL=libwow64fex.dll, 默认不注入)",
+                ContainerFlags.WOWBOXMODE to "wowbox64模式(勾选才注入HODLL=wowbox64.dll, 部分32位游戏)",
                 ContainerFlags.CLOSESERVICE to "关闭service服务",
                 ContainerFlags.DEBUG to "调试日志"
             ),
@@ -1315,8 +1316,11 @@ private fun BasicSettingsTab(
         GNote(
             "startfex.sh/startwine.sh 同款逻辑，参数一律追加在 exe 之后：强制DX11 → -dx11；" +
                 "OpenGL → --rendering-driver opengl3；Unity单线程 → -force-gfx-direct；" +
-                "F5任务管理器 → 随容器启动 /opt/apps/f5taskmgr.exe；FEX模式 → HODLL=libwow64fex.dll（v3.3.34 起默认注入，勾选仅为显式标记）；" +
-                "自定义参数里写 hodll=… / hodll64=…（大小写均可）会自动提升为环境变量不再传给游戏；" +
+                "F5任务管理器 → 随容器启动 /opt/apps/f5taskmgr.exe；" +
+                "FEX模式 → 勾选才注入 HODLL=libwow64fex.dll；wowbox64模式 → 勾选才注入 HODLL=wowbox64.dll" +
+                "（部分 32 位游戏需要 box64-in-wow64；默认都不注入，wine 内部缺省即 FEX；两档同勾时 FEX模式 优先；" +
+                "v3.4.2 对齐参考源码 WinFusion 的 HODLL 二选一取值）；" +
+                "自定义参数里写 hodll=… / hodll64=…（大小写均可）会自动提升为环境变量不再传给游戏（优先于两个勾选档）；" +
                 "调试日志 → AnWind 会话日志本就常显（标记槽位）"
         )
     }
@@ -3913,10 +3917,11 @@ private fun NewContainerDialog(
     var name by remember { mutableStateOf("") }
     var arch by remember { mutableStateOf("x86_64") }
     var wine by remember { mutableStateOf("") }
-    // v3.4.0【性能大修 A3】：新建容器默认 1280x720（对标 Linbox 默认档）——
-    // 2K 屏 native 全物理分辨率渲染像素量是 720p 的 4~6 倍，默认档被像素
-    // 流水线拖死；用户仍可选"全屏"（native）。主桌面 UI 分辨率不受影响。
-    var res by remember { mutableStateOf("1280x720") }
+    // v3.4.1【撤销 v3.4.0 A3 720p】：新建容器默认回归"全屏"（native 全
+    // 物理分辨率）。用户明确指令："主桌面分辨率不要动" —— X11 运行时性能
+    // 靠 X server 前台主进程化 + 桌面 launcher 式让位解决（见
+    // DesktopPerfGovernor / X11Support），不降桌面分辨率。
+    var res by remember { mutableStateOf("全屏") }
     var lang by remember { mutableStateOf(ContainerLangs.DEFAULT) }
     var frame by remember { mutableStateOf("默认(不限制)") }
     var error by remember { mutableStateOf<String?>(null) }

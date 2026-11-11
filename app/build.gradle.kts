@@ -298,8 +298,27 @@ android {
         // ⑤两个 build.sh（wine + hangover-wine）补丁生效硬校验：virtual.c
         //   无 noexec 标记 / env.c 无 locale 标记 → ::error:: 直接构建失
         //   败 —— CI 不再可能产出缺补丁的裸奔 wine 包。
-        versionCode = 104
-        versionName = "2.38.41"
+        versionCode = 105
+        versionName = "2.38.42"
+        // v3.4.3（源码包 v3.4.3，App v2.38.42 / versionCode 105）——
+        //   用户交付 assets-ck 资产包 + WinFusion 参考源码（「assets-ck
+        //   我发了，源码也发了…特别是 arm64ec wine 和 x86_64 wine 的
+        //   调用以及性能问题」「乱的注册表，根据 json 正确打」）：
+        //   ①FEX 预设 JSON 注入（arm64ec 线性能主修复）：fex_presets.json
+        //     四档各 15 项 FEX_* 全量注入（旧表每档仅 2-3 项，performance
+        //     档 TSOENABLED=0/SMC_CHECKS=none/VOLATILEMETADATA=0/
+        //     HALFBARRIERTSO=0 转译吞吐主旋钮全空转）；App 侧
+        //     applyFexPresetEnv 运行时读 assets（presetEnvVars 装载器），
+        //     ensureFexConfigFile 的 Config.json 四档值同源派生（11 键），
+        //     两份 anwind-wine 脚本内联同表。
+        //   ②box64 预设 JSON 对齐（x86_64 线）：box64_presets.json 四档
+        //     11 项（补 AVX/UNITYPLAYER）+ BOX64_PREFER_EMULATED=1
+        //    （WinFusion 同款）；SAFEFLAGS 保持 0（用户设备定稿）；
+        //     PERFORMANCE 档补 MMAP32=1。
+        //   ③注册表核对：ensureGlobalDllOverrides 两份输入 JSON 与
+        //     assets-ck 逐字节一致（v3.4.1 已正确，核验确认）。
+        //   ④assets 新增 builtin/fex_presets.json / fex_env_vars.json /
+        //     box64_presets.json / box64_env_vars.json。
         // v3.3.39（源码包 v3.3.39，App v2.38.41 / versionCode 104）——
         //   用户 2026-11-10 定稿轮（conf 统一 APK 内部 + 容器管理兼容 +
         //   桌面容器更名 bionic + 启动彻底 App 内部化）：
