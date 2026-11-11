@@ -5,7 +5,10 @@ import org.json.JSONArray
 import java.io.File
 
 /**
- * v3.3.40：FEX 变量配置中心（用户需求 1 —— assets-ck 缺失项补全）。
+ * v3.3.40：FEX 变量配置中心（用户需求 1 —— assets-ck 缺失项补全；
+ * v3.4.4 资产统一：两套 JSON 合并进 assets `builtin/`，`anwind/fex/`
+ * 目录删除，容器管理读写全部指向 builtin —— 与启动链 presetEnvVars
+ * 的 `builtin/fex_presets.json`、WinFusion assets/builtin 布局完全同源）。
  *
  * AnWind 与 WinFusion 同源（WinFusion 用 Weston，AnWind 用 X11）；其
  * assets-ck（= WinFusion assets/builtin）中的 `fex_env_vars.json` /
@@ -13,9 +16,9 @@ import java.io.File
  * 只有 applyFexPresetEnv 的 4 档硬编码映射（仅覆盖 6~7 个 FEX_* 变量），
  * 15 个官方 FEX 配置变量从未开放给用户。本类把这些资产接入容器管理：
  *
- *  * `anwind/fex/fex_env_vars.json` —— 变量定义表（name / values /
+ *  * `builtin/fex_env_vars.json` —— 变量定义表（name / values /
  *    toggleSwitch / editText / defaultValue，WinFusion 同源 schema）；
- *  * `anwind/fex/fex_presets.json` —— 四档预设（stability / compatibility /
+ *  * `builtin/fex_presets.json` —— 四档预设（stability / compatibility /
  *    intermediate / performance，name/items[{key,value}] schema）。
  *
  * ## 生效链路（与 DY 配置完全同构）
@@ -36,11 +39,11 @@ import java.io.File
  */
 object FexConfSupport {
 
-    /** 变量定义表（APK assets，随包分发；WinFusion assets-ck 同源）。 */
-    const val ASSET_ENV_VARS = "anwind/fex/fex_env_vars.json"
+    /** 变量定义表（APK assets `builtin/`，随包分发；WinFusion assets-ck 同源）。 */
+    const val ASSET_ENV_VARS = "builtin/fex_env_vars.json"
 
-    /** 四档预设（APK assets）。 */
-    const val ASSET_PRESETS = "anwind/fex/fex_presets.json"
+    /** 四档预设（APK assets `builtin/`）。 */
+    const val ASSET_PRESETS = "builtin/fex_presets.json"
 
     /** 当前生效值文件（App 内部 conf；行式 export KEY=VALUE）。 */
     const val ACTIVE_CONF = "fex_active.conf"

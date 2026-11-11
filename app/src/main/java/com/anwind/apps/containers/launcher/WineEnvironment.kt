@@ -305,11 +305,11 @@ object WineEnvironment {
     /**
      * v3.4.1 A1：Adreno DRM 渲染节点探测（auto 档 freedreno 优先的依据）。
      *
-     * /sys/class/drm/renderD*/device/driver 符号链接名 msm/adreno = Adreno
-     * DRM 可达 —— freedreno 原生 GL 免 Vulkan 翻译层，GL 游戏通常快于
-     * zink；有 dri 权限的设备（root / 宽松 ROM）由 auto 档回归 v3.4.0 前
-     * 的原生速度。读不到 sysfs（无 DRM 设备 / 节点）返回 false → auto
-     * 走 zink/softpipe 分支。
+     * /sys/class/drm 下 renderD 开头节点的 device/driver 符号链接名为
+     * msm 或 adreno = Adreno DRM 可达 —— freedreno 原生 GL 免 Vulkan
+     * 翻译层，GL 游戏通常快于 zink；有 dri 权限的设备（root / 宽松 ROM）
+     * 由 auto 档回归 v3.4.0 前的原生速度。读不到 sysfs（无 DRM 设备 /
+     * 节点）返回 false → auto 走 zink/softpipe 分支。
      */
     private fun hasMsmDrmAccess(): Boolean = try {
         val drm = File("/sys/class/drm")
@@ -461,8 +461,9 @@ object WineEnvironment {
         //    2/2/2/1 不适用本机；flags 保守度对性能影响微小，稳定性优先）；
         //  - PERFORMANCE 档补 BOX64_MMAP32=1（WinlatorXR 同款）。
         // 资产缺席回落下方旧内联表（打包错误兜底，行为不劣于 v3.4.2）。
-        val bvars = presetEnvVars(context, "builtin/box64_presets.json", log)
-            [container.preset.name.lowercase()]
+        val bvars = presetEnvVars(
+            context, "builtin/box64_presets.json", log
+        )[container.preset.name.lowercase()]
         if (!bvars.isNullOrEmpty()) {
             bvars.forEach { (k, v) -> env.putIfAbsent(k, v) }
             env["BOX64_DYNAREC_SAFEFLAGS"] = "0"
@@ -628,8 +629,9 @@ object WineEnvironment {
         // WinFusion FEXPresetManager 同一张表 —— 四档各 15 项，含旧表
         // 缺失的 SMALLTSCSCALE/MAXINST 等）。资产缺席（打包错误）回落
         // 下方旧四档内联表，行为不劣于 v3.4.2。
-        val presetVars = presetEnvVars(context, "builtin/fex_presets.json", log)
-            [container.preset.name.lowercase()].orEmpty()
+        val presetVars = presetEnvVars(
+            context, "builtin/fex_presets.json", log
+        )[container.preset.name.lowercase()].orEmpty()
         // FEX 配置页 env 变量名 → Config.json 键（WinlatorXR FEXCoreManager
         // 实证键位；未映射的 FEX_*（HOSTFEATURES/SMC_CHECKS/MONOHACKS/
         // HIDEHYPERVISORBIT）仅 env 通道）。v3.4.3 +SmallTSCScale/

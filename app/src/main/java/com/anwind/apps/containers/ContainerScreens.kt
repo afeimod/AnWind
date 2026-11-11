@@ -2676,7 +2676,7 @@ private fun FexConfigTab(onSaved: () -> Unit) {
                 }
             }
         }
-        GNote("预设值来自 assets/anwind/fex/fex_presets.json（WinFusion 同源四档）；匹配当前生效值自动选中对应档")
+        GNote("预设值来自 assets/builtin/fex_presets.json（WinFusion 同源四档）；匹配当前生效值自动选中对应档")
     }
 
     // ---- 变量列表（WinFusion fex_env_vars.json 定义表全量） ----
@@ -2720,7 +2720,7 @@ private fun FexConfigTab(onSaved: () -> Unit) {
             }
         }
         GNote(
-            "定义表 = assets/anwind/fex/fex_env_vars.json（FEX_TSOENABLED / FEX_MULTIBLOCK / FEX_MAXINST / " +
+            "定义表 = assets/builtin/fex_env_vars.json（FEX_TSOENABLED / FEX_MULTIBLOCK / FEX_MAXINST / " +
                 "FEX_HOSTFEATURES / FEX_SMC_CHECKS 等 15 项 —— WinFusion assets-ck 同源）"
         )
     }

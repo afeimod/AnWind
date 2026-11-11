@@ -298,8 +298,29 @@ android {
         // ⑤两个 build.sh（wine + hangover-wine）补丁生效硬校验：virtual.c
         //   无 noexec 标记 / env.c 无 locale 标记 → ::error:: 直接构建失
         //   败 —— CI 不再可能产出缺补丁的裸奔 wine 包。
-        versionCode = 105
-        versionName = "2.38.42"
+        // v3.4.4（源码包 v3.4.4，App v2.38.43 / versionCode 106）——
+        //   用户 2026-11-11 GitHub CI 首构失败轮 + 资产统一：
+        //   ①【CI 构建修复】：v3.4.3 的 WineEnvironment.kt:308 KDoc 注释
+        //     正文含字面量 "renderD*/device" —— "*/" 序列提前闭合块注释，
+        //     309-313 行中文注释正文被当 Kotlin 代码解析，kspReleaseKotlin
+        //     报 58 个 Expecting member declaration。改写注释消除 "*/"
+        //     序列（全仓 277 个 Kotlin 文件词法扫描，唯一地雷）。
+        //   ②【索引换行编译错】：v3.4.3 预设 JSON 注入两处调用把 [档位名]
+        //     索引换行写在函数调用后 —— Kotlin 索引后缀不可跨行，被解析
+        //     为集合字面量语句（Unsupported collection literal / Map 传
+        //     String 两类共 4 错）。改写为右括号同行索引（box64/fex 两处）。
+        //     本地 JDK21 + Gradle 8.7 + SDK34 全量验证 compileReleaseKotlin
+        //     BUILD SUCCESSFUL 后交付。
+        //   ③【资产统一（用户：「把 assets 里的 fex 和其他 json 统一一下，
+        //     都用 builtin 下，删掉 fex 下的，容器管理读取和更改也是」）】：
+        //     assets/anwind/fex/ 目录删除（4 份与 builtin/ 逐字节相同的
+        //     重复 JSON），gpu_presets.json（2541 行唯一副本）迁入 builtin/；
+        //     FexConfSupport 的 ASSET_ENV_VARS/ASSET_PRESETS 常量与容器
+        //     管理 FEX 配置页两处帮助文案全部改指 assets builtin/ —— 与
+        //     启动链 presetEnvVars 的 builtin/fex_presets.json、WinFusion
+        //     assets/builtin 布局完全同源，单一权威路径。
+        versionCode = 106
+        versionName = "2.38.43"
         // v3.4.3（源码包 v3.4.3，App v2.38.42 / versionCode 105）——
         //   用户交付 assets-ck 资产包 + WinFusion 参考源码（「assets-ck
         //   我发了，源码也发了…特别是 arm64ec wine 和 x86_64 wine 的
