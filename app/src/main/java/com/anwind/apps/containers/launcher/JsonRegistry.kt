@@ -17,7 +17,7 @@ import java.io.File
  * 每次 1~3 秒的进程拉起 + wineserver 握手开销，wineserver 还会把注册表
  * 缓存在内存里异步回写，导入顺序敏感。
  *
- * 新链路（WinFusion WineRegistryConfigurator + WineRegExporter 模型移植，
+ * 新链路（上游发行包 WineRegistryConfigurator + WineRegExporter 模型移植，
  * 适配 AnWind 的容器布局）：**JSON 描述 → 直接文本合并进前缀的
  * user.reg / system.reg / userdef.reg**，零 wine 进程拉起：
  *
@@ -55,7 +55,7 @@ import java.io.File
  * ## wineserver 一致性
  *
  * wineserver 会把注册表缓存在内存并异步回写 —— 直接改文件前必须确认
- * server 不在（在则先 [WineServerUtils.stop] 三段式收尾落盘，与 WinFusion
+ * server 不在（在则先 [WineServerUtils.stop] 三段式收尾落盘，与 上游发行包
  * WineServerUtils.stop → WineRegistryConfigurator 的顺序约定一致）。
  * 所有既有调用点均有幂等标记，本引擎只在值变化时落盘 —— 常态零开销。
  *

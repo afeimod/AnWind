@@ -8,16 +8,16 @@ import java.io.File
  * v3.3.40：FEX 变量配置中心（用户需求 1 —— assets-ck 缺失项补全；
  * v3.4.4 资产统一：两套 JSON 合并进 assets `builtin/`，`anwind/fex/`
  * 目录删除，容器管理读写全部指向 builtin —— 与启动链 presetEnvVars
- * 的 `builtin/fex_presets.json`、WinFusion assets/builtin 布局完全同源）。
+ * 的 `builtin/fex_presets.json`、上游发行包 assets/builtin 布局完全同源）。
  *
- * AnWind 与 WinFusion 同源（WinFusion 用 Weston，AnWind 用 X11）；其
- * assets-ck（= WinFusion assets/builtin）中的 `fex_env_vars.json` /
+ * AnWind 与 上游发行包 同源（上游发行包 用 Weston，AnWind 用 X11）；其
+ * assets-ck（= 上游发行包 assets/builtin）中的 `fex_env_vars.json` /
  * `fex_presets.json` 在 AnWind 侧一直没有被任何代码消费 —— arm64ec 线
  * 只有 applyFexPresetEnv 的 4 档硬编码映射（仅覆盖 6~7 个 FEX_* 变量），
  * 15 个官方 FEX 配置变量从未开放给用户。本类把这些资产接入容器管理：
  *
  *  * `builtin/fex_env_vars.json` —— 变量定义表（name / values /
- *    toggleSwitch / editText / defaultValue，WinFusion 同源 schema）；
+ *    toggleSwitch / editText / defaultValue，上游发行包 同源 schema）；
  *  * `builtin/fex_presets.json` —— 四档预设（stability / compatibility /
  *    intermediate / performance，name/items[{key,value}] schema）。
  *
@@ -39,7 +39,7 @@ import java.io.File
  */
 object FexConfSupport {
 
-    /** 变量定义表（APK assets `builtin/`，随包分发；WinFusion assets-ck 同源）。 */
+    /** 变量定义表（APK assets `builtin/`，随包分发；上游发行包 assets-ck 同源）。 */
     const val ASSET_ENV_VARS = "builtin/fex_env_vars.json"
 
     /** 四档预设（APK assets `builtin/`）。 */
@@ -56,7 +56,7 @@ object FexConfSupport {
         "performance" to "🚀 性能"
     )
 
-    /** 变量定义（WinFusion fex_env_vars.json schema 的 Kotlin 形态）。 */
+    /** 变量定义（上游发行包 fex_env_vars.json schema 的 Kotlin 形态）。 */
     data class FexVarDef(
         val name: String,
         val values: List<String>,

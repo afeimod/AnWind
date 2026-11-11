@@ -9,7 +9,7 @@ import java.io.FileReader
 import java.util.concurrent.TimeUnit
 
 /**
- * Wine 服务进程生命周期工具（移植 WinFusion WineServerUtils，适配
+ * Wine 服务进程生命周期工具（移植 上游发行包 WineServerUtils，适配
  * AnWind 的容器/多版本 wine 布局）。
  *
  * wineserver 会把注册表缓存在内存中并异步回写 user.reg 等文件；同时它

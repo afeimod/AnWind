@@ -14,7 +14,7 @@ import java.util.concurrent.TimeUnit
 /**
  * 原生子进程执行器 —— AnWind 原生 rootfs 启动架构的基石。
  *
- * 参照 WinFusion 的 ShellExecutor（Java）移植为 Kotlin：所有 rootfs 内的
+ * 参照上游发行包 的 ShellExecutor（Java）移植为 Kotlin：所有 rootfs 内的
  * 二进制（wine / wineserver / wineboot / pulseaudio / box64 …）都由本类经
  * [ProcessBuilder] 直接 exec，**不经任何终端模拟器、不经 bash 脚本、
  * 不经 PTY**。子进程的 stdin/stdout/stderr 是普通的管道（或按需重定向
@@ -25,13 +25,13 @@ import java.util.concurrent.TimeUnit
  *     （LD_PRELOAD / TERMUX_* / 错误 DISPLAY 等"终端遗产"从源头消失）；
  *  2. 结构化日志 —— stdout/stderr 逐行回调实时落盘，不再从 80×24 pty
  *     transcript 里二次抠文本（历史教训：给 wine 会话接 bash 管道曾触发
- *     wineboot SEH 崩溃；ProcessBuilder 管道是 WinFusion 生产验证过的
+ *     wineboot SEH 崩溃；ProcessBuilder 管道是 上游发行包 生产验证过的
  *     标准通路，两者机制完全不同）；
  *  3. 生命周期可控 —— 持有 [Process] 句柄，destroy/destroyForcibly/
  *     waitFor 具备进程语义，配合 [WineServerUtils] 完成整棵 wine 树的
  *     干净收尾，不再依赖 `ps -ef | grep | xargs kill` 文本级清理。
  *
- * 线程模型（对齐 WinFusion 的教训）：读输出 / 等退出的任务全部跑在
+ * 线程模型（对齐上游发行包 的教训）：读输出 / 等退出的任务全部跑在
  * 自管 cached daemon 线程池上 —— 绝不能用 ForkJoinPool.commonPool()
  * （阻塞的 readLine() 不会触发补偿建线程，多个常驻子进程会互相饿死，
  * 表现为"容器在跑但日志一个字都没有"）。

@@ -24,10 +24,10 @@ import java.util.concurrent.TimeUnit
 /**
  * 原生 rootfs 启动编排器 —— AnWind 原生启动架构的中枢。
  *
- * 对齐 WinFusion Launcher 的编排模型（resolve → 目录检查 → 显示就绪 →
+ * 对齐上游发行包 Launcher 的编排模型（resolve → 目录检查 → 显示就绪 →
  * 清残留会话 → 环境构建 → 前缀/注册表准备 → exec），但**显示环节是
  * X11**（[X11Support]：App 内嵌 termux-x11/libXlorie），不是 Weston/
- * Wayland —— 这是 AnWind 与 WinFusion 的方案差异，按需求保留 X11。
+ * Wayland —— 这是 AnWind 与 上游发行包 的方案差异，按需求保留 X11。
  *
  * 与旧「终端链路」的本质区别：wine 是 [NativeShellExecutor] 直接 exec
  * 的原生子进程，**不再存在 bash / anwind-wine 脚本 / PTY / 终端模拟器**
@@ -44,7 +44,7 @@ import java.util.concurrent.TimeUnit
  *   run_wine                              → [buildCommand] + NativeShellExecutor.exec
  *  ```
  *
- * 启动前清 wineserver 残留（对齐 WinFusion launch 链）：上次会话的
+ * 启动前清 wineserver 残留（对齐上游发行包 launch 链）：上次会话的
  * server 若还在，新客户端会连上旧会话 —— "第一次能启动，之后再也起
  * 不来"的根因；注册表内存缓存也是它，不清则后续注册表写入被无视。
  */
@@ -269,7 +269,7 @@ object RootfsLauncher {
     /**
      * 停止容器内全部 wine 进程。
      *
-     * 顺序（对齐 WinFusion clean()）：先收 wine 客户端会话，再
+     * 顺序（对齐上游发行包 clean()）：先收 wine 客户端会话，再
      * wineserver -k / -w 让 server 自己 kill_all_processes() 收掉
      * 整棵进程树（services.exe / winedevice.exe / explorer / 游戏）。
      */
@@ -396,7 +396,7 @@ object RootfsLauncher {
     // ------------------------------------------------------------------
     // v3.3.6（用户定稿）：noexec 存储**零拷贝**直读执行 —— 游戏 exe 按
     // 原路径直接启动，不再有任何执行区/镜像机制（v3.2.23 整目录导入、
-    // v3.3.5 PE 件落地两代机制全部移除；对齐 Winlator / MiceWine ——
+    // v3.3.5 PE 件落地两代机制全部移除；对齐上游同类项目 ——
     // 两者都直接从 /storage/emulated/0 跑游戏，没有 PE 落地机制）
     // ------------------------------------------------------------------
 
@@ -414,7 +414,7 @@ object RootfsLauncher {
      * **匿名内存不受限**（匿名页加执行位照常允许）；普通读写完全不受
      * 影响。因此 wine 加载 noexec 上的 PE 镜像有一条官方回退路：带执行
      * 位 mmap 失败 → 改用匿名页 + pread() 读入文件内容 + 再加执行位
-     * —— 这正是 Winlator 直跑外部存储游戏的机制（其 wine-9.2-custom
+     * —— 这正是上游参考实现直跑外部存储游戏的机制（其 wine-9.2-custom
      * 删掉了共享映射硬失败，bionic-rootfs 补丁 0011/0014 系列已把同款
      * 回退补进全部构建形态）。
      */
@@ -496,7 +496,7 @@ object RootfsLauncher {
     }
 
     /**
-     * v3.3.6 定稿（用户原话：「真·完全零拷贝…Winlator 和 MiceWine 都是
+     * v3.3.6 定稿（用户原话：「真·完全零拷贝…上游同类项目都是
      * 直接从 /storage/emulated/0 跑游戏」—— v3.2.23 整目录导入与
      * v3.3.5 PE 件落地两代机制全部废除）。
      *
@@ -715,7 +715,7 @@ object RootfsLauncher {
                     }
                 }
 
-                // 0.5) v3.3.16（WinNative DriverPackages 模型）：Vulkan 驱动
+                // 0.5) v3.3.16（上游实现 DriverPackages 模型）：Vulkan 驱动
                 //      （wrapper / 用户 turnip tar）装到【独立目录】
                 //      usr/share/anwind-wrapper/drivers/<slot>/（自带 ICD，
                 //      rootfs 任何文件不被覆盖，多版本共存）。
@@ -782,7 +782,7 @@ object RootfsLauncher {
             //        wineboot -u 不再重导入）；
             //      ② user.reg + system.reg 存量 AppDefaults 段剥除（白名单 =
             //        管理器 per-exe 账本，用户配置不误删）；
-            //      ③ 全局 [Software\\Wine\\DllOverrides] 注入（WinFusion 同款：
+            //      ③ 全局 [Software\\Wine\\DllOverrides] 注入（上游同款：
             //        dinput/xinput=builtin,native，direct3d + 全 wincomponents
             //        =native,builtin）。
             //      详见 [WineRegistry.sanitizeRegistryHygiene]。
@@ -857,12 +857,12 @@ object RootfsLauncher {
             // 6) GPU / Box64 环境叠加
             WineEnvironment.applyGpuEnv(env, container)
 
-            // 6a) v3.3.16（WinNative 模型）：Vulkan 驱动激活 —— 容器 wrapper /
+            // 6a) v3.3.16（上游实现 模型）：Vulkan 驱动激活 —— 容器 wrapper /
             //     turnip（用户 tar）槽位中任一选中时，VK_ICD_FILENAMES 指向
             //     其独立目录的自生成 ICD 清单，并把驱动目录前插
             //     LD_LIBRARY_PATH（附属 .so 如 libc++_shared.so 的解析位）；
             //     GL 侧：容器 gallium 为 auto/空/zink 时联动 zink（GL over
-            //     Vulkan 吃驱动加速，WinNative XServerDisplayActivity 同款
+            //     Vulkan 吃驱动加速，上游实现 XServerDisplayActivity 同款
             //     MESA_LOADER_DRIVER_OVERRIDE=zink + GALLIUM_DRIVER=zink），
             //     用户显式选了 freedreno/softpipe 等则尊重选择。
             //     都未选 = Mesa 内置 Turnip（BUNDLED，loader 默认搜索，不注入）。
@@ -885,7 +885,7 @@ object RootfsLauncher {
                         sink.stamp("⚠ 系统驱动：wrapper 栈不可用（资产缺失/安装失败），回退 Mesa 内置 Turnip")
                     }
                 }
-                // v3.3.19：激活计划（WinNative 语义：ELF 平台识别 + wrapper 栈
+                // v3.3.19：激活计划（上游实现 语义：ELF 平台识别 + wrapper 栈
                 // 路由 + 依赖闭环预检）。用户实测（2026-11-08 会话日志）：选了
                 // wrapper-22 后游戏报 "Required Vulkan extension VK_KHR_surface
                 // not supported" —— ICD 的 .so 在 bionic 原生 wine 进程里
@@ -962,7 +962,7 @@ object RootfsLauncher {
                         }
                         env["LD_LIBRARY_PATH"] = ldParts.joinToString(":")
                         if (act.wrapperStack) {
-                            // wrapper 栈模式（WinNative setDriverById + wrapper_icd 同款）：
+                            // wrapper 栈模式（上游实现 setDriverById + wrapper_icd 同款）：
                             // ICD→libvulkan_wrapper.so，turnip 经 ADRENOTOOLS_*
                             // 注入，X11 WSI 由 wrapper 的 xcb 侧提供
                             //
@@ -991,7 +991,7 @@ object RootfsLauncher {
                                 env["ADRENOTOOLS_HOOKS_PATH"] = hooks.absolutePath
                             }
                             // adrenotools 临时目录（patched .so 落盘位）：wrapper
-                            // 内部拼 <driverPath>/temp，必须预创建（WinNative
+                            // 内部拼 <driverPath>/temp，必须预创建（上游实现
                             // vulkan.c 的 mkdir(tmpdir) 同款语义）
                             act.adrenotoolsTempDir?.let { tmp ->
                                 runCatching { tmp.mkdirs() }
@@ -1004,7 +1004,7 @@ object RootfsLauncher {
                             val adrenoDriverName = act.adrenotoolsDriverName
                             val adrenoDriverDir = act.adrenotoolsDriverDir
                             if (adrenoDriverName != null && adrenoDriverDir != null) {
-                                // v3.3.28：尾斜杠对齐 WinlatorXR（AdrenotoolsManager
+                                // v3.3.28：尾斜杠对齐上游参考（AdrenotoolsManager
                                 // setDriverById 的 driverPath 拼法 `dir + "/"`）——
                                 // 部分 wrapper 栈按 driverPath 直接拼接子路径
                                 // （temp/、driver 库名），无尾斜杠时拼出
@@ -1077,7 +1077,7 @@ object RootfsLauncher {
                 // 目录进 BOX64_LD_LIBRARY_PATH（缺它 box64 加载 wine unix .so
                 // 直接 "Symbol ... not found"）；v3.4.3：+context/log ——
                 // 四档 BOX64_* 改由 assets builtin/box64_presets.json 派生
-                //（assets-ck 资产，WinFusion 同款表，含 AVX/UNITYPLAYER）。
+                //（assets-ck 资产，上游同款表，含 AVX/UNITYPLAYER）。
                 WineEnvironment.applyBox64Env(
                     env, container, resolved.wineDir,
                     context = context, log = { sink.stamp(it) }
@@ -1105,7 +1105,7 @@ object RootfsLauncher {
             }
 
             // 6b) Android 安全默认（v3.1.4）：WINEESYNC/WINEFSYNC=0 等
-            //     沙箱守卫 + HODLL 显式注入（v3.4.2 对齐参考源码 WinFusion
+            //     沙箱守卫 + HODLL 显式注入（v3.4.2 对齐上游发行包
             //     LaunchPlan）：默认【不】注入 HODLL/HODLL64 —— wine 内部
             //     缺省（0010/0011 补丁：libwow64fex/libarm64ecfex）接管
             //     默认路径；仅用户 env=/启动参数显式值，或勾选 FEX模式 →
@@ -1122,19 +1122,19 @@ object RootfsLauncher {
             //（aarch64 wine 原生 exec 不经 box64），预设改映射 FEX_ 前缀
             // 环境变量（libwow64fex/libarm64ecfex 配置层最高优先级）。
             // opt conf 与容器 env= 在其后执行，仍可覆盖。
-            // v3.3.37：+ ensureFexConfigFile —— 参考 WinlatorXR FEXCoreManager
+            // v3.3.37：+ ensureFexConfigFile —— 参考 上游参考 FEXCoreManager
             // 的实证通道：libwow64fex/libarm64ecfex 读 $HOME/.fex-emu/
             // Config.json（FEX_* env 在部分构建上不生效，双通道保险）。
             if (resolved.backend == ContainerBackend.ARM64EC) {
                 // v3.4.3：预设 JSON 注入（assets builtin/fex_presets.json ——
-                // 用户提供的 assets-ck 资产，WinFusion FEXPresetManager
+                // 用户提供的 assets-ck 资产，上游发行包 FEXPresetManager
                 // 同一张表；旧表每档仅 2-3 项，performance 档的 TSOENABLED=0/
                 // SMC_CHECKS=none/VOLATILEMETADATA=0 主旋钮全缺）。
                 WineEnvironment.applyFexPresetEnv(env, container, { sink.stamp(it) }, context)
                 WineEnvironment.ensureFexConfigFile(env, container, { sink.stamp(it) }, context)
             }
 
-            // v3.3.37：全局性能基线（WinlatorXR 容器出厂调优串移植，两线
+            // v3.3.37：全局性能基线（上游参考 容器出厂调优串移植，两线
             // 共用：mailbox 呈现 / GL NO_ERROR / DXVK 异步编译与状态缓存 /
             // WINEDEBUG=-all / esync 等）—— 全部 putIfAbsent，opt conf 与
             // 容器 env= 在其后仍可逐项覆盖。
@@ -1143,7 +1143,7 @@ object RootfsLauncher {
             // v3.3.37：DXVK 真激活 —— v3.2.27 撤销全部 DllOverrides 后，
             // wine 默认加载序（builtin 优先）从未真正加载过解压进
             // system32/syswow64 的 DXVK DLL；dxvk 槽位激活时注入
-            // D3D/DXGI 全家 native,builtin（WinlatorXR WineUtils 同款），
+            // D3D/DXGI 全家 native,builtin（上游参考 WineUtils 同款），
             // 与 winedbg=d 合并，容器 dxoverrides/env= 仍最高优。
             WineEnvironment.applyDxvkEnv(env, container) { sink.stamp(it) }
 
@@ -1444,7 +1444,7 @@ object RootfsLauncher {
                             sink.stamp("警告: wineboot 后续链异常: ${it.message}（下次启动自动重试）")
                             prefixLogLine(key, "wineboot 后续链异常: ${it.message}")
                         }
-                        sink.stamp("前缀构建完成（wineboot → 解压 → 注册表 → taskmgr，startwine.sh 顺序）")
+                        sink.stamp("前缀构建完成（wineboot → 解压 → 注册表 → taskmgr）")
                         prefixLogLine(key, "前缀构建完成")
                         _prefixBuildFlow.value = null
                     }
@@ -1711,7 +1711,7 @@ object RootfsLauncher {
         // 升级为全量注册表卫生（幂等每次重跑）：wineserver 收尾落盘 →
         // wine.inf 源头剥除 → user.reg/system.reg AppDefaults 段剥除
         // （管理器 per-exe 账本白名单）→ 全局 [Software\\Wine\\DllOverrides]
-        // 注入（WinFusion 同款）。/opt/prefix 导入侧同步剥段
+        // 注入（上游同款）。/opt/prefix 导入侧同步剥段
         // （normalizeRegForBionic）—— 双保险。
         runCatching {
             WineRegistry.sanitizeRegistryHygiene(context, resolved, container, env, prefixLog)
@@ -1914,7 +1914,7 @@ object RootfsLauncher {
             log("仙剑四兼容：未配置 cores，本次自动单核（多核竞态崩溃规避，CPU核心 页可改回）")
         }
         // v3.4.0【性能大修】：CPU 亲和默认开启 —— cores/cores.conf 均未
-        // 配置时自动探测大核簇（cpufreq max_freq 最高组，Winlator 性能模式
+        // 配置时自动探测大核簇（cpufreq max_freq 最高组，上游性能模式
         // 同款思路）并钉核：wine 默认跑在调度器随手分的小核上，是
         // “bionic 不到 proot 一半”的重要级供应商；探测失败（无 sysfs/
         // 单簇 SoC）保持系统调度零风险。容器 CPU核心 页显式配置仍最高优。

@@ -11,7 +11,7 @@ doNotApplyPatch=1
 # ------------------------------------------------------------
 # 与 hangover-wine（aarch64 + qemu）互补的第二个 Wine 运行时：
 #   * 目标架构 x86_64（bionic），PE 侧 i386+x86_64（新 WoW64）
-#   * aarch64 设备上由 box64 加载运行（MiceWine 同款模型：
+#   * aarch64 设备上由 box64 加载运行（上游项目 同款模型：
 #     `box64 $PREFIX/opt/wine/bin/wine ...`）
 #   * x86_64 设备上原生运行，无需模拟器
 #   * 显示：仅 X11（--with-x 全套 X 扩展；无 wayland）
@@ -511,11 +511,11 @@ FSYSGUARD
   # v3.2.0：esync Android 硬禁用 —— proton10 arm64ec wineboot 无输出挂死
   # 的头号嫌疑。设备日志实证：ntdll 已成功加载（"anwind: bionic heap
   # tagging disabled" 出现 = __wine_main 在跑）后，esync 初始化路径打印
-  # "_r_debug not found in ld.so"（proton/Winlator 系 wine 在 Android 上的
-  # 同款输出；Winlator 紧跟 "esync: shm initialized" 能走通，bionic 下
+  # "_r_debug not found in ld.so"（proton/上游参考 系 wine 在 Android 上的
+  # 同款输出；上游参考 紧跟 "esync: shm initialized" 能走通，bionic 下
   # 无 _r_debug 导出、无 /dev/shm，该段 DSO 枚举/共享内存代码走不通，
   # 之后进程再无任何输出 = 挂死）。esync 在 Android 沙箱收益为零
-  # （Winlator/MiceWine 默认关闭），与 fsync 守卫同款处理：__ANDROID__
+  # （上游参考/上游项目 默认关闭），与 fsync 守卫同款处理：__ANDROID__
   # 目标 do_esync 直接 return 0；运行期 WINEESYNC=0 环境兜底保留。
   # wine >=10 官方树/hangover-11 树 esync 并入 sync.c（无独立 esync.c），
   # 文件缺失自动跳过；幂等。
@@ -539,7 +539,7 @@ FSYSGUARD
      * /dev/shm; proton's esync DSO-enumeration/shm init path hangs the
      * process silently on Android (device log: "_r_debug not found in
      * ld.so" then no output at all). esync gives zero benefit in the
-     * Android sandbox (Winlator/MiceWine ship it disabled). Hard-disable
+     * Android sandbox (上游参考/上游项目 ship it disabled). Hard-disable
      * on bionic targets; WINEESYNC=0 runtime fallback stays. */
     return 0;
 #endif
@@ -615,7 +615,7 @@ UFFDGUARD
   # bin/wine 及其 ELF 解释器再跳入 —— box64 仿真下该交接跑不通（设备日志
   # 连预加载器的 "_r_debug not found in ld.so" 告警都没有 = 死在进入前后），
   # 进程无任何输出阵亡。禁用后首进程与子进程全部直接 exec wine loader
-  # （box64 对 execve 的 x86_64 再入即 MiceWine 模型常规路径）。
+  # （box64 对 execve 的 x86_64 再入即 上游项目 模型常规路径）。
   # pre_package 侧同步剔除 bin/*-preloader 入口（旧包由 App 侧停用兜底）。
   # 幂等；锚点缺失（树结构漂移）时告警跳过不中断。
   disable_preloader_android() {

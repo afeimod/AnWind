@@ -247,14 +247,14 @@ object WineRegistry {
                 if (!link.exists() && target.isDirectory) {
                     try {
                         android.system.Os.symlink(targetPath, link.absolutePath)
-                        log("已补 dosdevices $drive → $targetPath（参考 startwine.sh 盘符矩阵）")
+                        log("已补 dosdevices $drive → $targetPath（盘符矩阵惯例）")
                     } catch (e: Exception) {
                         log("警告: $drive 盘补建失败（${e.message}）")
                     }
                 }
             }
 
-            // v3.2.28（startwine.sh 同款）：x: 盘 → 前缀内 drive_x
+            // v3.2.28：x: 盘 → 前缀内 drive_x
             // （mkdir -p $WINEPREFIX/drive_x; ln -sf …dosdevices/x: ——
             // 安装包脚本/快捷方式按 x: 引用前缀内资源时可达）。
             runCatching {
@@ -263,7 +263,7 @@ object WineRegistry {
                 val link = File(dd, "x:")
                 if (!link.exists()) {
                     android.system.Os.symlink(driveX.absolutePath, link.absolutePath)
-                    log("已补 dosdevices x: → $driveX（startwine.sh 同款）")
+                    log("已补 dosdevices x: → $driveX（前缀资源盘惯例）")
                 }
             }.onFailure { log("警告: x: 盘补建失败（${it.message}）") }
 
@@ -274,9 +274,9 @@ object WineRegistry {
 
     /**
      * v3.3.6（用户指令：「Z 盘如果缺少 /storage 或者 sdcard 等访问入口，
-     * 参考 Winlator 和 MiceWine 的 rootfs 正确逻辑补齐」）。
+     * 参考上游同类项目的 rootfs 正确逻辑补齐」）。
      *
-     * 勘察结论：Winlator 的 z: 直链其 rootfs 根、外部存储只经 d:/e: 盘符
+     * 勘察结论：上游参考实现的 z: 直链其 rootfs 根、外部存储只经 d:/e: 盘符
      * 触达，rootfs 内**没有** /storage、/sdcard 入口；AnWind 按用户指令
      * 补齐 —— rootfs 根下建两条符号链接：
      *  - storage → /storage            （Z:\storage\emulated\0\… 与 Android
@@ -691,7 +691,7 @@ object WineRegistry {
                 //   段（白名单保护：App 侧用户手动 per-exe 配置不误删）；
                 // ② 注入全局 [Software\Wine\DllOverrides]
                 //   （amstream/atl100/d3d8~d3d12core=native,builtin，
-                //   WinFusion 同款 —— 详见 ensureGlobalDllOverrides）。
+                //   上游同款 —— 详见 ensureGlobalDllOverrides）。
                 // postPrefixBootChain 每次启动链同样幂等重跑 —— v3.3.20
                 // 只在首建前缀清一次 + v3.3.5 purge 一次性标记挡住存量段
                 // 的缺陷由此根治（wineboot -u 重写入的 hack 不再留存）。
@@ -901,7 +901,7 @@ object WineRegistry {
 
     /**
      * v3.4.1【注册表大修·注入】：全局 [Software\\Wine\\DllOverrides] 幂等落位
-     * —— WinFusion DirectXWrapperConfigure + WinComponentsConfigure 同款语义
+     * —— 上游发行包 DirectXWrapperConfigure + WinComponentsConfigure 同款语义
      * （参考源码与资产由用户提供）：
      *
      *  * assets builtin/wineprefix/wine_dll_overrides.json：
@@ -914,7 +914,7 @@ object WineRegistry {
      *  * assets builtin/wineprefix/wincomponents/wincomponents.json：全部组件
      *    dlnames（amstream/atl100/d3dcompiler_33~47/d3dx9_24~43/xactengine…/
      *    wmvcore 等约 150 项）固定 "native,builtin"（AnWind 无组件开关 UI ——
-     *    WinFusion 默认全原生同款；restoreBuiltinDlls 只影响切回 builtin 的
+     *    上游发行包 默认全原生同款；restoreBuiltinDlls 只影响切回 builtin 的
      *    语义，此处不参与）；
      *  * 经 [JsonRegistry] 直写 user.reg（零 wine 进程拉起；只在值变化时
      *    落盘；wineserver 在跑则先收尾落盘）。
@@ -993,7 +993,7 @@ object WineRegistry {
         }
         log(
             "全局 [Software\\\\Wine\\\\DllOverrides] 已落位（${overrides.size} 项：dinput/xinput=builtin,native，" +
-                "direct3d(dx8_11/dx12)+全 wincomponents=native,builtin —— WinFusion 同款，原生 dll 缺席自动回退 builtin）"
+                "direct3d(dx8_11/dx12)+全 wincomponents=native,builtin —— 原生 dll 缺席自动回退 builtin）"
         )
         return true
     }
@@ -1075,6 +1075,14 @@ object WineRegistry {
      *    alsa-plugins pulse 桥（/etc/asound.conf）→ 同一守护 → sles-sink）；
      *  - OFF  → ""（空 = 不加载任何音频驱动，完全无声）。
      *
+     * v3.4.8（用户 2026-11-12："我选择了 alsa 还是用的 pulse"）：
+     * **winecfg 手改优先** —— 旧逻辑每次启动按容器档强制覆写，用户在
+     * winecfg「音频」页选的驱动下次启动就被拉回。现在先读注册表现值
+     * （[readUserRegSz]），现值与容器档映射不一致 = 用户在 winecfg 手改
+     * → 容器档跟随注册表（ContainerManager.update 持久化，不在回写），
+     * 后续会话即按新档走（守护/env 注册表一致）；键不存在或与档一致
+     * 才落位（幂等）。
+     *
      * JsonRegistry 直写 hive（与 [ensureGlobalDllOverrides] 同一通路，
      * 幂等；首建前缀 user.reg 缺席时跳过 —— postPrefixBootChain 会再试）。
      */
@@ -1091,6 +1099,27 @@ object WineRegistry {
             ContainerAudio.ALSA -> "alsa" to "winealsa（经 alsa-plugins pulse 桥 → 守护 → sles-sink）"
             ContainerAudio.OFF -> "" to "空（不加载音频驱动）"
             else -> "pulse" to "winepulse（原生 libpulse → 守护 → sles-sink）"
+        }
+        // v3.4.8：winecfg 手改检测（现值 ≠ 容器档映射 → 容器档跟随）
+        val current = readUserRegSz(container.prefixPath, "Software\\\\Wine\\\\Drivers", "Audio")
+        if (current != null && current != value) {
+            val follow = when (current.lowercase().trim()) {
+                "alsa" -> ContainerAudio.ALSA
+                "pulse" -> ContainerAudio.PULSE
+                "" -> ContainerAudio.OFF
+                else -> null // 多驱动组合（"pulse,alsa" 等逗号串）：保留注册表原样
+            }
+            if (follow == null) {
+                log("音频: winecfg 手改 Audio=\"$current\"（多驱动组合）—— 保留注册表值，容器档 ${container.audio.id} 不动")
+                return true
+            }
+            if (follow != container.audio) {
+                val err = ContainerManager.update(container.copy(audio = follow))
+                log("音频: 检测到 winecfg 手改 Audio=\"${if (current.isEmpty()) "（空=禁用）" else current}\" —— 容器档跟随为 ${follow.id}" +
+                    if (err == null) "（已持久化；原 ${container.audio.id}）" else "（⚠ 持久化失败：$err；本次会话仍按 $follow 生效）")
+            }
+            // 注册表用户值已在位 —— 不覆盖回写
+            return true
         }
         val edits = org.json.JSONArray().put(
             org.json.JSONObject()
@@ -1113,6 +1142,34 @@ object WineRegistry {
         log("音频驱动已落位 [Software\\\\Wine\\\\Drivers] Audio=${if (value.isEmpty()) "（空=禁用）" else value} —— $human")
         return true
     }
+
+    /**
+     * v3.4.8：轻量注册表 sz 读（user.reg 文本直析，不起 wine 进程）。
+     *
+     * wine reg 格式：段头 `[Software\\\\Wine\\\\Drivers] 123456789`，
+     * 值行 `"Audio"="pulse"`（字符串值；dword/hex 返回 null）。
+     * 找不到键/段返回 null（区别于空串值 = 显式禁用）。
+     */
+    private fun readUserRegSz(
+        prefixPath: String,
+        keyPath: String,
+        valueName: String
+    ): String? = runCatching {
+        val f = File(prefixPath, "user.reg")
+        if (!f.isFile) return null
+        val section = "[$keyPath]"
+        val inSection: (String) -> Boolean = { it.startsWith(section) }
+        val lines = f.readLines()
+        var idx = lines.indexOfFirst(inSection)
+        if (idx < 0) return null
+        idx++
+        while (idx < lines.size && !lines[idx].startsWith("[")) {
+            val m = Regex("^\\\"${Regex.escape(valueName)}\\\"=\\\"(.*)\\\"$").find(lines[idx])
+            if (m != null) return m.groupValues[1]
+            idx++
+        }
+        null
+    }.getOrNull()
 
 
     /**
@@ -1507,7 +1564,7 @@ object WineRegistry {
     }
 
     /**
-     * WinFusion 风格 wine 发行包的前缀预置资产注入（用户问题：
+     * 发行包风格 wine 发行包的前缀预置资产注入（用户问题：
      * "构建前缀也没有解压 rootfs/opt/prefix/ 下的文件和注册表注册"）。
      *
      * 参考链路（startwine.sh 前缀构建段）：
@@ -1591,7 +1648,7 @@ object WineRegistry {
 
         // ① drive_c / directx 归档（arm64ec 跳过）
         if (arm64ec) {
-            log("arm64ec 架构：跳过 drive_c.tar.xz / directx.tar.xz 预置解压（startfex.sh 同款 —— x86 预置包会导致 arm64 前缀无法运行）")
+            log("arm64ec 架构：跳过 drive_c.tar.xz / directx.tar.xz 预置解压（x86 预置包会导致 arm64 前缀无法运行）")
         } else {
             extractOptArchive(pd, "drive_c", driveC, log)
             extractOptArchive(pd, "directx", driveC, log)
@@ -1712,9 +1769,8 @@ object WineRegistry {
         //     脚本容错语义一致）。
         val installBat = File(root, "apps/install.bat")
         if (installBat.isFile && arm64ec) {
-            // v3.3.4：arm64ec 跳过 install.bat（startfex.sh 无此步 —— 全是
-            // x86 运行库安装器）
-            log("arm64ec 架构：跳过 install.bat 运行库安装（startfex.sh 同款）")
+            // v3.3.4：arm64ec 跳过 install.bat（全是 x86 运行库安装器）
+            log("arm64ec 架构：跳过 install.bat 运行库安装（x86 运行库不适合 arm64 前缀）")
         } else if (installBat.isFile) {
             log("安装运行库（install.bat：Physx/7-zip/VC++，640x480 虚拟桌面）……")
             runCatching {

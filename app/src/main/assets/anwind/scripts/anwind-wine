@@ -85,7 +85,7 @@ CONF_GLOBAL="$RFS_USR/etc/anwind/container.conf"
 X11_SOCK_DIR="$APP_PREFIX/tmp/.X11-unix"
 LOG_DIR="$CONT_ROOT/logs"
 
-version() { echo "anwind-wine 2.17.0 (v3.3.20 WinNative 全语义：yuzu/adpkg zip 安装 + wrapper 栈 ADRENOTOOLS 四件套激活 + android 驱动自动路由 + AppDefaults 垃圾注册表清除)"; }
+version() { echo "anwind-wine 2.17.0 (v3.3.20 全语义：zip/tar 驱动包安装 + wrapper 栈 ADRENOTOOLS 四件套激活 + android 驱动自动路由 + AppDefaults 垃圾注册表清除)"; }
 
 # ---------- 纯日志（v2.12 唯一新增的执行代码） ----------
 # 仅当 App 会话传入 ANWIND_SESSION_LOG（可写文件路径）时生效；终端直跑
@@ -147,7 +147,7 @@ conf_read() { # <file> <key> [default]
 # ============================================================
 # /opt 生态配置（v3.2.25，对齐 startwine.sh / startfex.sh 参考链路）
 # ============================================================
-# 用户安装的 wine 发行包（WinFusion 风格）自带一套 /opt 布局：
+# 用户安装的 wine 发行包（发行包风格）自带一套 /opt 布局：
 #   opt/conf/env.conf         运行环境开关（WINEESYNC/BOX64_* 等）
 #   （wine_path.conf 按用户要求 v3.2.26 起剔除：wine 目录由 AnWind
 #    槽位体系管理，不读包内声明）
@@ -158,7 +158,7 @@ conf_read() { # <file> <key> [default]
 #                             归档 + start/ 开始菜单 + marlett.ttf +
 #                             user.reg/system.reg/fix-services.reg）
 #   opt/dxvk1/                dxvk 归档；opt/virgl/virgl-enabled 跳过标记
-# 设备侧路径：rootfs/opt（WinFusion 风格包落盘处）优先，
+# 设备侧路径：rootfs/opt（发行包风格包落盘处）优先，
 # usr/opt（AnWind 自有槽位）兜底 —— 两处都检查。
 # 解析方式：逐行 KEY=VALUE 白名单提取（不 source 不 eval）——
 # 配置文件不能执行任意代码，也无法破坏容器隔离变量（WINEPREFIX/
@@ -311,8 +311,13 @@ apply_arm64ec_audio_env() {
         log "arm64ec 音频: 容器 env= 已显式设置 BOX64_NOPULSE，尊重用户值"
         return 0
     fi
-    export BOX64_NOPULSE=1
-    log "arm64ec 音频修复: BOX64_NOPULSE=1（wowbox64 进程内形态不加载 pulse 库，避免与 winepulse 原生 libpulse 冲突 —— 部分游戏无声根因；box64 后端不受影响）"
+    # v3.4.8（回归 v3.4.6 的置 1 实验）：BOX64_NOPULSE=1 实测未解决
+    # wowbox64 部分游戏无声（用户 2026-11-12 二次反馈），且 winepulse 的
+    # arm64 unixlib 本就原生 dlopen libpulse、不经 box64 —— 根因在守护/
+    # machine-id/alsa 桥链路（本轮 audio_setup 已逐条补齐）。回归缺省：
+    # 不注入，并清掉生态 conf 残留的 export，恢复 box64 官方默认行为。
+    unset BOX64_NOPULSE
+    log "arm64ec 音频: BOX64_NOPULSE 不再注入（v3.4.6 置 1 实测无效已回归缺省；无声根因改由 machine-id/守护诊断链路治理）"
     return 0
 }
 
@@ -385,7 +390,7 @@ isolate_env() {
 
     # --- 4) 动态库搜索路径 → rootfs 优先 + 末位 /system/lib64 兜底 ---
     # 注意：不追加继承值（Termux 侧 lib 会污染 Mesa/ARM 驱动符号解析）。
-    # v3.3.29：末位补 /system/lib64（WinlatorXR BionicProgramLauncher 同款
+    # v3.3.29：末位补 /system/lib64（上游参考 BionicProgramLauncher 同款
     #   "rootDir/usr/lib:/system/lib64"）。根因（用户设备日志
     #   wine-10arm-20261109-121003 实证）：wrapper 栈 ICD → libvulkan_
     #   wrapper.so →（DT_NEEDED 绝对路径）/system/lib64/libnativewindow.so
@@ -394,7 +399,7 @@ isolate_env() {
     #   ICD 整体被忽略 → "Found no drivers" → DXVK vkCreateInstance 失败。
     #   rootfs 路径全部在前，系统目录仅兜底 NDK 库，零符号污染。
     #   仅 aarch64 追加：x86_64 形态走 glibc ld-linux，混入 bionic 系统
-    #   目录反而有解析风险（WinlatorXR 全程 arm64 也无此分支）。
+    #   目录反而有解析风险（上游参考全程 arm64 也无此分支）。
     local _lp="$RFS_USR/lib"
     [ -d "$RFS_USR/local/lib" ] && _lp="$_lp:$RFS_USR/local/lib"
     [ -d "$WINE_DIR/lib" ]      && _lp="$_lp:$WINE_DIR/lib"
@@ -501,6 +506,13 @@ detect_wine_arch() { # $1=wine 二进制 → 回显 aarch64|x86_64|unknown
 #     module-sles-sink。
 #   - 新增 pactl 诊断：守护就位后数 sink —— sinks=0（module-sles-sink
 #     没起来）即无声根因，日志一眼可见，用户"看日志"诉求直接可判。
+# v3.4.8（用户 2026-11-12："winecfg 里音频完整但部分游戏没声音，日志
+# 里找不到 etc/machine-id"）：
+#   - 守护拉起前先 ensure_machine_id（rootfs 从未带过 /etc/machine-id，
+#     wine/会话日志里 "Failed to open /etc/machine-id" 的出处；pulse
+#     守护初始化也读它）——缺文件时补 32 hex 稳定值。
+#   - 守护拉起失败时前台试跑收集 stderr 前 5 行进会话日志（原来静默
+#     >/dev/null，拉不起来只能猜）。
 audio_setup() {
     local _audio
     _audio="$(conf_read "$CONT_CONF" audio "pulse")"
@@ -523,6 +535,12 @@ audio_setup() {
             ;;
     esac
 
+    # v3.4.8：先补 /etc/machine-id（音频档除 off 外都需要守护；守护与
+    # wine 侧若干库都会读它，rootfs 包从未生成过——日志里
+    # "Failed to open /etc/machine-id" 的出处。稳定值：取 boot_id
+    # 去连字符，兜底 /dev/urandom；幂等，已有内容不重写）。
+    ensure_machine_id
+
     local _pa_bin="$RFS_USR/bin/pulseaudio"
     local _pa_sock="$RFS_USR/tmp/pulse/native"
 
@@ -542,6 +560,14 @@ audio_setup() {
                 sleep 0.5 2>/dev/null || sleep 1
                 _n=$((_n + 1))
             done
+            if [ ! -S "$_pa_sock" ]; then
+                # v3.4.8：守护拉不起来不再是哑谜——前台试跑 3 秒收集
+                # stderr 前 5 行进会话日志（bionic 下常见死因：machine-id
+                # 旧根、动态库 soname 缺、default.pa 模块加载链）。
+                local _pa_err=""
+                _pa_err="$(timeout -s KILL 3 "$_pa_bin" -n --fail 2>&1 | head -5)" || true
+                [ -n "$_pa_err" ] && log "⚠ pulse 前台试跑诊断（前 5 行）: $(echo "$_pa_err" | tr '\n' ' ')"
+            fi
         fi
         if [ -S "$_pa_sock" ]; then
             export PULSE_SERVER="unix:$_pa_sock"
@@ -579,6 +605,33 @@ audio_setup() {
 
     # rootfs 未内置 pulseaudio（老 rootfs 包）→ 最后才借道 App 侧 TCP 4713
     export PULSE_SERVER="${PULSE_SERVER:-127.0.0.1:4713}"
+}
+
+# v3.4.8：rootfs /etc/machine-id 补齐（wine 会话日志里
+# "Failed to open /etc/machine-id, error No such file or directory"
+# 的出处——rootfs 包从未生成过该文件；pulseaudio 守护初始化与
+# wine 侧库都会读）。缺它时补一个 32 hex 稳定值：优先 /proc/sys/
+# kernel/random/boot_id（去连字符，重启内稳定），兜底 /dev/urandom。
+# 幂等：已有内容（≥8 字节）不重写——machine-id 变更会使 pulse 的
+# cookie/流标识失效产生小抖动。同步 var/lib/dbus/machine-id。
+ensure_machine_id() {
+    local _mid="$RFS_ROOT/etc/machine-id"
+    if [ -s "$_mid" ]; then
+        return 0
+    fi
+    local _id=""
+    _id="$(cat /proc/sys/kernel/random/boot_id 2>/dev/null | tr -d ' -' | cut -c1-32)"
+    if [ "${#_id}" -ne 32 ]; then
+        _id="$(head -c 16 /dev/urandom 2>/dev/null | od -An -tx1 2>/dev/null | tr -d ' \n' | cut -c1-32)"
+    fi
+    if [ "${#_id}" -ne 32 ]; then
+        return 0
+    fi
+    mkdir -p "$RFS_ROOT/etc" "$RFS_ROOT/var/lib/dbus" 2>/dev/null || true
+    printf '%s\n' "$_id" >"$_mid" 2>/dev/null || true
+    [ -s "$_mid" ] && cp -f "$_mid" "$RFS_ROOT/var/lib/dbus/machine-id" 2>/dev/null || true
+    log "machine-id: 已补齐 rootfs/etc/machine-id（pulse/dbus 初始化就绪；此前守护与 wine 侧报缺失）"
+    return 0
 }
 
 # ---------- 后端探测 ----------
@@ -810,7 +863,7 @@ apply_gpu_env() {
             export GALLIUM_DRIVER=zink
             export ZINK_DESCRIPTORS=lazy
             export ZINK_DEBUG=compact
-            # v3.3.37（WinlatorXR 同款）：Turnip 崩溃规避仅 noconform；
+            # v3.3.37（上游同款）：Turnip 崩溃规避仅 noconform；
             # kopper 禁用 —— zink 不自建 X11 swapchain，呈现交给 wine 的
             # GLX/X11 路径（闪屏/帧率不稳的来源之一）。
             [ -z "${TU_DEBUG:-}" ] && export TU_DEBUG=noconform
@@ -826,7 +879,7 @@ apply_gpu_env() {
     esac
 }
 
-# ---------- Vulkan 用户驱动（v3.3.20 WinNative DriverPackages 全语义） ----------
+# ---------- Vulkan 用户驱动（v3.3.20 上游实现 DriverPackages 全语义） ----------
 # 容器 conf 的 wrapper / turnip 键（App 图形驱动页"Vulkan 驱动"同款）：
 #   wrapper=<slot>  → usr/share/anwind-wrapper/drivers/<slot>/icd.json
 #   turnip=<tar名>  → 同一驱动库（/opt/wrapper、/opt/tz 的 zip/tar 由
@@ -836,7 +889,7 @@ apply_gpu_env() {
 # 覆盖 —— turnip 与 wrapper 并列选择、多版本共存、切换零文件读写。
 #
 # v3.3.20（用户实测反馈："切换 wrapper 依旧无法使用，也无法安装 yuzu 类
-# 驱动"—— 两处根因修复，对齐 WinNative DriverPackages + setDriverById）：
+# 驱动"—— 两处根因修复，对齐 上游实现 DriverPackages + setDriverById）：
 #  1) 安装：yuzu/adpkg 的 zip 包此前【完全无法装】（兜底安装只认 tar，
 #     meta.json 的 libraryName 定位也缺）—— 现在 zip（unzip/busybox/
 #     bsdtar 三级回退）与 tar(.gz/.xz/.bz2/.zst) 通吃，meta.json 的
@@ -1025,7 +1078,7 @@ apply_vk_driver() {
     # ICD → 任一已装 wrapper 栈；不注入 ADRENOTOOLS_DRIVER_* ——
     # libvulkan_wrapper.so 自身回退加载 /system/lib64/libvulkan.so
     #（设备厂商专有驱动：高通 Adreno 系统驱动 / 联发科 Mali 同通路；
-    # WinlatorXR 的 "System" 选项同语义）。栈未安装时给可照做的出路
+    # 上游参考 的 "System" 选项同语义）。栈未安装时给可照做的出路
     #（终端侧无法读 APK 资产 —— 在 App 图形驱动页选一次即自动安装）。
     if [ "$_slot" = "system" ]; then
         local _wdir="" _w _g
@@ -1097,11 +1150,11 @@ apply_vk_driver() {
     fi
 
     if [ "$_basename" = "libvulkan_wrapper.so" ]; then
-        # ---- wrapper 栈模式（WinNative setDriverById + wrapper_icd 同款）----
+        # ---- wrapper 栈模式（上游实现 setDriverById + wrapper_icd 同款）----
         # ICD→libvulkan_wrapper.so；turnip 本体（同包 meta.driverLibrary）
         # 经 ADRENOTOOLS_* 注入；hooks 目录（libmain_hook.so 等所在）=
         # wrapper slot 目录；temp 目录为 adrenotools patched .so 落盘位
-        #（wrapper 内部拼 <driverPath>/temp，WinNative vulkan.c 同款）
+        #（wrapper 内部拼 <driverPath>/temp，上游实现 vulkan.c 同款）
         ensure_ndk_deps   # v3.3.29：NDK 依赖前置解析（libbinder_ndk 链）
         local _drv=""
         _drv="$(sed -n 's/.*"driverLibrary"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$DRIVERS_ROOT/$_dir/meta.json" 2>/dev/null | head -n 1)"
@@ -1109,7 +1162,7 @@ apply_vk_driver() {
         export LD_LIBRARY_PATH="$_dirfull${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
         export ADRENOTOOLS_HOOKS_PATH="$_dirfull"
         if [ -n "$_drv" ] && [ -f "$_dirfull/$_drv" ]; then
-            # v3.3.28：尾斜杠对齐 WinlatorXR（setDriverById 拼法 dir + "/"）
+            # v3.3.28：尾斜杠对齐上游参考（setDriverById 拼法 dir + "/"）
             export ADRENOTOOLS_DRIVER_PATH="$_dirfull/"
             export ADRENOTOOLS_DRIVER_NAME="$_drv"
             mkdir -p "$_dirfull/temp" 2>/dev/null || true
@@ -1187,9 +1240,9 @@ apply_android_safe_env() {
     # fsync 的 futex_waitv 能力探测在 Android 上被 seccomp 以 SIGSYS
     # 击杀（proton 树退出码 159 根因；构建侧已加 __ANDROID__ 守卫根治，
     # 此处环境默认再兜一层 —— 旧版 wine 包没打守卫时也能活）；esync 依赖
-    # /dev/shm 与 eventfd，沙箱内行为不可预期。默认双禁（Winlator/
-    # MiceWine 同款），用户 extra env 可覆盖（apply_extra_env 在后面执行）。
-    # v3.3.37：WINEESYNC 0→1（对齐 WinlatorXR XServerDisplayActivity
+    # /dev/shm 与 eventfd，沙箱内行为不可预期。默认双禁（上游
+    # 上游项目 同款），用户 extra env 可覆盖（apply_extra_env 在后面执行）。
+    # v3.3.37：WINEESYNC 0→1（对齐上游参考 XServerDisplayActivity
     # :1748-1751 未设即强制 1）：同为 bionic 直跑环境，esync 是线程密集型
     # 32 位 D3D9 游戏的主帧率供应商；fd 上限不够时 extra env 写
     # WINEESYNC=0 一键回退。WINEFSYNC 保持 0（futex_waitv 必被 seccomp
@@ -1214,7 +1267,7 @@ apply_android_safe_env() {
     # v3.3.37：DXVK 真激活（App 侧 WineEnvironment.applyDxvkEnv 同款）——
     # v3.2.27 撤销全部 DllOverrides 后，wine 默认加载序（builtin 优先）
     # 从未真正加载过解压进 windows/ 的 DXVK DLL；dxvk 槽位非 off 时
-    # 注入 D3D/DXGI 全家 native,builtin（WinlatorXR WineUtils.java:141
+    # 注入 D3D/DXGI 全家 native,builtin（上游参考 WineUtils.java:141
     # 同款）。仅用户未显式设置时生效，extra env/dxoverrides 仍最高优。
     if [ -z "${WINEDLLOVERRIDES:-}" ] || [ "${WINEDLLOVERRIDES}" = "winedbg=d" ]; then
         _dxvk="$(conf_read "$CONT_CONF" dxvk auto)"
@@ -1233,14 +1286,14 @@ apply_android_safe_env() {
     # 的小写归一已处理）或启动命令行前置 HODLL=xxx。v3.3.34/v3.4.0 的
     # 默认注入已撤销 —— 会在用户未选择时改写 32 位模拟层（用户实测
     # 「性能更差了」的直接嫌疑源）。
-    # 取值对齐参考源码 WinFusion（LaunchPlan 二选一）：HODLL=libwow64fex.dll
+    # 取值对齐上游发行包（LaunchPlan 二选一）：HODLL=libwow64fex.dll
     # 或 HODLL=wowbox64.dll（部分 32 位游戏需要后者 box64-in-wow64；
     # App 侧勾选 FEX模式/wowbox64模式 即等价写入 env= —— 脚本路径用户
     # 手写 env= HODLL=wowbox64.dll 同效）。dll 缺席请勿注入（32 位进程
     # 死于 c0000135，不如留给 wine 内部缺省）。
 }
 
-# ---------- v3.3.37：全局性能基线（WinlatorXR 容器出厂调优串移植） ----------
+# ---------- v3.3.37：全局性能基线（上游参考 容器出厂调优串移植） ----------
 # App 侧 WineEnvironment.applyPerfBaselineEnv 同款语义（DefaultVersion.
 # ENV_VARS + XServerDisplayActivity:2431-2441 + DXVKConfigDialog:152-194），
 # box64 / arm64ec 两条线共用；全部"未设才导出"—— opt conf（apply_opt_
@@ -1276,7 +1329,7 @@ apply_perf_baseline_env() {
 apply_fex_preset_env() {
     # v3.4.3【FEX 预设 JSON 对齐】：四档 15 项 FEX_* 与 assets
     # builtin/fex_presets.json（用户提供的 assets-ck 资产；App 侧
-    # WineEnvironment.applyFexPresetEnv 运行时读同一文件，WinFusion
+    # WineEnvironment.applyFexPresetEnv 运行时读同一文件，上游发行包
     # FEXPresetManager/LaunchPlan.buildEnv:226-228 同款表）逐项一致 ——
     # 脚本路径无 APK assets 可读，表按 JSON 展开内联。
     # 旧表每档仅 2-3 项：performance 档的 TSOENABLED=0（标量 TSO 关）/
@@ -1285,7 +1338,7 @@ apply_fex_preset_env() {
     # 稳定/兼容档旧「VECTORTSO=1 反向兜底」撤销（JSON 稳定档靠
     # TSOENABLED=1 + HALFBARRIER=1 + SMC=mtrack 兜底）；
     # X87REDUCEDPRECISION 按 JSON 全档 0（上游注明 may result in
-    # rendering bugs，WinFusion 四档全不开）。
+    # rendering bugs，上游发行包 四档全不开）。
     # 未设才导出（opt conf / 容器 env= 在后仍可覆盖）；未知变量名被旧
     # FEX 构建忽略，零副作用。仅 aarch64 形态（arm64ec 线，不经 box64）。
     [ "${WINE_ARCH:-}" != "aarch64" ] && return 0
@@ -1365,7 +1418,7 @@ apply_fex_preset_env() {
             info "性能档 arm64ec 线生效（FEX 预设 JSON·performance 档）：15 项完整注入（TSO 全关 + SMC=none + VOLATILEMETADATA=0 —— 转译吞吐主旋钮）"
             ;;
     esac
-    # v3.3.37：FEX Config.json（WinlatorXR FEXCoreManager.java:110-118/241-243
+    # v3.3.37：FEX Config.json（上游参考 FEXCoreManager.java:110-118/241-243
     # 实证通道）：libwow64fex/libarm64ecfex 读 $HOME/.fex-emu/Config.json——
     # FEX_* 环境变量在部分构建上不生效，配置文件是参考实现验证过的通道，
     # 双通道保险。v3.4.3：键值与 fex_presets.json 同源（11 键全量），
@@ -1394,7 +1447,7 @@ apply_box64_env() {
     export BOX64_LOG=0
     export BOX64_NOBANNER=1
     export BOX64_DYNAREC_TRACE=0
-    # v3.3.37（WinlatorXR BionicProgramLauncherComponent:427-438 同款）：
+    # v3.3.37（上游参考 BionicProgramLauncherComponent:427-438 同款）：
     # dynarec 显式开启 + GLX 桥接（缺 X11GLX 时 GLX 走死路）。
     [ -z "${BOX64_DYNAREC:-}" ] && export BOX64_DYNAREC=1
     [ -z "${BOX64_X11GLX:-}" ]  && export BOX64_X11GLX=1
@@ -1461,7 +1514,7 @@ apply_box64_env() {
     fi
     # v3.4.3【box64 预设 JSON 对齐】：四档 11 项 BOX64_* 与 assets
     # builtin/box64_presets.json（assets-ck 资产，App 侧
-    # WineEnvironment.applyBox64Env 运行时读同一文件；WinFusion
+    # WineEnvironment.applyBox64Env 运行时读同一文件；上游发行包
     # Box64PresetManager/LaunchPlan.buildEnv:237-242 同款表）逐项一致 ——
     # 补齐旧表缺的 BOX64_AVX 与 BOX64_UNITYPLAYER（稳定/兼容档 1，
     # 进阶/性能档 0）。两处 AnWind 定稿覆写保留：
@@ -1469,8 +1522,8 @@ apply_box64_env() {
     #    实测 1/2 触发 ntdll 早期 SIGSEGV；JSON 档位值 2/2/2/1 不适用
     #    本机 —— 崩溃具地址空间布局随机性，与 SAFEFLAGS 无关，0 是
     #    实测稳定值）；
-    #  - PERFORMANCE 档补 BOX64_MMAP32=1（WinlatorXR 同款）；
-    #  - +BOX64_PREFER_EMULATED=1（WinFusion x86_64 线同款：优先仿真库）。
+    #  - PERFORMANCE 档补 BOX64_MMAP32=1（上游同款）；
+    #  - +BOX64_PREFER_EMULATED=1（上游发行包 x86_64 线同款：优先仿真库）。
     # 容器 env= 的 BOX64_* 覆盖机制不变（下方 case 块）。
     case "$_preset" in
         stability)
@@ -1610,7 +1663,7 @@ wine_server_call() { # <args...>
 #   fix-fonts.tar.xz → windows/
 #   /opt/dxvk1/*.tar.gz → windows/（virgl 启用时跳过）
 #   .update-timestamp=disable（防重跑标记，参考脚本同款）
-# 仅在 /opt/prefix 存在（WinFusion 风格 wine 发行包）时生效；幂等
+# 仅在 /opt/prefix 存在（发行包风格 wine 发行包）时生效；幂等
 # （.anwind-opt-prefix 标记）；任一步失败仅告警不阻断（与参考脚本
 # 容错语义一致）。App 侧容器流程（WineRegistry.bootstrapOptPrefix）
 # 同源双保险 —— 两端各自幂等，先到先应用。
@@ -2142,7 +2195,7 @@ load_container
 load_opt_confs
 apply_opt_locale
 resolve_wine_dir
-# v3.2.26：wine 槽位目录确定后补一遍 /opt 探测 —— WinFusion 风格包把
+# v3.2.26：wine 槽位目录确定后补一遍 /opt 探测 —— 发行包风格包把
 # conf/prefix 打进 wine 目录树（与 bin/ 平级）时，首轮（rootfs/opt）落空
 # 而槽位命中的场景。命中且首轮未命中时重新应用 locale。
 if [ -z "$OPT_ROOT" ]; then

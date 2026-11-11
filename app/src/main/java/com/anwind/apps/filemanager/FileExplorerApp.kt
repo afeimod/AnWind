@@ -1827,7 +1827,7 @@ private fun isExecutableExtension(ext: String): Boolean =
  */
 private fun isDriverPackageFile(name: String): Boolean {
     val n = name.lowercase()
-    // v3.3.21：补 .tzst / .tar.zst（wrapper-gamenative.tzst 类 WinNative
+    // v3.3.21：补 .tzst / .tar.zst（wrapper-gamenative.tzst 类 上游实现
     // 生态包，tar+zstd；解压链已支持 zstd-jni）
     return n.endsWith(".zip") || n.endsWith(".tar") || n.endsWith(".tar.gz") ||
         n.endsWith(".tar.xz") || n.endsWith(".tar.bz2") ||

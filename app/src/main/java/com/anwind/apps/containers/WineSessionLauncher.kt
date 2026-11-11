@@ -21,7 +21,7 @@ import com.anwind.apps.containers.launcher.WineSession
  *     → 环境二次清洗 → exec wine
  * ```
  *
- * 新链路（对齐 WinFusion 的原生编排，显示保留 AnWind 的 X11 方案）：
+ * 新链路（对齐上游发行包 的原生编排，显示保留 AnWind 的 X11 方案）：
  * ```
  * App → RootfsLauncher 启动链（Kotlin）
  *     1. WineRuntime.resolve        （wine 目录 + ELF 形态 + 后端）

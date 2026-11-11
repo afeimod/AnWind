@@ -146,7 +146,7 @@ custom_patch() {
 #     anwind-box64-<ver>-aarch64-bionic.tar.gz）：NDK bionic 链接，
 #     原生 exec，宿主侧零 glibc 依赖；
 #   * glibc 形态（build-box64.yml 产出 anwind-box64-*-aarch64-
-#     glibc.tar.gz，Winlator/MiceWine 同款 -DWINLATOR_GLIBC +
+#     glibc.tar.gz，上游参考/上游项目 同款 -DWINLATOR_GLIBC +
 #     patchelf）：PT_INTERP/DT_RPATH 钉到 rootfs 私有加载器
 #     /data/data/com.anwind/files/rootfs/usr/lib/aarch64-linux-gnu/
 #     ld-linux-aarch64.so.1 —— 该加载器与整套 aarch64 glibc 运行库
@@ -250,14 +250,14 @@ custom_patch() {
 # 规则跳过），由自定义 install() 补齐完整集。
 #
 # 【v3.2.13 · NOLOADADDR=ON】（用户实测"bionic box64 启动时没有任何日志、
-# 无法启动"的排查修复之一，与 Winlator / MiceWine 两条已验证的 Android
+# 无法启动"的排查修复之一，与 上游参考 / 上游项目 两条已验证的 Android
 # bionic 部署链对齐）：
 #   上游默认（NOLOADADDR=OFF）经 lld `--image-base=0x34800000` 把 box64
 #   钉在低地址 —— 这是桌面 glibc ld.so 的手法。Android 的 linker64 对 PIE
 #   不遵守 image-base（ASLR 随机化加载基址），该链接参数在设备上零收益；
 #   且 0x34800000 低地址段在 Android 应用进程布局里与 zygote/heap 常驻区
 #   相邻，不同 ROM 的 mmap_min_addr / 布局差异下存在加载即死的风险面。
-#   Winlator（WINLATOR_GLIBC 链）与 MiceWine（NDK bionic 链）的 box64
+#   上游参考（WINLATOR_GLIBC 链）与 上游项目（NDK bionic 链）的 box64
 #   构建【均显式 -DNOLOADADDR=ON】，本配方对齐 —— box64 运行时按
 #   /proc/self/maps 自适应任意基址（Termux 同款形态）。
 # v3.3.35 勘误（box64-build-log-aarch64(5).zip 实证）：v3.3.34 的

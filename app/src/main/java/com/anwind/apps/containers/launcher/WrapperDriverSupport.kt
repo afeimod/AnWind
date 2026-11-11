@@ -13,15 +13,15 @@ import java.util.zip.ZipInputStream
  *
  * v3.3.19（用户实测反馈："wrapper 无法正常使用运行游戏"，会话日志实证
  * DXVK 报 "Required Vulkan extension VK_KHR_surface not supported"——
- * ICD 根本没被 dlopen 成功）：补齐 WinNative DriverPackages.java 的
+ * ICD 根本没被 dlopen 成功）：补齐 上游实现 DriverPackages.java 的
  * 【运行时可用性】语义 —— 装得进 ≠ 用得了。
  *
  * ## 本次根因（参考源码对照结论）
  *
- * 参考源码 WinNative（github.com/WinNative-Emu/WinNative）的
+ * 参考源码 上游实现（github.com/上游实现-Emu/上游实现）的
  * DriverPackages.install 在装包时干三件事，旧 v3.3.16 只干了一件：
  *
- *  | WinNative DriverPackages.install | v3.3.16 AnWind | v3.3.19 |
+ *  | 上游实现 DriverPackages.install | v3.3.16 AnWind | v3.3.19 |
  *  |---|---|---|
  *  | 解包归一化到独立目录 + meta.json | ✓ | ✓ |
  *  | **identify()：ELF DT_NEEDED 识别 ABI（libc.so=bionic / libc.so.6=glibc），平台不符直接拒装** | ✗ 缺失 | ✓ 移植 |
@@ -38,10 +38,10 @@ import java.util.zip.ZipInputStream
  * 1. **install() ABI 门禁**（identify() 全语义移植）：glibc 包直接拒装，
  *    Toast 给出可照做的出路（bionic X11 turnip 包 / 含 wrapper 栈的包）；
  *    非 arm64 ELF / 无法识别 ABI 同样拒装 —— 不再产出"选了必黑屏"的槽位；
- * 2. **wrapper 栈包形态**：包内含 libvulkan_wrapper.so（WinNative
+ * 2. **wrapper 栈包形态**：包内含 libvulkan_wrapper.so（上游实现
  *    wrapper.tzst 布局：wrapper + libadrenotools.so + hooks）→ ICD 指向
  *    wrapper；同包带 turnip（libvulkan_*.so）则记为 adrenotools 驱动本体
- *    （ADRENOTOOLS_DRIVER_PATH/NAME，WinNative setDriverById 同款键）；
+ *    （ADRENOTOOLS_DRIVER_PATH/NAME，上游实现 setDriverById 同款键）；
  *    纯 wrapper 栈包（无 turnip）也可装 —— 作为共享栈给其他槽位路由；
  * 3. **android 平台驱动自动路由**：裸 turnip 为 bionic 但无 X11 WSI
  *    （DT_NEEDED 无 libxcb* —— yuzu/Adrenotools 型 android 平台构建）时，
@@ -58,7 +58,7 @@ import java.util.zip.ZipInputStream
  *
  *  * 每个驱动一个【独立目录】usr/share/anwind-wrapper/drivers/<slot>/：
  *    libvulkan_*.so（+ wrapper 栈 .so）+ meta.json + icd.json（自生成，
- *    library_path 宿主绝对路径，不信任包内 json —— WinNative 同款）；
+ *    library_path 宿主绝对路径，不信任包内 json —— 上游实现 同款）；
  *  * turnip（Mesa 内置）= BUNDLED 档：rootfs 自带
  *    usr/share/vulkan/icd.d/freedreno_icd.aarch64.json，loader 默认搜索；
  *  * 多版本共存；切换 = 换 VK_ICD_FILENAMES 指向，零文件读写；
@@ -67,35 +67,35 @@ import java.util.zip.ZipInputStream
  * ## 支持的包形态（全部归一到独立目录）
  *
  *  1. rootfs 布局包：usr/lib 下全部 .so + usr/share/vulkan 的 json；
- *  2. WinNative meta.json 包：根级 meta.json 的 libraryName 指明驱动；
+ *  2. 上游实现 meta.json 包：根级 meta.json 的 libraryName 指明驱动；
  *  3. yuzu 裸包：根级 libvulkan*.so（+ 同目录附属 .so）；
  *  4. 【v3.3.19】wrapper 栈包：含 libvulkan_wrapper.so（可带可不带
- *     turnip 本体；WinNative wrapper.tzst 重打包为 tar.gz/zip 即可）。
+ *     turnip 本体；上游实现 wrapper.tzst 重打包为 tar.gz/zip 即可）。
  *
  * ## bionic 驱动包从哪来（写给用户的路标）
  *
  *  * **首选**：AnWind CI `build-mesa-bionic` 新产物
  *    `anwind-turnip-driver-<mesa版本>-bionic.tar.gz`（与 rootfs 同一配方、
  *    同一 bionic/X11 平台构建，装完即用，零 ABI 风险）；
- *  * WinNative-Emu/Drivers 的 adrenotools turnip zip（bionic/android 平台）
+ *  * 上游实现-Emu/Drivers 的 adrenotools turnip zip（bionic/android 平台）
  *    —— 需同时装一个 wrapper 栈包供路由（见上 3）；
  *  * glibc 系（mesa 官方包 / wineguanli 生态 / termux-glibc）—— 一律拒装。
  */
 object WrapperDriverSupport {
 
-    /** 驱动安装根目录（rootfs 内；WinNative 对应 contents/linux-drivers/）。 */
+    /** 驱动安装根目录（rootfs 内；上游实现 对应 contents/linux-drivers/）。 */
     const val DRIVER_ROOT_REL = "usr/share/anwind-wrapper/drivers"
 
-    /** 每个驱动 slot 目录内的 ICD 清单文件名（WinNative DRIVER_ICD 同位）。 */
+    /** 每个驱动 slot 目录内的 ICD 清单文件名（上游实现 DRIVER_ICD 同位）。 */
     const val ICD_NAME = "icd.json"
 
-    /** 每个驱动 slot 目录内的元数据文件名（WinNative meta.json 同名）。 */
+    /** 每个驱动 slot 目录内的元数据文件名（上游实现 meta.json 同名）。 */
     const val META_NAME = "meta.json"
 
-    /** wrapper 栈标志库（作 ICD 目标；WinNative wrapper.tzst 同名）。 */
+    /** wrapper 栈标志库（作 ICD 目标；上游实现 wrapper.tzst 同名）。 */
     const val WRAPPER_SO = "libvulkan_wrapper.so"
 
-    /** adrenotools 驱动加载库（wrapper 栈包内随行，WinNative 同名）。 */
+    /** adrenotools 驱动加载库（wrapper 栈包内随行，上游实现 同名）。 */
     const val ADRENOTOOLS_SO = "libadrenotools.so"
 
     /**
@@ -105,7 +105,7 @@ object WrapperDriverSupport {
      * 【系统专有驱动档】的 sentinel 值 —— 容器 wrapper="system" 时激活
      * wrapper 栈但不注入 ADRENOTOOLS_DRIVER_*（libvulkan_wrapper.so 自身
      * 回退加载 /system/lib64/libvulkan.so = 设备厂商专有驱动，高通
-     * Adreno / 联发科 Mali 同一通路，WinlatorXR 的 "System" 选项同款）。
+     * Adreno / 联发科 Mali 同一通路，上游参考 的 "System" 选项同款）。
      *
      * yuzu 格式专有驱动包（v819.2 / v849 / q615.50 等，包内
      * vulkan.ad*.so / libvulkan_adreno.so + not* 改名依赖）安装后走
@@ -115,7 +115,7 @@ object WrapperDriverSupport {
 
     /**
      * v3.3.32：内置 wrapper 栈的 slot 名（APK 资产 assets/anwind/wrapper-stack.tzst
-     * 首次用到时自动安装到本 slot，5.5MB，WinlatorXR wrapper.tzst 同源二进制）。
+     * 首次用到时自动安装到本 slot，5.5MB，上游参考 wrapper.tzst 同源二进制）。
      */
     const val BUNDLED_WRAPPER_SLOT = "wrapper-stack"
 
@@ -180,7 +180,7 @@ object WrapperDriverSupport {
     }
 
     // ------------------------------------------------------------------
-    // v3.3.19：ELF 识别（WinNative DriverPackages.identify 全语义移植）
+    // v3.3.19：ELF 识别（上游实现 DriverPackages.identify 全语义移植）
     // ------------------------------------------------------------------
 
     /** 驱动 ABI 平台：DT_NEEDED 里的 C 库决定（libc.so=bionic / libc.so.6=glibc）。 */
@@ -197,7 +197,7 @@ object WrapperDriverSupport {
     data class ElfInfo(val platform: DriverPlatform, val needed: List<String>)
 
     /**
-     * 解析 ARM64 ELF 共享库（WinNative DriverPackages.identify 同款结构校验，
+     * 解析 ARM64 ELF 共享库（上游实现 DriverPackages.identify 同款结构校验，
      * 额外带出全量 DT_NEEDED）。任何结构异常返回 null —— 调用方给可读错误。
      * 校验链：ELF 魔数 / 64 位 / 小端 / ET_DYN / EM_AARCH64(183) →
      * 程序头表（PT_LOAD + PT_DYNAMIC）→ 动态段（DT_STRTAB/DT_NEEDED）→
@@ -348,7 +348,7 @@ object WrapperDriverSupport {
         val wrapperStack: Boolean = false
     )
 
-    /** slot（包显示名）→ 安全目录名（WinNative safeName 同语义）。 */
+    /** slot（包显示名）→ 安全目录名（上游实现 safeName 同语义）。 */
     fun safeSlotName(display: String): String =
         display.trim()
             .replace(Regex("\\.(zip|tar|tar\\.(gz|xz|bz2|zst)|tzst)$"), "")
@@ -444,7 +444,7 @@ object WrapperDriverSupport {
     }
 
     // ------------------------------------------------------------------
-    // v3.3.19：激活计划（RootfsLauncher 6a 使用；对齐 WinNative
+    // v3.3.19：激活计划（RootfsLauncher 6a 使用；对齐 上游实现
     // XServerDisplayActivity 的 ICD + ADRENOTOOLS_* 注入语义）
     // ------------------------------------------------------------------
 
@@ -492,7 +492,7 @@ object WrapperDriverSupport {
         /**
          * v3.3.20：adrenotools 临时目录（patched .so 落盘位）。
          *
-         * wrapper 内部拼 `<driverPath>/temp`（WinNative vulkan.c 同款），
+         * wrapper 内部拼 `<driverPath>/temp`（上游实现 vulkan.c 同款），
          * 目录必须【存在且可写】；激活时由 RootfsLauncher 创建。
          */
         val adrenotoolsTempDir: File? = null,
@@ -534,7 +534,7 @@ object WrapperDriverSupport {
             }
         } else if (elf?.platform == DriverPlatform.BIONIC && !hasX11Wsi(elf.needed)) {
             // android 平台裸 turnip（yuzu/Adrenotools 型）：直挂无 X11 WSI，
-            // DXVK 交换链必失败 —— 按 WinNative 参考逻辑找 wrapper 栈路由
+            // DXVK 交换链必失败 —— 按 上游实现 参考逻辑找 wrapper 栈路由
             val ws = listDrivers().firstOrNull {
                 it.slot != slot && it.wrapperStack && it.icd != null
             }
@@ -635,7 +635,7 @@ object WrapperDriverSupport {
 
     /**
      * v3.3.32：安装 APK 内置 wrapper 栈（assets/anwind/wrapper-stack.tzst，
-     * WinlatorXR wrapper.tzst 同源二进制：libvulkan_wrapper.so + libadrenotools.so
+     * 上游参考 wrapper.tzst 同源二进制：libvulkan_wrapper.so + libadrenotools.so
      * + libmain_hook/libhook_impl/libfile_redirect_hook/libgsl_alloc_hook 四钩子）。
      * 幂等：BUNDLED_WRAPPER_SLOT 已含 wrapper .so 且 ICD 就位即跳过。
      *
@@ -684,7 +684,7 @@ object WrapperDriverSupport {
     // ------------------------------------------------------------------
 
     /**
-     * 安装一个驱动包到独立 slot 目录（WinNative DriverPackages.install
+     * 安装一个驱动包到独立 slot 目录（上游实现 DriverPackages.install
      * 同语义：staging 解包 → 【v3.3.19 ELF ABI 识别】→ 校验 → 落位 →
      * 生成 ICD + meta）。
      *
@@ -724,7 +724,7 @@ object WrapperDriverSupport {
                     "meta.json / yuzu 裸包 / wrapper 栈四种形态）"
             }
 
-        // ---- v3.3.19：ELF ABI 识别（WinNative DriverPackages.identify 移植）----
+        // ---- v3.3.19：ELF ABI 识别（上游实现 DriverPackages.identify 移植）----
         // glibc 构建在 bionic 原生链路 dlopen 必失败（libc.so.6 无处可寻）：
         // 安装期直接拒绝并给出路，不再产出"选了必黑屏、DXVK 只丢一句
         // VK_KHR_surface not supported"的槽位。primary = ICD 目标
@@ -791,7 +791,7 @@ object WrapperDriverSupport {
         }
         runCatching { staging.deleteRecursively() }
 
-        // 自生成 ICD（WinNative 同款：宿主绝对路径，不信任包内 json）
+        // 自生成 ICD（上游实现 同款：宿主绝对路径，不信任包内 json）
         //  * wrapper 栈包 → ICD 指向 libvulkan_wrapper.so（X11 WSI 由 wrapper 提供）
         //  * 直挂包 → ICD 指向 turnip 本体
         val libAbs = File(dest, icdTarget).absolutePath
@@ -804,7 +804,7 @@ object WrapperDriverSupport {
             appendLine("    }")
             appendLine("}")
         }
-        // meta.json（WinNative 同款字段 + v3.3.19 平台/WSI/wrapper 记录）
+        // meta.json（上游实现 同款字段 + v3.3.19 平台/WSI/wrapper 记录）
         val metaJson = buildString {
             appendLine("{")
             appendLine("    \"name\": \"$slot\",")
@@ -883,9 +883,9 @@ object WrapperDriverSupport {
      * 从 lib 目录文件里挑 turnip 驱动本体。
      *
      * v3.3.20（用户实测反馈修复）：识别面扩大 —— 旧版只认 `libvulkan*.so`，
-     * 而 yuzu 生态/WinNative 测试包存在 `vulkan.<name>.so` 命名（用户提供的
+     * 而 yuzu 生态/上游实现 测试包存在 `vulkan.<name>.so` 命名（用户提供的
      * turnip_mrpurple_T28-toasted.adpkg.zip 的 libraryName 就是
-     * `vulkan.purple.so`；WinNative DriverPackagesTest 也用 `vulkan.adreno.so`）。
+     * `vulkan.purple.so`；上游实现 DriverPackagesTest 也用 `vulkan.adreno.so`）。
      * 现在 `libvulkan*.so` 与 `vulkan.*.so` 双形态都认（wrapper 除外）。
      */
     private fun pickDriverSo(names: List<String>): String? =
@@ -916,12 +916,12 @@ object WrapperDriverSupport {
         return InstallPlan(files, driverSo, wrapperSo)
     }
 
-    /** B/C/D) 扁平包：WinNative meta.json / yuzu 裸包 / wrapper 栈裸包。 */
+    /** B/C/D) 扁平包：上游实现 meta.json / yuzu 裸包 / wrapper 栈裸包。 */
     private fun planFlatLayout(base: File): InstallPlan? {
         val soNames = base.listFiles { f -> f.isFile && f.name.endsWith(".so") }
             .orEmpty().map { it.name }
         val wrapperSo = soNames.firstOrNull { it == WRAPPER_SO }
-        // B) WinNative meta.json：libraryName 指定的驱动优先
+        // B) 上游实现 meta.json：libraryName 指定的驱动优先
         runCatching {
             val meta = File(base, META_NAME)
             if (meta.isFile) {

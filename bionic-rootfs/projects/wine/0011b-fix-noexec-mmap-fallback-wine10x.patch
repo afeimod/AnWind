@@ -2,7 +2,7 @@
 #   10.x 的 map_file_into_view 初始 mmap 已含执行位（Flow A）：
 #   只读执行映射本就能走匿名回退；剩两个硬点：
 #   ① EPERM 分支对 VPROT_WRITE 映射硬失败（DEP-off 游戏的共享
-#     可写映射被强加执行位后必撞）—— 本补丁移除（Winlator 同款）；
+#     可写映射被强加执行位后必撞）—— 本补丁移除（上游参考 同款）；
 #   ② 尾部"未对齐共享映射"硬失败 —— 软化为私有读拷贝。
 #   另：map_image_into_view 的节映射带上 IMAGE_SCN_MEM_EXECUTE →
 #   VPROT_EXEC，执行段初始即带执行位 mmap → noexec EPERM →
@@ -23,7 +23,7 @@ diff -uNr a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
 -                return STATUS_ACCESS_DENIED;
 -            }
 -            if (prot & PROT_EXEC) WARN( "failed to set PROT_EXEC on file map, noexec filesystem?\n" );
-+            /* AnWind: never hard-fail writable mappings here (Winlator's
++            /* AnWind: never hard-fail writable mappings here (上游参考's
 +             * wine-9.2-custom drops the same refusal) - the private read()
 +             * fallback below still gives the caller full data access. */
 +            if (prot & PROT_EXEC) WARN( "failed to set PROT_EXEC on file map, noexec filesystem? [AnWind-noexec-fallback]\n" );
@@ -37,7 +37,7 @@ diff -uNr a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
 -        return STATUS_INVALID_PARAMETER;
 +        /* AnWind: shared mapping could not be created with mmap (noexec /
 +         * unaligned) - degrade to a private read copy instead of failing so
-+         * games on /storage keep working (same semantics as Winlator's
++         * games on /storage keep working (same semantics as 上游参考's
 +         * wine-9.2-custom fallback). */
 +        WARN( "shared mapping %p-%p not supported, falling back to private read\n",
 +              map_addr, map_addr + map_size );

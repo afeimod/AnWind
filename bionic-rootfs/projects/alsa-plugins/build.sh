@@ -26,8 +26,36 @@ license="GPL-2.0-or-later"
 # 只建 pulse 桥：NDK 交叉环境探测不到 jack/speexdsp/libsamplerate 等
 # 宿主库（sysroot 隔离，自动关停）；显式 --disable-* 双保险（configure
 # 对未知 --disable 仅警告忽略，零风险）。
-args="--disable-jack --disable-usbstream --disable-samplerate --disable-speexdsp"
+# v3.4.8【构建修复】（用户 2026-11-12 实证：rootfs / wine x86_64 /
+# wine arm64ec 三个构建全挂在 alsa-plugins 的 arcam-av 部件）：
+#   arcam-av/arcam_av.c 在 bionic 严格 C99 下两处必挂 —— ① bzero()
+#   未声明（glibc 旧代码习惯，bionic 需 <strings.h>）；② AF_FILE 是
+#   glibc 旧别名宏，bionic 无此宏（wine 日志同期报的 "Failed to open
+#   /etc/machine-id" 与此无关）。arcam-av 是 Arcam 功放控制件，与
+#   AnWind 音频链路（pulse 桥）毫无关系 → 直接禁掉不编。开关名以
+#   v1.2.12 configure.ac 为准：AC_ARG_ENABLE([arcamav]) →
+#   **--disable-arcamav（无连字符）**；此前写 --disable-arcam-av 是
+#   未知选项，configure 仅警告忽略 → 目录照编照挂（本轮拼写修正点）。
+#   顺带显式禁掉 oss/libav/a52/lavrate 等 Android 无后端的部件（其余
+#   依赖缺失时 configure 自动关停，显式双保险）；pre_setup 里再 sed
+#   修补源码做三重保险（万一仍被编也能过）。
+args="--disable-jack --disable-usbstream --disable-samplerate --disable-speexdsp --disable-arcamav --disable-oss --disable-libav --disable-a52 --disable-lavrate"
 deps="alsa-lib pulseaudio"
+
+pre_setup() {
+  # arcam-av bionic 兼容修补（v3.4.8）：与 --disable-arcamav 多重保险。
+  # AF_FILE（glibc 旧别名，bionic 无）→ AF_UNIX（unix domain socket
+  # 同语义）；补 <strings.h> 声明 bzero。目录不存在（已禁用时 tarball
+  # 可能仍在）则静默跳过。
+  if [ -f arcam-av/arcam_av.c ]; then
+    sed -i \
+      -e 's/sun_family = AF_FILE/sun_family = AF_UNIX/g' \
+      -e 's|#include <string.h>|#include <string.h>\\
+#include <strings.h>|' \
+      arcam-av/arcam_av.c
+    echo "[pre_setup] arcam-av bionic 兼容修补完成（AF_FILE→AF_UNIX；+<strings.h>）"
+  fi
+}
 
 install() {
   DESTDIR="${destDir}" PREFIX="${prefix}" make install

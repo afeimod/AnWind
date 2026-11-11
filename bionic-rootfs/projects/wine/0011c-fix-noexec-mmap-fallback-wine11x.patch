@@ -32,7 +32,7 @@ diff -uNr a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
 -        case EPERM:  /* access error, fall back to read() */
 -            if (vprot & VPROT_WRITE) return STATUS_ACCESS_DENIED;
 +        case EPERM:  /* noexec filesystem, fall back to read() */
-+            /* AnWind: never hard-fail writable mappings here (Winlator's
++            /* AnWind: never hard-fail writable mappings here (上游参考's
 +             * wine-9.2-custom drops the same refusal) - the private read()
 +             * fallback below still gives the caller full data access. */
 +            if (prot & PROT_EXEC) WARN( "failed to set PROT_EXEC on file map, noexec filesystem? [AnWind-noexec-fallback]\n" );
@@ -47,7 +47,7 @@ diff -uNr a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
 -        return STATUS_INVALID_PARAMETER;
 +        /* AnWind: shared mapping could not be created with mmap (noexec /
 +         * unaligned) - degrade to a private read copy instead of failing so
-+         * games on /storage keep working (same semantics as Winlator's
++         * games on /storage keep working (same semantics as 上游参考's
 +         * wine-9.2-custom fallback). */
 +        WARN( "shared mapping %p-%p not supported, falling back to private read\n",
 +              map_addr, map_addr + map_size );

@@ -6,7 +6,7 @@ import java.io.File
 import java.io.FileReader
 
 /**
- * 孤儿进程清扫器（移植 WinFusion ProcessCleanup，适配 AnWind 进程特征）。
+ * 孤儿进程清扫器（移植 上游发行包 ProcessCleanup，适配 AnWind 进程特征）。
  *
  * 旧的文本级清理（`ps -ef | grep -E 'wineserver|wine-preloader|\.exe' |
  * awk | xargs kill`）有三重缺陷：依赖 App 前缀的 bash/ps 工具链存在、

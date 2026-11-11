@@ -21,7 +21,7 @@
 # 【修法】与 projects/wine/0011（x86_64 形态同款）一致：删掉
 #   EPERM 分支对共享映射的硬失败，落入 wine 自带的匿名 mmap +
 #   pread + mprotect 回退（匿名页加执行位不受 noexec 限制 ——
-#   本机内核实验 + Winlator 同款机制验证）。
+#   本机内核实验 + 上游参考 同款机制验证）。
 #
 # 【生效标记】WARN 行内嵌 "AnWind-noexec-fallback" —— App 侧
 #   WinePatchDetector grep ntdll.so 中的该串判断 wine 包是否含

@@ -1314,12 +1314,12 @@ private fun BasicSettingsTab(
             )
         }
         GNote(
-            "startfex.sh/startwine.sh 同款逻辑，参数一律追加在 exe 之后：强制DX11 → -dx11；" +
+            "启动参数一律追加在 exe 之后：强制DX11 → -dx11；" +
                 "OpenGL → --rendering-driver opengl3；Unity单线程 → -force-gfx-direct；" +
                 "F5任务管理器 → 随容器启动 /opt/apps/f5taskmgr.exe；" +
                 "FEX模式 → 勾选才注入 HODLL=libwow64fex.dll；wowbox64模式 → 勾选才注入 HODLL=wowbox64.dll" +
                 "（部分 32 位游戏需要 box64-in-wow64；默认都不注入，wine 内部缺省即 FEX；两档同勾时 FEX模式 优先；" +
-                "v3.4.2 对齐参考源码 WinFusion 的 HODLL 二选一取值）；" +
+                "HODLL 二选一取值）；" +
                 "自定义参数里写 hodll=… / hodll64=…（大小写均可）会自动提升为环境变量不再传给游戏（优先于两个勾选档）；" +
                 "调试日志 → AnWind 会话日志本就常显（标记槽位）"
         )
@@ -1362,7 +1362,7 @@ private fun GraphicsDriverTab(
     var dxvkTars by remember { mutableStateOf<List<GuanliSupport.OptTar>>(emptyList()) }
     var wined3dTars by remember { mutableStateOf<List<GuanliSupport.OptTar>>(emptyList()) }
     var fexcoreTars by remember { mutableStateOf<List<GuanliSupport.OptTar>>(emptyList()) }
-    // v3.3.16（WinNative DriverPackages 模型）：Vulkan 驱动 = 类型
+    // v3.3.16（上游实现 DriverPackages 模型）：Vulkan 驱动 = 类型
     //（turnip / wrapper）+ 版本（独立目录多驱动共存）+ ➕ yuzu 式安装
     // v3.3.17（用户问题：wrapper 选不了/无列表）：wrapper 版本列表改双源 ——
     // 已装独立目录驱动 + rootfs/opt/wrapper tar 包（wineguanli.py 参考行为：
@@ -1441,7 +1441,7 @@ private fun GraphicsDriverTab(
     }
 
     // yuzu 式安装：文件管理器选 zip/tar 包 → 直接装进驱动库（独立目录，
-    // 装完立即出现在版本列表）—— WinNative promptInstallDriverFromFile 同款
+    // 装完立即出现在版本列表）—— 上游实现 promptInstallDriverFromFile 同款
     DisposableEffect(driversTick) {
         val unregister = com.anwind.apps.filemanager.FilePickBus.listen(
             targetApp = "containers_driverinstall",
@@ -1471,7 +1471,7 @@ private fun GraphicsDriverTab(
     val dirNote = "目录内未发现 tar 包。把驱动 tar.gz 放进 rootfs/opt/<目录> 后重进本页即可选择"
 
     // ------------------------------------------------------------------
-    // Vulkan 驱动（v3.3.16：类型 + 版本，WinNative 同款并列选择）
+    // Vulkan 驱动（v3.3.16：类型 + 版本，上游实现 同款并列选择）
     // ------------------------------------------------------------------
     GGroup("Vulkan 驱动（turnip / wrapper / 系统专有）") {
         // 类型：从容器数据推导（wrapper 优先，其次 turnip 槽位，否则 Mesa 内置）。
@@ -1591,7 +1591,7 @@ private fun GraphicsDriverTab(
                 if (wrapperOpts.size == 1) {
                     GNote(
                         "尚未安装任何 wrapper 驱动，rootfs/opt/wrapper 内也未发现 tar 包 ——\n" +
-                            "点下方 ➕ 从 zip/tar 包安装（yuzu 社区 / WinNative wrapper 包），\n" +
+                            "点下方 ➕ 从 zip/tar 包安装（社区驱动包 / wrapper 包），\n" +
                             "或把驱动包放进 rootfs/opt/wrapper 后重进本页即可选择"
                     )
                     // v3.3.32：一键安装 APK 内置 wrapper 栈（无需自己找包）——
@@ -1758,16 +1758,16 @@ private fun GraphicsDriverTab(
             }
         }
         GNote(
-            "v3.3.16 新机制（WinNative 同款）：每个驱动装在独立目录"
+            "v3.3.16 新机制：每个驱动装在独立目录"
                 + "（usr/share/anwind-wrapper/drivers/<名>/），rootfs 任何文件不被覆盖 ——"
                 + " turnip 与 wrapper 并列选择、多版本共存、切换零文件读写；"
-                + " 支持 rootfs 布局包 / WinNative meta.json 包 / yuzu 裸包（zip 或 tar）\n"
+                + " 支持 rootfs 布局包 / meta.json 包 / 社区裸包（zip 或 tar）\n"
                 + "v3.3.18：三个选项切换时自动同步改写 rootfs/opt/conf/path.conf 的"
                 + " VK_ICD_FILENAMES 行（选择即落 conf，其余 conf 内容一字不动）——"
                 + " 运行会话日志的「path.conf 已同步」行可核对实际写入值\n"
                 + "v3.3.32：『系统驱动（高通/联发科专有）』档零包零配置 —— 内置 wrapper 栈"
                 + "（APK 资产，首次选中自动安装）回退加载设备厂商专有驱动；"
-                + "yuzu 格式专有驱动包（v819.2 / v849 / q615.50 等）➕ 安装后"
+                + "专有驱动社区格式包（v819.2 / v849 / q615.50 等）➕ 安装后"
                 + "自动经 wrapper 栈路由（专有驱动无 X11 WSI，直挂必黑屏）"
         )
     }
@@ -2559,12 +2559,12 @@ private fun DyConfigTab(
 // 🧬 FEX 配置（v3.3.40：用户需求 1 —— assets-ck 的 fex_env_vars/fex_presets
 // 接入，“放在 dy 配置旁边”）
 //
-// WinFusion（同源项目）assets 内置 `builtin/fex_env_vars.json`（变量定义
+// 上游发行包（同源项目）assets 内置 `builtin/fex_env_vars.json`（变量定义
 // 表：name/values/toggleSwitch/editText/defaultValue）+ `fex_presets.json`
 //（stability/compatibility/intermediate/performance 四档）—— AnWind 的
 // assets-ck 一直带着这两份资产却没有任何代码消费。本页把它补全：
 //  - 定义表逐行渲染控件（0/1 变量 → 启用勾选；多值变量 → 候选下拉；
-//    editText 变量（FEX_MAXINST）→ 编辑框）—— WinFusion
+//    editText 变量（FEX_MAXINST）→ 编辑框）—— 上游发行包
 //    FEXPresetEditDialogFragment 同款交互，wineguanli DY 配置同款布局；
 //  - 四档预设一键装载（Assets 内置，不可删改）+ 「自定义」态；
 //  - 应用 = 整文件重写 App 内部 fex_active.conf（启动链
@@ -2676,10 +2676,10 @@ private fun FexConfigTab(onSaved: () -> Unit) {
                 }
             }
         }
-        GNote("预设值来自 assets/builtin/fex_presets.json（WinFusion 同源四档）；匹配当前生效值自动选中对应档")
+        GNote("预设值来自 assets/builtin/fex_presets.json（内置四档）；匹配当前生效值自动选中对应档")
     }
 
-    // ---- 变量列表（WinFusion fex_env_vars.json 定义表全量） ----
+    // ---- 变量列表（fex_env_vars.json 定义表全量） ----
     GGroup("FEX 变量（15 项官方参数；0/1 变量勾选启用，多值变量下拉，数字变量编辑）") {
         defs.forEach { d ->
             val cur = current[d.name] ?: d.defaultValue
@@ -2721,7 +2721,7 @@ private fun FexConfigTab(onSaved: () -> Unit) {
         }
         GNote(
             "定义表 = assets/builtin/fex_env_vars.json（FEX_TSOENABLED / FEX_MULTIBLOCK / FEX_MAXINST / " +
-                "FEX_HOSTFEATURES / FEX_SMC_CHECKS 等 15 项 —— WinFusion assets-ck 同源）"
+                "FEX_HOSTFEATURES / FEX_SMC_CHECKS 等 15 项）"
         )
     }
 

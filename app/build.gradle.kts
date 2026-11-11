@@ -250,7 +250,7 @@ android {
         //   键值一次性 regedit 清洗（幂等标记）。
         // v3.3.6（源码包 v3.3.6，App v2.38.31 / versionCode 94）：
         // ①【用户定稿】真·零拷贝：废除 v3.3.5 PE 件落地 games/ 执行区
-        //   （对齐 Winlator/MiceWine —— 二者均无 PE 落地机制，直接从
+        //   （对齐 上游同类项目 —— 二者均无 PE 落地机制，直接从
         //   /storage/emulated/0 跑游戏）；exe 按原路径直接启动，不复制
         //   任何文件；旧两代执行区残留（rootfs/home/.anwind/games、
         //   <容器>/games）首次启动/删容器一次性清理释放。
@@ -317,7 +317,7 @@ android {
         //     重复 JSON），gpu_presets.json（2541 行唯一副本）迁入 builtin/；
         //     FexConfSupport 的 ASSET_ENV_VARS/ASSET_PRESETS 常量与容器
         //     管理 FEX 配置页两处帮助文案全部改指 assets builtin/ —— 与
-        //     启动链 presetEnvVars 的 builtin/fex_presets.json、WinFusion
+        //     启动链 presetEnvVars 的 builtin/fex_presets.json、上游发行包
         //     assets/builtin 布局完全同源，单一权威路径。
         // v3.4.5（源码包 v3.4.5，App v2.38.44 / versionCode 107）——
         //   用户 2026-11-11 六大需求轮（"1:1 复刻 Win7，不是随便"）：
@@ -347,7 +347,7 @@ android {
         //   ⑤【X11 控制条隐藏】画面顶部中央 ⌃/⌄ 玻璃片，隐藏底部
         //     分辨率/切窗/键盘栏让游戏画面更大（会话级状态）。
         //   ⑥【构建对照结论】mesa 26.2.1（zink+freedreno+turnip 全在 +
-        //     SONAME 软链齐）≥ WinFusion 26.2.0；box64 v0.4.4 ≥ 0.4.3；
+        //     SONAME 软链齐）≥ 上游发行包 26.2.0；box64 v0.4.4 ≥ 0.4.3；
         //     wine hangover-11.16 > wine-10.10；性能 env 键全套已对齐
         //     （mailbox/NO_ERROR/esync/DXVK_ASYNC/GPL 缓存…）。设备侧
         //     "缺 zink" = 旧 rootfs 包，重跑构建即带。
@@ -430,10 +430,63 @@ android {
         //     权限面）；保存=输入名字对话框（预填默认名/确认/取消，重名
         //     覆盖）；读取=该目录 .vgp 列表点选（时间倒序+保存时间+空
         //     目录指引）；结果气泡/持久化机制不变。
-        versionCode = 109
-        versionName = "2.38.46"
+        // v3.4.8（源码包 v3.4.8，App v2.38.47 / versionCode 110）——
+        //   用户 2026-11-12 四问题轮（wine 会话日志 + 三份 CI 构建日志实证）：
+        //   ①【音频三修：machine-id / winecfg 手改 / NOPULSE 回归】
+        //     （用户："部分游戏还是没声音，可是 winecfg 里音频完整啊，
+        //     日志里找不到 etc/machine-id 啥意思，而且我选择了 alsa
+        //     还是用的 pulse"）：
+        //     a) anwind-wine 新增 ensure_machine_id —— rootfs 包从未带过
+        //        /etc/machine-id（日志 "Failed to open /etc/machine-id"
+        //        的出处；pulseaudio 守护初始化与 wine 侧库都会读它），
+        //        缺失时补 32 hex 稳定值（boot_id 去连字符优先，urandom
+        //        兜底；幂等，同步 var/lib/dbus）；audio_setup 守护拉起
+        //        前调用，守护拉不起来时前台试跑 3s 收集 stderr 前 5 行
+        //        进会话日志（不再哑谜）。
+        //     b) WineRegistry.ensureAudioDriver 改 winecfg 手改优先：先经
+        //        readUserRegSz（user.reg 文本直析，零 wine 进程）读
+        //        [Software\Wine\Drivers] Audio 现值 —— 现值与容器档映射
+        //        不一致 = 用户在 winecfg「音频」页手改 → 容器档跟随注册表
+        //        （ContainerManager.update 持久化），不再覆盖回写（旧逻辑
+        //        每次启动把 winecfg 选择拉回容器档 —— "选了 alsa 还是
+        //        pulse"的直接根因）；键不存在/与档一致才落位（幂等）。
+        //     c) apply_arm64ec_audio_env 回归：v3.4.6 的 BOX64_NOPULSE=1
+        //        实测未解决 wowbox64 无声（用户二次反馈实证），winepulse
+        //        arm64 unixlib 本就原生 dlopen libpulse 不经 box64 ——
+        //        回归缺省（不注入 + unset 生态残留），无声根因改由
+        //        machine-id/守护诊断/alsa 桥链路治理。
+        //   ②【三构建全挂修复：alsa-plugins arcam-av】（用户："bionic
+        //     proton9.0 全都构建报错了，日志发了，rootfs 也构建报错了"
+        //     —— rootfs aarch64 / wine x86_64 / wine arm64ec 三日志同一
+        //     死点）：alsa-plugins 1.2.12 的 arcam-av 部件在 bionic 严格
+        //     C99 下必挂 —— bzero() 未声明（需 <strings.h>）+ AF_FILE 是
+        //     glibc 旧别名宏（bionic 无，AF_UNIX 同语义）。arcam-av 为
+        //     Arcam 功放控制件与音频链路无关 → 禁之。开关名以 v1.2.12
+        //     configure.ac 为准：AC_ARG_ENABLE([arcamav]) →
+        //     --disable-arcamav（无连字符；此前 --disable-arcam-av 是未知
+        //     选项被 configure 静默忽略，目录照编照挂 —— 本轮拼写修正
+        //     点）；顺带显式禁 oss/libav/a52/lavrate；pre_setup sed 修补
+        //     源码（AF_FILE→AF_UNIX + <strings.h>）三重保险。
+        //   ③【去外部项目名】（用户："启动日志里把 WinFusion 和
+        //     WinlatorXR 等不相干的名字去掉"）：运行时会话日志 7 处输出
+        //     行（version/dosdevices×2/跳过预置×2/前缀构建完成/GLIBC_BIN
+        //     ）与容器设置页 7 处 GNote 文案全部去名（WinFusion/
+        //     WinlatorXR/WinNative/MiceWine/Winlator/startwine.sh/
+        //     startfex.sh/yuzu → 中性表述，语义保留）；源码与脚本注释
+        //     同类字样一并中性化（App 与 bionic-rootfs 双侧，含打进
+        //     rootfs 包的 anwind-wine 脚本源与 wine/box64 补丁注释），
+        //     rg 验证残留为 0；exagear 为用户设备真实目录名（E: 盘映射
+        //     ）保留。
+        //   ④【主桌面右键菜单放大】（用户澄清："我说的是主桌面的右键
+        //     菜单，不是x11界面右键菜单"）：DesktopContextMenu 整体约
+        //     一倍 —— 面板 112→230dp、普通/子菜单条目 17→40dp（≈40dp
+        //     触摸目标达标）、字号 9.5→15sp、图标 10→20dp、单选项行
+        //     34→40dp 字号 13→15sp 同尺寸统一、圆角/内边距/子菜单缩进
+        //     同步。
+        versionCode = 110
+        versionName = "2.38.47"
         // v3.4.3（源码包 v3.4.3，App v2.38.42 / versionCode 105）——
-        //   用户交付 assets-ck 资产包 + WinFusion 参考源码（「assets-ck
+        //   用户交付 assets-ck 资产包 + 上游发行包 参考源码（「assets-ck
         //   我发了，源码也发了…特别是 arm64ec wine 和 x86_64 wine 的
         //   调用以及性能问题」「乱的注册表，根据 json 正确打」）：
         //   ①FEX 预设 JSON 注入（arm64ec 线性能主修复）：fex_presets.json
@@ -445,7 +498,7 @@ android {
         //     两份 anwind-wine 脚本内联同表。
         //   ②box64 预设 JSON 对齐（x86_64 线）：box64_presets.json 四档
         //     11 项（补 AVX/UNITYPLAYER）+ BOX64_PREFER_EMULATED=1
-        //    （WinFusion 同款）；SAFEFLAGS 保持 0（用户设备定稿）；
+        //    （上游同款）；SAFEFLAGS 保持 0（用户设备定稿）；
         //     PERFORMANCE 档补 MMAP32=1。
         //   ③注册表核对：ensureGlobalDllOverrides 两份输入 JSON 与
         //     assets-ck 逐字节一致（v3.4.1 已正确，核验确认）。
@@ -506,7 +559,7 @@ android {
         //     垂直同步零感知代价）。
         // v3.3.37（源码包 v3.3.37，App v2.38.39 / versionCode 102 —— 构建
         //   系统与配置轮，App 版本号不变）—— 用户 2026-11-10 反馈六连修：
-        //   ①【性能全链对齐 WinlatorXR】（"还不如 proot"）：box64 PERFORMANCE
+        //   ①【性能全链对齐 上游参考】（"还不如 proot"）：box64 PERFORMANCE
         //     档逐字对齐（BIGBLOCK=3/FORWARD=512/X87DOUBLE=0/+MMAP32=1 +
         //     X11GLX/DYNAREC 恒开）；新增全局性能基线 applyPerfBaselineEnv
         //     （mailbox 呈现 + MESA_NO_ERROR + DXVK_ASYNC/GPLASYNCCACHE/
@@ -517,13 +570,13 @@ android {
         //   ②【DXVK 真激活】（"arm64ec 仙剑四用 dxvk 直接失败"核心根因）：
         //     v3.2.27 撤销全部 DllOverrides 后 wine 默认加载序（builtin 优先）
         //     从未加载过解压进 system32/syswow64 的 DXVK DLL —— dxvk 槽位
-        //     激活时注入 D3D/DXGI 全家 native,builtin（WinlatorXR WineUtils
+        //     激活时注入 D3D/DXGI 全家 native,builtin（上游参考 WineUtils
         //     同款；off 档零注入，用户 dxoverrides/env= 仍最高优）。
         //   ③【闪屏对策】mailbox 呈现模式 + zink KOPPER 禁用 + GL NO_ERROR。
-        //   ④【驱动目录分列】（"wrapper和yuzu类驱动包括系统驱动怎么全跑到
-        //     turnip(opt/tz)那里了"）：/opt/tz（turnip 包）与 /opt/yuzu
-        //     （yuzu/高通专有包）独立目录独立档位独立选择；RootfsLauncher
-        //     0.5 与脚本兜底安装同步支持 /opt/yuzu。
+        //   ④【驱动目录分列】（"wrapper和社区格式类驱动包括系统驱动怎么全跑到
+        //     turnip(opt/tz)那里了"）：/opt/tz（turnip 包）与 /opt/社区格式
+        //     （社区格式/高通专有包）独立目录独立档位独立选择；RootfsLauncher
+        //     0.5 与脚本兜底安装同步支持 /opt/社区格式。
         //   ⑤【中文环境兜底】rootfs-fonts 的 NotoSansSC 纳入 CJK 字体候选
         //     （/system/fonts 无 CJK 的设备不再直接方块）。
         //   ⑥【glibc 下载镜像池】（box64-build-log-aarch64(7) 实证：CI 到
@@ -548,15 +601,15 @@ android {
         //     纯 Java PE 解析器（RT_GROUP_ICON→RT_ICON，PNG/DIB 1-32bpp，
         //     A/B 双偏移风格自适应，桌面端已对真实 exe 验证）+
         //     ExeIconThumbnail（LruCache，exe/dll/scr/com/cpl/ocx/ico）；
-        //   ④【高通/联发科专有系统驱动支持】（用户需求，参考 WinlatorXR）：
+        //   ④【高通/联发科专有系统驱动支持】（用户需求，参考 上游参考）：
         //     新增『系统驱动（高通/联发科专有）』档（wrapper="system"，
         //     内置 wrapper-stack.tzst APK 资产 5.5MB 自动安装，wrapper 回退
-        //     /system/lib64/libvulkan.so）；yuzu 格式专有驱动包（v819.2/
+        //     /system/lib64/libvulkan.so）；社区格式 格式专有驱动包（v819.2/
         //     v849/q615.50 等）安装后自动经 wrapper 栈路由；依赖预检补
         //     vendor 分区（/vendor/lib64 等 HIDL 库解析）。
         // v3.3.30（源码包 v3.3.30，App v2.38.38 / versionCode 101）——
         //   用户 2026-11-09 18:2x 日志四连发实证的修复轮：
-        //   ①【wrapper/yuzu 驱动"装了选了也不能用"根因闭环】：v3.3.29
+        //   ①【wrapper/社区格式 驱动"装了选了也不能用"根因闭环】：v3.3.29
         //     补的 /system/lib64 末位兜底不够 —— rootfs 的 libandroid-stub
         //     代理桩 libbinder_ndk.so（无 DT_SONAME；targetSdk≥23 时
         //     bionic 不做 basename 回退 → soname 为空）在 rootfs/usr/lib
@@ -582,12 +635,12 @@ android {
         //   无需重建 rootfs / wine 包（全部改动在 APK 侧）。
         // v3.3.29（源码包 v3.3.29，App v2.38.37 / versionCode 100）——
         //   用户设备日志（wine-10arm-20261109 三连发）实证修复轮：
-        //   ①【wrapper 驱动"不能用"真根因】：选 wrapper/yuzu 驱动后 Vulkan
+        //   ①【wrapper 驱动"不能用"真根因】：选 wrapper/社区格式 驱动后 Vulkan
         //     Loader 报 "cannot find libbinder_ndk.so from verneed[2] in
         //     DT_NEEDED list for /system/lib64/libnativewindow.so" → ICD
         //     整体被忽略 → "Found no drivers" → DXVK vkCreateInstance 失败。
         //     三层修复：a) anwind-wine isolate_env 末位补 /system/lib64
-        //     （WinlatorXR BionicProgramLauncher 同款；此前 v3.3.28 只在
+        //     （上游参考 BionicProgramLauncher 同款；此前 v3.3.28 只在
         //     App 层设置、被脚本 isolate_env 重建丢弃）；b) NDK 依赖前置
         //     解析（脚本 ensure_ndk_deps + Kotlin WrapperDriverSupport.
         //     ensureNdkDeps 双份）：rootfs/usr/lib 缺 libbinder_ndk.so 等
@@ -621,13 +674,13 @@ android {
         //     闭包捕获首次组合时的旧 edit 快照（DisposableEffect key
         //     不变不重建）→ 浏览选 exe 后保存把分辨率打回旧值。
         //     rememberUpdatedState 修复。
-        //   ④LD_LIBRARY_PATH 末位补 /system/lib64（WinlatorXR 同款）：
+        //   ④LD_LIBRARY_PATH 末位补 /system/lib64（上游参考 同款）：
         //     wrapper/turnip 驱动的 libnativewindow.so 等系统库解析必需。
-        //   ⑤ADRENOTOOLS_DRIVER_PATH 尾斜杠对齐 WinlatorXR。
+        //   ⑤ADRENOTOOLS_DRIVER_PATH 尾斜杠对齐 上游参考。
         //   ⑥DXVK 注入 wineArch 选档补全（v3.3.21 只加了参数没接线）：
         //     arm64ec 容器 system32 装 arm64ec 原生档（多架构包时）。
         // v3.3.19（源码包 v3.3.19）：wrapper 驱动运行时可用性根治 ——
-        //   ELF ABI 门禁（WinNative DriverPackages.identify 移植：glibc 包
+        //   ELF ABI 门禁（上游实现 DriverPackages.identify 移植：glibc 包
         //   拒装，bionic 才收）+ wrapper 栈包形态（libvulkan_wrapper.so 作
         //   ICD + ADRENOTOOLS_DRIVER_PATH/NAME 注入，X11 WSI 由 wrapper 的
         //   xcb 侧提供）+ android 平台裸 turnip 自动路由 wrapper 栈 +
@@ -650,7 +703,7 @@ android {
         //   用户 path.conf 的 turnip 硬编码正是此前 wrapper 失效根因。
         // v3.3.10（源码包 v3.3.10）：fexcore 独立目录 + 桌面图标精简/拖拽
         //   + box64 按版本跳过补丁 + wine mf 补丁分档 + Wrapper 驱动
-        //   （WinNative/yuzu 同型 Turnip）——详见 README-FIX.md：
+        //   （社区/上游 同型 Turnip）——详见 README-FIX.md：
         //   ①FEXCore 槽位目录 /opt/dxvk1 → /opt/fexcore（逻辑同 DXVK，
         //     解压到容器 C 盘 windows）；②桌面仅保留此电脑/浏览器/终端/
         //     X11/云音乐/Wine容器六件，其余收进开始菜单，菜单瓦片长按
@@ -662,7 +715,7 @@ android {
         //     CLSID_MPEG4ByteStreamHandlerPlugin，<9.10 → CLSID_AVI-...
         //     +WINE_DO_NOT_CREATE_DXGI_DEVICE_MANAGER stub，用户
         //     wine-wow64-no.yml 同款语义）；⑤Wrapper 驱动槽位 /opt/wrapper
-        //     （yuzu/WinNative 预编译 Turnip：独立目录 + Vulkan ICD 清单
+        //     （社区格式/上游实现 预编译 Turnip：独立目录 + Vulkan ICD 清单
         //     + VK_ICD_FILENAMES 切换，与 Mesa 共存可切，libc++_shared
         //     依赖补全，App + anwind-wine CLI 双端）。
         // v3.3.3（源码包 v3.3.3）：media 根治（noexec 导入空间误判修复）
@@ -721,7 +774,7 @@ android {
         //   fontconfig 缓存、rootfs 迁移）。
         // ②/opt 生态路径修正（用户："应该是 /data/data/com.anwind/
         //   files/rootfs/opt"）：探测候选 rootfs/opt → wine 槽位目录
-        //   （WinFusion 包 conf/prefix 与 bin/ 平级落槽位的布局）→
+        //   （上游发行包 包 conf/prefix 与 bin/ 平级落槽位的布局）→
         //   rootfs/usr/opt；探测/应用结果全程大声日志（会话日志可见
         //   "读了哪里、用了哪些"）。
         // ③wine_path.conf 按用户要求剔除：wine 目录一律由 AnWind 槽位
@@ -812,7 +865,7 @@ android {
         //   → jcc 拿陈旧标志走错分支 → 寄存器装入未重定位裸值 → 访问 0x928e8
         //   类未映射小地址（崩溃现场 RAX=0x3f000928d8 与 R15=0x928d8 低 32 位
         //   一致 = 高位丢失，flags 错乱典型后遗症）。修复：
-        //   ① PERFORMANCE 预设 SAFEFLAGS 0→1（上游默认值，Winlator wine 组合
+        //   ① PERFORMANCE 预设 SAFEFLAGS 0→1（上游默认值，上游参考 wine 组合
         //      实证底线：BIGBLOCK=1/FASTNAN=1/FASTROUND=1/SAFEFLAGS=1/
         //      STRONGMEM=0）；
         //   ② wineboot 前缀构建会话强制 SAFEFLAGS=2（"All CALL/RET will need
@@ -893,7 +946,7 @@ android {
         //     （wine X11/unix 侧大量依赖）→ 加载即死零输出；删除 OUTPUT
         //     文件强制必跑，install() 三道冒烟（functions_list 含 shmget /
         //     符号表含 shmget+getDB / 链接无 --image-base）。
-        //   b.NOLOADADDR=ON 对齐 Winlator/MiceWine 两条已验证 Android 部署
+        //   b.NOLOADADDR=ON 对齐 上游同类项目 两条已验证 Android 部署
         //     链（Android linker64 对 PIE 不遵守 image-base，桌面低地址钉死
         //     在应用进程布局上无收益有风险）。
         //   c.CI 加源码级冒烟测试：同 ref 独立 clone + 宿主 x86_64 构建 +
@@ -967,8 +1020,8 @@ android {
         // 运行库补齐 —— x86_64 形态 wine 前缀构建秒退(139)的根治。
         // [根因]（用户诊断 + 构建链核对）：bionic 形态 box64（-DANDROID=1，
         // NDK clang）冒烟可过（wine --version 轻路径）但真实 wine 负载
-        // （explorer ... wineboot -i）SIGSEGV；而 glibc 形态 box64（Winlator/
-        // MiceWine 同款）所需的 ld-linux-aarch64.so.1 从未构建过——rootfs
+        // （explorer ... wineboot -i）SIGSEGV；而 glibc 形态 box64（上游参考/
+        // 上游项目 同款）所需的 ld-linux-aarch64.so.1 从未构建过——rootfs
         // 只有 glibc-x86_64（amd64 deb，给被仿真的 x86_64 程序用），aarch64
         // 侧 glibc 加载器/运行库缺失，glibc box64 装上即 ENOENT。
         // [本版]：①新配方 bionic-rootfs/projects/glibc-aarch64（Ubuntu

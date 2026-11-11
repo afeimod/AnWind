@@ -20,7 +20,7 @@ APK 启动 / bootstrap 安装完成后由 `AnWindTzstAssets` **自动自解压**
 
 ## 特殊资产：wrapper-stack.tzst（v3.3.32，不自动解压）
 
-**`wrapper-stack.tzst`（5.5MB）**：Vulkan wrapper 栈（WinlatorXR `wrapper.tzst`
+**`wrapper-stack.tzst`（5.5MB）**：Vulkan wrapper 栈（上游参考 `wrapper.tzst`
 同源二进制：`libvulkan_wrapper.so` + `libadrenotools.so` + 四个钩子库）——
 高通/联发科【专有】系统驱动与 yuzu 格式专有驱动包（v819.2 / v849 / q615.50
 等）的唯一可用通路。文件名**不含上述关键词**，不进 AnWindTzstAssets 自解压；

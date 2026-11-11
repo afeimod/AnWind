@@ -13,14 +13,14 @@ import java.net.Socket
  * 移植 anwind-wine 脚本 audio_setup 的语义，但由 App 端以
  * [NativeShellExecutor] 原生拉起 rootfs 自带的 pulseaudio
  * （bionic 构建，default.pa 内置 module-sles-sink 直连 Android
- * OpenSLES），并与 WinFusion PulseAudioServer 的健壮性设计对齐：
+ * OpenSLES），并与 上游发行包 PulseAudioServer 的健壮性设计对齐：
  *
  *  1. **陈旧 pid 文件必须由我们清**：daemon 模式的 pulseaudio 按 pid
  *     文件判断"是否已有守护在跑"。App 进程死亡留下的孤儿 pulse 或
  *     pid 被内核回收后的陈旧文件，会让下一次 `--start` 打印
  *     "Daemon already running." 后秒退，socket 永不出现 —— 表现为
  *     随机的"音频无声"。启动前先校验 pid 真伪，死了就清 pid 与
- *     socket 残留（WinFusion 同款教训）。
+ *     socket 残留（上游同款教训）。
  *  2. **复用必须验证 socket 真活着**（v3.1 修复）：旧版 `socket 文件
  *     存在 → 直接复用`，存活校验永远执行不到 —— 孤儿 socket 被直接
  *     交给 wine（PULSE_SERVER=unix:<死端点>），表现为 winecfg 音频页

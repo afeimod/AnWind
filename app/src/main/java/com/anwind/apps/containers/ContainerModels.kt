@@ -69,16 +69,16 @@ enum class ContainerBackend(
 }
 
 // ---------------------------------------------------------------------------
-// Box64 动态重编译预设（v3.3.16 对齐 WinNative Box64PresetManager 四档）
+// Box64 动态重编译预设（v3.3.16 对齐 上游实现 Box64PresetManager 四档）
 // ---------------------------------------------------------------------------
 
 /**
- * Box64 DYNAREC 预设（WinNative Box64PresetManager.getEnvVars 同款四档，
+ * Box64 DYNAREC 预设（上游实现 Box64PresetManager.getEnvVars 同款四档，
  * 变量值逐字对齐；标签按 AnWind 语言习惯命名）。
  *
  * STABILITY      : 最稳档（wineboot/旧程序崩溃时选）—— 全安全开关
  * COMPATIBILITY  : 兼容优先 —— 强内存序 + 安全 flags
- * INTERMEDIATE   : 进阶（WinNative 原名）—— 大块 + CALLRET 优化开
+ * INTERMEDIATE   : 进阶（上游实现 原名）—— 大块 + CALLRET 优化开
  * PERFORMANCE    : 性能优先 —— BIGBLOCK=3 + 全快路径，适合多数游戏
  *
  * 旧容器数据迁移：原两档 id（performance/compatibility）保留不变，
@@ -290,7 +290,7 @@ object ContainerFlags {
     const val DX11 = "dx11"
 
     /** FEX 模式（wineguanli.py 高级启动选项）。v3.4.2 语义（对齐参考
-     *  源码 WinFusion LaunchPlan：HODLL 是用户设置项，不默认注入）：
+     *  源码 上游发行包 LaunchPlan：HODLL 是用户设置项，不默认注入）：
      *  勾选 → 注入 HODLL=libwow64fex.dll（dll 缺席则跳过）；不勾选 →
      *  不注入，由 wine 内部缺省（0010/0011 补丁：libwow64fex/
      *  libarm64ecfex）接管 —— fex 运行默认直接 wine exe。用户 env=/
@@ -300,7 +300,7 @@ object ContainerFlags {
     /** wowbox64 模式。v3.4.2（用户：「wowbox64 模式别取消，加入选项，
      *  部分 32 游戏需要」）：FEXMODE 的姊妹档 —— 勾选 → 注入
      *  HODLL=wowbox64.dll（box64-in-wow64 32 位模拟层；dll 缺席则跳过）。
-     *  参考源码 WinFusion 的 HODLL 取值恰是这两个二选一
+     *  上游发行包 的 HODLL 取值恰是这两个二选一
      *  （LaunchPlan.buildEnv:224-225 / WineConfigure.fexDllsInstalled:
      *  356-358：0=libwow64fex.dll，1=wowbox64.dll —— SettingKeys
      *  ContainerFEXHodll）。默认不注入同 FEXMODE；与 FEXMODE 同时勾选

@@ -15,7 +15,7 @@ deps=""
 # 程序的运行库，lib/x86_64-linux-gnu）互为镜像：
 #
 #   * glibc 形态 box64（build-box64.yml 工作流产物
-#     anwind-box64-*-aarch64-glibc.tar.gz，Winlator/MiceWine 同款
+#     anwind-box64-*-aarch64-glibc.tar.gz，上游参考/上游项目 同款
 #     -DWINLATOR_GLIBC 形态）的 PT_INTERP / DT_RPATH 指向
 #     /data/data/com.anwind/files/rootfs/usr/lib/aarch64-linux-gnu/
 #     ld-linux-aarch64.so.1 —— rootfs 必须自带这套运行库，该形态

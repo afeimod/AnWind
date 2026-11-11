@@ -307,7 +307,7 @@ fun X11Surface(scope: WindowContentScope) {
                         // "跟随窗口一直在左上角、点击位置不对、整体上移"），虚拟
                         // 桌面铺满整个 X 屏幕后 wine 自管子窗口几何，三个症状同除。
                         X11ResolutionLink.writeScreenSize(screenW, screenH)
-                        // 同步 Winlator 侧 xserver 状态（screenInfo 消费方依赖）。
+                        // 同步 X 服务侧 xserver 状态（screenInfo 消费方依赖）。
                         try {
                             lv.screenInfo.handleHostSizeChanged(surfaceW, surfaceH)
                             lv.screenInfo.handleClientSizeChanged(screenW, screenH)

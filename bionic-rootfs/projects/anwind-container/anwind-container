@@ -2,7 +2,7 @@
 # ============================================================
 # anwind-container — AnWind Wine 容器管理（bionic rootfs / X11）
 # ------------------------------------------------------------
-# 数据模型参考 Winlator/WinNative/MiceWine：每个容器 = 独立
+# 数据模型参考 上游参考/上游实现/上游项目：每个容器 = 独立
 # wine 前缀 + 后端(box64/hangover/fexcore/native) + 个性化环境。
 #
 #   容器根目录 : /data/data/com.anwind/files/rootfs/home/.anwind/containers
@@ -547,7 +547,7 @@ cmd_install_vkd3d() {
 
 # ---------- Vulkan 驱动管理（v3.3.20：yuzu zip / adpkg zip / wrapper tar） ----------
 # 驱动库 = usr/share/anwind-wrapper/drivers/<slot>/（App 图形驱动页同款，
-# WinNative DriverPackages 独立目录模型）。安装实现委托 anwind-wine
+# 上游实现 DriverPackages 独立目录模型）。安装实现委托 anwind-wine
 # --install-driver（zip/tar 通吃 + meta.json libraryName + ABI 门禁 +
 # 自生成 ICD/meta 全套语义），此处补 list/select/remove 管理面。
 DRIVERS_ROOT="$RFS_USR/share/anwind-wrapper/drivers"
@@ -610,7 +610,7 @@ cmd_driver() {
             [ -n "$slot" ] || die "用法: anwind-container driver remove <slot>"
             local _dir="$DRIVERS_ROOT/$slot"
             [ -d "$_dir" ] || die "驱动未安装: $slot"
-            # WinNative removeDriver 同语义：引用该槽位的容器先重置回内置
+            # 上游实现 removeDriver 同语义：引用该槽位的容器先重置回内置
             local _cd _val _hit=0
             for _cd in "$CONT_ROOT"/*/; do
                 [ -f "$_cd/container.conf" ] || continue

@@ -767,11 +767,11 @@ FSYSGUARD
   # v3.2.0：esync Android 硬禁用 —— proton10 arm64ec wineboot 无输出挂死
   # 的头号嫌疑。设备日志实证：ntdll 已成功加载（"anwind: bionic heap
   # tagging disabled" 出现 = __wine_main 在跑）后，esync 初始化路径打印
-  # "_r_debug not found in ld.so"（proton/Winlator 系 wine 在 Android 上的
-  # 同款输出；Winlator 紧跟 "esync: shm initialized" 能走通，bionic 下
+  # "_r_debug not found in ld.so"（proton/上游参考 系 wine 在 Android 上的
+  # 同款输出；上游参考 紧跟 "esync: shm initialized" 能走通，bionic 下
   # 无 _r_debug 导出、无 /dev/shm，该段 DSO 枚举/共享内存代码走不通，
   # 之后进程再无任何输出 = 挂死）。esync 在 Android 沙箱收益为零
-  # （Winlator/MiceWine 默认关闭），与 fsync 守卫同款处理：__ANDROID__
+  # （上游参考/上游项目 默认关闭），与 fsync 守卫同款处理：__ANDROID__
   # 目标 do_esync 直接 return 0；运行期 WINEESYNC=0 环境兜底保留。
   # wine >=10 官方树/hangover-11 树 esync 并入 sync.c（无独立 esync.c），
   # 文件缺失自动跳过；幂等。
@@ -795,7 +795,7 @@ FSYSGUARD
      * /dev/shm; proton's esync DSO-enumeration/shm init path hangs the
      * process silently on Android (device log: "_r_debug not found in
      * ld.so" then no output at all). esync gives zero benefit in the
-     * Android sandbox (Winlator/MiceWine ship it disabled). Hard-disable
+     * Android sandbox (上游参考/上游项目 ship it disabled). Hard-disable
      * on bionic targets; WINEESYNC=0 runtime fallback stays. */
     return 0;
 #endif

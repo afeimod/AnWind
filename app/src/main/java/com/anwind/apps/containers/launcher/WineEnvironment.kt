@@ -145,7 +145,7 @@ object WineEnvironment {
         env["LC_ALL"] = lang
 
         // --- 动态库搜索路径 → rootfs + Android 系统（§4） ---
-        // v3.3.28：末位补 /system/lib64 —— WinlatorXR（cmod_bionic
+        // v3.3.28：末位补 /system/lib64 —— 上游参考（cmod_bionic
         // BionicProgramLauncherComponent）同款：`LD_LIBRARY_PATH =
         // rootDir/usr/lib : /system/lib64`。wine 进程 dlopen 的链路里
         // 有一批库只在 Android 系统目录：wrapper 驱动栈的
@@ -269,7 +269,7 @@ object WineEnvironment {
                 //   此变量，猜想 kopper 的 GLX 直呈现更快 —— 但 AnWind 的
                 //   X 服务（termux-x11/libXlorie 软渲染 X server）没有 DRI3
                 //   呈现通路，kopper 自建 swapchain 每帧反而多一次回读慢
-                //   路径（WinlatorXR XServerDisplayActivity 同款禁用语义，
+                //   路径（上游参考 XServerDisplayActivity 同款禁用语义，
                 //   用户参考源码保持一致）。GL 命令流依旧全速经 Vulkan →
                 //   GPU，只是不走 kopper 的 X 呈现支路。
                 env.putIfAbsent("LIBGL_KOPPER_DISABLE", "true")
@@ -387,7 +387,7 @@ object WineEnvironment {
         // startwine.sh/startfex.sh 的同款导出，这是参考链路能跑、
         // AnWind 链路部分场景子进程拉不起的差异点之一。
         // 注入后：box64 对仿真进程的 exec 直接在 wine 自己的 bin 里找，
-        // 与 MiceWine/Winlator 的 BOX64_PATH 用法一致。仅目录存在时写入。
+        // 与上游同类项目的 BOX64_PATH 用法一致。仅目录存在时写入。
         val wineBinDir = File(wineDir, "bin")
         if (wineBinDir.isDirectory) {
             env["BOX64_PATH"] = wineBinDir.absolutePath
@@ -435,7 +435,7 @@ object WineEnvironment {
             }
         }
         // v3.3.37（用户：“性能问题根本没有解决，甚至还不如 proot”）：
-        // 四档全面对齐 WinlatorXR Box86_64PresetManager.java:23-95 参考值
+        // 四档全面对齐上游参考 Box86_64PresetManager.java:23-95 参考值
         // （同代 Adreno 硬件 + 同代 box64 实战验证的档位表）：
         //   * PERFORMANCE：BIGBLOCK 1→3、FORWARD 128→512、X87DOUBLE 1→0、
         //     +MMAP32=1 —— 与参考实现逐字一致，这是 32 位游戏 dynarec
@@ -451,7 +451,7 @@ object WineEnvironment {
         env.putIfAbsent("BOX64_X11GLX", "1")
         // v3.4.3【box64 预设 JSON 对齐】：四档 BOX64_* 改由 assets
         // builtin/box64_presets.json 派生（用户提供的 assets-ck 资产，
-        // WinFusion LaunchPlan.buildEnv:237-242 经 Box64PresetManager
+        // 上游发行包 LaunchPlan.buildEnv:237-242 经 Box64PresetManager
         // 展开的同一张表 —— x86_64 wine 线的调用与性能对齐）。旧表每档
         // 9 项手抄值；JSON 表 11 项补齐 BOX64_AVX 与 BOX64_UNITYPLAYER
         //（稳定/兼容档 1，进阶/性能档 0；容器 UNITY 勾选的 applyTuningEnv
@@ -459,7 +459,7 @@ object WineEnvironment {
         //  - SAFEFLAGS 恒 0（v3.3.21 用户设备定稿：Adreno 740 /
         //    Android 15 实测 1/2 触发 ntdll 早期 SIGSEGV —— JSON 档位值
         //    2/2/2/1 不适用本机；flags 保守度对性能影响微小，稳定性优先）；
-        //  - PERFORMANCE 档补 BOX64_MMAP32=1（WinlatorXR 同款）。
+        //  - PERFORMANCE 档补 BOX64_MMAP32=1（上游同款）。
         // 资产缺席回落下方旧内联表（打包错误兜底，行为不劣于 v3.4.2）。
         val bvars = presetEnvVars(
             context, "builtin/box64_presets.json", log
@@ -470,7 +470,7 @@ object WineEnvironment {
             if (container.preset == Box64Preset.PERFORMANCE) {
                 env.putIfAbsent("BOX64_MMAP32", "1")
             }
-            // WinFusion x86_64 线同款（LaunchPlan.buildEnv:236）：优先仿真
+            // 上游发行包 x86_64 线同款（LaunchPlan.buildEnv:236）：优先仿真
             // 库，避免 rootfs/系统原生同名库混载不可预期
             env.putIfAbsent("BOX64_PREFER_EMULATED", "1")
             log(
@@ -513,7 +513,7 @@ object WineEnvironment {
                 env["BOX64_DYNAREC_WAIT"] = "1"
             }
             Box64Preset.PERFORMANCE -> {
-                // v3.3.37：WinlatorXR PERFORMANCE 档逐字对齐（仅 SAFEFLAGS
+                // v3.3.37：上游参考 PERFORMANCE 档逐字对齐（仅 SAFEFLAGS
                 // 按用户设备实测保持 0）。
                 env["BOX64_DYNAREC_BIGBLOCK"] = "3"
                 env["BOX64_DYNAREC_SAFEFLAGS"] = "0"
@@ -534,12 +534,12 @@ object WineEnvironment {
     // ------------------------------------------------------------------
 
     /**
-     * v3.3.37：全局性能基线（WinlatorXR DefaultVersion.ENV_VARS 容器
+     * v3.3.37：全局性能基线（上游参考 DefaultVersion.ENV_VARS 容器
      * 出厂调优串的全量移植，box64 / arm64ec 两条线共用）。
      *
      * 用户原话：“性能问题根本没有解决，甚至还不如 proot 容器运行 wine
      * 的性能，完全解析参考源码的性能调用以及所有配置”。参考实现
-     * （WinlatorXR core/DefaultVersion.java:41-44 + XServerDisplayActivity
+     * （上游参考 core/DefaultVersion.java:41-44 + XServerDisplayActivity
      * :1663-1675/:2431-2441 + DXVKConfigDialog:152-194）注入而我们缺的：
      *  * MESA 侧（闪屏/掉帧双杀）：
      *    - MESA_VK_WSI_PRESENT_MODE=mailbox —— 交换链呈现模式走 mailbox
@@ -595,18 +595,18 @@ object WineEnvironment {
             "ximagesink:3000,avdec_wmav1:512,avdec_wmav2:512,avdec_wmapro:512"
         )
         log(
-            "性能基线（WinlatorXR 容器调优串移植）：mailbox 呈现 + GL NO_ERROR + " +
+            "性能基线（容器调优串）：mailbox 呈现 + GL NO_ERROR + " +
                 "DXVK 异步编译/状态缓存 + WINEDEBUG=-all（opt conf / 容器 env= 可逐项覆盖）"
         )
     }
 
     /**
-     * v3.3.37：FEX 运行时配置文件（WinlatorXR FEXCoreManager.java:110-118/
+     * v3.3.37：FEX 运行时配置文件（上游参考 FEXCoreManager.java:110-118/
      * 241-243 同款机制 —— libwow64fex/libarm64ecfex 从
      * `$HOME/.fex-emu/Config.json` 读配置，这是参考实现【实证有效】的
      * 通道；FEX_* 环境变量在部分 FEX 构建上不生效，env 保留作次级兜底）。
      *
-     * 按容器预设写（WinlatorXR 四档语义）：
+     * 按容器预设写（上游参考 四档语义）：
      *  * PERFORMANCE：TSO 全关（Fastest）+ X87ReducedPrecision=1（x87 64 位
      *    精算提速）+ Multiblock=1（超块内分支直通）—— 32 位游戏三件套；
      *  * INTERMEDIATE：TSO 全关 + Multiblock=1（x87 保持 80 位精算）；
@@ -626,13 +626,13 @@ object WineEnvironment {
     ) {
         // v3.4.3【根据 JSON 正确打】：presetDefaults 改由 assets
         // builtin/fex_presets.json 派生（用户提供的 assets-ck 资产，
-        // WinFusion FEXPresetManager 同一张表 —— 四档各 15 项，含旧表
+        // 上游发行包 FEXPresetManager 同一张表 —— 四档各 15 项，含旧表
         // 缺失的 SMALLTSCSCALE/MAXINST 等）。资产缺席（打包错误）回落
         // 下方旧四档内联表，行为不劣于 v3.4.2。
         val presetVars = presetEnvVars(
             context, "builtin/fex_presets.json", log
         )[container.preset.name.lowercase()].orEmpty()
-        // FEX 配置页 env 变量名 → Config.json 键（WinlatorXR FEXCoreManager
+        // FEX 配置页 env 变量名 → Config.json 键（上游参考 FEXCoreManager
         // 实证键位；未映射的 FEX_*（HOSTFEATURES/SMC_CHECKS/MONOHACKS/
         // HIDEHYPERVISORBIT）仅 env 通道）。v3.4.3 +SmallTSCScale/
         // +VolatileMetadata（JSON 表有值，Config 键为 FEX 官方命名）。
@@ -705,7 +705,7 @@ object WineEnvironment {
      * 根因：v3.2.27 按用户要求移除了 APK 侧全部 DllOverrides（当时 WineLibrary
      * 无条件写表污染加载序）—— 但 wine 的默认 DLL 加载序是 builtin 优先，
      * DXVK DLL 解压进 drive_c/windows 后【从未被加载】：游戏拿到的仍是
-     * 内置 wined3d。参考实现（WinlatorXR WineUtils.java:141-149 +
+     * 内置 wined3d。参考实现（上游参考 WineUtils.java:141-149 +
      * Container.java:27 默认 dxwrapper="dxvk"）的做法：**装 DXVK 即同步写
      * D3D/DXGI 全家 native,builtin**。
      *
@@ -725,7 +725,7 @@ object WineEnvironment {
         val override = "d3d8,d3d9,d3d10,d3d10_1,d3d10core,d3d11,d3d12,d3d12core,ddraw,dxgi=native,builtin"
         val existing = env["WINEDLLOVERRIDES"]
         env["WINEDLLOVERRIDES"] = if (existing.isNullOrBlank()) override else "$override;$existing"
-        log("DXVK 激活：D3D/DXGI 全家 native,builtin（v3.2.27 移除后 wine 默认序从未真正加载 DXVK —— 本行恢复 WinlatorXR 同款激活语义）")
+        log("DXVK 激活：D3D/DXGI 全家 native,builtin（v3.2.27 移除后 wine 默认序从未真正加载 DXVK —— 本行恢复其激活语义）")
     }
 
     /**
@@ -736,7 +736,7 @@ object WineEnvironment {
      *      SIGSYS 击杀（构建侧已加 __ANDROID__ 守卫根治；此处环境默认
      *      再兜一层——旧版 wine 包没打守卫补丁时也能活）；
      *    - esync 依赖 /dev/shm 与 eventfd，Android 沙箱行为不可预期；
-     *    - 两者对游戏兼容性收益为零（Winlator/MiceWine 同款默认）。
+     *    - 两者对游戏兼容性收益为零（上游同类项目同款默认）。
      *    用户可在容器 env= 里显式覆盖（applyExtraEnv 在链路最后叠加）。
      *
      * ①b WINELOADERNOEXEC=1（v3.2.3，用户问题「proton 的 wine 都无法
@@ -769,7 +769,7 @@ object WineEnvironment {
      *    不读它，零影响。用户 env= 可覆盖（putIfAbsent 语义）。
      *
      * ② HODLL64/HODLL（仅 arm64ec 形态）—— v3.4.2【对齐参考源码】：
-     *    【默认不注入任何 HODLL/HODLL64】。参考源码（WinFusion
+     *    【默认不注入任何 HODLL/HODLL64】。参考源码（上游发行包
      *    LaunchPlan.buildEnv:222-228）里 HODLL 是【用户容器设置项】
      *    （libwow64fex.dll / wowbox64.dll 二选一），从不按探测结果默认
      *    注入，也从【不设置 HODLL64】。AnWind 的 0010/0011 补丁后 wine
@@ -786,7 +786,7 @@ object WineEnvironment {
      *      c0000135，不如交给 wine 内部缺省）；
      *    ③ 勾选 wowbox64模式（v3.4.2 用户：「wowbox64 模式别取消，加入
      *      选项，部分 32 游戏需要」）→ HODLL=wowbox64.dll（box64-in-wow64
-     *      32 位模拟层，dll 缺席同样跳过）。参考源码 WinFusion 的 HODLL
+     *      32 位模拟层，dll 缺席同样跳过）。上游发行包 的 HODLL
      *      取值恰是这两个二选一（LaunchPlan.buildEnv:224-225：
      *      0=libwow64fex.dll，1=wowbox64.dll —— SettingKeys
      *      ContainerFEXHodll）—— AnWind 拆成两个勾选档，同勾时
@@ -810,12 +810,12 @@ object WineEnvironment {
         //（wine 内部缺省接管），撤销 v3.4.0 A2 的「默认 wowbox64」（用户
         // 实测性能回退的直接嫌疑源）。
         // wowbox64模式勾选 → HODLL=wowbox64.dll（用户：「wowbox64 模式别
-        // 取消，加入选项，部分 32 游戏需要」—— WinFusion ContainerFEXHodll
+        // 取消，加入选项，部分 32 游戏需要」—— 上游发行包 ContainerFEXHodll
         // 的另一个取值，两个 UI 档同参考源码的一对取值）。
         fexMode: Boolean = false,
         wowboxMode: Boolean = false
     ) {
-        // v3.3.37：WINEESYNC 0→1（对齐 WinlatorXR XServerDisplayActivity:1748-1751
+        // v3.3.37：WINEESYNC 0→1（对齐上游参考 XServerDisplayActivity:1748-1751
         // —— 未设即强制 1；同为 bionic 直跑环境，esync 是线程密集型 32 位
         // D3D9 游戏的主帧率供应商。WINEFSYNC 保持 0：futex_waitv 会被
         // Android seccomp 以 SIGSYS 击杀。fd 上限不够时 env= WINEESYNC=0
@@ -843,7 +843,7 @@ object WineEnvironment {
         if (arch != WineRuntime.Arch.AARCH64) return
         // v3.4.2【HODLL 对齐参考源码·撤销全部默认注入】（用户两轮反馈：
         // 「把默认的 HODLL=libwow64fex.dll 去掉，fex 运行默认直接 wine exe
-        //  的，只有我选择了 HODLL 才在前面加」；参考源码 WinFusion
+        //  的，只有我选择了 HODLL 才在前面加」；上游发行包
         // LaunchPlan.buildEnv:222-228 —— HODLL 是【用户容器设置项】，
         // 从不默认注入、从不设 HODLL64）：
         // ① 默认【不注入】HODLL/HODLL64 —— 0010/0011 补丁后 wine 内部缺省
@@ -860,7 +860,7 @@ object WineEnvironment {
         //       不存在的 dll 会让 32 位进程死于 c0000135，不如交给内部缺省）；
         //    c. 勾选 wowbox64模式（用户：「wowbox64 模式别取消，加入选项，
         //       部分 32 游戏需要」）→ HODLL=wowbox64.dll（box64-in-wow64
-        //       32 位模拟层，dll 缺席同样跳过）。参考源码 WinFusion 的 HODLL
+        //       32 位模拟层，dll 缺席同样跳过）。上游发行包 的 HODLL
         //       取值恰是这两个二选一（LaunchPlan.buildEnv:224-225 /
         //       WineConfigure.fexDllsInstalled:356-358：0=libwow64fex.dll，
         //       1=wowbox64.dll —— SettingKeys.ContainerFEXHodll）—— AnWind
@@ -911,7 +911,7 @@ object WineEnvironment {
             .any { File(File(wineDir, it), name).isFile }
 
     // ------------------------------------------------------------------
-    // v3.4.3：assets builtin 预设 JSON（assets-ck 资产，WinFusion 同款）
+    // v3.4.3：assets builtin 预设 JSON（assets-ck 资产，上游同款）
     // ------------------------------------------------------------------
 
     /** v3.4.3：预设资产解析缓存（assets 随 APK 打包，进程内不变）。 */
@@ -919,10 +919,10 @@ object WineEnvironment {
 
     /**
      * v3.4.3【预设 JSON 装载】：assets builtin 预设表（用户提供的 assets-ck
-     * 资产包，与参考源码 WinFusion 同款）→ 按档位的环境变量集合。
+     * 资产包，与参考源码 上游同款）→ 按档位的环境变量集合。
      *
      *  - "builtin/fex_presets.json"：四档（stability/compatibility/
-     *    intermediate/performance）各 15 项 FEX_* —— WinFusion
+     *    intermediate/performance）各 15 项 FEX_* —— 上游发行包
      *    LaunchPlan.buildEnv:226-228 经 FEXPresetManager.getEnvVars
      *    展开的同一张表（含 AnWind 旧表缺失的 TSOENABLED / SMC_CHECKS /
      *    VOLATILEMETADATA / SMALLTSCSCALE / MAXINST / HOSTFEATURES /
@@ -930,7 +930,7 @@ object WineEnvironment {
      *    TSOENABLED=0 + SMC_CHECKS=none + VOLATILEMETADATA=0 是 FEX
      *    转译吞吐的主旋钮，正是「arm64ec 性能问题大概率在这里」的缺口）；
      *  - "builtin/box64_presets.json"：四档各 11 项 BOX64_*（含旧表缺的
-     *    AVX / UNITYPLAYER；WinFusion LaunchPlan.buildEnv:237-242 同款）。
+     *    AVX / UNITYPLAYER；上游发行包 LaunchPlan.buildEnv:237-242 同款）。
      *
      * context 为 null 或资产缺失/坏 JSON（= 打包错误）时返回空表 ——
      * 调用方回落旧内联表，行为不劣于 v3.4.2。
@@ -973,7 +973,7 @@ object WineEnvironment {
      * v3.3.35：性能档位在 arm64ec 后端真正生效（用户："我的项目所有性能
      * 都没有提升，全在最低性能"）。v3.4.3【预设 JSON 注入】全面重写：
      * 四档 FEX_* 改由 assets builtin/fex_presets.json 派生（用户提供的
-     * assets-ck 资产包，与参考源码 WinFusion FEXPresetManager /
+     * assets-ck 资产包，与上游发行包 FEXPresetManager /
      * LaunchPlan.buildEnv:226-228 展开的同一张表）—— 旧表每档仅 2-3 项，
      * 缺的正是主性能旋钮：
      *  - performance 档 TSOENABLED=0（标量 TSO 关）、SMC_CHECKS=none
@@ -985,7 +985,7 @@ object WineEnvironment {
      *    与 JSON 稳定档语义冲突（JSON 全档 VECTORTSO=0，稳定档靠
      *    TSOENABLED=1 + HALFBARRIER=1 + SMC=mtrack 兜底）—— 按 JSON；
      *  - X87ReducedPrecision JSON 全档 0（上游注明 may result in
-     *    rendering bugs，WinFusion 四档全不开）—— 旧表性能档 =1 撤销。
+     *    rendering bugs，上游发行包 四档全不开）—— 旧表性能档 =1 撤销。
      *
      * 层级：opt conf（applyOptConfEnv）与容器 env=（applyExtraEnv 直接
      * 赋值）在其后执行 —— conf/用户显式 FEX_*= 仍可覆盖本预设值；
@@ -1018,7 +1018,7 @@ object WineEnvironment {
         vars.forEach { (k, v) -> env.putIfAbsent(k, v) }
         log(
             "性能档 arm64ec 线生效（FEX 预设 JSON·$presetName 档）：${vars.size} 项 FEX_* 完整注入" +
-                "（TSOENABLED/SMC_CHECKS/VOLATILEMETADATA/SMALLTSCSCALE 等主旋钮在内 —— WinFusion 同款；" +
+                "（TSOENABLED/SMC_CHECKS/VOLATILEMETADATA/SMALLTSCSCALE 等主旋钮在内；" +
                 "opt conf / 容器 env= 仍可逐项覆盖）"
         )
     }
@@ -1089,7 +1089,7 @@ object WineEnvironment {
      *
      * 读 /sys/devices/system/cpu/cpu<N>/cpufreq/cpuinfo_max_freq 分簇，
      * max_freq 最高的一簇 = 大核（高通/联发科旗舰大小核布局通用启发式，
-     * Winlator 性能模式同款思路）。三重安全边界：
+     * 上游性能模式同款思路）。三重安全边界：
      *  - 任一 cpu 的 sysfs 条目缺失/不可读 → 无法可靠比较 → 返回空
      *    （保持系统默认调度，零绑定零风险）；
      *  - 单簇 SoC（全部同频）→ 绑定无收益且丢核 → 返回空；
@@ -1236,7 +1236,7 @@ object WineEnvironment {
      * 候选顺序（用户指定主路径优先）：
      *  1. rootfs/opt —— 用户明确的路径（/data/data/com.anwind/files/rootfs/opt）
      *  2. wine 槽位目录（resolved.wineDir，如 rootfs/usr/opt/wine-proton10-x86）
-     *     —— WinFusion 风格包安装时把 conf/prefix/locale.conf 一并打进
+     *     —— 发行包风格包安装时把 conf/prefix/locale.conf 一并打进
      *     wine 目录树的场景（App 的 wine 版本管理以 --strip-components=1
      *     解包，包内与 bin/ 平级的 conf/、prefix/ 就落在这里）
      *  3. rootfs/opt/opt —— v3.2.28：生态包根是 opt/ 时用户解到了
@@ -1557,14 +1557,14 @@ object WineEnvironment {
             if (applied.isEmpty()) "opt 生态: conf ${conf.size} 项解析后无新增导出（全部被容器 env= 覆盖或为关键变量）"
             else "opt 生态: conf ${conf.size} 项已 source（export ${applied.size} 项: ${applied.joinToString(", ").take(400)}）"
         )
-        // GLIBC_BIN（startwine.sh：export GLIBC_BIN=/usr/local/bin）——
+        // GLIBC_BIN（惯例：export GLIBC_BIN=/usr/local/bin）——
         // 指向 rootfs 的 usr/local/bin（box64/wineserver 包装所在地），
         // conf/env 均未设置且目录存在时兜底导出，供 rootfs 脚本消费。
         if (!env.containsKey("GLIBC_BIN") && !userEnv.contains("GLIBC_BIN=")) {
             val glibcBin = File("$RFS_USR/local/bin")
             if (glibcBin.isDirectory) {
                 env["GLIBC_BIN"] = glibcBin.absolutePath
-                log("opt 生态: export GLIBC_BIN=${glibcBin.absolutePath}（startwine.sh 同款）")
+                log("opt 生态: export GLIBC_BIN=${glibcBin.absolutePath}（glibc 链路惯例）")
             }
         }
     }

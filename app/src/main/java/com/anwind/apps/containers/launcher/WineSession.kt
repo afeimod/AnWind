@@ -16,7 +16,7 @@ import java.util.concurrent.TimeUnit
  *    实时追加（旧的 pty transcript 二次抠取不存在了）；
  *  - **退出**：自然退出（游戏/程序结束）或 [stop]（用户点"停止"）；
  *    会话只负责 wine 客户端进程本身，wineserver 整树收尾由
- *    [WineServerUtils] 在停止链路中完成（对齐 WinFusion 的
+ *    [WineServerUtils] 在停止链路中完成（对齐上游发行包 的
  *    shellExecutor → stopWineServer 顺序）。
  *
  * @property name 会话键（容器名或 "__install__"）
@@ -35,7 +35,7 @@ class WineSession internal constructor(
         runCatching { executor.stop(true) }
     }
 
-    /** 强制结束并短暂等待（1 秒，对齐 WinFusion shell 收尾节奏）。 */
+    /** 强制结束并短暂等待（1 秒，对齐上游发行包 shell 收尾节奏）。 */
     fun stopAndWait() {
         runCatching { executor.stopAndWait(true, 1, TimeUnit.SECONDS) }
     }

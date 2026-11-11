@@ -423,7 +423,7 @@ object GuanliSupport {
                 // 魔数判型（不信任文件名：xz=FD 37 7A 58 5A 00，gzip=1F 8B，
                 // bzip2=42 5A 68，zstd=28 B5 2F FD，其余按纯 tar）。
                 // v3.3.21：补 zstd —— 用户实测 wrapper-gamenative.tzst
-                //（tar+zstd，WinNative 生态常见格式）旧版被当纯 tar 读 →
+                //（tar+zstd，上游实现 生态常见格式）旧版被当纯 tar 读 →
                 // 解压必失败。zstd-jni 经 termux-x11 模块在 classpath
                 //（TarCompressorUtils 同源），ZstdCompressorInputStream 可用。
                 raw.mark(64 * 1024)

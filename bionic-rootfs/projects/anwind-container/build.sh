@@ -8,8 +8,8 @@ license="MIT"
 # ============================================================
 # anwind-container — AnWind Wine 容器管理（bionic rootfs / X11）
 # 纯脚本包：安装 anwind-container（容器管理 CLI）与 anwind-wine
-# （后端感知启动器）进 rootfs。数据模型参考 Winlator/WinNative/
-# MiceWine：每容器独立 WINEPREFIX + CPU 翻译后端 + 个性化环境。
+# （后端感知启动器）进 rootfs。数据模型参考 上游参考/上游实现/
+# 上游项目：每容器独立 WINEPREFIX + CPU 翻译后端 + 个性化环境。
 #   后端: box64（x86_64 wine，主力）/ hangover（aarch64 qemu）
 #         / fexcore（探测槽位）/ native（x86_64 设备）
 #   显示: X11 —— AnWind 内置 X 服务（App 侧 tmp/.X11-unix/Xn，

@@ -9,8 +9,8 @@ import com.anwind.apps.x11.X11WindowController
 import java.io.File
 
 /**
- * X11 显示方案联动（原生启动链的显示环节 —— AnWind 与 WinFusion 的
- * 核心差异点：**WinFusion 用进程内 Weston/Wayland，AnWind 保留
+ * X11 显示方案联动（原生启动链的显示环节 —— AnWind 与 上游发行包 的
+ * 核心差异点：**上游发行包 用进程内 Weston/Wayland，AnWind 保留
  * termux-x11/libXlorie 的 X11 方案**）。
  *
  * ## v3.1：X 服务拉起完全去脚本化（本文件的核心变更）
