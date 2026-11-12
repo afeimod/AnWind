@@ -768,18 +768,16 @@ object WineEnvironment {
      *    本变量让 wine 10 系旧包【免重装免重编】跳过该探测；wine 11 树
      *    不读它，零影响。用户 env= 可覆盖（putIfAbsent 语义）。
      *
-     * ② HODLL64/HODLL（仅 arm64ec 形态）—— v3.4.2【对齐参考源码】：
-     *    【默认不注入任何 HODLL/HODLL64】。参考源码（上游发行包
-     *    LaunchPlan.buildEnv:222-228）里 HODLL 是【用户容器设置项】
-     *    （libwow64fex.dll / wowbox64.dll 二选一），从不按探测结果默认
-     *    注入，也从【不设置 HODLL64】。AnWind 的 0010/0011 补丁后 wine
-     *    无 HODLL 时的内部缺省就是 libwow64fex/libarm64ecfex
-     *    （hangover 树自带自己的缺省）—— App 侧默认注入是纯冗余，
-     *    而且有害：v3.3.34 的"默认 libwow64fex"、v3.4.0 A2 的
-     *    "默认 wowbox64"（把 32 位游戏从 FEX 强切到 box64-in-wow64）
-     *    都在用户未选择时改写了 32 位模拟层 —— 用户实测
-     *    "性能更差了"的直接嫌疑源（本轮两轮反馈撤销）。
-     *    现在注入恰是三处（fex 运行默认直接 wine exe，选择才前置）：
+     * ② HODLL64/HODLL（仅 arm64ec 形态）—— v3.4.10【默认按在场 DLL 守卫注入】：
+     *    v3.4.2 曾撤销全部默认注入，前提是"0010/0011 补丁后 wine 无 HODLL
+     *    时的内部缺省就是 libwow64fex/libarm64ecfex（hangover 树自带自己的
+     *    缺省）"——该前提只对 official/proton 树成立：hangover 树的 0010/0011
+     *    锚点不命中被静默跳过，其内部缺省是 box64cpu.dll（hangover-10.x）/
+     *    wowbox64.dll（hangover-11.x），并非 FEX 仿真器 → 用户 2026-11-12
+     *    设备日志实证：hangover 源 arm64ec 前缀构建会话 32 位 rundll32
+     *    死于 "could not load kernel32.dll, status c0000135"（退出 53），
+     *    Wow64Install 段从未执行、前缀挂死；同设备 proton 源正常。
+     *    现注入恰是四处（fex 运行默认直接 wine exe，选择才前置）：
      *    ① 用户显式 env=/启动参数 HODLL=/HODLL64=（大小写归一，最高优先）；
      *    ② 勾选 FEX模式（用户在 UI 的 HODLL 选择）→ HODLL=libwow64fex.dll
      *      （dll 缺席则跳过 —— 注入不存在的 dll 会让 32 位进程死于
@@ -791,6 +789,13 @@ object WineEnvironment {
      *      0=libwow64fex.dll，1=wowbox64.dll —— SettingKeys
      *      ContainerFEXHodll）—— AnWind 拆成两个勾选档，同勾时
      *      FEX模式 在前。
+     *    ④ v3.4.10 默认兜底（①②③均未命中且 libwow64fex.dll 在场）→
+     *      HODLL=libwow64fex.dll：对 official/proton 树（内部缺省同为
+     *      libwow64fex）幂等 no-op，对 hangover 树（内部缺省
+     *      box64cpu/wowbox64）拉回 FEX 通道；dll 缺席不注入（交给内部
+     *      缺省）。v3.4.7 的"libwow64fex 缺席 + wowbox64 在场"兜底随其后。
+     *    HODLL64 保持【默认不注入】（所有树的内部缺省均已是
+     *    libarm64ecfex.dll：0011 于 official/proton 树、hangover 树自带）。
      *    - 【v3.3.34 大小写归一保留】wine 读【大写】HODLL/HODLL64 ——
      *      用户在 env= 或启动参数写小写 hodll= 的值经 extractEnvTokenIgnoreCase
      *      规范成大写键导出，不再"导出了但 wine 读不到"。
@@ -874,6 +879,27 @@ object WineEnvironment {
             env["HODLL"] = "libwow64fex.dll"
         } else if (wowboxMode && probeEmulatorDll(wineDir, "wowbox64.dll")) {
             env["HODLL"] = "wowbox64.dll"
+        } else if (!fexMode && !wowboxMode &&
+            probeEmulatorDll(wineDir, "libwow64fex.dll")
+        ) {
+            // v3.4.10【恢复带守卫的默认注入】（用户 2026-11-12 设备日志实证：
+            // hangover 源 arm64ec wine 前缀构建会话 "could not load
+            // kernel32.dll, status c0000135" / 退出码 53（=0xC0000135&0xFF），
+            // Wow64Install 段 32 位 rundll32 即死、前缀挂死；同设备 proton
+            // 源正常）。v3.4.2 撤销默认注入的前提——"0010/0011 补丁后 wine
+            // 内部缺省就是 libwow64fex/libarm64ecfex"——只对 official/proton
+            // 树成立：hangover 树自带 HODLL 机制、0010 锚点不命中被静默跳过，
+            // 其内部缺省是 box64cpu.dll（hangover-10.x）/ wowbox64.dll
+            // （hangover-11.x），并非 FEX 仿真器。32 位 wow64 进程装载该缺省
+            // dll 失败/不可用即死于 c0000135。本兜底：libwow64fex.dll 在场
+            // （本仓 wine 包 pre_package 必注入）即默认注入 —— 对 official/
+            // proton 树（内部缺省同为 libwow64fex）为幂等 no-op，对 hangover
+            // 树拉回 FEX 通道；dll 缺席则不注入（同 v3.4.2 语义：注入不存在
+            // 的 dll 会让 32 位进程死于 c0000135，交给内部缺省）。构建侧
+            // （hangover-wine v3.4.10）已同步把缺省值拉齐，此处兜底覆盖
+            // 已安装的存量 hangover 包。用户 env=/FEX模式/wowbox64模式
+            // 仍最高优（本分支仅在均未设置时进入）。
+            env["HODLL"] = "libwow64fex.dll"
         } else if (!fexMode && !wowboxMode &&
             !probeEmulatorDll(wineDir, "libwow64fex.dll") &&
             probeEmulatorDll(wineDir, "wowbox64.dll")

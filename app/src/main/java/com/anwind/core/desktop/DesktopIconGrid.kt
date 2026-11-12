@@ -53,25 +53,29 @@ import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
 /**
- * 桌面图标网格（v5 自由摆放版）：对齐 Windows 桌面拖拽体验。
+ * 桌面图标网格（v6 对齐到网格版）：对齐 Windows 桌面默认体验。
  *
  * v4 及之前的问题是「死板」（用户诉求 3）：
  *  - 拖动必须先长按 400ms（detectDragGesturesAfterLongPress）——手指
  *    直接拖图标毫无反应，手感僵硬；
- *  - 松手必吸附到网格单元格且强制与占用者交换 —— 图标永远只能落在
- *    格点，不能像 Windows 那样摆到任意位置。
+ *  - 松手必吸附到网格单元格且强制与占用者交换。
  *
- * v5 的修复（Windows 同款语义）：
- *  - 按下即可拖动（detectDragGestures，越过 slop 即跟手；单击/双击
- *    打开不受影响 —— 手势以 slop 区分，点按不产生拖动）；
- *  - 松手像素级自由落位（图标停在哪里就在哪里，无吸附、无交换，允许
- *    与其它图标重叠 —— Windows 关闭“对齐到网格”时的行为）；
- *  - 自由位置以像素持久化（格式 id:x,y —— 恰与 v3 旧格式同构，旧数据
- *    自动升级为自由位）；未被拖过的图标仍按单元格 first-fit 自动落位
- *    （先列后行，同 Windows 新图标落格）；
- *  - 拖动只影响被拖图标（其余图标不动）；v4 的稳定性全部保留：即时
- *    生效不闪跳 / 删除不留幽灵 / 网格尺寸变化时位置钳制回界内；
- *  - name/type 排序模式仍按序自动排列、禁用拖动（保持原行为）；
+ * v5 改成了 Windows【关闭“对齐到网格”】的完全自由摆放（像素级落位、
+ * 允许重叠）—— 用户 2026-11-12 反馈矫枉过正：「图标没有横平竖直的
+ * 吸附感，有点太随便移动了，而且偶尔会出现图标图片重叠」。
+ *
+ * v6 的修复（Windows 默认语义：“对齐到网格”开启 + “自动排列”关闭）：
+ *  - 拖动保持 v5 手感（detectDragGestures，按下越过 slop 即跟手，
+ *    拖动中图标自由跟手、拎起放大置顶）；
+ *  - 松手吸附到【最近单元格】（按图标中心换算）—— 图标永远横平
+ *    竖直落在格点上；小幅度拖动（不足半格）松手即回原格，不再
+ *    “随便挪动”；
+ *  - 目标格被占时【就近外扩找空格】（曼哈顿距离最近的空闲格，
+ *    Windows 溜边落位同款）—— 图标之间永不重叠；
+ *  - v5 存量像素自由位在加载时一次性就近归位为单元格（整队后持久化，
+ *    桌面即刻恢复横平竖直；解析兼容 v3/v5 全部旧格式）；
+ *  - 新增图标仍按单元格 first-fit 自动落位（先列后行，同 Windows
+ *    新图标落格）；name/type 排序模式仍按序自动排列、禁用拖动；
  *  - iconBounds 上报每个图标边界，供双指右键手势命中检测。
  */
 
@@ -191,6 +195,47 @@ fun DesktopIconGrid(
             return Offset(gridMarginPx + c * cellWpx, gridMarginPx + r * cellHpx)
         }
 
+        // ---- v6：吸附换算（Windows "对齐到网格"开启语义） ----
+        // 像素坐标（图标左上角）→ 最近单元格（按图标中心判定，四舍五入
+        // 到最近格点；不足半格的拖动松手即回原格 —— "不随便移动"的关键）
+        fun snapCellFromPx(pxX: Float, pxY: Float): Pair<Int, Int> {
+            val col = (((pxX + cellWpx / 2f - gridMarginPx) / cellWpx).toInt())
+                .coerceIn(0, perRow - 1)
+            val row = (((pxY + cellHpx / 2f - gridMarginPx) / cellHpx).toInt())
+                .coerceIn(0, perCol - 1)
+            return col to row
+        }
+
+        // 像素自由位（v5 存量）覆盖的单元格（左上角所在格）—— 占位判定用
+        fun freePosCell(p: IconPos.Free): Pair<Int, Int> {
+            val px = posPx(p)
+            return ((px.x / cellWpx).toInt().coerceIn(0, perRow - 1)) to
+                ((px.y / cellHpx).toInt().coerceIn(0, perCol - 1))
+        }
+
+        // 目标格被占时向外扩找最近空格（曼哈顿距离最近；Windows 溜边落位
+        // 同款语义：绝不与已有图标重叠）。全满时退回目标格（极端兜底）。
+        fun nearestFreeCell(want: Pair<Int, Int>, taken: Set<Pair<Int, Int>>): Pair<Int, Int> {
+            if (want !in taken) return want
+            var best: Pair<Int, Int>? = null
+            var bestDist = Int.MAX_VALUE
+            val maxRing = perRow + perCol
+            for (ring in 1..maxRing) {
+                for (dc in -ring..ring) for (dr in -ring..ring) {
+                    if (maxOf(Math.abs(dc), Math.abs(dr)) != ring) continue // 只看当前环
+                    val c = want.first + dc
+                    val r = want.second + dr
+                    if (c !in 0 until perRow || r !in 0 until perCol) continue
+                    val cell = c to r
+                    if (cell in taken) continue
+                    val d = Math.abs(dc) + Math.abs(dr)
+                    if (d < bestDist) { bestDist = d; best = cell }
+                }
+                if (best != null) return best!! // 最近的非空环即答案
+            }
+            return want
+        }
+
         // ---- 持久化位置的解析与序列化 ----
         // "id:c:col,row" → 单元格；"id:x,y" → 像素自由位（v5 语义；恰与
         // v3 旧像素格式同构 —— 旧数据自动升级为自由位，无需迁移）
@@ -279,6 +324,21 @@ fun DesktopIconGrid(
                         }
                     }
                 }
+                // v6：v5 存量像素自由位一次性就近归位为单元格（"横平竖直"整队）。
+                // 归位结果并入 newOnes 持久化 —— 此后桌面全部为格点位，旧格式
+                // 数据（v3 像素 / v5 自由位）加载即自动升级，无需迁移工具。
+                val legacyFree = merged.entries.filter { it.value is IconPos.Free }
+                if (legacyFree.isNotEmpty()) {
+                    for ((id, p) in legacyFree) {
+                        val px = posPx(p)
+                        val want = snapCellFromPx(px.x, px.y)
+                        val cell = nearestFreeCell(want, takenCells)
+                        val cellPos = IconPos.Cell(cell.first, cell.second)
+                        merged[id] = cellPos
+                        newOnes[id] = cellPos
+                        takenCells.add(cell)
+                    }
+                }
                 merged to newOnes
             } else {
                 // 排序模式：全部按序自动排列（不写位置、忽略自定义位置）
@@ -318,46 +378,61 @@ fun DesktopIconGrid(
             }
         }
 
-        // ---- 拖动落位：像素级自由放置（Windows 式，无吸附无交换） ----
-        // v5：拖动累计偏移直接加到当前渲染位置上，钳制在桌面界内，图标停在
-        // 松手处 —— 不再吸附单元格、不再与占用者交换（Windows 关闭“对齐
-        // 到网格”的行为；允许与其它图标重叠，同 Windows）。
-        // v4.1 教训保留：从当前 positions 表取真实基准位（不信任过期闭包）。
+        // ---- 拖动落位：吸附到最近单元格（v6，Windows "对齐到网格"语义） ----
+        // v6：拖动累计偏移加到当前渲染位置上，钳制在桌面界内，再按图标中心
+        // 换算到最近单元格吸附落位；目标格被其它图标占用时就近外扩找空格
+        // —— 图标永远横平竖直、互不重叠（v5 的像素自由位与重叠问题就此
+        // 收敛；不足半格的小拖动松手即回原格）。v4.1 教训保留：从当前
+        // positions 表取真实基准位（不信任过期闭包）。
+        fun occupiedCellsExcluding(excludeId: String): MutableSet<Pair<Int, Int>> {
+            val taken = mutableSetOf<Pair<Int, Int>>()
+            positions.forEach { (id, p) ->
+                if (id == excludeId) return@forEach
+                when (p) {
+                    is IconPos.Cell -> taken += p.col to p.row
+                    // v5 存量自由位：以覆盖格参与占位（防归位前重叠）
+                    is IconPos.Free -> taken += freePosCell(p)
+                }
+            }
+            return taken
+        }
+
         fun onDropIcon(item: DesktopItem, deltaPx: Offset) {
             if (deltaPx == Offset.Zero) return
             val base = positions[item.id] ?: return
             val basePx = posPx(base)
             val nx = (basePx.x + deltaPx.x)
                 .coerceIn(0f, (gridWpx - cellWpx).coerceAtLeast(0f))
-                .roundToInt()
             val ny = (basePx.y + deltaPx.y)
                 .coerceIn(0f, (gridHpx - cellHpx).coerceAtLeast(0f))
-                .roundToInt()
-            val free = IconPos.Free(nx, ny)
-            if (free == base) return
+            val want = snapCellFromPx(nx, ny)
+            val cell = nearestFreeCell(want, occupiedCellsExcluding(item.id))
+            val cellPos = IconPos.Cell(cell.first, cell.second)
+            if (cellPos == base) return
 
             // 即时生效（不等 DataStore 回流）+ 持久化
-            livePositions[item.id] = free
-            persistPositions(positions + (item.id to free))
+            livePositions[item.id] = cellPos
+            persistPositions(positions + (item.id to cellPos))
         }
 
         // ---- v3.3.10（用户问题 2）：开始菜单拖入落位（DesktopDragState 总线） ----
         // 菜单瓦片长按拖出 → 影子跟手（DesktopEnvironment 顶层）→ 桌面松手：
         // 此处把应用加入固定集合（DesktopPins.pin 持久化），并把松手坐标
-        // （root 坐标 ≈ 全屏网格坐标）固化为 Free 位置 —— 影子中心换算
-        // 到图标左上角（半单元格偏移），界面内钳制。首个 collectAsState
-        // 回流前用 live 层即时占位，图标即刻出现在松手处不闪跳。
+        // （root 坐标 ≈ 全屏网格坐标）吸附到最近空格（v6：与桌面图标拖拽
+        // 同一套吸附语义；影子中心换算到图标左上角半格偏移后吸附）。
+        // 首个 collectAsState 回流前用 live 层即时占位，图标即刻出现在
+        // 吸附格不闪跳。
         DesktopDragState.onDrop = { appId, dropX, dropY ->
             val itemId = "app_$appId"
             val nx = (dropX - cellWpx / 2f)
                 .coerceIn(0f, (gridWpx - cellWpx).coerceAtLeast(0f))
-                .roundToInt()
             val ny = (dropY - cellHpx / 2f)
                 .coerceIn(0f, (gridHpx - cellHpx).coerceAtLeast(0f))
-                .roundToInt()
-            val free = IconPos.Free(nx, ny)
-            livePositions[itemId] = free
-            persistPositions(positions + (itemId to free))
+            val want = snapCellFromPx(nx, ny)
+            val cell = nearestFreeCell(want, occupiedCellsExcluding(itemId))
+            val cellPos = IconPos.Cell(cell.first, cell.second)
+            livePositions[itemId] = cellPos
+            persistPositions(positions + (itemId to cellPos))
             DesktopPins.pin(appId, scope)
         }
         // 网格离开组合时注销总线回调（防泄漏/跨会话残留）

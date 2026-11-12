@@ -303,6 +303,41 @@ pre_setup() {
     echo "    构建继续；若运行期异常请检查源码树内 *.rej 文件"
   fi
 
+  # v3.4.10【i386 CPU 仿真 DLL 缺省统一为 libwow64fex.dll（全源码树）】
+  # （用户 2026-11-12 设备日志实证：hangover 源 arm64ec 形态 wineboot -u
+  #   即 "wine: could not load kernel32.dll, status c0000135" / 进程退出码
+  #   53（= 0xC0000135 & 0xFF），前缀构建会话挂死；同设备 proton 源
+  #   arm64ec/x86_64 形态一切正常）：
+  #   前缀构建的 Wow64Install 段靠 32 位 rundll32.exe 执行，其 wow64 初始化
+  #   经 get_cpu_dll_name 选 CPU 仿真 dll。0010 补丁只对 official/proton
+  #   树生效（缺省改写为 libwow64fex.dll）；hangover 树自带 HODLL 机制，
+  #   0010 锚点不命中被 --forward 静默跳过 —— 而 hangover 树自身的内部
+  #   缺省是【box64cpu.dll（hangover-10.x）/ wowbox64.dll（hangover-11.x）】
+  #   （实测核对 hangover-10.0/11.16 源码），不是本仓 pre_package 必注入
+  #   的 FEX 仿真器 libwow64fex.dll。App 侧（WineEnvironment v3.4.10）已按
+  #   "dll 在场即注入 HODLL=libwow64fex.dll" 兜底，本步把缺省值也在
+  #   构建期拉齐（双保险：免重装 App 即修复 + 无 HODLL 环境时行为一致）。
+  #   幂等：0010 已应用的树（official/proton）与 wine-11+ 上游化树本就
+  #   是 libwow64fex.dll，grep 命中即跳过，不重复改写。
+  local _syscallC="${srcDir}/${pjName}/dlls/wow64/syscall.c"
+  if [[ "${args}" == *"--enable-archs=arm64ec,"* ]] && [[ -f "${_syscallC}" ]]; then
+    if ! grep -q 'return L"libwow64fex.dll"' "${_syscallC}"; then
+      # 仅改写 i386-on-ARM64 分支的缺省（box64cpu/wowbox64 → libwow64fex）；
+      # "return L"wow64cpu.dll"" 是 x86_64 宿主分支的合法缺省，不动。
+      sed -i \
+        -e 's|return L"box64cpu\.dll"|return L"libwow64fex.dll"|' \
+        -e 's|return L"wowbox64\.dll"|return L"libwow64fex.dll"|' \
+        "${_syscallC}"
+      if grep -q 'return L"libwow64fex.dll"' "${_syscallC}"; then
+        echo "i386 CPU 仿真 dll 缺省已统一为 libwow64fex.dll（v3.4.10：hangover 树缺省 box64cpu/wowbox64 已改写；HODLL 环境变量仍最高优）"
+      else
+        echo "⚠️  dlls/wow64/syscall.c 的 i386 缺省未能改写为 libwow64fex.dll（树形态未知）—— 32 位 wow64 进程的缺省 CPU dll 请人工核查 get_cpu_dll_name"
+      fi
+    else
+      echo "i386 CPU 仿真 dll 缺省已是 libwow64fex.dll（0010 补丁或上游已达成，跳过）"
+    fi
+  fi
+
   # v3.3.20（用户问题 3）：wine.inf 垃圾 AppDefaults 注册表剔除 —— proton 树
   # 的 loader/wine.inf.in 带 31 条 Valve/Steam 游戏兼容 hack（ActOfWar/
   # BlackOps3/DIRT5/ffxvi/RDR2 等的 atiadlxx=builtin、winxp/win7 Version、

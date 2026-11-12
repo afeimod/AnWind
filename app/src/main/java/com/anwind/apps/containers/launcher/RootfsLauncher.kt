@@ -1193,20 +1193,25 @@ object RootfsLauncher {
             //   2. v3.1.6 时代的 proton10（vanilla wine-10）根本没有读取
             //      HODLL64/HODLL 的代码，注入与否对当时的挂死毫无影响（挂死
             //      根因是 bionic 堆标记/预加载器/esync，已由 v3.2.x 修复）。
-            // 【现在·v3.4.2】0010/0011 补丁已把 HODLL/HODLL64 机制连同
+            // 【现在·v3.4.10】0010/0011 补丁已把 HODLL/HODLL64 机制连同
             // 内部缺省值（HODLL 未设 → libwow64fex；HODLL64 未设 →
-            // libarm64ecfex）移植进 official/proton 树（对齐
-            // hangover-11.16）—— 前缀构建会话【无需 App 侧注入】，
-            // 32 位 rundll32 由 wine 内部缺省仿真器支撑，syswow64 正常
-            // 生成；勾选 FEX模式/wowbox64模式或显式 HODLL=/HODLL64=
-            // 时以用户值为准（6b 步 applyWineCompatEnv 已注入同一份 env，
-            // wineboot/游戏会话共用，无需分支重复）。
+            // libarm64ecfex）移植进 official/proton 树；但 hangover 树
+            // 自带 HODLL 机制（0010/0011 锚点不命中被静默跳过），其内部
+            // 缺省是 box64cpu.dll（hangover-10.x）/ wowbox64.dll
+            // （hangover-11.x）—— v3.4.2「无需 App 侧注入」的假设对
+            // hangover 树不成立（用户 2026-11-12 设备日志实证：hangover
+            // 源 arm64ec 前缀构建即死 c0000135/退出 53）。6b 步
+            // applyWineCompatEnv（v3.4.10）按 wine 包实际在场 DLL 兜底
+            // 注入 HODLL=libwow64fex.dll（在场才注入，对 official/proton
+            // 树幂等 no-op，对 hangover 树拉回 FEX 通道），构建侧
+            // hangover-wine 配方（v3.4.10）同步拉齐缺省值；用户显式
+            // HODLL=/勾选 FEX模式/wowbox64模式 时以用户值为准。
             if (wineArgs.firstOrNull() == "wineboot") {
                 sink.stamp(
-                    "前缀构建会话：32 位 rundll32 由 wine 内部缺省仿真器支撑" +
-                        "（0010/0011 补丁缺省 libwow64fex/libarm64ecfex；勾选 FEX模式" +
-                        "/wowbox64模式或显式 HODLL=/HODLL64= 时以用户值为准）" +
-                        "—— syswow64 正常生成"
+                    "前缀构建会话：32 位 rundll32 仿真器已按 wine 包实际在场 DLL 兜底" +
+                        "（v3.4.10：libwow64fex.dll 在场即默认注入 HODLL——hangover 源树的内部缺省" +
+                        "（box64cpu/wowbox64）会致 32 位进程死于 c0000135；用户显式 HODLL=/勾选" +
+                        "FEX模式/wowbox64模式 时以用户值为准）—— syswow64 正常生成"
                 )
                 // v3.2.0（用户诉求 4）：前缀构建画面指引 —— 构建已包 explorer
                 // 虚拟桌面（见 buildCommand），mono/gecko 等安装提示框从此在
