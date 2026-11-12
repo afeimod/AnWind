@@ -1,0 +1,112 @@
+# anwind: proton_9.0 树 amd_ags_x64 的 arm64ec 链接补桩（v3.3.21，0016 v2 增量）
+#
+# 【根因】（CI wine-build-log-arm64ec (16).zip 实证链条终点）：
+#   0016 v1 把 spec 的 13 个跳板条目 "-arch=win64" 收窄为 "-arch=x86_64"，
+#   但 wine-9.0 形态树的 winebuild parser 有一条硬规则（tools/winebuild/
+#   parser.c 542-543 行，wine-10 同在）：
+#       /* x86-64 implies arm64ec */
+#       if (odp->flags & FLAG_CPU(CPU_x86_64)) odp->flags |= FLAG_CPU(CPU_ARM64EC);
+#   → "-arch=x86_64" 的条目在 arm64ec 编译趟【依旧激活】（无法用 spec
+#   语法把 x86_64 与 arm64ec 拆开；混用 "!arm64ec" 负向 arch 也拆不掉——
+#   隐含位先置、FLAG_CPU_MASK 与掩码只添不减，实测标志算术推导见补丁
+#   评审）。EC 趟于是引用 8 个只有 x64 汇编实现的符号：
+#     lld-link: error: <root>: undefined symbol: DX11_BeginUAVOverlap_impl (EC symbol)
+#     ... DX11_EndUAVOverlap_impl / DX11_MultiDrawIndexedInstancedIndirect_impl /
+#     DX11_MultiDrawIndexedInstancedIndirectCountIndirect_impl /
+#     DX11_MultiDrawInstancedIndirect_impl / DX11_MultiDrawInstancedIndirectCountIndirect_impl /
+#     DX11_SetDepthBounds_impl / agsDriverExtensionsDX11_DestroyDevice（连片 8 条）
+#   与 0016 v1 的 "!defined(__arm64ec__)" 块排除（防 x64 汇编误激活）正面
+#   冲突：排除后 EC 趟既编不出实现、又必须按 spec 提供符号 → 链接必炸。
+#
+# 【修法】proton_10.0 的官方解法是 "#pragma makedep arm64ec_x64"（wine-10
+#   makedep 新机制：x86_64 编译器把 x64 代码编进 ARM64X 混合镜像），
+#   wine-9.0 makedep 无此 pragma，树做不了 → 本补丁在 #if/#endif 链上追加
+#   "#elif defined(__arm64ec__)" 纯 C 桩分支，为 8 个符号提供 EC 可见定义：
+#   * 7 个 DX11_*_impl → AGS_EXTENSION_NOT_SUPPORTED（AGS 多重间接绘制/
+#     UAV overlap/深度边界等驱动扩展在 EC 仿真形态本就无 AMD 驱动，0016 v1
+#     对 aarch64 趟已按此语义收窄，桩与其同语义）；
+#   * agsDriverExtensionsDX11_DestroyDevice → AGS_SUCCESS（释放路径无害）。
+#   Windows x64/EC ABI 为 caller 清栈，无参 C 桩忽略实参即 ABI 安全。
+#   x86_64 趟仍用原 x64 汇编跳板（行为零变化）；i386/aarch64 趟 spec 条目
+#   按 arch 排除、不引入新符号。
+#
+# 【互斥】.patch.proton 后缀避开主补丁循环；build.sh 条件应用，门控三要素：
+#   spec 为 0016 v1 应用后的 "-arch=x86_64" 形态 && main.c 无 arm64ec_x64
+#   pragma（proton_10.0 ARM64X 形态，其汇编趟必须保留）&& 无本桩标记。
+#
+# 【验证】本地 proton_9.0 官方 tar 按 CI 同序应用 0016 v1 后 patch
+#   --dry-run --fuzz=0 命中；proton_10.0 / hangover / official 树门控
+#   不触发。
+--- a/dlls/amd_ags_x64/amd_ags_x64_main.c
++++ b/dlls/amd_ags_x64/amd_ags_x64_main.c
+@@ -1932,6 +1932,70 @@
+                    "jge 1f\n\t"
+                    "jmp "     __ASM_NAME("agsDriverExtensionsDX11_DestroyDevice_511") "\n\t"
+                    "1:\tjmp " __ASM_NAME("agsDriverExtensionsDX11_DestroyDevice_520") )
++#elif defined(__arm64ec__)
++
++/* ANWIND_AMD_AGS_EC_STUBS: wine-9.0 形态树（无 arm64ec_x64 pragma，如 proton_9.0）
++ * 的 EC 编译趟编不出上面 9 个 x64 汇编跳板（llvm-mingw arm64ec 同时预定义
++ * __arm64ec__ 与 __x86_64__，x64 AT&T 汇编必炸，0016 的 !__arm64ec__ 排除
++ * 即为此）；而 spec 的 -arch=x86_64 条目经 winebuild parser 的
++ * "x86-64 implies arm64ec" 规则（tools/winebuild/parser.c）在 EC 趟依旧
++ * 激活，链接引用这 8 个符号（CI wine-build-log-arm64ec (16).zip 实证：
++ * lld-link undefined symbol DX11_*_impl / agsDriverExtensionsDX11_DestroyDevice
++ * (EC symbol) 连片 8 条）—— 收窄 spec 单独救不了 EC 链接，必须在 EC 趟
++ * 提供可见定义。proton_10.0 靠 "#pragma makedep arm64ec_x64" 把 x64 代码编
++ * 进 ARM64X 混合镜像（wine-10 makedep 新机制，本树不可用），此处按 EC 纯 C
++ * 桩补齐。AGS 多重间接绘制 / UAV overlap / 深度边界等驱动扩展在 EC 仿真
++ * 形态本就无 AMD 驱动可用（0016 v1 已按此语义收窄 aarch64 趟），桩返回
++ * AGS_EXTENSION_NOT_SUPPORTED；DestroyDevice 走释放路径返回 AGS_SUCCESS。
++ * x86_64 趟仍用原汇编跳板；i386/aarch64 趟 spec 条目按 arch 排除，不达
++ * 此处。Windows x64/EC ABI 为 caller 清栈，无参 C 桩忽略实参即 ABI 安全。 */
++AGSReturnCode WINAPI DX11_SetDepthBounds_impl( void )
++{
++    FIXME("arm64ec stub, not supported.\n");
++    return AGS_EXTENSION_NOT_SUPPORTED;
++}
++
++AGSReturnCode WINAPI DX11_BeginUAVOverlap_impl( void )
++{
++    FIXME("arm64ec stub, not supported.\n");
++    return AGS_EXTENSION_NOT_SUPPORTED;
++}
++
++AGSReturnCode WINAPI DX11_EndUAVOverlap_impl( void )
++{
++    FIXME("arm64ec stub, not supported.\n");
++    return AGS_EXTENSION_NOT_SUPPORTED;
++}
++
++AGSReturnCode WINAPI DX11_MultiDrawIndexedInstancedIndirect_impl( void )
++{
++    FIXME("arm64ec stub, not supported.\n");
++    return AGS_EXTENSION_NOT_SUPPORTED;
++}
++
++AGSReturnCode WINAPI DX11_MultiDrawIndexedInstancedIndirectCountIndirect_impl( void )
++{
++    FIXME("arm64ec stub, not supported.\n");
++    return AGS_EXTENSION_NOT_SUPPORTED;
++}
++
++AGSReturnCode WINAPI DX11_MultiDrawInstancedIndirect_impl( void )
++{
++    FIXME("arm64ec stub, not supported.\n");
++    return AGS_EXTENSION_NOT_SUPPORTED;
++}
++
++AGSReturnCode WINAPI DX11_MultiDrawInstancedIndirectCountIndirect_impl( void )
++{
++    FIXME("arm64ec stub, not supported.\n");
++    return AGS_EXTENSION_NOT_SUPPORTED;
++}
++
++AGSReturnCode WINAPI agsDriverExtensionsDX11_DestroyDevice( void )
++{
++    FIXME("arm64ec stub.\n");
++    return AGS_SUCCESS;
++}
+ #endif
+ 
+ AGSReturnCode WINAPI agsDriverExtensionsDX11_SetDiskShaderCacheEnabled(AGSContext *context, int enable)

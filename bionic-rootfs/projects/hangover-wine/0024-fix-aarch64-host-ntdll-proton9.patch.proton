@@ -1,0 +1,81 @@
+# anwind: proton_9.0 树 aarch64 host（bionic 交叉）ntdll.so 链接修复（v3.3.21）
+#
+# 【根因】（CI wine-build-log-arm64ec (16).zip 实证，主 make 终点）：
+#   ld.lld: error: undefined symbol: set_thread_teb
+#   >>> referenced by loader.c dlls/ntdll/unix/loader.o:(start_main_thread)
+#   ld.lld: error: undefined symbol: xstate_supported_features_mask
+#   ld.lld: error: undefined symbol: xstate_features_size
+#   >>> referenced by thread.c dlls/ntdll/unix/thread.o:(validate_context_xstate)
+#   两处均为 Valve 在 proton_9.0 的 x86_64-only 私货（官方 wine-9.0 树
+#   set_thread_teb / validate_context_xstate 压根不存在，已核对 wine-mirror
+#   wine-9.0 tar），Valve 只构建 x86_64 host 从未暴露：
+#   * set_thread_teb：定义仅 signal_x86_64.c（arch_prctl）与
+#     signal_i386.c（GDT），proton_9.0 的 start_main_thread 无条件调用；
+#   * xstate_supported_features_mask / xstate_features_size：定义仅
+#     system.c 的 "#if defined(__i386__) || defined(__x86_64__)" 分支，
+#     proton_9.0 的 validate_context_xstate 无守卫照样编译引用。
+#   aarch64 host（本配方 bionic 交叉主战场）上三符号皆无定义 → ntdll.so
+#   链接中止（x86_64 host 形态不受影响，逐字节不变）。
+#
+# 【修法】与 proton_10.0 自身修法逐字同形（已核对 proton_10.0 tar：
+#   loader.c 2390-2392 行 "#if defined(__x86_64__) || defined(__i386__)
+#   set_thread_teb( teb ); #endif"；thread.c 167-187 行同款 x86 守卫包裹
+#   validate_context_xstate —— Valve 在 10 分支自己补的守卫，本补丁回移）：
+#   * loader.c：调用点包 x86 守卫（aarch64 host 的 unix 侧 TEB 由进入 PE
+#     后的 call_init_thunk（x18）设定，上游 aarch64 host 构建即无此调用）；
+#   * thread.c：定义包 x86 守卫（aarch64 无 xstate，语义为空；调用方仅
+#     signal_x86_64.c / signal_i386.c 皆 x86 专属编译单元，已全树核对，
+#     守卫无副作用；xstate_extended_features() 其余用户均已在 system.c
+#     x86 分支内，无新未解析引用）。
+#
+# 【互斥】.patch.proton 后缀避开主补丁循环；build.sh 内容特征条件应用：
+#   仅当调用点/定义存在且尚未带守卫时套用（proton_10.0+ 已自带守卫、
+#   官方 9.x 树无此代码，门控均不触发）+ --fuzz=0 逐字锚点。
+#
+# 【验证】本地 proton_9.0 官方 tar patch --dry-run --fuzz=0 全 hunk 命中；
+#   proton_10.0 锚点不命中（调用点已在守卫内）。
+--- a/dlls/ntdll/unix/loader.c
++++ b/dlls/ntdll/unix/loader.c
+@@ -2178,7 +2178,16 @@
+     init_cpu_info();
+     init_files();
+ 
++    /* ANWIND_AARCH64_HOST_FIX: set_thread_teb 仅 x86 host 有定义
++     *（signal_x86_64.c arch_prctl / signal_i386.c GDT），aarch64 host 趟
++     * ntdll.so 链接必炸 "undefined symbol: set_thread_teb"（CI
++     * wine-build-log-arm64ec (16).zip 实证）。按 proton_10.0 / 上游
++     * wine-10 同款 x86 守卫回移：aarch64 host 的 unix 侧 TEB 由进入 PE
++     * 模式后的 call_init_thunk（x18 寄存器）设定，上游 aarch64 host
++     * 构建即无此调用。 */
++#if defined(__x86_64__) || defined(__i386__)
+     set_thread_teb( teb );
++#endif
+ 
+     init_startup_info();
+     *(ULONG_PTR *)&peb->CloudFileFlags = get_image_address();
+--- a/dlls/ntdll/unix/thread.c
++++ b/dlls/ntdll/unix/thread.c
+@@ -158,6 +158,15 @@
+ }
+ 
+ 
++/* ANWIND_AARCH64_HOST_FIX: xstate_supported_features_mask / xstate_features_size
++ * 仅 system.c 的 x86 分支（#if __i386__||__x86_64__）有定义，本树
++ * validate_context_xstate 无守卫、aarch64 host 趟照样编译并引用两符号
++ * → ntdll.so 链接炸 "undefined symbol"（CI wine-build-log-arm64ec (16).zip
++ * 实证）。按上游 wine-10 / proton_10.0 同款 x86 守卫回移（其 thread.c
++ * 已包裹）：aarch64 无 xstate，本函数在该形态语义为空。调用方仅
++ * signal_x86_64.c / signal_i386.c（皆 x86 专属编译单元），守卫无副作用。 */
++#if defined(__i386__) || defined(__x86_64__)
++
+ /***********************************************************************
+  *           validate_context_xstate
+  */
+@@ -177,6 +186,7 @@
+ 
+     return TRUE;
+ }
++#endif
+ 
+ 
+ /***********************************************************************

@@ -1213,6 +1213,48 @@ PCMBSF
   elif [[ -f dlls/amd_ags_x64/amd_ags_x64.spec ]]; then
     echo "ℹ️ amd_ags_x64 已是修复后形态（或 proton_10.0+ ARM64X 形态），跳过"
   fi
+  # b2) v3.3.21：0016b —— amd_ags EC 链接补桩（CI wine-build-log-arm64ec
+  #     (16).zip 实证链条终点）。0016 v1 收窄 spec 为 "-arch=x86_64" 后，
+  #     wine-9.0 形态树的 winebuild parser 硬规则 "x86-64 implies
+  #     arm64ec"（tools/winebuild/parser.c）令条目在 EC 趟依旧激活 →
+  #     EC 链接引用 8 个只有 x64 汇编实现的符号（DX11_*_impl ×7 +
+  #     agsDriverExtensionsDX11_DestroyDevice），而 0016 v1 的
+  #     !defined(__arm64ec__) 块排除已把实现从 EC 趟剔除 → 必炸：
+  #       lld-link: error: <root>: undefined symbol: DX11_BeginUAVOverlap_impl (EC symbol) …（连片 8 条）
+  #     proton_10.0 靠 "#pragma makedep arm64ec_x64"（wine-10 makedep
+  #     新机制）把 x64 代码编进 ARM64X 混合镜像，wine-9.0 makedep 无此
+  #     pragma —— 0016b 在 #if/#endif 链追加 #elif defined(__arm64ec__)
+  #     纯 C 桩分支补齐 8 符号（7 个 _impl 返回 AGS_EXTENSION_NOT_
+  #     SUPPORTED；DestroyDevice 返回 AGS_SUCCESS），x86_64 趟仍走原汇编。
+  #     门控三要素：spec 为 v1 后的 x86_64 形态 && main.c 无 arm64ec_x64
+  #     pragma（proton_10.0 ARM64X 形态必须跳过，其汇编趟要保留）&& 无
+  #     本桩标记（幂等）。
+  if [[ -f dlls/amd_ags_x64/amd_ags_x64_main.c ]] \
+     && grep -q -- '-arch=x86_64 agsDriverExtensions_BeginUAVOverlap' dlls/amd_ags_x64/amd_ags_x64.spec 2>/dev/null \
+     && ! grep -q 'arm64ec_x64' dlls/amd_ags_x64/amd_ags_x64_main.c 2>/dev/null \
+     && ! grep -q 'ANWIND_AMD_AGS_EC_STUBS' dlls/amd_ags_x64/amd_ags_x64_main.c 2>/dev/null; then
+    echo "应用 amd_ags_x64 EC 链接补桩（proton_9.0 树 winebuild 隐含规则令 -arch=x86_64 条目在 EC 趟激活）"
+    if patch --silent --forward -p1 --fuzz=0 \
+         < "${wsDir}/projects/${pjName}/0016b-fix-arm64ec-amd-ags-ecstubs-proton.patch.proton"; then
+      echo "已补齐 amd_ags EC 桩（8 符号：7×NOT_SUPPORTED + DestroyDevice→SUCCESS）"
+    else
+      echo "⚠️ amd_ags EC 桩补丁有 hunk 未应用（部分已应用或锚点漂移，继续构建）"
+      echo "    若 arm64ec 链接报 DX11_*_impl / agsDriverExtensionsDX11_DestroyDevice (EC symbol) 未定义，请核查该补丁锚点"
+    fi
+  fi
+  # 【硬校验】EC 趟桩符号必须落位 —— 防锚点漂移静默落空（v1 的"收窄即完事"
+  # 判断被 winebuild 隐含规则证伪，此处不再轻信）
+  if [[ "${args}" == *"--enable-archs=arm64ec,"* ]] \
+     && [[ -f dlls/amd_ags_x64/amd_ags_x64.spec ]] \
+     && grep -q -- '-arch=x86_64 agsDriverExtensions_BeginUAVOverlap' dlls/amd_ags_x64/amd_ags_x64.spec 2>/dev/null \
+     && ! grep -q 'arm64ec_x64' dlls/amd_ags_x64/amd_ags_x64_main.c 2>/dev/null \
+     && ! grep -q 'ANWIND_AMD_AGS_EC_STUBS' dlls/amd_ags_x64/amd_ags_x64_main.c 2>/dev/null; then
+    echo "::error::0016b 补丁未生效（amd_ags_x64_main.c 无 EC 桩标记）！"
+    echo "   arm64ec 链接必炸于 dlls/amd_ags_x64/arm64ec-windows/amd_ags_x64.dll："
+    echo "   undefined symbol: DX11_*_impl / agsDriverExtensionsDX11_DestroyDevice (EC symbol) 连片 8 条（CI (16).zip 实证）"
+    echo "   请核查源码树形态与补丁锚点：projects/${pjName}/0016b-fix-arm64ec-amd-ags-ecstubs-proton.patch.proton"
+    return 1
+  fi
 
   # c) 0011 挂起管道断裂态补全（wine-9.0 形态树专属）。0011 的锚点只覆盖
   #    wine-9.7/10 形态，在 9.0/9.2/proton_9.0 上部分落空 —— 且有两种
@@ -1383,18 +1425,91 @@ PCMBSF
   fi
   # 同向排查：EC 趟跳板齐备性兜底校验（spec 里全部非 Nt 的 -syscall 条目都
   # 必须在 signal_arm64ec.c 有跳板或头文件可见声明 —— 防后续 Valve 树再追加
+  # 【v3.3.21 误报修复】wine-10+ 树（proton_10.0 / hangover-11.x）的
+  #   signal_arm64ec.c 已改为 DEFINE_SYSCALL / DEFINE_WRAPPED_SYSCALL 宏表
+  #   形态（宏展开自带 hybrid_patchable 跳板定义），既无 "SYSCALL_API <sym>"
+  #   字面量也无 extern 声明 —— 旧校验 grep 双双落空，把健康的 p10 树误杀于
+  #   pre_setup（CI wine-build-log-arm64ec (15).zip 实证：wine_nt_to_unix_
+  #   file_name / wine_unix_to_nt_file_name 两条 ::error 后构建中止，而两
+  #   符号在 p10 树 signal_arm64ec.c 583/584 行实有 DEFINE_SYSCALL 跳板）。
+  #   追加宏形态识别；wine-9.x 手写 SYSCALL_API 形态（0020 补齐产物）行为
+  #   不变。
   _ec_syscall_missing=0
   if [[ "${args}" == *"--enable-archs=arm64ec,"* ]] && [[ -f dlls/ntdll/ntdll.spec ]]; then
     while IFS= read -r _spec_line; do
       _sym=$(echo "${_spec_line}" | sed -n 's/^@ stdcall -syscall[^\n]* \([A-Za-z_][A-Za-z0-9_]*\)(.*/\1/p')
       [[ -z "${_sym}" ]] && continue
       if ! grep -q "SYSCALL_API ${_sym}" dlls/ntdll/signal_arm64ec.c 2>/dev/null \
+         && ! grep -qE "DEFINE_(WRAPPED_)?SYSCALL\( *${_sym}[(),]" dlls/ntdll/signal_arm64ec.c 2>/dev/null \
          && ! grep -rq "extern.*${_sym}\b" dlls/ntdll/signal_arm64ec.c include/winternl.h include/wine/debug.h 2>/dev/null; then
         echo "::error::EC 跳板兜底校验失败：ntdll.spec 的 -syscall 条目 ${_sym} 在 signal_arm64ec.c 无跳板且无可见声明！"
         _ec_syscall_missing=1
       fi
     done < <(grep '^@ stdcall -syscall ' dlls/ntdll/ntdll.spec 2>/dev/null | grep -v ' Nt\| Zw')
     [[ "${_ec_syscall_missing}" == "1" ]] && return 1
+  fi
+  # g) v3.3.21：proton_9.0 树 aarch64 host（bionic 交叉）ntdll.so 链接修复
+  #    （CI wine-build-log-arm64ec (16).zip 实证主 make 终点）：
+  #      ld.lld: error: undefined symbol: set_thread_teb        ← loader.c start_main_thread
+  #      ld.lld: error: undefined symbol: xstate_supported_features_mask
+  #      ld.lld: error: undefined symbol: xstate_features_size   ← thread.c validate_context_xstate
+  #    【机制】两处均 Valve 在 proton_9.0 的 x86_64-host-only 私货（官方
+  #      wine-9.0 tar 已核对：set_thread_teb / validate_context_xstate
+  #      压根不存在；Valve 只构建 x86_64 host 从未暴露）：
+  #      * set_thread_teb 定义仅 signal_x86_64.c / signal_i386.c，
+  #        proton_9.0 start_main_thread 无条件调用；
+  #      * xstate_* 定义仅 system.c 的 x86 分支，proton_9.0
+  #        validate_context_xstate 无守卫照样编译引用（调用方仅
+  #        signal_x86_64.c / signal_i386.c，全树已核对，守卫无副作用）。
+  #    【修法】与 proton_10.0 自身修法逐字同形（p10 tar 已核：loader.c
+  #      2390-2392 "##if defined(__x86_64__) || defined(__i386__) /
+  #      set_thread_teb( teb ); #endif"，thread.c 167-187 同款守卫包裹
+  #      validate_context_xstate）—— 本补丁回移。aarch64 host 的 unix 侧
+  #      TEB 由进入 PE 后 call_init_thunk（x18）设定（上游 aarch64 host
+  #      构建即无此调用）；aarch64 无 xstate，该函数语义为空。
+  #    【门控】调用点/定义存在且未带守卫（loader.c 看调用点前 2 行、thread.c 看
+  #      签名前 6 行内有无 #if —— p9 未守卫形态的最近 #if 远在 includes 区；
+  #      proton_10.0+ 自带守卫 #if 距签名 5 行，窗口须 ≥5）+ 无标记（幂等）。
+  #      x86_64 host 形态不受任何影响（守卫内行为逐字节不变）。
+  _a64host_broken=0
+  if [[ -f dlls/ntdll/unix/loader.c ]] \
+     && grep -q 'set_thread_teb( teb );' dlls/ntdll/unix/loader.c 2>/dev/null \
+     && ! grep -q 'ANWIND_AARCH64_HOST_FIX' dlls/ntdll/unix/loader.c 2>/dev/null \
+     && ! grep -B2 'set_thread_teb( teb );' dlls/ntdll/unix/loader.c 2>/dev/null | grep -q '#if'; then
+    _a64host_broken=1
+  fi
+  if [[ -f dlls/ntdll/unix/thread.c ]] \
+     && grep -q 'BOOL validate_context_xstate( CONTEXT \*context )' dlls/ntdll/unix/thread.c 2>/dev/null \
+     && ! grep -B6 'BOOL validate_context_xstate( CONTEXT \*context )' dlls/ntdll/unix/thread.c 2>/dev/null | grep -q '#if'; then
+    _a64host_broken=1
+  fi
+  if [[ "${_a64host_broken}" == "1" ]]; then
+    echo "应用 aarch64 host ntdll 链接修复（proton_9.0 树 x86-only 符号未守卫，aarch64 host 趟必炸）"
+    if patch --silent --forward -p1 --fuzz=0 \
+         < "${wsDir}/projects/${pjName}/0024-fix-aarch64-host-ntdll-proton9.patch.proton"; then
+      echo "已修复 aarch64 host 链接（set_thread_teb / validate_context_xstate x86 守卫，proton_10.0 同款）"
+    else
+      echo "⚠️ aarch64 host 修复补丁有 hunk 未应用（树差异，继续构建）"
+      echo "    若 ntdll.so 链接报 set_thread_teb / xstate_* 未定义符号，请核查该补丁锚点"
+    fi
+    # 【硬校验】两文件的守卫必须落位（标记 + 调用点在守卫内）—— 防锚点漂移静默落空
+    if grep -q 'set_thread_teb( teb );' dlls/ntdll/unix/loader.c 2>/dev/null \
+       && ! grep -B2 'set_thread_teb( teb );' dlls/ntdll/unix/loader.c 2>/dev/null | grep -q '#if'; then
+      echo "::error::0024 未生效（loader.c 的 set_thread_teb 调用仍无 x86 守卫）！"
+      echo "   aarch64 host 趟 ntdll.so 链接必炸：undefined symbol: set_thread_teb（CI (16).zip 实证）"
+      echo "   请核查 projects/${pjName}/0024-fix-aarch64-host-ntdll-proton9.patch.proton 锚点"
+      return 1
+    fi
+    if grep -q 'BOOL validate_context_xstate( CONTEXT \*context )' dlls/ntdll/unix/thread.c 2>/dev/null \
+       && ! grep -B6 'BOOL validate_context_xstate( CONTEXT \*context )' dlls/ntdll/unix/thread.c 2>/dev/null | grep -q '#if'; then
+      echo "::error::0024 未生效（thread.c 的 validate_context_xstate 仍无 x86 守卫）！"
+      echo "   aarch64 host 趟 ntdll.so 链接必炸：undefined symbol: xstate_supported_features_mask / xstate_features_size（CI (16).zip 实证）"
+      echo "   请核查 projects/${pjName}/0024-fix-aarch64-host-ntdll-proton9.patch.proton 锚点"
+      return 1
+    fi
+    echo "aarch64 host 守卫校验通过（loader.c/thread.c 均带 ANWIND_AARCH64_HOST_FIX）"
+  else
+    echo "ℹ️ aarch64 host ntdll 无需修复（非 proton_9.0 形态或已带守卫），跳过"
   fi
   # h) v3.3.19：0013 rpcrt4 EC thunks 生效硬校验（CI wine-build-log-arm64ec.zip
   #    实证 cstub.o / cproxy.o 阵亡：v3.2.25 版 THUNK_ENTRY 宏对 cpsf.h 的
