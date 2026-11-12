@@ -1,9 +1,9 @@
 --- a/dlls/winex11.drv/xrender.c	2026-11-10 22:56:09.832564023 +0000
 +++ b/dlls/winex11.drv/xrender.c	2026-11-10 22:56:09.832564023 +0000
-@@ -49,6 +49,112 @@
+@@ -57,6 +57,113 @@
+ #define RepeatReflect 3
+ #endif
  
- #include <X11/Xlib.h>
- #include <X11/extensions/Xrender.h>
 +#include <X11/extensions/XShm.h>
 +#include <sys/ipc.h>
 +#include <sys/shm.h>
@@ -110,9 +110,10 @@
 +    shmctl( shminfo.shmid, IPC_RMID, NULL );
 +    return TRUE;
 +}
- 
- #ifndef RepeatNone  /* added in 0.10 */
- #define RepeatNone    0
++
+ enum wxr_format
+ {
+   WXR_FORMAT_MONO,
 @@ -1613,7 +1719,8 @@
  
      *pixmap = XCreatePixmap( gdi_display, root_window, width, height, depth );

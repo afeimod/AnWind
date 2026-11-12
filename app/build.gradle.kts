@@ -483,8 +483,66 @@ android {
         //     触摸目标达标）、字号 9.5→15sp、图标 10→20dp、单选项行
         //     34→40dp 字号 13→15sp 同尺寸统一、圆角/内边距/子菜单缩进
         //     同步。
-        versionCode = 110
-        versionName = "2.38.47"
+        // v3.4.9（源码包 v3.4.9，App v2.38.48 / versionCode 111）——
+        //   用户 2026-11-12 proton9.0 二轮构建失败日志（arm64ec + x86_64
+        //   双作业同树不同死点）+ 设备三容器会话日志（rootfs 重建后
+        //   x86_64 挂死 / arm64ec c0000135 / 存储耗尽）实证轮：
+        //   ①【proton9.0 arm64ec：media-converter murmur3 守卫】arm64ec
+        //     趟死于 dlls/winegstreamer/media-converter/audioconv.c 成片
+        //     "field has incomplete type 'struct murmur3_128_state'" +
+        //     murmur3_128_full/state_init/state_reset 未声明 —— 根因
+        //     media-converter.h:139 宏守卫只认 __x86_64__/__i386__，aarch64
+        //     （arm64ec unix 侧编译目标）两支均不命中，murmur3_128_state
+        //     沦为从未定义的真类型。新增 0023 补丁（beforehostbuild 族，
+        //     hangover-wine 与 wine 双项目投放）：aarch64 并入 x64 变体，
+        //     与 proton_10.0 / wine 10 上游定稿逐行同款（murmur3.c 两实现
+        //     纯 C 无架构专属代码）；wine 10+ 树已含同款修正 → hunk 不
+        //     命中仅告警跳过（与 0022 registry 补丁同族容忍行为）。
+        //   ②【proton9.0 x86_64：xshm 补丁 hunk1 锚点重制】x86_64 趟死于
+        //     winex11.drv/xrender.c:1750 'xshm_upload_image' 未声明 ——
+        //     0021/0013 xshm 零拷贝补丁 hunk1（函数定义）锚在 include 区
+        //     Xrender.h 之后，而 wine9/proton9 树该处自带 XShm.h（fs_hack
+        //     残留）上下文漂移 3 行外 → hunk1 拒绝、hunk2（调用点）照套
+        //     → 调用了不存在的函数。重制 hunk1：锚点移至 RepeatNone 守卫
+        //     块与 enum wxr_format 之间（wine9/proton9 与 wine10+/11 双树
+        //     形态同锚，本地 proton9+wine11 双树实测两 hunk 全量命中）；
+        //     插入内容与调用点不动（wine11 形态净空应用回归验证）。
+        //   ③【排查确认非死点】：0005 xstate 空桩补丁在 proton9 树 hunk
+        //     失败经核实无害（wine9.0 树 wineboot.c 的 #else 分支本就自带
+        //     initialize_xstate_features 空桩，树差异属正常告警家族）；
+        //     其余 0001/0006/0007x/0008b/0011/0014x 拒绝 hunk 同前轮
+        //     （rpcrt4/ntdll/wow64/dbghelp 等均在死点前编译通过，非本
+        //     轮死因）。
+        //   ④【x86_64 形态 box64 符号断链根治：libandroid-shmem 剥
+        //     liblog】（用户 2026-11-12 会话日志实证：wine-9.0 x86_64 线
+        //     启动即 "[BOX64] Error: Symbol __android_log_print not
+        //     found, cannot apply R_X86_64_JUMP_SLOT … in …/lib/
+        //     x86_64-bionic/libandroid-shmem.so" ×4，随后 wineboot 无输出
+        //     挂死）：Termux shmem.c 的 DBG 宏走 __android_log_print（NDK
+        //     liblog），box64 v0.4.4 的 wrapped 库集没有 liblog、宿主侧
+        //     也解析不到 → x86_64 包内 libandroid-shmem.so 的 PLT 永久
+        //     断链，任何 shm 调用即崩（潜伏缺陷，box64 形态重建后首次
+        //     实跑暴露，非环境回归）。修复：libandroid-shmem 构建对 x86_64
+        //     目标把 DBG 编译成空（日志本只进 logcat 用户不可见，零功能
+        //     损失）+ 链接剥 -llog/-landroid（shmem.c 纯 ioctl/socket/
+        //     pthread，无任何 libandroid 符号引用；sed 双写实测逐行验证）；
+        //     aarch64 原生侧不受影响（宿主 liblog 解析正常，日志保留）。
+        //     wine 包重编即带（x86_64 shmem 只存在于 wine 包内）。
+        //   ⑤【冒烟测试输出扫错】（同日志实证：旧版把 box64 符号断链错误
+        //     行当版本串打 "加载器正常: [BOX64] Error…"——PLT 断链被冒烟
+        //     测试亲手放行）：loaderSmokeTest 退出 0 但输出含 "BOX64]
+        //     Error" 时大声列出（最多 3 行）+ 对策行；不硬拦（--version
+        //     未触及断链符号时 loader 本体可用，真断链时看门狗/超时链路
+        //     兜底取证）。
+        //   ⑥【存储 fail-fast】（同日志实证：arm64ec 线 wineboot 2 秒
+        //     c0000135 + 300s 重试全超时 + 自诊断"内部存储空间仅剩 0MB"
+        //     ——存储耗尽时 wineboot 写上千个前缀文件必失败，wine 包解压
+        //     也可能残缺即 kernel32.dll 缺失 c0000135）：initializePrefix
+        //     IfNeeded 与 RootfsLauncher 的 wineboot 重试链新增剩余空间
+        //     <64MB 守卫 —— 直接放弃构建/跳过重试并大声指路（省 15 分钟
+        //     挂死 + 300 秒重试白跑）；对策指向清理内部存储后重建容器。
+        versionCode = 111
+        versionName = "2.38.48"
         // v3.4.3（源码包 v3.4.3，App v2.38.42 / versionCode 105）——
         //   用户交付 assets-ck 资产包 + 上游发行包 参考源码（「assets-ck
         //   我发了，源码也发了…特别是 arm64ec wine 和 x86_64 wine 的

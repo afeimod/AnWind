@@ -1,0 +1,22 @@
+proton 树 media-converter 头的 murmur3 宏守卫只认 __x86_64__/__i386__
+（media-converter.h:139 #ifdef __x86_64__ / #elif defined(__i386__)），
+aarch64（arm64ec unix 侧编译目标）两支均不命中 → murmur3_128_state
+不是宏而是从未定义的真类型 → audioconv.c/videoconv.c 成片报
+"field has incomplete type 'struct murmur3_128_state'" + 未声明函数，
+arm64ec 趟 winegstreamer 编译必挂（CI proton-9.0 arm64ec 实证）。
+修法与 proton_10.0 / wine 10 上游定稿逐行同款：aarch64 并入 x64 变体
+（murmur3.c 两实现皆纯 C 无架构专属代码，全 arch 可编译）。
+wine 10+ / hangover-11.16 树已含同款修正 → hunk 不命中仅告警跳过，
+与 0022 registry 补丁同族行为。
+
+--- a/dlls/winegstreamer/media-converter/media-converter.h
++++ b/dlls/winegstreamer/media-converter/media-converter.h
+@@ -136,7 +136,7 @@
+ extern bool murmur3_x86_128_full(void *data_src, data_read_callback read_callback,
+         struct murmur3_x86_128_state* state, void *out);
+ extern bool murmur3_x86_128(void *data_src, data_read_callback read_callback, uint32_t seed, void *out);
+-#ifdef __x86_64__
++#if defined(__x86_64__) || defined(__aarch64__)
+ #define murmur3_128_state       murmur3_x64_128_state
+ #define murmur3_128_state_init  murmur3_x64_128_state_init
+ #define murmur3_128_state_reset murmur3_x64_128_state_reset

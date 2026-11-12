@@ -1642,6 +1642,16 @@ object RootfsLauncher {
         val systemReg = File(container.prefixPath, "system.reg")
         if (!systemReg.isFile) {
             prefixLog("前缀未就绪（system.reg 缺失）→ 自动重跑一次 wineboot -u 修复……")
+            // v3.4.9【存储 fail-fast】（同 WineRegistry.initializePrefixIfNeeded
+            // 守卫；用户 2026-11-12 日志实证：存储 0MB 时 300 秒重试必然无输出
+            // 超时白跑）：剩余空间 <64MB 直接跳过重试并大声指路。
+            val freeMb = runCatching {
+                (resolved.wineDir.parentFile ?: resolved.wineDir).usableSpace / 1024L / 1024L
+            }.getOrDefault(-1L)
+            if (freeMb in 0..64) {
+                prefixLog("→ 存储不足（仅剩 ${freeMb}MB）：wineboot 需写入上千个文件，重试必无输出超时 —— 跳过重试")
+                prefixLog("  对策：清理内部存储（旧容器前缀 / rootfs 残留 / 多余 wine 包）后重建容器")
+            } else {
             var rbCode = -1
             runCatching {
                 // v3.3.3：-i → -u（startfex.sh 同款）+ 压 mono 弹窗。
@@ -1697,6 +1707,7 @@ object RootfsLauncher {
                     }
                 }.onFailure { prefixLog("警告: 解释器模式兜底异常: ${it.message}") }
             }
+            } // v3.4.9 存储守卫 else 结束
         }
         // v3.3.4：taskmgr 前置保活已移除（用户问题 5 —— 参考链路里解压与
         // 注册表的每一步都是独立 wine 客户端，wineserver 按需拉起，无需

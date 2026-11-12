@@ -591,6 +591,19 @@ object WineRegistry {
         if (File(container.prefixPath, "system.reg").isFile) return true
         log("首次使用，初始化 wine 前缀: ${container.prefixPath}")
         log("提示: 构建过程中的 mono/gecko 等安装提示框将显示在『X11 桌面』窗口（explorer 虚拟桌面）内，请在该窗口确认")
+        // v3.4.9【存储 fail-fast】（用户 2026-11-12 三容器会话日志实证：arm64ec
+        // 线 wineboot 2 秒 c0000135 + 300s 重试全超时 + 自诊断"内部存储空间
+        // 仅剩 0MB"——存储耗尽时 wineboot 需写入上千个前缀文件必失败，且
+        // wine 包解压可能残缺（kernel32.dll 缺失即 c0000135）。低于 64MB
+        // 直接放弃本次构建并大声指路，省掉 15 分钟挂死与 300 秒重试白跑）。
+        val freeMb = runCatching {
+            (resolved.wineDir.parentFile ?: resolved.wineDir).usableSpace / 1024L / 1024L
+        }.getOrDefault(-1L)
+        if (freeMb in 0..64) {
+            log("→ 存储不足：内部存储仅剩 ${freeMb}MB —— wineboot 需写入上千个前缀文件，本次构建必失败")
+            log("  对策：清理内部存储（旧容器前缀 / rootfs 残留 / 多余 wine 包）后重建容器；wine 包如疑似残缺（启动报 c0000135）请一并重装")
+            return false
+        }
         return try {
             // v3.2.1 ③：加载器冒烟测试 —— 静默阵亡拦在前级并给出结论
             if (!loaderSmokeTest(resolved, container, env, log)) {
@@ -1248,7 +1261,21 @@ object WineRegistry {
             val code = runCatching { executor.waitFor() }.getOrDefault(-1)
             val text = synchronized(output) { output.toString().trim() }
             val ok = finished && code == 0 && text.isNotEmpty()
-            if (ok) {
+            // v3.4.9【冒烟输出扫错】（用户 2026-11-12 日志实证：旧版把 box64
+            // 符号断链错误行当版本串打 "加载器正常: [BOX64] Error…"——
+            // PLT 断链问题被冒烟测试亲手放行，wineboot 随后无输出挂死）。
+            // 退出 0 但输出含 box64 库错误 = x86_64 库加载/符号断链（运行期
+            // 调用即崩）——大声列出，不再等挂死后猜根因。不硬拦（--version
+            // 未触及断链符号时 loader 本体仍可用，真断链时看门狗/超时链路
+            // 会兜底取证）。
+            val box64ErrLines = text.lineSequence()
+                .filter { it.contains("BOX64] Error") || it.contains("box64: Error") }
+                .distinct().toList()
+            if (ok && box64ErrLines.isNotEmpty()) {
+                log("加载器正常（退出 0），但输出含 box64 库错误 —— 对应 x86_64 库 PLT/加载断链，运行期调用即崩（wineboot 可能无输出挂死）:")
+                box64ErrLines.take(3).forEach { log("    ${it.take(180)}") }
+                log("    对策: 重装含 v3.4.9+ 修复的 wine 包/rootfs（libandroid-shmem x86_64 已剥 liblog 依赖——box64 无该符号的 wrapped 集）")
+            } else if (ok) {
                 log("加载器正常: ${text.lineSequence().first().take(60)}")
             } else if (!finished) {
                 runCatching { executor.stopAndWait(true, 5, TimeUnit.SECONDS) }
