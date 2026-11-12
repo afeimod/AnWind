@@ -196,6 +196,17 @@ fun DesktopIconGrid(
         }
 
         // ---- v6：吸附换算（Windows "对齐到网格"开启语义） ----
+        // 位置 → 渲染像素（左上角）：单元格走网格几何；自由位直接像素并
+        // 钳制回界内（旋转/改图标大小后网格尺寸变化时防越界，v4 同款防御）
+        // （注意：须定义在 freePosCell 之前 —— 局部函数不允许前向引用）
+        fun posPx(p: IconPos): Offset = when (p) {
+            is IconPos.Cell -> cellPx(p.col, p.row)
+            is IconPos.Free -> Offset(
+                p.x.toFloat().coerceIn(0f, (gridWpx - cellWpx).coerceAtLeast(0f)),
+                p.y.toFloat().coerceIn(0f, (gridHpx - cellHpx).coerceAtLeast(0f))
+            )
+        }
+
         // 像素坐标（图标左上角）→ 最近单元格（按图标中心判定，四舍五入
         // 到最近格点；不足半格的拖动松手即回原格 —— "不随便移动"的关键）
         fun snapCellFromPx(pxX: Float, pxY: Float): Pair<Int, Int> {
@@ -270,16 +281,6 @@ fun DesktopIconGrid(
                     is IconPos.Free -> "${id}:${p.x},${p.y}"
                 }
             }
-
-        // 位置 → 渲染像素（左上角）：单元格走网格几何；自由位直接像素并
-        // 钳制回界内（旋转/改图标大小后网格尺寸变化时防越界，v4 同款防御）
-        fun posPx(p: IconPos): Offset = when (p) {
-            is IconPos.Cell -> cellPx(p.col, p.row)
-            is IconPos.Free -> Offset(
-                p.x.toFloat().coerceIn(0f, (gridWpx - cellWpx).coerceAtLeast(0f)),
-                p.y.toFloat().coerceIn(0f, (gridHpx - cellHpx).coerceAtLeast(0f))
-            )
-        }
 
         // 解析持久化位置（iconPositions / 网格几何 变化时重算）
         val savedPositions = remember(iconPositions, perRow, perCol) {
