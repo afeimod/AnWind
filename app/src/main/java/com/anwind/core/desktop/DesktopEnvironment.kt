@@ -502,14 +502,18 @@ fun DesktopEnvironment(
         // 瓦片长按拖出 → 菜单关闭（瓦片手势协程随组件销毁而取消）→
         // 本层全屏接管：跟踪手指位置（纯观察不消费事件）+ 渲染跟手影子
         // + 松手触发 DesktopDragState.end() → DesktopIconGrid 的落位回调
-        // （固定集合 + Free 位置）。拖到任务栏区域（底部 12%）不算落位，
-        // 静默取消（同 Windows 语义：拖到任务栏 = 不固定）。
+        // （固定集合 + Free 位置）。拖到任务栏区域不算落位，静默取消
+        // （同 Windows 语义：拖到任务栏 = 不固定）。
+        // v6.1：边界用真实工作区底缘（任务栏上缘）而非旧版"屏幕高 88%"
+        // 硬阈值 —— 旧行把桌面底排可用格的下半区也吞掉，拖到底排松手
+        // 直接没反应（用户反馈的"底部拖不进图标"）。
+        val workAreaBottomPx = with(density) { workAreaHeight.toPx() }
         if (DesktopDragState.dragging != null) {
             // 观察层：跟手 + 松手判定（不消费事件，不阻挡底层）
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .pointerInput(Unit) {
+                    .pointerInput(workAreaBottomPx) {
                         awaitPointerEventScope {
                             while (DesktopDragState.dragging != null) {
                                 val event = awaitPointerEvent()
@@ -519,10 +523,9 @@ fun DesktopEnvironment(
                                     DesktopDragState.update(change.position.x, change.position.y)
                                 }
                                 if (event.changes.none { it.pressed }) {
-                                    // 手指抬起：底部 12% 为任务栏区 → 取消；
+                                    // 手指抬起：越过工作区底缘（任务栏上缘）→ 取消；
                                     // 其余区域 → 落位（end 内部调 onDrop）
-                                    val h = size.height.toFloat()
-                                    if (DesktopDragState.y > h * 0.88f) {
+                                    if (DesktopDragState.y > workAreaBottomPx) {
                                         DesktopDragState.cancel()
                                     } else {
                                         DesktopDragState.end()

@@ -180,13 +180,24 @@ fun DesktopIconGrid(
     val cellWpx = with(density) { ((iconSize + 24f).dp + 8.dp).toPx() }
     val cellHpx = with(density) { ((iconSize + 46f).dp + 8.dp).toPx() }
     val gridMarginPx = with(density) { 8.dp.toPx() }
+    // v6.1：图标"视觉块"尺寸（px）—— DesktopIcon 实际渲染的图标+标签范围：
+    // 宽 (iconSize+24)dp；高 4dp内边距+图标+2dp间隙+两行11sp标签(≈26dp,
+    // 随系统字体缩放)+4dp内边距 ≈ (iconSize+36)dp，取 38dp 留 2dp 余量。
+    val fontScale = density.fontScale.coerceAtLeast(1f)
+    val blockWpx = with(density) { (iconSize + 24f).dp.toPx() }
+    val blockHpx = with(density) { iconSize.dp.toPx() + (38f.dp.toPx() * fontScale) }
     val freeDrag = sortMode == "default"
 
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
         val gridWpx = constraints.maxWidth.toFloat()
         val gridHpx = constraints.maxHeight.toFloat()
-        val perCol = (((gridHpx - 2 * gridMarginPx) / cellHpx).toInt()).coerceAtLeast(1)
-        val perRow = (((gridWpx - 2 * gridMarginPx) / cellWpx).toInt()).coerceAtLeast(1)
+        // v6.1（用户反馈：底部明明还放得下一整格图标，落点却跳去第二列）：
+        // 旧行整格整除截断 —— 末格自带的 8dp 格间距也要完整预留，底部
+        // 0.5~0.9 格的可见空间全被废弃。新判据：顶部 8dp 边距 + (n-1) 个
+        // 整格 + 末格仅占"视觉块"高度 ≤ 网格高/宽；末格块底按构造保证
+        // 不越网格底缘（标签绝不压进任务栏），能多排一行就多排一行。
+        val perCol = (1 + ((gridHpx - gridMarginPx - blockHpx) / cellHpx).toInt()).coerceAtLeast(1)
+        val perRow = (1 + ((gridWpx - gridMarginPx - blockWpx) / cellWpx).toInt()).coerceAtLeast(1)
 
         // 网格单元坐标 → 像素（左上角）
         fun cellPx(col: Int, row: Int): Offset {
@@ -305,13 +316,46 @@ fun DesktopIconGrid(
                 sortedItems.forEach { item ->
                     (livePositions[item.id] ?: savedPositions[item.id])?.let { merged[item.id] = it }
                 }
-                // 无位置图标按「先列后行」落入剩余空格（同 Windows 新图标落格）
                 val newOnes = mutableMapOf<String, IconPos>()
+                // 占位集合：有效单元格照记；v5 自由位以其覆盖格参与占位
+                // （防归位前新图标塞进同一格）；越界单元格不参与占位
+                // （自身即将重归位）。
                 val takenCells = mutableSetOf<Pair<Int, Int>>()
-                merged.values.forEach { if (it is IconPos.Cell) takenCells.add(it.col to it.row) }
+                merged.values.forEach { p ->
+                    when (p) {
+                        is IconPos.Cell ->
+                            if (p.col in 0 until perRow && p.row in 0 until perCol)
+                                takenCells.add(p.col to p.row)
+                        is IconPos.Free -> takenCells.add(freePosCell(p))
+                    }
+                }
+                // v6.1：存量位置重归位（就近吸附到最近空格，绝不重叠）。两类：
+                // ① v5 像素自由位 → 一次性归位为单元格（"横平竖直"整队）；
+                // ② 越界单元格 —— 旋转屏幕/改图标大小/网格行数变化后，旧
+                //   Cell(col,row) 超出当前网格范围。旧行为在 cellPx() 里静默
+                //   钳制回界内 → 直接压在别的图标上（"偶尔图标重叠"的根源）。
+                // 归位结果并入 newOnes 持久化 —— 旧格式数据（v3 像素 /
+                // v5 自由位 / 旧几何单元格）加载即自动升级，无需迁移工具。
+                val needsRefit = merged.entries.filter { (_, p) ->
+                    p is IconPos.Free ||
+                        (p is IconPos.Cell && (p.col !in 0 until perRow || p.row !in 0 until perCol))
+                }
+                for ((id, p) in needsRefit) {
+                    val px = posPx(p)
+                    val want = snapCellFromPx(px.x, px.y)
+                    val cell = nearestFreeCell(want, takenCells)
+                    val cellPos = IconPos.Cell(cell.first, cell.second)
+                    merged[id] = cellPos
+                    newOnes[id] = cellPos
+                    takenCells.add(cell)
+                }
+                // 无位置图标按「先列后行」落入剩余空格（同 Windows 新图标
+                // 落格；靠前的空位优先被"补上"）
                 var cellIdx = 0
+                var overflowIdx = 0
                 sortedItems.forEach { item ->
                     if (merged.containsKey(item.id)) return@forEach
+                    var placed = false
                     while (cellIdx < perRow * perCol) {
                         val col = cellIdx / perCol
                         val row = cellIdx % perCol
@@ -321,23 +365,17 @@ fun DesktopIconGrid(
                             merged[item.id] = IconPos.Cell(col, row)
                             newOnes[item.id] = IconPos.Cell(col, row)
                             takenCells.add(cell)
+                            placed = true
                             break
                         }
                     }
-                }
-                // v6：v5 存量像素自由位一次性就近归位为单元格（"横平竖直"整队）。
-                // 归位结果并入 newOnes 持久化 —— 此后桌面全部为格点位，旧格式
-                // 数据（v3 像素 / v5 自由位）加载即自动升级，无需迁移工具。
-                val legacyFree = merged.entries.filter { it.value is IconPos.Free }
-                if (legacyFree.isNotEmpty()) {
-                    for ((id, p) in legacyFree) {
-                        val px = posPx(p)
-                        val want = snapCellFromPx(px.x, px.y)
-                        val cell = nearestFreeCell(want, takenCells)
-                        val cellPos = IconPos.Cell(cell.first, cell.second)
-                        merged[id] = cellPos
-                        newOnes[id] = cellPos
-                        takenCells.add(cell)
+                    // v6.1：网格全满（图标总数 > 格数，极端场景）兜底 ——
+                    // 旧行为漏分配 → 渲染层 Cell(0,0) 兜底 → 全部叠死在
+                    // 第一格（重叠）。改为按序散排首列各格，至少错开可视
+                    // 认领；不落盘（动态极端态），腾出空格后自动回正。
+                    if (!placed) {
+                        merged[item.id] = IconPos.Cell(0, overflowIdx % perCol)
+                        overflowIdx++
                     }
                 }
                 merged to newOnes
