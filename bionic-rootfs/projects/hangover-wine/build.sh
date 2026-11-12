@@ -1516,7 +1516,7 @@ PCMBSF
   #    表达式参数（32*(block)+n）做 ##num 粘贴只取首 token，"NdrProxyForwarding
   #    Function32 * (1) + 0(void)" 连片解析错误；且 call_stubless_func 尾调
   #    的 NdrpClientCall2 是 wine-9.7 符号，proton_9.0 叫 ndr_client_call，
-  #    链接必炸）。0013 由主补丁循环应用，此处校验 v3.2.26 修复版确实落位
+  #    链接必炸）。0013 由主补丁循环应用，此处校验 v3.2.26/v3.2.27 修复版确实落位
   #    （EC_THUNK 字面量枚举是其独有标记）。wine-10+ 树 cstub/cproxy 已重写
   #    （rpcrt4 无 ALL_THUNK_ENTRIES asm 形态）→ 门控不触发，静默跳过。
   if [[ "${args}" == *"--enable-archs=arm64ec,"* ]] \
@@ -1526,6 +1526,26 @@ PCMBSF
     echo "::error::0013 补丁未生效或仍为 v3.2.25 旧版（rpcrt4/cstub.c 的 EC 趟缺 EC_THUNK 字面量枚举）！"
     echo "   arm64ec 编译趟必炸于 dlls/rpcrt4/arm64ec-windows/cstub.o / cproxy.o（##num 表达式粘贴连片解析错误，CI 实证）"
     echo "   请核查源码树形态与补丁锚点：projects/${pjName}/0013-fix-arm64ec-rpcrt4-thunks-wine97.patch"
+    return 1
+  fi
+  # 同向：v3.2.27 —— cproxy 的 EC call_stubless_func 必须为非 static 形态。
+  # 【根因】CI wine-build-log-arm64ec (17).zip 实证（v3.2.26 阵亡点）：static
+  # naked 函数在 C 层面零引用（1021 个 ObjectStublessClientN thunk 只在汇编
+  # 字符串里 "b call_stubless_func" 引用它；stubless_thunks 又被
+  # #ifndef __arm64ec__ 排除）→ clang 报 -Wunused-function 并把该 static
+  # 函数整体丢弃（内联汇编根本没进 .o）→ lld-link "undefined symbol:
+  # call_stubless_func (EC symbol)" ×1021（referenced by cproxy.o:
+  # #ObjectStublessClient3/4/5...）→ rpcrt4.dll EC 链接阵亡。非 static
+  # （外部链接）永不丢弃；与 0007 补丁同 CI 实证可链的 GetProcAddress /
+  # RaiseException 等 EC naked 函数同一形态，对齐上游 wine-9.7
+  # ndr_stubless.c NdrClientCall2 的 __arm64ec__ naked 入口。
+  if [[ "${args}" == *"--enable-archs=arm64ec,"* ]] \
+     && [[ -f dlls/rpcrt4/cproxy.c ]] \
+     && grep -q 'EC_THUNK(' dlls/rpcrt4/cproxy.c 2>/dev/null \
+     && grep -q 'static void call_stubless_func' dlls/rpcrt4/cproxy.c 2>/dev/null; then
+    echo "::error::0013 补丁仍为 v3.2.26 旧版（cproxy.c 的 EC 趟 call_stubless_func 为 static，必被编译器当作未引用函数丢弃）！"
+    echo "   arm64ec 链接必炸于 dlls/rpcrt4/arm64ec-windows/rpcrt4.dll：undefined symbol: call_stubless_func (EC symbol) ×1021（CI (17) 实证）"
+    echo "   请核查：projects/${pjName}/0013-fix-arm64ec-rpcrt4-thunks-wine97.patch（v3.2.27）"
     return 1
   fi
   # 同向：cproxy 的 EC callee 必须与本树的非 static NDR 客户端符号一致
@@ -1557,7 +1577,7 @@ PCMBSF
       if ! grep -q 'bl \\"#'${_ec_callee}'\\"' dlls/rpcrt4/cproxy.c 2>/dev/null; then
         echo "::error::0013 EC callee 适配失败（期望 ${_ec_callee}）！"
         echo "   cproxy.c 的 call_stubless_func 尾调符号与本树不符，arm64ec 链接必炸 undefined symbol"
-        echo "   请核查：projects/${pjName}/0013-fix-arm64ec-rpcrt4-thunks-wine97.patch（v3.2.26）"
+        echo "   请核查：projects/${pjName}/0013-fix-arm64ec-rpcrt4-thunks-wine97.patch（v3.2.27）"
         return 1
       fi
     fi

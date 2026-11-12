@@ -1,4 +1,28 @@
-# anwind: wine-9.x/proton_9.0 arm64ec rpcrt4 EC thunks 根治（v3.2.26）
+# anwind: wine-9.x/proton_9.0 arm64ec rpcrt4 EC thunks 根治（v3.2.27）
+#
+# 【v3.2.27 修 static 消除致命 bug（CI wine-build-log-arm64ec (17).zip 实证）】
+#
+#  v3.2.26 把 call_stubless_func 定义为 static naked 函数 —— 但 1021 个
+#  ObjectStublessClientN thunk 只在汇编字符串里引用它（"b call_stubless_func"），
+#  C 层面零引用；stubless_thunks 又被 #ifndef __arm64ec__ 排除 → clang 报
+#  -Wunused-function 并把该 static 函数整体丢弃（内联汇编根本没进 .o）→
+#  EC 链接必炸：
+#      lld-link: error: undefined symbol: call_stubless_func (EC symbol)
+#      >>> referenced by dlls/rpcrt4/arm64ec-windows/cproxy.o:(#ObjectStublessClient3)
+#      >>> ... referenced 1018 more times
+#      make: *** [dlls/rpcrt4/arm64ec-windows/rpcrt4.dll] Error 2
+#  （日志 17 同时实证：0024 aarch64 host 守卫、0016b amd_ags 补桩、0016 v1
+#   等此前修复全部生效，ntdll/kernel32/amd_ags 均 EC 链接通过，rpcrt4 是
+#   当前唯一拦路虎。）
+#
+#  修法：对齐上游 wine-9.7 ndr_stubless.c NdrClientCall2 的 __arm64ec__
+#  naked 入口形态 —— 非 static（外部链接函数编译器永不丢弃）+ 前置 extern
+#  声明；与 0007 补丁里同 CI 已实证可链的 GetProcAddress/get_proc_address_
+#  wrapper/RaiseException 等 EC naked 函数同一形态（clang 对 naked 函数不
+#  自动生成 #name 入口，函数体自带 .seh_proc "#name" 即 x64 入口，无重复
+#  定义之虞）。同时修掉 v3.2.26 生成时误拼的
+#  `#else  /* __i386__ */#else  /* __i386__ */` 重复行（-Wextra-tokens 警告
+#  来源，cproxy.c:377）。
 #
 # 【v3.2.25 的两处致命 bug（CI wine-build-log-arm64ec.zip 实证）】
 #
@@ -235,7 +259,7 @@
  
 --- a/dlls/rpcrt4/cproxy.c      2026-11-08 04:09:17.197974290 +0000
 +++ b/dlls/rpcrt4/cproxy.c      2026-11-08 04:09:17.201974301 +0000
-@@ -193,7 +193,188 @@
+@@ -193,7 +193,189 @@
      "mov w16,#("#num")\n\t" \
      "b " __ASM_NAME("call_stubless_func") "\n\t"
  
@@ -253,7 +277,8 @@
 + * ndr_client_call（proton_9.0 符号；v3.2.25 误用 wine-9.7 的
 + * NdrpClientCall2 名，proton_9.0 链接必炸）。浮点参数不支持
 + * （fpu=0，与 wine-9.7 EC NdrClientCall2 同一限制）。 */
-+__attribute__((naked)) static void call_stubless_func(void)
++extern void call_stubless_func(void);
++__attribute__((naked)) void call_stubless_func(void)
 +{
 +    asm( ".seh_proc \"#call_stubless_func\"\n\t"
 +         "stp x29, x30, [sp, #-0x10]!\n\t"
@@ -421,7 +446,7 @@
 +};
 +#define THUNK_ENTRY_SIZE 0  /* EC：无偏移算术 */
 +
-+#else  /* __i386__ */#else  /* __i386__ */
++#else  /* __i386__ */
  
  #warning You must implement stubless proxies for your CPU
  
