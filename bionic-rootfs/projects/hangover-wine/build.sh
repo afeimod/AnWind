@@ -227,8 +227,34 @@ pre_setup() {
       #   * 0007 的 kernelbase/debug.c hunk：被 0025 wine-10 形态内联，
       #     落 .rej 属预期（主循环警告文案注明）；
       #   * 0010/0013/0019/0024 等其余补丁：照常应用，硬校验全部通过。
+      # v3.4.13【0025 后 winecrt0/arm64ec.c 抽查门禁】（v3.4.12 实证教训：
+      #   补丁生成伪影 asm( asm( 落进 EC 首批编译对象 —— dlls/winecrt0/
+      #   arm64ec-windows/arm64ec.o 首趟即死：expected string literal in
+      #   'asm'，构建到 wine 编译段才暴，前功尽弃）：
+      #   ① 不得出现成对 'asm( asm(' 伪影（回移补丁生成损伤的形态指纹）；
+      #   ② _load_config_used CRT 块必须在场 —— wine-10 把该块挪进了
+      #      winebuild spec32.c output_load_config，但本回移不含该提交，
+      #      p9 的 winebuild 不产该符号，而 lld-link 链接 EC 对象硬要求
+      #      『EC version of '_load_config_used'』（0b 段同根因）——块被误删
+      #      会让所有 EC 模块链接失败。两项不过即中止，防残废包流出。
+      _ec_crt="${srcDir}/${pjName}/dlls/winecrt0/arm64ec.c"
+      if grep -q 'asm( asm(' "${_ec_crt}" 2>/dev/null; then
+        echo "::error::0025 后 winecrt0/arm64ec.c 检出 'asm( asm(' 成对伪影（v3.4.12 生成损伤形态）——回移补丁文件损坏，中止防 2 小时白构建"
+        return 1
+      fi
+      if ! grep -q '_load_config_used' "${_ec_crt}" 2>/dev/null; then
+        echo "::error::0025 后 winecrt0/arm64ec.c 的 _load_config_used CRT 块丢失 —— wine<10 树的 winebuild 不产该符号（lld-link 链 EC 对象硬要求），删块即全线 EC 链接失败；请核查 0025 补丁的 arm64ec.c 段"
+        return 1
+      fi
+      echo "0025 后 winecrt0/arm64ec.c 抽查通过（无成对伪影 + _load_config_used CRT 块在位）"
     else
       echo "arm64ec 完整性门禁通过（loader.c 含 load_arm64ec_module、makedep.c 含 arm64x —— wine 10+ Linux 宿主形态）"
+      # v3.4.13：wine-10+ 原生树同样拒绝成对伪影（防御性，双保险）
+      _ec_crt="${srcDir}/${pjName}/dlls/winecrt0/arm64ec.c"
+      if grep -q 'asm( asm(' "${_ec_crt}" 2>/dev/null; then
+        echo "::error::winecrt0/arm64ec.c 检出 'asm( asm(' 成对伪影 —— 源码树/补丁链异常，中止"
+        return 1
+      fi
     fi
   fi
 

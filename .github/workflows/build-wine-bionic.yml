@@ -26,6 +26,12 @@ name: AnWind Bionic Wine (X11 / x86_64 + arm64ec)
 #     形态整体回移】（proton_9.0 实证锚点，41 文件全 hunk 硬校验）→
 #     proton_9.0 恢复可用；proton<9.0 及异构 wine<10 树（official 9.x 等，
 #     0025 锚点不命中）在入参/0a 阶段拒绝；x86_64 形态不受限制
+#   ※ v3.4.13：修复 v3.4.12 的 0025 生成伪影 —— winecrt0/arm64ec.c 出现
+#     成对 'asm( asm('（构建到 EC 首批编译对象即死：expected string
+#     literal in 'asm'）。修复 = 删除该伪影 hunk：保留 wine-9 的
+#     _load_config_used CRT 块（wine-10 把它挪进 winebuild，本回移不含
+#     该提交，p9 的 winebuild 不产该符号而 lld-link 硬要求）；配方 0a
+#     新增 arm64ec.c 抽查门禁（伪影/块丢失双检，防同类损伤再流出）
 # 共同点：
 #   * 显示仅 X11（--with-x 全套扩展，无 wayland），连接 AnWind 内置
 #     termux-x11/libXlorie X 服务（App 侧 tmp/.X11-unix/X1，默认 :1）
@@ -52,7 +58,7 @@ on:
           - proton
           - custom
       wine_version:
-        description: '版本号 — hangover 仅发版里程碑有 tag：11.16/11.9/11.4/11.0/10.18/10.14/10.11/10.10/10.9/10.6/10.4/10.2/10.0（10.15、10.16 不存在！）；official 任意 tag：9.0~11.20（10.15、10.16 可用）；proton 仅主版本分支：11.0/10.0/9.0/8.0/7.0/6.3/5.13/5.0。arm64ec 形态支持 wine 10+ 树与 proton 9.0（v3.4.12 经 0025 回移补全 wine-10 形态：ARM64X 合并/x64 仿真装载/xtajit64，syswow64 注入链路完整）；proton<9.0 直接拒绝；official/custom 的 wine<10 树在 0a 阶段经 0025 锚点硬校验拒绝；过旧自定义树自动降级 aarch64+i386'
+        description: '版本号 — hangover 仅发版里程碑有 tag：11.16/11.9/11.4/11.0/10.18/10.14/10.11/10.10/10.9/10.6/10.4/10.2/10.0（10.15、10.16 不存在！）；official 任意 tag：9.0~11.20（10.15、10.16 可用）；proton 仅主版本分支：11.0/10.0/9.0/8.0/7.0/6.3/5.13/5.0。arm64ec 形态支持 wine 10+ 树与 proton 9.0（v3.4.13 经 0025 回移补全 wine-10 形态：ARM64X 合并/x64 仿真装载/xtajit64，syswow64 注入链路完整）；proton<9.0 直接拒绝；official/custom 的 wine<10 树在 0a 阶段经 0025 锚点硬校验拒绝；过旧自定义树自动降级 aarch64+i386'
         required: false
         default: '11.16'
         type: string
@@ -190,7 +196,7 @@ jobs:
               exit 1
             fi
             if [[ "${KIND}" == "proton" && "${VER}" == "9.0" ]]; then
-              echo "proton_9.0 arm64ec：将经 0025 回移补丁补全 wine-10 完整形态（v3.4.12：ARM64X 合并 + x64 仿真装载 + xtajit64 + syswow64 注入链路）"
+              echo "proton_9.0 arm64ec：将经 0025 回移补丁补全 wine-10 完整形态（v3.4.13：ARM64X 合并 + x64 仿真装载 + xtajit64 + syswow64 注入链路）"
             fi
           fi
 

@@ -34,8 +34,15 @@
 #        （KiUserEmulationDispatcher/ProcessPendingCrossProcessEmulatorWork/
 #        RtlWow64SuspendThread/__wine_unix_call_dispatcher_arm64ec）；
 #     5. 新 dlls/xtajit64（wine-10 三件套）+ winecrt0/arm64ec.c wine-10 元
-#        数据形态 + kernel32/kernelbase EC 裸跳板（BaseThreadInitThunk/
+#        数据形态（CHPE v2 元数据/helper3-8/dispatch_call+check_call）+
+#        kernel32/kernelbase EC 裸跳板（BaseThreadInitThunk/
 #        GetProcAddress/FlushInstructionCache/RaiseException）；
+#        ※ 例外保留：arm64ec.c 的 _load_config_used asm 块为 wine-9 形态
+#        不动（wine-10 把它挪进 winebuild spec32.c output_load_config，本回
+#        移不含该提交——p9 的 winebuild 不产 _load_config_used，而 lld-link
+#        链接 EC 对象硬要求『EC version of '_load_config_used'』，删块即全
+#        线 EC 链接失败；wine-9 CRT 块本就编译/链接全绿，块内 __chpe_metadata
+#        指针对 server mapping.c LOAD_CONFIG 判定同样有效）；
 #     6. unix 侧：load_builtin 混合 PE 搜索、unix_call EC 分发重定向、
 #        signal_arm64 start_main_thread EC 首入口路由、thread.c CHPE_V2
 #        CPU area（仿真器栈）、is_ec_code 内联、server is_hybrid 位
@@ -7712,15 +7719,11 @@
       "\t.rva __os_arm64x_helper3\n"
       "\t.rva __os_arm64x_helper4\n"
       "\t.rva __os_arm64x_helper5\n"
-@@ -102,7 +103,7 @@
-      "\t.rva __os_arm64x_helper7\n"
-      "\t.rva __os_arm64x_helper8\n" );
- 
--asm( "\t.section .rdata,\"dr\"\n"
-+asm( asm( "\t.section .rdata,\"dr\"\n"
-      "\t.globl _load_config_used\n"
-      "\t.balign 8\n"
-      "_load_config_used:\n"
+# anwind backport 注：wine-10 在此删除了 _load_config_used asm 块（挪进
+# winebuild spec32.c output_load_config 按模块产出）；本回移不包含 wine-
+# build 的该提交（p9 spec32.c 无 output_load_config），删块会让所有 EC 模
+# 块链接失败（lld-link: EC version of '_load_config_used' is missing）——
+# 保留 wine-9 的 CRT 内联块（见文件头【修法】5 的例外说明）。
 --- a/dlls/wow64/process.c	2025-01-20 21:30:19.000000000 +0000
 +++ b/dlls/wow64/process.c	2026-11-13 09:11:54.820471520 +0000
 @@ -1027,12 +1027,17 @@
