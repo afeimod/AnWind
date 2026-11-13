@@ -137,6 +137,101 @@ pre_setup() {
     args="${args/--enable-archs=arm64ec,aarch64,i386/--enable-archs=aarch64,i386}"
   fi
 
+  # v3.4.12：0025 回移标志（0a 段置 1 —— 主循环 0011 定向跳过/警告文案用）
+  local _anwind_0025_applied=0
+
+  # 0a. v3.4.12【wine<10 树 arm64ec 完整性：0025 wine-10 形态整体回移】
+  #   【背景】（用户 2026-11-13 设备实测：bionic proton_9.0 arm64ec v3.4.11 前构建成功，
+  #   但 wineboot -i 前缀构建丢失 syswow64 文件注入（32 位 rundll32 即死/挂死，
+  #   Wow64Install/FakeDllsWow64 段从未执行），libwow64fex.dll 在场亦无效，
+  #   任何游戏都起不来）：
+  #     configure 能过 arm64ec 校验 ≠ 树具备【Linux 宿主 arm64ec 完整运行时】。
+  #     wine 9.x 时代的 arm64ec 是为【Windows ARM64 宿主】准备的试验形态
+  #     （proton_9.0 分支由 Valve 反向移植）——Linux 侧运行时三大件全缺
+  #     （proton_9.0 与 proton_10.0 树逐项核对）：
+  #       a) ntdll/loader.c 无 load_arm64ec_module（x64 仿真装载点）：
+  #          x64 exe 进程 current_machine=AMD64 → get_pe_dir→"/x86_64-windows"
+  #          → 该形态从不产出该目录 → "failed to load …/x86_64-windows/
+  #          ntdll.dll" 进程即死；
+  #       b) signal_arm64ec.c 为 2023 旧形态（仅上下文转换辅助），无
+  #          xtajit64/BTCpu64 接口（proton_10.0 有 2154 行完整实现）；
+  #       c) makedep.c 无 ARM64X 合并 → arm64ec PE 独立产出 arm64ec-windows/
+  #          目录（split 布局），wine.inf 的 32 位 rundll32 链无 FEX wow64
+  #          ABI 实证。
+  #   【v3.4.11 处置回顾】曾直接拒构建（硬门禁）；v3.4.12 应用户“根据源码
+  #     补上（需要 9.0）”指令改为【修复】：0025 把 wine 10 的完整 Linux 宿主
+  #     arm64ec 形态（与 proton_10.0 树逐项核对：ARM64X 混合生成、xtajit64、
+  #     load_arm64ec_module + HODLL64、挂起管道、EC syscall 跳板、wine.inf
+  #     amd64 缺省）整体回移到 wine<10 树 —— 应用后 0011 主循环锚点自然
+  #     跳空（内容已内联）、0018 断裂态不触发、0020 不触发（三 Valve 跳板
+  #     为 SYSCALL_API 终形态）、.anwind-wine-info kind 自动落
+  #     arm64ec-wow64-x11（merge 布局）。41 文件全 hunk 硬校验（--fuzz=0
+  #     逐字锚点），异构树（official 9.x 等）锚点漂移直接失败拒绝。
+  #   【判据】保持 --enable-archs=arm64ec,（未触发 0 步降级）时：
+  #     * dlls/ntdll/loader.c 含 load_arm64ec_module —— x64 仿真装载点；
+  #     * tools/makedep.c 含 arm64x —— ARM64X 混合（wine 10+ 布局）。
+  #     任一缺失 = wine<10 试验形态 → 应用 0025 → 重跑 autogen（configure.ac
+  #     /ntdll.spec 改动需重新生成 configure 与 syscall 表）→ 复验门禁。
+  #     复验仍缺 = 补丁异常，立即失败防“构建成功但前缀必残废”的包流出。
+  #     x86_64 形态（projects/wine 配方）不受本段影响。
+  if [[ "${args}" == *"--enable-archs=arm64ec,"* ]]; then
+    local _loaderC="${srcDir}/${pjName}/dlls/ntdll/loader.c"
+    local _makedepC="${srcDir}/${pjName}/tools/makedep.c"
+    local _gateFail=""
+    if [[ ! -f "${_loaderC}" ]] || ! grep -q "load_arm64ec_module" "${_loaderC}" 2>/dev/null; then
+      _gateFail="loader"
+    fi
+    if [[ ! -f "${_makedepC}" ]] || ! grep -q "arm64x" "${_makedepC}" 2>/dev/null; then
+      _gateFail="${_gateFail:+${_gateFail}+}makedep"
+    fi
+    if [[ -n "${_gateFail}" ]]; then
+      echo "检测到 wine<10 时代 arm64ec 试验形态（缺: ${_gateFail}）—— 应用 0025：wine-10 完整 Linux 宿主形态整体回移（v3.4.12，proton_9.0 实证锚点）"
+      if ! patch --silent --forward -p1 --fuzz=0 \
+           < "${wsDir}/projects/${pjName}/0025-backport-arm64ec-wine10-proton9.patch.proton"; then
+        echo "::error::0025 回移补丁有 hunk 未应用（--fuzz=0 逐字锚点）—— 本源码树与 proton_9.0 锚点漂移，整体回移不可套用！"
+        echo "::error::  0025 仅对 proton_9.0 树实证（41 文件全 hunk 硬校验）；异构树（official 9.x / wine-9.2 / hangover 9.x 等）不支持本回移"
+        echo "::error::  arm64ec 形态请改用：proton 9.0（经 0025 补全）/ proton 10.0 / proton 11.0 / official 10.0+ / hangover 10.0+"
+        echo "::error::  若确需本树：请用 x86_64 形态构建（build-wine-bionic.yml flavor=x86_64，box64 后端运行）"
+        return 1
+      fi
+      # 0025 改动 configure.ac（arm64ec→extra x86_64 交叉 arch、enable_xtajit64、
+      # xtajit64 Makefile）与 ntdll.spec（syscall 表由 autogen 的
+      # tools/make_specfiles 重新生成）—— 必须重跑 autogen 使 configure 与
+      # ntsyscalls.h 反映回移后的源码树；0b 的 PE 探测补丁在其后重新落位。
+      if [[ ! -f "${srcDir}/${pjName}/autogen.sh" ]]; then
+        echo "::error::0025 需 autogen.sh 重新生成 configure（树缺 autogen.sh）—— 请核查源码树形态"
+        return 1
+      fi
+      echo "0025 已修改 configure.ac/ntdll.spec —— 重新运行 autogen.sh（生成 configure + ntsyscalls.h）"
+      ( cd "${srcDir}/${pjName}" && rm -f configure && ./autogen.sh ) || {
+        echo "::error::0025 应用后 autogen.sh 重新生成 configure 失败（autotools 环境或树形态异常）"
+        return 1
+      }
+      # 门禁复验：回移后三大件落位必须双双通过（防半应用状态静默流出）
+      _gateFail=""
+      if ! grep -q "load_arm64ec_module" "${_loaderC}" 2>/dev/null; then _gateFail="loader"; fi
+      if ! grep -q "arm64x" "${_makedepC}" 2>/dev/null; then _gateFail="${_gateFail:+${_gateFail}+}makedep"; fi
+      if [[ -n "${_gateFail}" ]]; then
+        echo "::error::0025 回移后门禁复验仍缺（${_gateFail}）—— 补丁应用异常，中止防“构建成功但前缀必残废”的包流出！"
+        echo "::error::  请核查 projects/${pjName}/0025-backport-arm64ec-wine10-proton9.patch.proton 与源码树形态"
+        return 1
+      fi
+      echo "0025 回移生效：arm64ec 完整性门禁复验通过（loader.c 含 load_arm64ec_module、makedep.c 含 arm64x —— wine 10 Linux 宿主形态）"
+      _anwind_0025_applied=1
+      # 0025 与后续补丁链的交互（CI 补丁链全量重放实证，2026-11-13）：
+      #   * 0011：内容全部内联于 0025，主循环按 _anwind_0025_applied 定向跳过
+      #     （其 hunk 在 0025 树上为混合态，自然应用会产生误导性 .rej）；
+      #   * 0018 断裂态检测：不触发（挂起管道四要素俱在）；
+      #   * 0020：不触发（三 Valve syscall 跳板为 SYSCALL_API 终形态，
+      #     wine-9.x 判据兼容）；
+      #   * 0007 的 kernelbase/debug.c hunk：被 0025 wine-10 形态内联，
+      #     落 .rej 属预期（主循环警告文案注明）；
+      #   * 0010/0013/0019/0024 等其余补丁：照常应用，硬校验全部通过。
+    else
+      echo "arm64ec 完整性门禁通过（loader.c 含 load_arm64ec_module、makedep.c 含 arm64x —— wine 10+ Linux 宿主形态）"
+    fi
+  fi
+
   # 0b. v3.2.8：wine ≤9.x 树 PE 探测程序补丁（arm64ec configure 检测根治）
   #   【根因】（llvm-mingw-20251202 实测复现，与 CI official-9.7 失败逐字一致）：
   #     lld-link 对 arm64ec 目标强制要求镜像含 load config —— 测试程序
@@ -289,6 +384,15 @@ pre_setup() {
   local _patchFail=""
   for _patch in "${wsDir}/projects/${pjName}"/*.patch; do
     if [[ -f "${_patch}" ]] && [[ ! "${_patch}" == *".beforehostbuild" ]]; then
+      # v3.4.12：0025 回移后，0011 的全部内容（HODLL64 装载 + 挂起管道）
+      # 已以 wine-10 形态内联 —— 锚点自然失效，定向跳过防混淆性 .rej 噪音
+      # （其 hunk 在 0025 树上为混合态：部分 reversed-skip、部分落 .rej，
+      # 误报“未应用”会误导排查）。0018 断裂态检测同理不触发（四要素俱在）。
+      if [[ "$(basename "${_patch}")" == "0011-fix-arm64ec-hodll64-suspend-wine10.patch" ]] \
+         && [[ "${_anwind_0025_applied}" == "1" ]]; then
+        echo "跳过 0011（HODLL64+挂起内容已由 0025 wine-10 形态内联，挂起管道四要素已验证俱在）"
+        continue
+      fi
       echo "应用主补丁: $(basename "${_patch}")"
       if ! sed -e "s%@TERMUX_PREFIX@%${prefix}%g" \
         -e "s%@TERMUX_BASE_DIR@%/data/data/com.anwind/files/rootfs%g" \
@@ -301,6 +405,9 @@ pre_setup() {
   if [[ -n "${_patchFail}" ]]; then
     echo "⚠️⚠️ 以下补丁存在失败 hunk:${_patchFail}"
     echo "    构建继续；若运行期异常请检查源码树内 *.rej 文件"
+    if [[ "${_anwind_0025_applied}" == "1" ]]; then
+      echo "    （0025 回移树：0007 的 kernelbase/debug.c RaiseException hunk 已被 0025 wine-10 形态内联，落 .rej 属预期）"
+    fi
   fi
 
   # v3.4.10【i386 CPU 仿真 DLL 缺省统一为 libwow64fex.dll（全源码树）】
@@ -1628,8 +1735,11 @@ pre_package() {
         # 为纯 aarch64）。功能上仍是完整 arm64ec 形态（_isArm64ec=1，FEX
         # 注入照常），但下游 ARM64X 混合校验必须跳过（对纯 aarch64 DLL
         # 校验 CHPE 元数据必失败，1.5 小时构建后误杀整包）。
+        # v3.4.12：0a 段起对 wine<10 树应用 0025 回移（proton_9.0 实证锚点）
+        # 后 makedep 必含 arm64x → 本分支对未降级的 arm64ec 构建已不可达
+        # （0025 应用失败直接中止）；仅作防御性保留（防未来门禁旁路）。
         _kind="arm64ec-split-wow64-x11"
-        echo "提示: 源码树无 ARM64X 混合（wine <10）—— arm64ec PE 独立 arm64ec-windows/ 目录"
+        echo "提示: 源码树无 ARM64X 混合（wine <10 且未回移）—— arm64ec PE 独立 arm64ec-windows/ 目录"
       fi
     fi
     cat > "${_wineDir}/.anwind-wine-info" << EOF

@@ -1,0 +1,7 @@
+cdd14dd4227bb41ecbdb40bc2e2e4f80ece12d76459621788ad1edcfa8a593a7  .github/workflows/build-wine-bionic.yml
+6a7fbf471fa2ac9a330114ce8a2c49413368ccc25a6c08e929cb50cee2e36a0d  README-安装说明.md
+e4899f438d19dcc40332a0197e720ee9c25aab5788807c5ccd457dbf738994a0  app/src/main/assets/anwind/scripts/anwind-wine
+307185b3e2946db1f8c5a8b413c9de907e27db06ff70fa29bc9c2f0e4e783046  app/src/main/java/com/anwind/apps/containers/launcher/RootfsLauncher.kt
+4246ffc0b09118aa1c8958aca58dce23fed4c83b4266f04ee0222a933b9fb6fc  bionic-rootfs/projects/anwind-container/anwind-wine
+8cd3917d89114e4075996130d33c26a05a117cc2c7e71168dd594dd00a0c40da  bionic-rootfs/projects/hangover-wine/0025-backport-arm64ec-wine10-proton9.patch.proton
+f887164b18123d4d131741664e7a935ddbcf7b37be0efb6a3f3626cda17ad0d5  bionic-rootfs/projects/hangover-wine/build.sh

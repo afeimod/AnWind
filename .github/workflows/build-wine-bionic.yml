@@ -17,6 +17,15 @@ name: AnWind Bionic Wine (X11 / x86_64 + arm64ec)
 #   custom    自行填写 wine_url 直链（任意 wine 源码 tarball）
 #   ※ 三大源均支持 arm64ec（实证：official-11.0 / proton_10.0 configure 全过）；
 #     过旧自定义树自动降级 aarch64,i386
+#   ※ v3.4.12：arm64ec 形态要求【wine 10+ 的 Linux 宿主 arm64ec】
+#     （loader.c 含 load_arm64ec_module + makedep.c 含 arm64x）。proton_9.0
+#     的 arm64ec 是 Valve 为 Windows ARM64 宿主反向移植的试验形态：
+#     无 x64 仿真装载、无 xtajit64 接口、无 ARM64X 合并 —— 构建能过但
+#     前缀 syswow64 文件注入丢失、任何游戏不可运行。v3.4.12 起配方
+#     pre_setup 对此类树自动应用【0025：wine-10 完整 Linux 宿主 arm64ec
+#     形态整体回移】（proton_9.0 实证锚点，41 文件全 hunk 硬校验）→
+#     proton_9.0 恢复可用；proton<9.0 及异构 wine<10 树（official 9.x 等，
+#     0025 锚点不命中）在入参/0a 阶段拒绝；x86_64 形态不受限制
 # 共同点：
 #   * 显示仅 X11（--with-x 全套扩展，无 wayland），连接 AnWind 内置
 #     termux-x11/libXlorie X 服务（App 侧 tmp/.X11-unix/X1，默认 :1）
@@ -43,7 +52,7 @@ on:
           - proton
           - custom
       wine_version:
-        description: '版本号 — hangover 仅发版里程碑有 tag：11.16/11.9/11.4/11.0/10.18/10.14/10.11/10.10/10.9/10.6/10.4/10.2/10.0（10.15、10.16 不存在！）；official 任意 tag：9.0~11.20（10.15、10.16 可用）；proton 仅主版本分支：11.0/10.0/9.0/8.0/7.0/6.3/5.13/5.0。三大源均支持 arm64ec；过旧自定义树自动降级 aarch64+i386'
+        description: '版本号 — hangover 仅发版里程碑有 tag：11.16/11.9/11.4/11.0/10.18/10.14/10.11/10.10/10.9/10.6/10.4/10.2/10.0（10.15、10.16 不存在！）；official 任意 tag：9.0~11.20（10.15、10.16 可用）；proton 仅主版本分支：11.0/10.0/9.0/8.0/7.0/6.3/5.13/5.0。arm64ec 形态支持 wine 10+ 树与 proton 9.0（v3.4.12 经 0025 回移补全 wine-10 形态：ARM64X 合并/x64 仿真装载/xtajit64，syswow64 注入链路完整）；proton<9.0 直接拒绝；official/custom 的 wine<10 树在 0a 阶段经 0025 锚点硬校验拒绝；过旧自定义树自动降级 aarch64+i386'
         required: false
         default: '11.16'
         type: string
@@ -155,6 +164,35 @@ jobs:
               echo "::error::未知 wine_kind: ${KIND}"; exit 1
               ;;
           esac
+
+          # ============ v3.4.12：arm64ec 形态 × 源码树快速校验 ============
+          # proton_9.0 等 wine<10 树的 arm64ec 原为 Windows 宿主试验形态：
+          # 无 load_arm64ec_module（x64 仿真装载）、无 xtajit64/BTCpu64 接口、
+          # 无 ARM64X 合并（split 布局）——CI 全绿但设备上前缀 syswow64
+          # 文件注入丢失、任何游戏不可运行（2026-11-13 用户实测）。
+          # v3.4.12 起配方 0a 段自动应用 0025【wine-10 完整 Linux 宿主
+          # arm64ec 形态整体回移】（proton_9.0 实证锚点）→ proton_9.0 恢复
+          # 可用。proton<9.0（8.0/7.0/6.3/5.13/5.0）无回移实证，入参阶段
+          # 直接拒绝（免 2 小时白构建）；official/custom 的 wine<10 异构树
+          # 由配方 0a 的 0025 锚点硬校验（--fuzz=0）拒绝。x86_64 形态不受限。
+          if [[ "${{ matrix.flavor }}" == "arm64ec" ]]; then
+            _armec_ok=1
+            if [[ "${KIND}" == "proton" ]]; then
+              _maj="${VER%%.*}"
+              if [[ "${_maj}" =~ ^[0-9]+$ ]] && (( 9 > "${_maj}" )); then
+                _armec_ok=0
+                echo "::error::arm64ec 形态不支持 proton_${VER}：proton<9.0 无 0025 回移实证（9.0 有：wine-10 完整形态整体回移，v3.4.12）"
+              fi
+            fi
+            if (( _armec_ok == 0 )); then
+              echo "::error::实证症状（v3.4.11 前的 proton<10 arm64ec）：构建成功但 wineboot 建前缀丢失 syswow64 文件注入（libwow64fex.dll 在场亦无效），x64 游戏死于 x86_64-windows/ntdll.dll 加载失败"
+              echo "::error::arm64ec 形态请改用：proton 9.0（经 0025 补全）/ proton 10.0 / proton 11.0 / official 10.0+ / hangover 10.0+；或本树改用 x86_64 形态（flavor=x86_64，box64 后端运行）"
+              exit 1
+            fi
+            if [[ "${KIND}" == "proton" && "${VER}" == "9.0" ]]; then
+              echo "proton_9.0 arm64ec：将经 0025 回移补丁补全 wine-10 完整形态（v3.4.12：ARM64X 合并 + x64 仿真装载 + xtajit64 + syswow64 注入链路）"
+            fi
+          fi
 
           echo "Wine 源码类型: ${KIND}"
           echo "版本标识: ${WINE_LABEL}"

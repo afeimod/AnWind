@@ -1126,6 +1126,39 @@ object RootfsLauncher {
             // 的实证通道：libwow64fex/libarm64ecfex 读 $HOME/.fex-emu/
             // Config.json（FEX_* env 在部分构建上不生效，双通道保险）。
             if (resolved.backend == ContainerBackend.ARM64EC) {
+                // v3.4.12：wine<10 试验形态 arm64ec 包（split 布局）运行期告警。
+                // proton_9.0 等 9.x 树的 arm64ec 原为 Windows 宿主试验形态（Valve
+                // 反向移植，configure 能过 arm64ec 校验但 Linux 运行时三大件全缺）：
+                // ntdll/loader.c 无 load_arm64ec_module（x64 仿真装载点缺失）、
+                // signal_arm64ec.c 无 xtajit64/BTCpu64 接口、makedep.c 无 ARM64X
+                // 合并 —— 设备实证（2026-11-13）：CI 构建全绿，但 wineboot 建前缀
+                // 丢失 syswow64 文件注入（Wow64Install 段的 32 位
+                // syswow64\rundll32 即死，libwow64fex.dll 在场亦无效），x64 游戏死于
+                // "failed to load …/x86_64-windows/ntdll.dll"（本形态从不产出该目录）。
+                // v3.4.12 起 CI 对 proton_9.0 自动应用 0025【wine-10 完整形态整体
+                // 回移】构建出 kind=arm64ec-wow64-x11 完整包 —— 本告警仅命中
+                // 【v3.4.11 时代的存量 split 包】（免重装即可见原因；仅告警不
+                // 阻断——32 位链路用户仍可自行尝试）。
+                runCatching {
+                    val wineInfo = File(resolved.wineDir, ".anwind-wine-info")
+                    if (wineInfo.isFile) {
+                        val kind = wineInfo.readLines()
+                            .map { it.trim() }
+                            .firstOrNull { it.startsWith("kind=") }
+                            ?.removePrefix("kind=") ?: ""
+                        if (kind == "arm64ec-split-wow64-x11") {
+                            sink.stamp(
+                                "警告: 当前 wine 包为 v3.4.11 时代的 wine<10 试验形态 arm64ec（kind=arm64ec-split-wow64-x11，如 proton_9.0）——" +
+                                    "该形态无 x64 仿真装载（load_arm64ec_module 缺失）、无 ARM64X 合并，" +
+                                    "前缀构建会丢失 syswow64 文件注入，x64 游戏必死"
+                            )
+                            sink.stamp(
+                                "→ 修复路径（v3.4.12）：重跑 build-wine-bionic（proton 源 9.0，经 0025 回移补全 wine-10 完整形态）" +
+                                    "或换装 wine 10+ 的 arm64ec 形态包（proton 10.0/11.0、official 10.0+、hangover 10.0+ 构建）"
+                            )
+                        }
+                    }
+                }
                 // v3.4.3：预设 JSON 注入（assets builtin/fex_presets.json ——
                 // 用户提供的 assets-ck 资产，上游发行包 FEXPresetManager
                 // 同一张表；旧表每档仅 2-3 项，performance 档的 TSOENABLED=0/

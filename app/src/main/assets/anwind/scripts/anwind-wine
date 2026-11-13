@@ -104,6 +104,9 @@ mkdir -p "$RFS_USR/tmp" "$APP_PREFIX/tmp/.X11-unix" "$LOG_DIR" "$RFS_ROOT/home" 
 
 die() { echo "anwind-wine: $*" >&2; exit 1; }
 info() { echo "[anwind-wine] $*"; }
+# v3.4.11：补齐 warn() —— 全脚本 15 处 warn "..." 调用此前无定义（运行时
+# 打 "warn: command not found" 且告警文本丢失）；stderr 输出、不阻断执行。
+warn() { echo "[anwind-wine] ⚠ $*" >&2; }
 
 usage() {
     cat << 'EOF'
@@ -1606,6 +1609,22 @@ pick_backend() {
         arm64ec)
             [ -x "$WINE_X86" ] || die "arm64ec wine 未安装：anwind-container install-wine bionic-arm64ec（wine-catalog 查看在线构建）"
             [ "$WINE_ARCH" = "aarch64" ] || die "所选 wine 不是 aarch64 形态（当前: ${WINE_ARCH:-unknown}）——arm64ec 后端需要 bionic-arm64ec 构建"
+            # v3.4.12：wine<10 试验形态 arm64ec 包（split 布局）运行期告警。
+            # proton_9.0 等 9.x 树的 arm64ec 原为 Windows 宿主试验形态：
+            # 无 x64 仿真装载（loader.c 无 load_arm64ec_module）、无 ARM64X
+            # 合并（arm64ec PE 独立 arm64ec-windows/ 目录）——设备实证：前缀
+            # 构建丢失 syswow64 文件注入（32 位 rundll32 即死，
+            # libwow64fex.dll 在场亦无效）、x64 游戏死于
+            # x86_64-windows/ntdll.dll 加载失败。v3.4.12 起 CI 对 proton_9.0
+            # 自动应用 0025【wine-10 完整形态整体回移】构建出 kind=arm64ec-
+            # wow64-x11 的完整包 —— 本告警仅命中【v3.4.11 时代存量 split 包】
+            # （免重装即可见原因；32 位链路用户仍可自行尝试）。
+            if [ -f "$WINE_DIR/.anwind-wine-info" ] \
+               && grep -q '^kind=arm64ec-split-wow64-x11' "$WINE_DIR/.anwind-wine-info" 2>/dev/null; then
+                warn "当前 wine 包为 v3.4.11 时代的 wine<10 试验形态 arm64ec（kind=arm64ec-split-wow64-x11，如 proton_9.0）"
+                warn "→ 该形态无 x64 仿真装载/无 ARM64X 合并：前缀构建会丢失 syswow64 文件注入，x64 游戏必死，多数游戏不可运行"
+                warn "→ 修复路径（v3.4.12）：重跑 build-wine-bionic（proton 源 9.0，经 0025 回移补全 wine-10 形态）或换装 wine 10+ 的 arm64ec 形态包（proton 10.0/11.0、official 10+、hangover 10+ 构建）"
+            fi
             ;;
         hangover)
             [ -x "$WINE_HANGOVER" ] || die "hangover wine 不在 $WINE_HANGOVER（aarch64 rootfs 构建时含 hangover-wine；新方案建议 install-wine bionic-arm64ec）"
