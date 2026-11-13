@@ -121,11 +121,13 @@
  void __fastcall BaseThreadInitThunk( DWORD unknown, LPTHREAD_START_ROUTINE entry, void *arg )
  {
 --- a/dlls/kernelbase/debug.c	2025-01-20 21:30:19.000000000 +0000
-+++ b/dlls/kernelbase/debug.c	2026-11-13 09:11:54.840471632 +0000
-@@ -313,6 +313,71 @@
++++ b/dlls/kernelbase/debug.c	2026-11-14 00:00:00.000000000 +0000
+@@ -313,7 +313,34 @@
  /*******************************************************************
   *           RaiseException  (kernelbase.@)
   */
+-#if defined(__x86_64__)
++#ifdef __x86_64__
 +#ifdef __arm64ec__
 +void __attribute__((naked)) RaiseException( DWORD code, DWORD flags, DWORD count, const ULONG_PTR *args )
 +{
@@ -153,53 +155,34 @@
 +         ".seh_endproc" );
 +}
 +#else
-+/* Some DRMs depend on RaiseException not altering non-volatile registers. */
-+__ASM_GLOBAL_FUNC( RaiseException,
-+                   ".byte 0x48,0x8d,0xa4,0x24,0x00,0x00,0x00,0x00\n\t" /* hotpatch prolog */
-+                   "sub $0xc8,%rsp\n\t"
-+                   __ASM_SEH(".seh_stackalloc 0xc8\n\t")
-+                   __ASM_SEH(".seh_endprologue\n\t")
-+                   __ASM_CFI(".cfi_adjust_cfa_offset 0xc8\n\t")
-+                   "leaq 0x20(%rsp),%rax\n\t"
-+                   "movl %ecx,(%rax)\n\t" /* ExceptionCode */
-+                   "and $1,%edx\n\t"
-+                   "movl %edx,4(%rax)\n\t" /* ExceptionFlags */
-+                   "movq $0,8(%rax)\n\t" /* ExceptionRecord */
-+                   "leaq " __ASM_NAME("RaiseException") "(%rip),%rcx\n\t"
-+                   "movq %rcx,0x10(%rax)\n\t" /* ExceptionAddress */
-+                   "movq %rax,%rcx\n\t"
-+                   "movl $0,0x18(%rcx)\n\t" /* NumberParameters */
-+                   "testl %r8d,%r8d\n\t"
-+                   "jz 2f\n\t"
-+                   "testq %r9,%r9\n\t"
-+                   "jz 2f\n\t"
-+                   "movl $15,%edx\n\t"
-+                   "cmp %edx,%r8d\n\t"
-+                   "cmovb %r8d,%edx\n\t"
-+                   "movl %edx,0x18(%rcx)\n\t" /* NumberParameters */
-+                   "leaq 0x20(%rcx),%rax\n" /* ExceptionInformation */
-+                   "1:\tmovq (%r9),%r8\n\t"
-+                   "movq %r8,(%rax)\n\t"
-+                   "decl %edx\n\t"
-+                   "jz 2f\n\t"
-+                   "addq $8,%rax\n\t"
-+                   "addq $8,%r9\n\t"
-+                   "jmp 1b\n"
-+                   "2:\tcall " __ASM_NAME("RtlRaiseException") "\n\t"
-+                   "add $0xc8,%rsp\n\t"
-+                   __ASM_CFI(".cfi_adjust_cfa_offset -0xc8\n\t")
-+                   "ret" )
-+#endif  /* __arm64ec__ */
-+
- #if defined(__x86_64__)
  /* Some DRMs depend on RaiseException not altering non-volatile registers. */
  __ASM_GLOBAL_FUNC( RaiseException,
+                    ".byte 0x48,0x8d,0xa4,0x24,0x00,0x00,0x00,0x00\n\t" /* hotpatch prolog */
+@@ -350,6 +377,7 @@
+                    "add $0xc8,%rsp\n\t"
+                    __ASM_CFI(".cfi_adjust_cfa_offset -0xc8\n\t")
+                    "ret" )
++#endif  /* __arm64ec__ */
+ 
+ C_ASSERT( offsetof(EXCEPTION_RECORD, ExceptionCode) == 0 );
+ C_ASSERT( offsetof(EXCEPTION_RECORD, ExceptionFlags) == 4 );
+@@ -357,7 +385,7 @@
+ C_ASSERT( offsetof(EXCEPTION_RECORD, ExceptionAddress) == 0x10 );
+ C_ASSERT( offsetof(EXCEPTION_RECORD, NumberParameters) == 0x18 );
+ C_ASSERT( offsetof(EXCEPTION_RECORD, ExceptionInformation) == 0x20 );
+-#else
++#else  /* __x86_64__ */
+ void WINAPI DECLSPEC_HOTPATCH RaiseException( DWORD code, DWORD flags, DWORD count, const ULONG_PTR *args )
+ {
+     EXCEPTION_RECORD record;
+
 --- a/dlls/kernelbase/loader.c	2025-01-20 21:30:19.000000000 +0000
-+++ b/dlls/kernelbase/loader.c	2026-11-13 09:11:54.839471627 +0000
-@@ -430,6 +430,24 @@
++++ b/dlls/kernelbase/loader.c	2026-11-14 00:00:00.000000000 +0000
+@@ -430,7 +430,23 @@
   *	GetProcAddress   (kernelbase.@)
   */
  
+-#ifdef __x86_64__
 +#ifdef __arm64ec__
 +FARPROC WINAPI __attribute__((naked)) GetProcAddress( HMODULE module, LPCSTR function )
 +{
@@ -217,10 +200,10 @@
 +         ".seh_endproc" );
 +}
 +#elif defined(__x86_64__)
-+
- #ifdef __x86_64__
  /*
   * Work around a Delphi bug on x86_64.  When delay loading a symbol,
+  * Delphi saves rcx, rdx, r8 and r9 to the stack.  It then calls
+
 --- a/dlls/kernelbase/memory.c	2025-01-20 21:30:19.000000000 +0000
 +++ b/dlls/kernelbase/memory.c	2026-11-13 09:11:54.840471632 +0000
 @@ -125,7 +125,7 @@
@@ -275,16 +258,22 @@
  	time.c \
  	unix/cdrom.c \
 --- a/dlls/ntdll/actctx.c	2025-01-20 21:30:19.000000000 +0000
-+++ b/dlls/ntdll/actctx.c	2026-11-13 09:11:54.819471515 +0000
-@@ -600,7 +600,7 @@
++++ b/dlls/ntdll/actctx.c	2026-11-14 00:00:00.000000000 +0000
+@@ -596,12 +596,12 @@
+ 
+ #ifdef __i386__
+ static const WCHAR current_archW[] = L"x86";
++#elif defined __aarch64__ || defined __arm64ec__
++static const WCHAR current_archW[] = L"arm64";
+ #elif defined __x86_64__
  static const WCHAR current_archW[] = L"amd64";
  #elif defined __arm__
  static const WCHAR current_archW[] = L"arm";
 -#elif defined __aarch64__
-+#elif defined __aarch64__ || defined __arm64ec__
- static const WCHAR current_archW[] = L"arm64";
+-static const WCHAR current_archW[] = L"arm64";
  #else
  static const WCHAR current_archW[] = L"none";
+ #endif
 @@ -3176,6 +3176,10 @@
                ai->version.major, ai->version.minor, lang );
      RtlInitUnicodeString( &lookup_us, lookup );
@@ -296,6 +285,7 @@
      if (!NtQueryDirectoryFile( dir, 0, NULL, NULL, &io, buffer, sizeof(buffer),
                                 FileBothDirectoryInformation, FALSE, &lookup_us, TRUE ))
      {
+
 --- a/dlls/ntdll/exception.c	2025-01-20 21:30:19.000000000 +0000
 +++ b/dlls/ntdll/exception.c	2026-11-13 09:11:58.207490472 +0000
 @@ -301,7 +301,7 @@
@@ -471,7 +461,7 @@
 +
 +/* anwind backport (wine-10): EC exception core end */
 --- a/dlls/ntdll/loader.c	2025-01-20 21:30:19.000000000 +0000
-+++ b/dlls/ntdll/loader.c	2026-11-13 09:11:54.817471504 +0000
++++ b/dlls/ntdll/loader.c	2026-11-14 00:00:00.000000000 +0000
 @@ -52,19 +52,14 @@
  
  #ifdef __i386__
@@ -556,6 +546,24 @@
  /*********************************************************************
   *           RtlGetUnloadEventTrace [NTDLL.@]
   */
+@@ -486,7 +431,7 @@
+     const char *name;
+     const void* entry;
+ };
+-#elif defined(__aarch64__) || defined(__arm64ec__)
++#elif defined(__aarch64__)
+ struct stub
+ {
+     DWORD ldr_x0;        /* ldr x0, $dll */
+@@ -550,7 +495,7 @@
+     stub->dll       = dll;
+     stub->name      = name;
+     stub->entry     = stub_entry_point;
+-#elif defined(__aarch64__) || defined(__arm64ec__)
++#elif defined(__aarch64__)
+     stub->ldr_x0    = 0x580000a0; /* ldr x0, #20 ($dll) */
+     stub->ldr_x1    = 0x580000c1; /* ldr x1, #24 ($name) */
+     stub->mov_x2_lr = 0xaa1e03e2; /* mov x2, lr */
 @@ -2246,7 +2191,7 @@
          cfg->CHPEMetadataPointer > (ULONG_PTR)module &&
          cfg->CHPEMetadataPointer < (ULONG_PTR)module + nt->OptionalHeader.SizeOfImage)
@@ -673,6 +681,7 @@
  
  #ifdef _WIN64
      if (NtCurrentTeb()->WowTebOffset) init_wow64( context );
+
 --- a/dlls/ntdll/ntdll.spec	2025-01-20 21:30:19.000000000 +0000
 +++ b/dlls/ntdll/ntdll.spec	2026-11-13 09:11:58.160490208 +0000
 @@ -70,6 +70,7 @@

@@ -32,6 +32,14 @@ name: AnWind Bionic Wine (X11 / x86_64 + arm64ec)
 #     _load_config_used CRT 块（wine-10 把它挪进 winebuild，本回移不含
 #     该提交，p9 的 winebuild 不产该符号而 lld-link 硬要求）；配方 0a
 #     新增 arm64ec.c 抽查门禁（伪影/块丢失双检，防同类损伤再流出）
+#   ※ v3.4.14：修复 0025 旧版的 kernelbase/ntdll 形态结构损伤（CI
+#     build-log (19)：kernelbase/loader.c 的 #ifdef __arm64ec__ 未闭合
+#     —— aarch64 趟 preprocessor 阵亡；debug.c 把 x86-64 汇编复制进
+#     #else 且保留原块 —— aarch64 趟 20 errors、EC 趟双重定义）。0025
+#     四段重生成对齐 proton_10.0 实证形态（kernelbase 单链+双层嵌套 /
+#     ntdll loader.c EC 落 x64 字节桩 / actctx.c EC 取 arm64）；配方
+#     0a 新增四文件结构门禁（形态四硬校验 + #if/#endif 配平），主循环
+#     在 0025 树上定向剥离 0007 的 kernelbase 两段（防 fuzz 误植）
 # 共同点：
 #   * 显示仅 X11（--with-x 全套扩展，无 wayland），连接 AnWind 内置
 #     termux-x11/libXlorie X 服务（App 侧 tmp/.X11-unix/X1，默认 :1）

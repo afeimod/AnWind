@@ -247,6 +247,66 @@ pre_setup() {
         return 1
       fi
       echo "0025 后 winecrt0/arm64ec.c 抽查通过（无成对伪影 + _load_config_used CRT 块在位）"
+
+      # v3.4.14【0025 后 kernelbase/ntdll 关键形态结构门禁】（CI wine-build-log-
+      #   arm64ec (19).zip 实证教训：0025 旧版的 kernelbase 两段是纯插入式错误
+      #   形态 —— loader.c 插入 #ifdef __arm64ec__ naked 块却未删原 #ifdef
+      #   __x86_64__ 行、未补组尾 #endif → aarch64 趟 preprocessor 阵亡于
+      #   "unterminated conditional directive"；debug.c 复制 x86-64 汇编进 #else
+      #   且原样保留 #if defined(__x86_64__) 块 → aarch64 趟把 x86 AT&T 汇编
+      #   喂给 ARM 汇编器（20 errors）；arm64ec 趟则双重定义。四项硬校验全部
+      #   对齐 proton_10.0 实证形态，任一不过即中止（防 2 小时构建到
+      #   kernelbase 才暴雷）：
+      #   ① kernelbase/loader.c：GetProcAddress 单链形态（#elif defined
+      #      (__x86_64__) 在场 + 无残留独立 '#ifdef __x86_64__' 行）；
+      #   ② kernelbase/debug.c：双层嵌套（外层 '#ifdef __x86_64__' + 收尾
+      #      '#endif  /* __arm64ec__ */'，x86 汇编只活在内层 #else）；
+      #   ③ ntdll/loader.c：导出桩 EC 落 #else x64 字节桩（不得残留
+      #      '#elif defined(__aarch64__) || defined(__arm64ec__)' —— Valve 9.x
+      #      试验形态会让 EC 生成 arm64 机器码桩，x64 调用方跳入即乱码）；
+      #   ④ ntdll/actctx.c：current_arch 链序（'__aarch64__ || __arm64ec__'
+      #      分支行号必须在 '__x86_64__' 分支之前 —— EC 取 L"arm64"）；
+      #   附加：四文件 #if/#endif 配平（未闭合条件编译即中止）。
+      local _kbL="${srcDir}/${pjName}/dlls/kernelbase/loader.c"
+      local _kbD="${srcDir}/${pjName}/dlls/kernelbase/debug.c"
+      local _ntL="${srcDir}/${pjName}/dlls/ntdll/loader.c"
+      local _acA="${srcDir}/${pjName}/dlls/ntdll/actctx.c"
+      local _balF
+      for _balF in "${_kbL}" "${_kbD}" "${_ntL}" "${_acA}"; do
+        if [[ ! -f "${_balF}" ]]; then
+          echo "::error::0025 后 ${_balF} 不存在 —— 树形态异常，中止"
+          return 1
+        fi
+        local _bal
+        _bal=$(awk '/^[[:space:]]*#[[:space:]]*(if|ifdef|ifndef)/{d++} /^[[:space:]]*#[[:space:]]*endif/{d--} END{print d+0}' "${_balF}")
+        if [[ "${_bal}" != "0" ]]; then
+          echo "::error::0025 后 ${_balF} 的 #if/#endif 不配平（深度差 ${_bal}）—— 回移补丁结构损伤（'unterminated conditional directive' 形态，CI wine-build-log-arm64ec (19).zip 实证），中止"
+          return 1
+        fi
+      done
+      if ! grep -q '#elif defined(__x86_64__)' "${_kbL}" 2>/dev/null \
+         || grep -q '^#ifdef __x86_64__$' "${_kbL}" 2>/dev/null; then
+        echo "::error::0025 后 kernelbase/loader.c 非 wine-10 单链形态（GetProcAddress 区应为 '#ifdef __arm64ec__ naked → #elif defined(__x86_64__)'，且无残留独立 #ifdef __x86_64__ 行）—— 请核查 0025 的 kernelbase/loader.c 段"
+        return 1
+      fi
+      if ! grep -q '^#endif  /\* __arm64ec__ \*/$' "${_kbD}" 2>/dev/null \
+         || ! grep -q '^#ifdef __x86_64__$' "${_kbD}" 2>/dev/null \
+         || grep -q '^#if defined(__x86_64__)$' "${_kbD}" 2>/dev/null; then
+        echo "::error::0025 后 kernelbase/debug.c 非 wine-10 双层嵌套形态（应为外层 #ifdef __x86_64__ + 内层 #ifdef __arm64ec__ naked + #else x86 汇编 + #endif /* __arm64ec__ */）—— 请核查 0025 的 kernelbase/debug.c 段"
+        return 1
+      fi
+      if grep -q '^#elif defined(__aarch64__) || defined(__arm64ec__)$' "${_ntL}" 2>/dev/null; then
+        echo "::error::0025 后 ntdll/loader.c 残留 Valve 9.x 试验形态的导出桩分支（'#elif defined(__aarch64__) || defined(__arm64ec__)'）—— EC 必须落 #else 的 x64 字节桩（wine-10 形态），请核查 0025 的 ntdll/loader.c 段"
+        return 1
+      fi
+      local _acArm64 _acAmd64
+      _acArm64=$(grep -n '^#elif defined __aarch64__ || defined __arm64ec__$' "${_acA}" 2>/dev/null | head -1 | cut -d: -f1)
+      _acAmd64=$(grep -n '^#elif defined __x86_64__$' "${_acA}" 2>/dev/null | head -1 | cut -d: -f1)
+      if [[ -z "${_acArm64}" ]] || [[ -z "${_acAmd64}" ]] || [[ "${_acArm64}" -ge "${_acAmd64}" ]]; then
+        echo "::error::0025 后 ntdll/actctx.c 的 current_arch 链序非 wine-10 形态（'__aarch64__ || __arm64ec__' 分支必须排在 '__x86_64__' 之前 —— EC 趟取 L\"arm64\"），请核查 0025 的 actctx.c 段"
+        return 1
+      fi
+      echo "0025 后关键形态门禁通过（kernelbase 单链+双层嵌套 / ntdll 导出桩 EC 落 x64 字节桩 / actctx 链序 arm64 前置 / 四文件条件编译配平）"
     else
       echo "arm64ec 完整性门禁通过（loader.c 含 load_arm64ec_module、makedep.c 含 arm64x —— wine 10+ Linux 宿主形态）"
       # v3.4.13：wine-10+ 原生树同样拒绝成对伪影（防御性，双保险）
@@ -419,20 +479,43 @@ pre_setup() {
         echo "跳过 0011（HODLL64+挂起内容已由 0025 wine-10 形态内联，挂起管道四要素已验证俱在）"
         continue
       fi
+      # v3.4.14：0025 回移树上 0007 的 kernelbase/loader.c + debug.c 段定向剥离。
+      #   0025 已内联 wine-10 同款形态（0007 这两个 hunk 想做的改动已达成）；
+      #   0007 的 hunk 锚定 wine-9.2 原始形态（'--- a/dlls/kernelbase/loader.c' /
+      #   '--- a/dlls/kernelbase/debug.c' 两段），在 0025 树上靠 patch 的 fuzz
+      #   匹配撞进 GetProcAddress/RaiseException 区 —— CI wine-build-log-arm64ec
+      #   (19).zip 实证：loader.c 被植出未闭合 #ifdef __arm64ec__（aarch64 趟
+      #   preprocessor 阵亡）。0025 修复版已让锚点自然不再命中（hunk 被识别为
+      #   previously-applied 而 skip / 干净落 .rej），本剥离为防御性双保险
+      #   （防未来 0025 或 0007 再漂移时 fuzz 误植）。0007 其余段（winnt.h /
+      #   kernel32/module.c / vcomp / oleaut32 / rpcrt4 / msvcrt / d3d8/d3d9）
+      #   照常应用。
+      local _srcPatch="${_patch}"
+      if [[ "$(basename "${_patch}")" == "0007-fix-arm64ec-x64-asm-wine92.patch" ]] \
+         && [[ "${_anwind_0025_applied}" == "1" ]]; then
+        local _stripped
+        _stripped=$(mktemp)
+        awk -v d1="a/dlls/kernelbase/loader.c" -v d2="a/dlls/kernelbase/debug.c" \
+          'BEGIN{keep=1} /^--- a\//{keep=($2!=d1 && $2!=d2)} {if(keep)print}' \
+          "${_patch}" > "${_stripped}"
+        _srcPatch="${_stripped}"
+        echo "已剥离 0007 的 kernelbase/loader.c + debug.c 段（0025 已内联 wine-10 形态，v3.4.14 防 fuzz 误植）"
+      fi
       echo "应用主补丁: $(basename "${_patch}")"
       if ! sed -e "s%@TERMUX_PREFIX@%${prefix}%g" \
         -e "s%@TERMUX_BASE_DIR@%/data/data/com.anwind/files/rootfs%g" \
-        "${_patch}" | patch --silent --forward -p1; then
+        "${_srcPatch}" | patch --silent --forward -p1; then
         echo "⚠️  主补丁 $(basename "${_patch}") 有 hunk 未应用（源码树差异，继续构建）"
         _patchFail+=" $(basename "${_patch}")"
       fi
+      if [[ "${_srcPatch}" != "${_patch}" ]]; then rm -f "${_srcPatch}"; fi
     fi
   done
   if [[ -n "${_patchFail}" ]]; then
     echo "⚠️⚠️ 以下补丁存在失败 hunk:${_patchFail}"
     echo "    构建继续；若运行期异常请检查源码树内 *.rej 文件"
     if [[ "${_anwind_0025_applied}" == "1" ]]; then
-      echo "    （0025 回移树：0007 的 kernelbase/debug.c RaiseException hunk 已被 0025 wine-10 形态内联，落 .rej 属预期）"
+      echo "    （0025 回移树：0007 的 kernelbase/loader.c + debug.c 段已被 v3.4.14 定向剥离（0025 内联 wine-10 形态）；其 hunk 若仍落 .rej 属预期）"
     fi
   fi
 
