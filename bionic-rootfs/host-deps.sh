@@ -27,6 +27,17 @@ wsDir="$(dirname $(readlink -f "$0"))"
 #   a) 与参考环境逐项对齐，规避"宿主缺依赖"类排查噪音；
 #   b) wine autogen（proton 树）/ 工具链 / 冒烟测试等宿主侧环节
 #      有完整的可选依赖可用。
+# ⚠ 互斥包警告（2026-11-14 修复）：wine 参考（wine-wow64-no.yml，
+#   amd64 runner）硬性安装 gcc-multilib/g++-multilib；mesa 参考
+#   （build-Allmesa.yml，aarch64 runner）安装 g++-arm-linux-gnueabihf。
+#   两者【并集】在 amd64 上不可满足：gcc-13-arm-linux-gnueabihf 声明
+#   Conflicts: gcc-multilib（multiarch 交叉编译器与 multilib 的经典
+#   /usr/include 冲突，Debian/Ubuntu 长期如此；noble 实测 apt 报
+#   "gcc-13-arm-linux-gnueabihf ... but it is not installable /
+#   held broken packages"）。两个参考工作流从不在同一台机器上装这两
+#   组包 —— 因此 gcc-multilib/g++-multilib 按平台匹配的 wine 参考保留
+#   在硬性列表，g++-arm-linux-gnueabihf 改为带互斥保护的探测式安装
+#   （见下方 debian/ubuntu 分支的专项处理块），绝不与 multilib 并存。
 # ============================================================
 
 archPkgs=(
@@ -283,10 +294,15 @@ debianPkgs=(
   # ---- 参考 yml 对齐：build-Allmesa.yml 基础依赖（aarch64 列表）----
   # XCB 全家 + DRM/GBM/EGL 开发包；python3-wheel / libatomic1 /
   # pulseaudio（宿主守护，供冒烟）/ libasound2-plugins（ALSA→pulse
-  # 桥）；g++-arm-linux-gnueabihf 在参考中用于 armhf 交叉（本构建
-  # 系统不构建 armhf，按参考基础列表照样装上）。llvm-19 / libclc-20-dev
-  # 带版本号后缀（noble-updates / noble-universe 有，bookworm 无）→
-  # 移至下方 debianRefPkgs 探测式安装。
+  # 桥）。llvm-19 / libclc-20-dev 带版本号后缀（noble-updates /
+  # noble-universe 有，bookworm 无）→ 移至下方 debianRefPkgs 探测式
+  # 安装；g++-arm-linux-gnueabihf 与上方 wine 参考的 gcc-multilib
+  # 在 amd64 上 apt 互斥（gcc-13-arm-linux-gnueabihf Conflicts:
+  # gcc-multilib）→ 移至下方专项处理块（带 multilib 互斥保护）。
+  # 【2026-11-14 修复】此前 g++-arm-linux-gnueabihf 放在本硬性列表，
+  # 与 gcc-multilib 同一条 apt install 直接令解析器失败（四个 bionic
+  # 工作流 wine x86_64/arm64ec、mesa、box64、rootfs 全部在
+  # "安装宿主依赖" 步骤阵亡于 unmet dependencies）。
   libx11-xcb-dev
   libxcb1-dev
   libxcb-shm0-dev
@@ -305,7 +321,6 @@ debianPkgs=(
   python3-wheel
   pulseaudio
   libasound2-plugins
-  g++-arm-linux-gnueabihf
 )
 
 # 参考对齐依赖（Debian/Ubuntu 名，探测式安装：apt-cache show 查到才装，
@@ -409,6 +424,35 @@ if [[ -f /etc/os-release ]]; then
         echo "提示: 当前源无 ${_p}（参考 yml 对齐项，跳过）"
       fi
     done
+
+    # ---- g++-arm-linux-gnueabihf 专项处理（build-Allmesa.yml 参考）----
+    # 根因（2026-11-14 CI 实证定位）：amd64 上 gcc-13-arm-linux-gnueabihf
+    # 声明 Conflicts: gcc-multilib，而 gcc-multilib/g++-multilib 已按
+    # wine 参考（wine-wow64-no.yml，amd64 平台参考）装入上方硬性列表：
+    #   * 同一条 apt install 两者并装 → 解析器直接失败
+    #     （"gcc-13-arm-linux-gnueabihf ... but it is not installable"，
+    #     即四个 bionic 工作流集体阵亡的 "主依赖报错" 根因）；
+    #   * multilib 已装后无脑 apt install -y 本包 → apt 会【静默卸载
+    #     gcc-multilib】再装入（noble 实测 Remv gcc-multilib），反而
+    #     偏离 wine 参考环境。
+    # 因此加互斥保护：检测到 multilib 即打印提示跳过；未装 multilib
+    # 的机器（如本地未启用 32 位工具链的环境）才尝试安装。本构建
+    # 系统为 NDK 交叉（aarch64/x86_64/arm64ec），不消费 armhf 工具
+    # 链，跳过对构建零影响（mesa 参考中它仅用于 aarch64 runner 上
+    # 的 armhf 交叉目标，bionic 形态无此目标）。
+    if dpkg -s gcc-multilib >/dev/null 2>&1 \
+       || dpkg -s g++-multilib >/dev/null 2>&1; then
+      echo "提示: 检测到 gcc-multilib/g++-multilib（wine 参考，amd64），"
+      echo "      跳过 g++-arm-linux-gnueabihf（mesa 参考）—— 两者在 amd64"
+      echo "      上 apt 互斥（gcc-13-arm-linux-gnueabihf Conflicts:"
+      echo "      gcc-multilib），共存即 'held broken packages'。"
+      echo "      bionic NDK 交叉构建不消费 armhf 工具链，跳过无影响。"
+    elif apt-cache show g++-arm-linux-gnueabihf >/dev/null 2>&1; then
+      apt install -y g++-arm-linux-gnueabihf \
+        || echo "警告: g++-arm-linux-gnueabihf 安装失败（参考 yml 对齐项，继续）"
+    else
+      echo "提示: 当前源无 g++-arm-linux-gnueabihf（参考 yml 对齐项，跳过）"
+    fi
     # meson 通过 pip 安装较新版本（GitHub Actions 的 ubuntu-24.04 自带
     # meson 1.3.x，部分包如新版 mesa/xorgproto 需要更高版本）
     # 注意：
