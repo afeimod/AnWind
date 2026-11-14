@@ -1,0 +1,673 @@
+diff --git a/bionic-rootfs/host-deps.sh b/bionic-rootfs/host-deps.sh
+index 150bb02..95becb3 100644
+--- a/bionic-rootfs/host-deps.sh
++++ b/bionic-rootfs/host-deps.sh
+@@ -1,5 +1,34 @@
+ wsDir="$(dirname $(readlink -f "$0"))"
+ 
++# ============================================================
++# 宿主依赖全集（参考 yml 对齐轮）
++# ------------------------------------------------------------
++# 目标：与三个参考工作流的宿主依赖【并集】完全一致：
++#   * wine-wow64-no.yml  BASE_DEPS + 多媒体/音频依赖（两个 job 并集）
++#   * build-Allmesa.yml  mesa 基础依赖（aarch64 列表，armhf 交叉
++#                        工具链部分按其基础列表一并装上）
++#   * build-box64.yml    box64 依赖（cmake build-essential gcc git
++#                        patchelf xz-utils）
++# 分层策略（保证 CI 的 ubuntu-24.04 上与参考逐项一致，其它发行版
++# 优雅降级不炸构建）：
++#   1) archPkgs / debianPkgs：基础构建工具 + 参考 yml 中所有
++#      「发行版稳定包名」的包 —— 严格安装，缺一即失败；
++#   2) archRefPkgs / debianRefPkgs：参考 yml 中「版本号后缀 / 发行版
++#      专属」的包（llvm-19、libclc-20-dev、gstreamer1.0-qt5、
++#      gstreamer1.0-gtk3、language-pack-zh-hans 等）—— 探测式安装
++#      （源里存在才装，不存在仅告警跳过）。CI 的 ubuntu-24.04
++#      （noble-updates + noble-universe）上这些包全部存在，与参考
++#      实际安装结果一致；bookworm 等旧发行版无 llvm-19/libclc-20-dev，
++#      跳过不影响交叉构建。
++# 注意：这些参考对齐包绝大多数是参考 yml【原生构建】（ARM runner 上
++#   直接编 glibc 产物）所消费的开发库；本构建系统是 NDK 交叉构建，
++#   目标侧依赖（X11/GStreamer/SDL 等）由 bionic-rootfs/projects/ 的
++#   配方按拓扑序自产，宿主侧包不参与产物。按参考全量装上的目的：
++#   a) 与参考环境逐项对齐，规避"宿主缺依赖"类排查噪音；
++#   b) wine autogen（proton 树）/ 工具链 / 冒烟测试等宿主侧环节
++#      有完整的可选依赖可用。
++# ============================================================
++
+ archPkgs=(
+   git
+   wget
+@@ -35,6 +64,93 @@ archPkgs=(
+ 
+   glib2
+   glib2-devel
++
++  # ---- 参考 yml 对齐：宿主工具类（wine BASE_DEPS / build-box64.yml）----
++  # perl：proton 树 autogen.sh 依赖；debootstrap/bubblewrap：参考
++  # BASE_DEPS 的容器工具；patchelf：参考 build-box64.yml；file：其
++  # glibc 形态工作流配套；python-setuptools/python-yaml/python-mako：
++  # 参考 python3-setuptools/python3-yaml/python3-mako 的 Arch 对应名
++  # （mesa 的 meson 构建在配置与编译期都 import mako）
++  perl
++  debootstrap
++  bubblewrap
++  patchelf
++  file
++  python-setuptools
++  python-yaml
++  python-mako
++)
++
++# 参考对齐依赖（Arch 包名，探测式安装：pacman -Si 查到才装）。
++# Debian→Arch 包名映射（wine BASE_DEPS / 多媒体 / mesa 依赖）：
++#   libx11-dev→libx11          libsdl2-dev→sdl2           libglu-dev→glu
++#   libgl-dev/libosmesa6-dev/libegl1-mesa-dev/mesa-vulkan-drivers→mesa/libglvnd
++#   libudev-dev→systemd-libs   libtiff-dev→libtiff        libpcap-dev→libpcap
++#   vulkan-tools/libvulkan1→vulkan-tools/vulkan-icd-loader
++#   gstreamer1.0-plugins-*→gst-plugins-*  gstreamer1.0-pulseaudio→gst-plugin-pulse
++#   libasound2-plugins→alsa-plugins  gstreamer1.0-libav→gst-libav
++#   llvm-19→llvm（滚动版本）    libclc-20-dev→libclc
++#   g++-arm-linux-gnueabihf→arm-linux-gnueabihf-gcc（在官方源才装）
++#   gcc-multilib/g++-multilib→gcc-multilib（Arch 由 gcc-multilib 提供 g++ 32 位）
++archRefPkgs=(
++  gcc-multilib
++  sdl2
++  glu
++  libglvnd
++  mesa
++  fontconfig
++  libpcap
++  dbus
++  openssl
++  alsa-lib
++  alsa-plugins
++  pulseaudio
++  libpulse
++  systemd-libs
++  libcups
++  libjpeg-turbo
++  libpng
++  libtiff
++  libxml2
++  expat
++  libdrm
++  vulkan-headers
++  vulkan-tools
++  vulkan-icd-loader
++  mingw-w64
++  llvm
++  libclc
++  libx11
++  libxext
++  libxi
++  libxrandr
++  libxcursor
++  libxcomposite
++  libxdamage
++  libxfixes
++  libxxf86vm
++  libxrender
++  libxinerama
++  libxshmfence
++  libxcb
++  libunwind
++  gstreamer
++  gst-plugins-base
++  gst-plugins-good
++  gst-plugins-bad
++  gst-plugins-ugly
++  gst-libav
++  gst-plugin-pulse
++  mpg123
++  openal
++  faad2
++  flac
++  libvorbis
++  x264
++  x265
++  libvpx
++  libtheora
++  arm-linux-gnueabihf-gcc
+ )
+ 
+ debianPkgs=(
+@@ -73,14 +189,145 @@ debianPkgs=(
+   autopoint
+   libfreetype-dev
+   locales
+-  # v3.2.27（用户问题：参考 yml 的 BASE_DEPS —— language-pack-zh-hans
+-  # 提供构建机中文翻译数据；Debian 无此包名，下方探测式安装）
+-  language-pack-zh-hans
+   # 注意：glib 开发工具（glib-mkenums/gdbus-codegen/gio-querymodules）所在
+   # 包名不写死在这里——它在不同发行版上包名不同，见下方安装前的动态探测。
++  # language-pack-zh-hans 已移至下方 debianRefPkgs 探测式安装（Ubuntu 专属
++  # 包名，Debian 无此包——旧版直接放在本数组里会让 Debian 上 apt install
++  # 整体失败）。
+   python3-setuptools
+   python3-dev
+   python3-mako
++
++  # ---- 参考 yml 对齐：build-box64.yml ----
++  # cmake/build-essential/gcc/git/xz-utils 已在列；patchelf 为参考 yml
++  # 显式安装项，file 为其 glibc 形态工作流（build-box64.yml）配套的
++  # ELF 校验工具。
++  patchelf
++  file
++
++  # ---- 参考 yml 对齐：wine-wow64-no.yml BASE_DEPS ----
++  # perl 供 proton 树 autogen.sh；debootstrap/bubblewrap 为参考 BASE_DEPS
++  # 的容器构建工具（bionic 交叉构建不消费，按参考装齐）；mingw-w64 在
++  # 本构建系统仅作参考对齐 —— PE 侧交叉编译实际使用 llvm-mingw（见
++  # projects/wine 与 projects/hangover-wine 配方），宿主 mingw-w64
++  # 不参与产物；gcc-multilib/g++-multilib 为参考的 32 位支持工具链。
++  debootstrap
++  perl
++  bubblewrap
++  gcc-multilib
++  g++-multilib
++  libx11-dev
++  libxext-dev
++  libxi-dev
++  libxrandr-dev
++  libxcursor-dev
++  libxcomposite-dev
++  libxdamage-dev
++  libxfixes-dev
++  libxxf86vm-dev
++  libxrender-dev
++  libxinerama-dev
++  libgl-dev
++  libsdl2-dev
++  # 参考 yml 写的 libglu-dev 是 libglu1-mesa-dev 的虚拟包名，装实包等价
++  # （虚拟包名在部分发行版会有多提供方歧义）。
++  libglu1-mesa-dev
++  libosmesa6-dev
++  # 参考 yml 的 libfreetype6-dev 与上方 libfreetype-dev 为同一源码包
++  # 产出（noble 起 libfreetype-dev 为实包名），已在上方原列表中。
++  libfontconfig1-dev
++  libpcap-dev
++  libdbus-1-dev
++  libssl-dev
++  libasound2-dev
++  libpulse-dev
++  libudev-dev
++  libcups2-dev
++  libjpeg-dev
++  libpng-dev
++  libtiff-dev
++  libxml2-dev
++  libvulkan-dev
++  vulkan-tools
++  libvulkan1
++  mesa-vulkan-drivers
++  mingw-w64
++  libgettextpo-dev
++
++  # ---- 参考 yml 对齐：wine-wow64-no.yml 多媒体/音频依赖（两 job 并集）----
++  # 参考 proton job 的 gstreamer1.0-* 通配在此展开为具体包名（与 wine
++  # job 的显式清单取并集），确定性安装、不依赖 apt 的通配展开。
++  libunwind-dev
++  libgstreamer1.0-dev
++  libgstreamer-plugins-base1.0-dev
++  libgstreamer-plugins-good1.0-dev
++  libgstreamer-plugins-bad1.0-dev
++  gstreamer1.0-plugins-base
++  gstreamer1.0-plugins-good
++  gstreamer1.0-plugins-bad
++  gstreamer1.0-plugins-ugly
++  gstreamer1.0-libav
++  gstreamer1.0-pulseaudio
++  gstreamer1.0-alsa
++  gstreamer1.0-gl
++  libmpg123-dev
++  libopenal-dev
++  libfaad-dev
++  libflac-dev
++  libvorbis-dev
++  libx264-dev
++  libx265-dev
++  libvpx-dev
++  libtheora-dev
++
++  # ---- 参考 yml 对齐：build-Allmesa.yml 基础依赖（aarch64 列表）----
++  # XCB 全家 + DRM/GBM/EGL 开发包；python3-wheel / libatomic1 /
++  # pulseaudio（宿主守护，供冒烟）/ libasound2-plugins（ALSA→pulse
++  # 桥）；g++-arm-linux-gnueabihf 在参考中用于 armhf 交叉（本构建
++  # 系统不构建 armhf，按参考基础列表照样装上）。llvm-19 / libclc-20-dev
++  # 带版本号后缀（noble-updates / noble-universe 有，bookworm 无）→
++  # 移至下方 debianRefPkgs 探测式安装。
++  libx11-xcb-dev
++  libxcb1-dev
++  libxcb-shm0-dev
++  libxcb-glx0-dev
++  libxcb-dri3-dev
++  libxcb-present-dev
++  libxcb-randr0-dev
++  libxcb-sync-dev
++  libxcb-xfixes0-dev
++  libxshmfence-dev
++  libdrm-dev
++  libgbm-dev
++  libegl1-mesa-dev
++  libexpat1-dev
++  libatomic1
++  python3-wheel
++  pulseaudio
++  libasound2-plugins
++  g++-arm-linux-gnueabihf
++)
++
++# 参考对齐依赖（Debian/Ubuntu 名，探测式安装：apt-cache show 查到才装，
++# 装不上仅告警不阻断）。CI 的 ubuntu-24.04（noble，含 updates/universe）
++# 上全部存在，实际安装结果与参考 yml 逐项一致：
++#   llvm-19 / libclc-20-dev     build-Allmesa.yml 的 LLVM 19 工具链与
++#                               libclc（noble-updates / noble-universe）。
++#                               ※ 交叉构建不消费：bionic mesa 为
++#                               -Dllvm=disabled（llvmpipe 需要目标架构
++#                               的 LLVM，宿主 llvm-19 无法链入 Android
++#                               .so，详见 projects/mesa/build.sh 注释），
++#                               装上仅为与参考环境对齐。
++#   gstreamer1.0-qt5            wine-wow64-no.yml 多媒体列表（noble 有，
++#   gstreamer1.0-gtk3           部分 Debian 版本无 → 探测）
++#   language-pack-zh-hans       wine BASE_DEPS 的构建机中文翻译数据
++#                               （Ubuntu 专属包名，Debian 无）
++debianRefPkgs=(
++  llvm-19
++  libclc-20-dev
++  gstreamer1.0-qt5
++  gstreamer1.0-gtk3
++  language-pack-zh-hans
+ )
+ 
+ if [[ -f /etc/os-release ]]; then
+@@ -98,7 +345,24 @@ if [[ -f /etc/os-release ]]; then
+     pacman -Syyu --noconfirm || exit 1
+     pacman -S --noconfirm --needed ${archPkgs[@]} || exit 1
+     pip install PyYAML --break-system-packages || python3 -m pip install PyYAML --break-system-packages || true
+-    # v3.2.27：zh_CN locale 一并生成（对齐参考 yml 的中文语言环境步骤）
++    # 参考对齐依赖（Arch 名）：探测式安装 —— pacman -Si 查到的才装，
++    # 查不到的（如部分发行版无 arm-linux-gnueabihf-gcc / libclc）跳过
++    # 并告警。Arch 滚动发布包名与 Debian 系差异较大，缺失仅影响参考
++    # 对齐，不影响本构建系统交叉编译。
++    _archRefAvail=()
++    for _p in "${archRefPkgs[@]}"; do
++      if pacman -Si "${_p}" >/dev/null 2>&1; then
++        _archRefAvail+=("${_p}")
++      else
++        echo "提示: Arch 源无 ${_p}（参考 yml 对齐项，跳过）"
++      fi
++    done
++    if [[ ${#_archRefAvail[@]} -gt 0 ]]; then
++      echo "参考对齐依赖（探测命中 ${#_archRefAvail[@]} 项）: ${_archRefAvail[*]}"
++      pacman -S --noconfirm --needed "${_archRefAvail[@]}" \
++        || echo "警告: 参考对齐依赖安装失败（继续，不影响交叉构建）"
++    fi
++    # zh_CN locale 一并生成（对齐参考 yml 的中文语言环境步骤）
+     sed -i 's/^#[[:space:]]*\(en_US.UTF-8\)/\1/;s/^#[[:space:]]*\(zh_CN.UTF-8\)/\1/' /etc/locale.gen && locale-gen
+     ;;
+   debian|ubuntu)
+@@ -132,6 +396,19 @@ if [[ -f /etc/os-release ]]; then
+ 
+     echo "需要安装 ${debianPkgs[@]} ${GLIB_DEV_BIN_PKGS[@]}"
+     apt install -y ${debianPkgs[@]} ${GLIB_DEV_BIN_PKGS[@]} || exit 1
++
++    # 参考对齐依赖：探测式安装（apt-cache show 查到的才装）。
++    # CI 的 ubuntu-24.04（noble + updates + universe）上以下包全部
++    # 存在，与参考 yml 的宿主依赖逐项一致；bookworm 等旧发行版无
++    # llvm-19 / libclc-20-dev 时跳过，不影响交叉构建。
++    for _p in "${debianRefPkgs[@]}"; do
++      if apt-cache show "${_p}" >/dev/null 2>&1; then
++        apt install -y "${_p}" \
++          || echo "警告: ${_p} 安装失败（参考 yml 对齐项，继续）"
++      else
++        echo "提示: 当前源无 ${_p}（参考 yml 对齐项，跳过）"
++      fi
++    done
+     # meson 通过 pip 安装较新版本（GitHub Actions 的 ubuntu-24.04 自带
+     # meson 1.3.x，部分包如新版 mesa/xorgproto 需要更高版本）
+     # 注意：
+@@ -171,20 +448,12 @@ if [[ -f /etc/os-release ]]; then
+         || echo "警告: libtool 仍不可用（当前配方链已不依赖；若新增 autogen 包需注意）"
+     fi
+     command -v libtool >/dev/null 2>&1 && libtool --version | head -1 || true
+-    # v3.2.27（用户问题："locales language-pack-zh-hans 这两个依赖没有，
+-    # 所以一直没有中文"，对齐参考 yml 的"设置中文语言环境"步骤）：
+-    # language-pack-zh-hans 是 Ubuntu 专属包名（Debian 无此包），
+-    # 探测存在才装，避免非 Ubuntu 环境直接失败；随后生成 zh_CN.UTF-8
+-    # locale —— wine 的 --enable-nls 构建（msgfmt 编译 po/zh_CN.po →
+-    # share/locale/zh_CN/LC_MESSAGES/wine.mo）在中文 locale 环境下
+-    # 产出完整翻译，rootfs-locale 的 localedef 也依赖 locales 包
+-    # （已在 debianPkgs）。任一步失败不阻断（仅影响中文）。
+-    if apt-cache show language-pack-zh-hans >/dev/null 2>&1; then
+-      apt install -y language-pack-zh-hans \
+-        || echo "警告: language-pack-zh-hans 安装失败（继续，仅影响构建机中文翻译数据）"
+-    else
+-      echo "提示: 当前源无 language-pack-zh-hans（非 Ubuntu？）—— 跳过"
+-    fi
++    # 参考 yml 对齐的中文语言环境（wine --enable-nls 构建（msgfmt 编译
++    # po/zh_CN.po → share/locale/zh_CN/LC_MESSAGES/wine.mo）在中文
++    # locale 环境下产出完整翻译，rootfs-locale 的 localedef 也依赖
++    # locales 包（已在 debianPkgs）。language-pack-zh-hans 为 Ubuntu
++    # 专属包名（已在 debianRefPkgs 探测安装），此处生成 zh_CN.UTF-8
++    # locale。任一步失败不阻断（仅影响中文）。
+     locale-gen zh_CN.UTF-8 2>/dev/null \
+       || { sed -i 's/^#[[:space:]]*\(zh_CN.UTF-8\)/\1/' /etc/locale.gen && locale-gen; } \
+       || echo "警告: locale-gen zh_CN.UTF-8 失败（继续）"
+@@ -199,11 +468,12 @@ if [[ -f /etc/os-release ]]; then
+   esac
+ 
+   # ============================================================
+-  # bionic-box64 走 NDK clang（与 rootfs 其它包同链），宿主无需
+-  # 任何交叉 glibc 工具链 / patchelf —— v3.2.5 的 gcc-aarch64-
+-  # linux-gnu + patchelf 段已随 glibc 方案一并移除。
++  # bionic-box64 走 NDK clang（与 rootfs 其它包同链）。patchelf/file
++  # 已按参考 build-box64.yml 装上（供 glibc 形态工作流 build-box64.yml
++  # 的 PT_INTERP/DT_RPATH 改写与 ELF 校验消费）；bionic 配方链依旧
++  # 无需任何交叉 glibc 工具链。
+   # ============================================================
+-  echo "工具链就绪: NDK 交叉编译（bionic），宿主仅通用构建工具"
++  echo "工具链就绪: NDK 交叉编译（bionic），宿主依赖已按参考 yml 对齐"
+ else
+   echo "不支持的发行版 => ${ID:-未知}"
+   exit 1
+diff --git a/bionic-rootfs/projects/box64/build.sh b/bionic-rootfs/projects/box64/build.sh
+index af7efbb..c8f1a15 100644
+--- a/bionic-rootfs/projects/box64/build.sh
++++ b/bionic-rootfs/projects/box64/build.sh
+@@ -285,7 +285,33 @@ custom_patch() {
+ # 分别激活（0001→静态 shm；0002/0003→RELR）。glibc 工作流另修 CWD
+ # bug（cd box64 后 patch -d box64 解析为 box64/box64，v3.2.19 起补丁
+ # 从未真正应用）。本配方 custom_patch() 无需改动。
+-args="-DANDROID=ON -DBAD_SIGNAL=ON -DARM_DYNAREC=ON -DNOLOADADDR=ON"
++# 参考 yml 对齐轮（build-box64.yml → 本配方）：
++# 参考 cmake 选项集（glibc 形态）为
++#   -DARM_DYNAREC=ON -DCMAKE_BUILD_TYPE=Release -DWINLATOR_GLIBC=ON
++#   -DARM64=ON -DBAD_SIGN=ON -DSD845=ON -DSD865=ON -DSD888=ON -DSD8G2=ON
++# 逐项对照本（bionic ANDROID 形态）配方：
++#   ARM_DYNAREC=ON            ✓ 同名同值
++#   CMAKE_BUILD_TYPE=Release  ✓ 由框架 cmakeBaseArgs 注入（base-configure-
++#                             args.conf；ANDROID 模式下 Release 内部限 -O1
++#                             为上游已知行为，见上方注释）
++#   WINLATOR_GLIBC=ON         ✗ 不适用 —— 那是 glibc 形态开关（Winlator/
++#                             MiceWine 同款），bionic 形态用 -DANDROID=ON；
++#                             glibc 形态构建走 build-box64.yml（已与参考
++#                             逐项对齐，含本组 SD8xx/ARM64/BAD_SIGNAL）
++#   ARM64=ON                  ✓ 新增显式声明（原本由 NDK toolchain 的
++#                             CMAKE_SYSTEM_PROCESSOR=aarch64 自动判定，
++#                             显式写出与参考命令行完全一致，结果不变）
++#   BAD_SIGN=ON               ✗ 参考的笔误 —— box64 无 BAD_SIGN 选项，
++#                             正确名为 BAD_SIGNAL（CMakeLists option 原文
++#                             BAD_SIGNAL；cmake 对未知 -D 仅告警），
++#                             本配方用 -DBAD_SIGNAL=ON（ANDROID 下上游
++#                             亦自动置 ON，显式写出对齐参考语义）
++#   SD845/SD865/SD888/SD8G2   ✓ 新增对齐 —— 骁龙平台 dynarec 快路径
++#                             预设（Termux/上游参考部署链默认开启组，
++#                             纯预处理器开关、与 ANDROID 模式正交）；
++#                             非 SD8xx 设备由 box64 运行时 CPU 探测
++#                             自动忽略，不影响兼容性
++args="-DANDROID=ON -DARM64=ON -DBAD_SIGNAL=ON -DARM_DYNAREC=ON -DNOLOADADDR=ON -DSD845=ON -DSD865=ON -DSD888=ON -DSD8G2=ON"
+ 
+ # 运行时配套闭包（见头部【deps 说明】：非编译期依赖，是保证
+ # "完整文件集"一次到位的构建顺序声明）
+diff --git a/bionic-rootfs/projects/hangover-wine/build.sh b/bionic-rootfs/projects/hangover-wine/build.sh
+index 1aef811..0f17fbe 100644
+--- a/bionic-rootfs/projects/hangover-wine/build.sh
++++ b/bionic-rootfs/projects/hangover-wine/build.sh
+@@ -27,6 +27,33 @@ doNotApplyPatch=1
+ # （与用户 glibc 流水线 wine-Arm.yml 的验证组合一致）
+ # ============================================================
+ 
++# ============================================================
++# 参考 yml 对齐轮（wine-wow64-no.yml → 本配方，arm64ec 形态）
++# ------------------------------------------------------------
++# 与参考 configure 选项集逐项对齐，新增 5 项（与 x86_64 形态配方同步）：
++#   --enable-win64          参考同项。arm64ec 形态 host=aarch64，
++#                           wine 10/11 的 configure 仅在 x86_64 原生
++#                           场景消费该变量（-m32 回退门控 +
++#                           --with-wine64 互斥检查），交叉 + archs 下
++#                           为惰性项，传上只为与参考命令行完全一致。
++#   --with-gettext          参考同项（msgfmt 由宿主 gettext 提供）。
++#   --disable-winemenubuilder 参考同项（per-module 选项，wine
++#                           9.22/11.0 均支持；Android 无 XDG 菜单
++#                           消费方）。
++#   --disable-win16         参考同项（本形态 archs 含 i386，16 位
++#                           模块默认会编，禁用省时且与参考一致）。
++#   --without-ldap          参考同项（wine 9+ 内嵌 libs/ldap，
++#                           仅 WARNING 无害；wine 8.x 为真实选项）。
++# 保持差异项：
++#   --without-sdl（参考为 --with-sdl）：需目标架构 SDL2 库，rootfs
++#   无 SDL2 配方；宿主 libsdl2-dev 已按参考装入（host-deps.sh）。
++#   --without-mingw：静态占位项，pre_setup 尾部以
++#   --with-mingw=<llvm-mingw>/bin/clang 覆盖（arm64ec PE 需
++#   llvm-mingw 20251202+）。
++# PE 侧优化（CROSSCFLAGS）：对齐参考的 -O3 -ftree-vectorize -pipe；
++#   参考的 -march=x86-64/-msse3/-mfpmath=sse 不适用（本形态 PE 为
++#   arm64ec/aarch64/i386 三目标，x86 -march 会让 ARM PE 目标直接报错）。
++# ============================================================
+ args="
+   ac_cv_header_linux_userfaultfd_h=no
+   ac_cv_path_GRADLE=no
+@@ -36,8 +63,11 @@ args="
+   --libdir=$prefix/opt/lib
+   --enable-archs=arm64ec,aarch64,i386
+   --enable-nls
++  --enable-win64
+   --disable-tests
++  --disable-win16
+   --disable-wineandroid-drv
++  --disable-winemenubuilder
+   --with-alsa
+   --without-capi
+   --without-coreaudio
+@@ -46,6 +76,7 @@ args="
+   --with-ffmpeg
+   --with-fontconfig
+   --with-freetype
++  --with-gettext
+   --without-gettextpo
+   --without-gphoto
+   --with-gnutls
+@@ -53,6 +84,7 @@ args="
+   --with-gstreamer
+   --without-inotify
+   --without-krb5
++  --without-ldap
+   --without-mingw
+   --without-netapi
+   --without-opencl
+@@ -1852,7 +1884,11 @@ PCMBSF
+   # 传入的 ${arch}_CC（CI 实测：即便 export 了 NDK clang，探测仍走
+   # llvm-mingw，记录 target=arm64ec-windows）——这几个 export 是死代码，
+   # 留着只会误导排查方向。真正决定 make 期编译器的是 PATH 顺序（见上）。
+-  export CROSSCFLAGS="-O3 -pipe"
++  # 参考 yml 对齐轮：CROSSCFLAGS 对齐参考的 -O3 -ftree-vectorize -pipe
++  # （参考的 -march=x86-64/-msse3/-mfpmath=sse 不适用：本形态 PE 为
++  # arm64ec/aarch64/i386 三目标，x86 -march 会让 ARM PE 目标直接报错；
++  # -O3 下 clang 默认向量化，-ftree-vectorize 为与参考一致的显式声明）
++  export CROSSCFLAGS="-O3 -ftree-vectorize -pipe"
+   export CROSSLDFLAGS="-s"
+ 
+   args+=" --with-wine-tools=wine-tools-build --with-mingw=${_llvmMingwDir}/bin/clang"
+diff --git a/bionic-rootfs/projects/mesa/build.sh b/bionic-rootfs/projects/mesa/build.sh
+index 997e407..aaee315 100644
+--- a/bionic-rootfs/projects/mesa/build.sh
++++ b/bionic-rootfs/projects/mesa/build.sh
+@@ -43,6 +43,39 @@ agreementTargetFile="${srcDir}/mesa/docs/license.rst"
+ #     （LIBGL_ALWAYS_SOFTWARE 仅 softpipe/llvmpipe 软渲染档导出）。
+ # ============================================================
+ patchOptional=1
++# ============================================================
++# 参考 yml 对齐轮（build-Allmesa.yml → 本配方）
++# ------------------------------------------------------------
++# 与参考的 aarch64 meson 选项集逐项对齐后，本配方差异仅剩两类：
++# 【已对齐项】（新增）：
++#   -Doptimization=3            参考: -Doptimization=3（--buildtype=
++#                              release 之外显式提升到 O3；本框架
++#                              mesonBaseArgs 的 release 仅映射 O2，
++#                              项目 args 在其后生效，显式覆盖）
++#   -Dgles1=enabled             参考: -Dgles1=enabled（原 disabled）
++#   -Dxlib-lease=enabled        参考: -Dxlib-lease=enabled（X 协议
++#                              CRTC 租赁，DRI3 路径；需 libXrandr
++#                              —— 已补进 deps）
++#   -Dvalgrind=disabled         参考: -Dvalgrind=disabled（交叉环境无
++#                              valgrind，显式关闭探测）
++#   -Dgallium-extra-hud=true    参考: -Dgallium-extra-hud=true（GALLIUM_HUD
++#                              额外统计块）
++#   -Dshader-cache-default=true 参考: -Dshader-cache-default=true
++#                              （默认开启着色器磁盘缓存）
++# 【不可对齐项】（保留差异，原因如下）：
++#   -Dllvm=disabled（参考: -Dllvm=enabled -Dshared-llvm=enabled +
++#   gallium-drivers 含 llvmpipe）：llvmpipe 需要【目标架构】的 LLVM
++#   库链入产物 .so —— 参考是 ARM 原生 runner（ubuntu-24.04-arm）上
++#   的原生构建，宿主 llvm-19 即目标；本构建系统是 NDK 交叉构建，
++#   宿主 llvm-19（amd64 glibc）无法链入 Android bionic .so，需要
++#   交叉构建整套 Android LLVM（额外 1~2 小时 CI 且超出本构建系统
++#   既有配方闭包）。bionic 侧以 softpipe 承担软件渲染档（产物名
++#   仍 swrast_dri.so），故 gallium-drivers 不含 llvmpipe。宿主侧
++#   llvm-19 / libclc-20-dev 已按参考装入构建机（见 host-deps.sh 的
++#   debianRefPkgs），仅不再被交叉构建消费。
++#   -Dplatform-sdk-version / --wrap-mode：交叉构建框架专属（NDK API
++#   级别 / 禁止 meson 子项目回退），参考为原生构建无此项。
++# ============================================================
+ args="
+   --wrap-mode=nofallback
+   -Dplatform-sdk-version=${api}
+@@ -50,7 +83,7 @@ args="
+   -Degl-native-platform=x11
+   -Dglx=dri
+   -Dshader-cache=enabled
+-  -Dgles1=disabled
++  -Dgles1=enabled
+   -Dgles2=enabled
+   -Dopengl=true
+   -Dgbm=enabled
+@@ -62,8 +95,13 @@ args="
+   -Dvulkan-beta=true
+   -Dvideo-codecs=all
+   -Dmediafoundation-codecs=all
++  -Doptimization=3
++  -Dvalgrind=disabled
++  -Dgallium-extra-hud=true
++  -Dshader-cache-default=true
++  -Dxlib-lease=enabled
+ "
+-deps="libandroid-shmem libc++ libexpat libdrm zstd xorgproto libxau libxdmcp xcb-proto libxcb xtrans libX11 libXext libXfixes libXdamage libXxf86vm libxshmfence vulkan-headers vulkan-icd-loader"
++deps="libandroid-shmem libc++ libexpat libdrm zstd xorgproto libxau libxdmcp xcb-proto libxcb xtrans libX11 libXext libXfixes libXdamage libXxf86vm libXrandr libxshmfence vulkan-headers vulkan-icd-loader"
+ 
+ pre_setup() {
+   # -landroid: NDK <android/trace.h> 的 ATrace_*（供下方 cutils/trace.h shim 引用）
+@@ -216,6 +254,9 @@ ANWIND_SHIM
+   #              与 AnWind glibc mesa 工作流保持一致
+   #   x86_64  -> softpipe 软件渲染（mesa 25.1+ 移除 swrast；llvmpipe 需 LLVM，交叉构建不启用）
+   if [[ "$targetArch" == "aarch64" ]]; then
++    # 参考（build-Allmesa.yml aarch64）: -Dgallium-drivers=zink,freedreno,llvmpipe
++    # —— llvmpipe 需目标架构 LLVM，交叉构建不可用（见上方 args 注释），
++    # 以 softpipe 承担软渲染档；zink/freedreno/turnip 与参考一致。
+     args+=" -Dgallium-drivers=softpipe,freedreno,zink -Dvulkan-drivers=freedreno -Dfreedreno-kmds=msm,kgsl"
+     # turnip/vk_android 需要 AHardwareBuffer 系列（libnativewindow，NDK API>=26 自带）；
+     # platforms=x11 下 meson 不会主动链接它
+@@ -256,6 +297,10 @@ install() {
+   ln -sf libGL.so libGL.so.1
+   ln -sf libEGL.so libEGL.so.1
+   ln -sf libGLESv2.so libGLESv2.so.2
++  # v3.3.38：+ libGLESv1_CM.so.1 —— 参考 yml 对齐轮启用 gles1 后，
++  # 补齐版本化 SONAME 别名（与 GL/EGL/GLESv2 同套路：预编译产物的
++  # DT_NEEDED 记录上游标准版本化名）
++  [[ -e libGLESv1_CM.so ]] && ln -sf libGLESv1_CM.so libGLESv1_CM.so.1 || true
+   ln -sf libgbm.so libgbm.so.1
+   ln -sf libglapi.so libglapi.so.0 2>/dev/null || true
+   # v3.3.37 备注（用户："rootfs 缺少 zink 的构建和使用"）：aarch64 形态
+diff --git a/bionic-rootfs/projects/wine/build.sh b/bionic-rootfs/projects/wine/build.sh
+index 36abebf..16b6f63 100644
+--- a/bionic-rootfs/projects/wine/build.sh
++++ b/bionic-rootfs/projects/wine/build.sh
+@@ -33,6 +33,47 @@ doNotApplyPatch=1
+ #   ANWIND_WINE_LABEL 运行时标识（写入 .anwind-wine-info 的 tag=，缺省用 TAG）
+ # ============================================================
+ 
++# ============================================================
++# 参考 yml 对齐轮（wine-wow64-no.yml → 本配方，x86_64 形态）
++# ------------------------------------------------------------
++# 与参考 configure 选项集逐项对齐，新增 5 项：
++#   --enable-win64          参考同项。交叉构建 + --enable-archs 下为
++#                           惰性项（wine 10/11 的 configure 仅在
++#                           “x86_64 原生 + 非 cross + 未设 archs”时才
++#                           用它决定 -m32 回退；新 WoW64 由
++#                           --enable-archs=i386,x86_64 驱动），
++#                           传上只为与参考命令行完全一致。
++#   --with-gettext          参考同项（--enable-nls 的显式确认；
++#                           msgfmt 由宿主 gettext 提供，host-deps 已装）。
++#   --disable-winemenubuilder 参考同项。wine 的 per-module 选项
++#                           （configure 自动生成，wine 9.22/11.0 的
++#                           ac_user_opts 均含 enable_winemenubuilder）；
++#                           Android 上无 XDG 桌面菜单消费方，禁用。
++#   --disable-win16         参考同项。i386 在 archs 列表时 16 位模块
++#                           （winevdm/w32skrnl/…）默认会编，禁用省时
++#                           且与参考一致。
++#   --without-ldap          参考同项。wine 9+ 已内嵌 libs/ldap，
++#                           --without-ldap 不再是实际选项（configure
++#                           仅打 "unrecognized options" WARNING 后继续，
++#                           实测 wine-11.0 无害）；wine 8.x 及更早树为
++#                           真实选项。按参考传上。
++# 保持差异项：
++#   --without-sdl（参考为 --with-sdl）：wine 的 SDL 支持需【目标架构】
++#   SDL2 库，rootfs 无 SDL2 配方（bionic 侧未收录）；宿主侧
++#   libsdl2-dev 已按参考装入构建机（host-deps.sh），若未来给
++#   bionic-rootfs 增加 SDL2 配方，把本项改为 --with-sdl 即可。
++#   --with-ffmpeg / --with-gnutls / --with-opengl / --with-pthread 等
++#   rootfs 侧能力项：参考树未传（默认 auto 探测），本配方显式开启
++#   （依赖均在 deps 列表，拓扑自动补齐）。
++# PE 侧优化（CROSSCFLAGS）：参考为
++#   "-march=x86-64 -msse3 -mfpmath=sse -O3 -ftree-vectorize -pipe"
++#   （其 PE 仅 i386/x86_64）。本形态 PE 同为 i386/x86_64，但为与
++#   arm64ec 形态（PE = arm64ec/aarch64/i386，x86 系 -march 会让
++#   arm64ec PE 目标直接报错）保持同一学实现，只对齐架构中立的
++#   -O3 -ftree-vectorize -pipe（见 pre_setup）。unix 侧 CFLAGS 由
++#   构建系统全局注入 -O3 -pipe -fvectorize（default.conf），
++#   与参考 -O3 -ftree-vectorize -pipe 等效。
++# ============================================================
+ args="
+   ac_cv_header_linux_userfaultfd_h=no
+   ac_cv_path_GRADLE=no
+@@ -42,8 +83,11 @@ args="
+   --includedir=$prefix/opt/wine/include
+   --enable-archs=i386,x86_64
+   --enable-nls
++  --enable-win64
+   --disable-tests
++  --disable-win16
+   --disable-wineandroid-drv
++  --disable-winemenubuilder
+   --with-alsa
+   --without-capi
+   --without-coreaudio
+@@ -52,6 +96,7 @@ args="
+   --with-ffmpeg
+   --with-fontconfig
+   --with-freetype
++  --with-gettext
+   --without-gettextpo
+   --without-gphoto
+   --with-gnutls
+@@ -59,6 +104,7 @@ args="
+   --with-gstreamer
+   --without-inotify
+   --without-krb5
++  --without-ldap
+   --without-netapi
+   --without-opencl
+   --with-opengl
+@@ -819,7 +865,12 @@ PCMBSF
+   export i386_CC="${_llvmMingwDir}/bin/i686-w64-mingw32-clang"
+   export x86_64_CC="${_llvmMingwDir}/bin/x86_64-w64-mingw32-clang"
+ 
+-  export CROSSCFLAGS="-O3 -pipe"
++  # 参考 yml 对齐轮：CROSSCFLAGS 对齐参考的 -O3 -ftree-vectorize -pipe
++  # （x86 系 -march 标志不进通用 CROSSCFLAGS：本形态 PE 虽为
++  # i386/x86_64，但 arm64ec 形态的 PE 含 arm64ec/aarch64 目标，
++  # x86 -march 会直接报错；-O3 下 clang 默认向量化，
++  # -ftree-vectorize 为与参考一致的显式声明）
++  export CROSSCFLAGS="-O3 -ftree-vectorize -pipe"
+   export CROSSLDFLAGS="-s"
+ 
+   args+=" --with-wine-tools=wine-tools-build --with-mingw=${_llvmMingwDir}/bin/clang"

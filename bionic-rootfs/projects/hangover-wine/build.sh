@@ -27,6 +27,33 @@ doNotApplyPatch=1
 # （与用户 glibc 流水线 wine-Arm.yml 的验证组合一致）
 # ============================================================
 
+# ============================================================
+# 参考 yml 对齐轮（wine-wow64-no.yml → 本配方，arm64ec 形态）
+# ------------------------------------------------------------
+# 与参考 configure 选项集逐项对齐，新增 5 项（与 x86_64 形态配方同步）：
+#   --enable-win64          参考同项。arm64ec 形态 host=aarch64，
+#                           wine 10/11 的 configure 仅在 x86_64 原生
+#                           场景消费该变量（-m32 回退门控 +
+#                           --with-wine64 互斥检查），交叉 + archs 下
+#                           为惰性项，传上只为与参考命令行完全一致。
+#   --with-gettext          参考同项（msgfmt 由宿主 gettext 提供）。
+#   --disable-winemenubuilder 参考同项（per-module 选项，wine
+#                           9.22/11.0 均支持；Android 无 XDG 菜单
+#                           消费方）。
+#   --disable-win16         参考同项（本形态 archs 含 i386，16 位
+#                           模块默认会编，禁用省时且与参考一致）。
+#   --without-ldap          参考同项（wine 9+ 内嵌 libs/ldap，
+#                           仅 WARNING 无害；wine 8.x 为真实选项）。
+# 保持差异项：
+#   --without-sdl（参考为 --with-sdl）：需目标架构 SDL2 库，rootfs
+#   无 SDL2 配方；宿主 libsdl2-dev 已按参考装入（host-deps.sh）。
+#   --without-mingw：静态占位项，pre_setup 尾部以
+#   --with-mingw=<llvm-mingw>/bin/clang 覆盖（arm64ec PE 需
+#   llvm-mingw 20251202+）。
+# PE 侧优化（CROSSCFLAGS）：对齐参考的 -O3 -ftree-vectorize -pipe；
+#   参考的 -march=x86-64/-msse3/-mfpmath=sse 不适用（本形态 PE 为
+#   arm64ec/aarch64/i386 三目标，x86 -march 会让 ARM PE 目标直接报错）。
+# ============================================================
 args="
   ac_cv_header_linux_userfaultfd_h=no
   ac_cv_path_GRADLE=no
@@ -36,8 +63,11 @@ args="
   --libdir=$prefix/opt/lib
   --enable-archs=arm64ec,aarch64,i386
   --enable-nls
+  --enable-win64
   --disable-tests
+  --disable-win16
   --disable-wineandroid-drv
+  --disable-winemenubuilder
   --with-alsa
   --without-capi
   --without-coreaudio
@@ -46,6 +76,7 @@ args="
   --with-ffmpeg
   --with-fontconfig
   --with-freetype
+  --with-gettext
   --without-gettextpo
   --without-gphoto
   --with-gnutls
@@ -53,6 +84,7 @@ args="
   --with-gstreamer
   --without-inotify
   --without-krb5
+  --without-ldap
   --without-mingw
   --without-netapi
   --without-opencl
@@ -1852,7 +1884,11 @@ PCMBSF
   # 传入的 ${arch}_CC（CI 实测：即便 export 了 NDK clang，探测仍走
   # llvm-mingw，记录 target=arm64ec-windows）——这几个 export 是死代码，
   # 留着只会误导排查方向。真正决定 make 期编译器的是 PATH 顺序（见上）。
-  export CROSSCFLAGS="-O3 -pipe"
+  # 参考 yml 对齐轮：CROSSCFLAGS 对齐参考的 -O3 -ftree-vectorize -pipe
+  # （参考的 -march=x86-64/-msse3/-mfpmath=sse 不适用：本形态 PE 为
+  # arm64ec/aarch64/i386 三目标，x86 -march 会让 ARM PE 目标直接报错；
+  # -O3 下 clang 默认向量化，-ftree-vectorize 为与参考一致的显式声明）
+  export CROSSCFLAGS="-O3 -ftree-vectorize -pipe"
   export CROSSLDFLAGS="-s"
 
   args+=" --with-wine-tools=wine-tools-build --with-mingw=${_llvmMingwDir}/bin/clang"

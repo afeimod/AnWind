@@ -43,6 +43,39 @@ agreementTargetFile="${srcDir}/mesa/docs/license.rst"
 #     （LIBGL_ALWAYS_SOFTWARE 仅 softpipe/llvmpipe 软渲染档导出）。
 # ============================================================
 patchOptional=1
+# ============================================================
+# 参考 yml 对齐轮（build-Allmesa.yml → 本配方）
+# ------------------------------------------------------------
+# 与参考的 aarch64 meson 选项集逐项对齐后，本配方差异仅剩两类：
+# 【已对齐项】（新增）：
+#   -Doptimization=3            参考: -Doptimization=3（--buildtype=
+#                              release 之外显式提升到 O3；本框架
+#                              mesonBaseArgs 的 release 仅映射 O2，
+#                              项目 args 在其后生效，显式覆盖）
+#   -Dgles1=enabled             参考: -Dgles1=enabled（原 disabled）
+#   -Dxlib-lease=enabled        参考: -Dxlib-lease=enabled（X 协议
+#                              CRTC 租赁，DRI3 路径；需 libXrandr
+#                              —— 已补进 deps）
+#   -Dvalgrind=disabled         参考: -Dvalgrind=disabled（交叉环境无
+#                              valgrind，显式关闭探测）
+#   -Dgallium-extra-hud=true    参考: -Dgallium-extra-hud=true（GALLIUM_HUD
+#                              额外统计块）
+#   -Dshader-cache-default=true 参考: -Dshader-cache-default=true
+#                              （默认开启着色器磁盘缓存）
+# 【不可对齐项】（保留差异，原因如下）：
+#   -Dllvm=disabled（参考: -Dllvm=enabled -Dshared-llvm=enabled +
+#   gallium-drivers 含 llvmpipe）：llvmpipe 需要【目标架构】的 LLVM
+#   库链入产物 .so —— 参考是 ARM 原生 runner（ubuntu-24.04-arm）上
+#   的原生构建，宿主 llvm-19 即目标；本构建系统是 NDK 交叉构建，
+#   宿主 llvm-19（amd64 glibc）无法链入 Android bionic .so，需要
+#   交叉构建整套 Android LLVM（额外 1~2 小时 CI 且超出本构建系统
+#   既有配方闭包）。bionic 侧以 softpipe 承担软件渲染档（产物名
+#   仍 swrast_dri.so），故 gallium-drivers 不含 llvmpipe。宿主侧
+#   llvm-19 / libclc-20-dev 已按参考装入构建机（见 host-deps.sh 的
+#   debianRefPkgs），仅不再被交叉构建消费。
+#   -Dplatform-sdk-version / --wrap-mode：交叉构建框架专属（NDK API
+#   级别 / 禁止 meson 子项目回退），参考为原生构建无此项。
+# ============================================================
 args="
   --wrap-mode=nofallback
   -Dplatform-sdk-version=${api}
@@ -50,7 +83,7 @@ args="
   -Degl-native-platform=x11
   -Dglx=dri
   -Dshader-cache=enabled
-  -Dgles1=disabled
+  -Dgles1=enabled
   -Dgles2=enabled
   -Dopengl=true
   -Dgbm=enabled
@@ -62,8 +95,13 @@ args="
   -Dvulkan-beta=true
   -Dvideo-codecs=all
   -Dmediafoundation-codecs=all
+  -Doptimization=3
+  -Dvalgrind=disabled
+  -Dgallium-extra-hud=true
+  -Dshader-cache-default=true
+  -Dxlib-lease=enabled
 "
-deps="libandroid-shmem libc++ libexpat libdrm zstd xorgproto libxau libxdmcp xcb-proto libxcb xtrans libX11 libXext libXfixes libXdamage libXxf86vm libxshmfence vulkan-headers vulkan-icd-loader"
+deps="libandroid-shmem libc++ libexpat libdrm zstd xorgproto libxau libxdmcp xcb-proto libxcb xtrans libX11 libXext libXfixes libXdamage libXxf86vm libXrandr libxshmfence vulkan-headers vulkan-icd-loader"
 
 pre_setup() {
   # -landroid: NDK <android/trace.h> 的 ATrace_*（供下方 cutils/trace.h shim 引用）
@@ -216,6 +254,9 @@ ANWIND_SHIM
   #              与 AnWind glibc mesa 工作流保持一致
   #   x86_64  -> softpipe 软件渲染（mesa 25.1+ 移除 swrast；llvmpipe 需 LLVM，交叉构建不启用）
   if [[ "$targetArch" == "aarch64" ]]; then
+    # 参考（build-Allmesa.yml aarch64）: -Dgallium-drivers=zink,freedreno,llvmpipe
+    # —— llvmpipe 需目标架构 LLVM，交叉构建不可用（见上方 args 注释），
+    # 以 softpipe 承担软渲染档；zink/freedreno/turnip 与参考一致。
     args+=" -Dgallium-drivers=softpipe,freedreno,zink -Dvulkan-drivers=freedreno -Dfreedreno-kmds=msm,kgsl"
     # turnip/vk_android 需要 AHardwareBuffer 系列（libnativewindow，NDK API>=26 自带）；
     # platforms=x11 下 meson 不会主动链接它
@@ -256,6 +297,10 @@ install() {
   ln -sf libGL.so libGL.so.1
   ln -sf libEGL.so libEGL.so.1
   ln -sf libGLESv2.so libGLESv2.so.2
+  # v3.3.38：+ libGLESv1_CM.so.1 —— 参考 yml 对齐轮启用 gles1 后，
+  # 补齐版本化 SONAME 别名（与 GL/EGL/GLESv2 同套路：预编译产物的
+  # DT_NEEDED 记录上游标准版本化名）
+  [[ -e libGLESv1_CM.so ]] && ln -sf libGLESv1_CM.so libGLESv1_CM.so.1 || true
   ln -sf libgbm.so libgbm.so.1
   ln -sf libglapi.so libglapi.so.0 2>/dev/null || true
   # v3.3.37 备注（用户："rootfs 缺少 zink 的构建和使用"）：aarch64 形态

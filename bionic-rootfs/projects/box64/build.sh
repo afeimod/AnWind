@@ -285,7 +285,33 @@ custom_patch() {
 # 分别激活（0001→静态 shm；0002/0003→RELR）。glibc 工作流另修 CWD
 # bug（cd box64 后 patch -d box64 解析为 box64/box64，v3.2.19 起补丁
 # 从未真正应用）。本配方 custom_patch() 无需改动。
-args="-DANDROID=ON -DBAD_SIGNAL=ON -DARM_DYNAREC=ON -DNOLOADADDR=ON"
+# 参考 yml 对齐轮（build-box64.yml → 本配方）：
+# 参考 cmake 选项集（glibc 形态）为
+#   -DARM_DYNAREC=ON -DCMAKE_BUILD_TYPE=Release -DWINLATOR_GLIBC=ON
+#   -DARM64=ON -DBAD_SIGN=ON -DSD845=ON -DSD865=ON -DSD888=ON -DSD8G2=ON
+# 逐项对照本（bionic ANDROID 形态）配方：
+#   ARM_DYNAREC=ON            ✓ 同名同值
+#   CMAKE_BUILD_TYPE=Release  ✓ 由框架 cmakeBaseArgs 注入（base-configure-
+#                             args.conf；ANDROID 模式下 Release 内部限 -O1
+#                             为上游已知行为，见上方注释）
+#   WINLATOR_GLIBC=ON         ✗ 不适用 —— 那是 glibc 形态开关（Winlator/
+#                             MiceWine 同款），bionic 形态用 -DANDROID=ON；
+#                             glibc 形态构建走 build-box64.yml（已与参考
+#                             逐项对齐，含本组 SD8xx/ARM64/BAD_SIGNAL）
+#   ARM64=ON                  ✓ 新增显式声明（原本由 NDK toolchain 的
+#                             CMAKE_SYSTEM_PROCESSOR=aarch64 自动判定，
+#                             显式写出与参考命令行完全一致，结果不变）
+#   BAD_SIGN=ON               ✗ 参考的笔误 —— box64 无 BAD_SIGN 选项，
+#                             正确名为 BAD_SIGNAL（CMakeLists option 原文
+#                             BAD_SIGNAL；cmake 对未知 -D 仅告警），
+#                             本配方用 -DBAD_SIGNAL=ON（ANDROID 下上游
+#                             亦自动置 ON，显式写出对齐参考语义）
+#   SD845/SD865/SD888/SD8G2   ✓ 新增对齐 —— 骁龙平台 dynarec 快路径
+#                             预设（Termux/上游参考部署链默认开启组，
+#                             纯预处理器开关、与 ANDROID 模式正交）；
+#                             非 SD8xx 设备由 box64 运行时 CPU 探测
+#                             自动忽略，不影响兼容性
+args="-DANDROID=ON -DARM64=ON -DBAD_SIGNAL=ON -DARM_DYNAREC=ON -DNOLOADADDR=ON -DSD845=ON -DSD865=ON -DSD888=ON -DSD8G2=ON"
 
 # 运行时配套闭包（见头部【deps 说明】：非编译期依赖，是保证
 # "完整文件集"一次到位的构建顺序声明）

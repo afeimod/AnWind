@@ -33,6 +33,47 @@ doNotApplyPatch=1
 #   ANWIND_WINE_LABEL 运行时标识（写入 .anwind-wine-info 的 tag=，缺省用 TAG）
 # ============================================================
 
+# ============================================================
+# 参考 yml 对齐轮（wine-wow64-no.yml → 本配方，x86_64 形态）
+# ------------------------------------------------------------
+# 与参考 configure 选项集逐项对齐，新增 5 项：
+#   --enable-win64          参考同项。交叉构建 + --enable-archs 下为
+#                           惰性项（wine 10/11 的 configure 仅在
+#                           “x86_64 原生 + 非 cross + 未设 archs”时才
+#                           用它决定 -m32 回退；新 WoW64 由
+#                           --enable-archs=i386,x86_64 驱动），
+#                           传上只为与参考命令行完全一致。
+#   --with-gettext          参考同项（--enable-nls 的显式确认；
+#                           msgfmt 由宿主 gettext 提供，host-deps 已装）。
+#   --disable-winemenubuilder 参考同项。wine 的 per-module 选项
+#                           （configure 自动生成，wine 9.22/11.0 的
+#                           ac_user_opts 均含 enable_winemenubuilder）；
+#                           Android 上无 XDG 桌面菜单消费方，禁用。
+#   --disable-win16         参考同项。i386 在 archs 列表时 16 位模块
+#                           （winevdm/w32skrnl/…）默认会编，禁用省时
+#                           且与参考一致。
+#   --without-ldap          参考同项。wine 9+ 已内嵌 libs/ldap，
+#                           --without-ldap 不再是实际选项（configure
+#                           仅打 "unrecognized options" WARNING 后继续，
+#                           实测 wine-11.0 无害）；wine 8.x 及更早树为
+#                           真实选项。按参考传上。
+# 保持差异项：
+#   --without-sdl（参考为 --with-sdl）：wine 的 SDL 支持需【目标架构】
+#   SDL2 库，rootfs 无 SDL2 配方（bionic 侧未收录）；宿主侧
+#   libsdl2-dev 已按参考装入构建机（host-deps.sh），若未来给
+#   bionic-rootfs 增加 SDL2 配方，把本项改为 --with-sdl 即可。
+#   --with-ffmpeg / --with-gnutls / --with-opengl / --with-pthread 等
+#   rootfs 侧能力项：参考树未传（默认 auto 探测），本配方显式开启
+#   （依赖均在 deps 列表，拓扑自动补齐）。
+# PE 侧优化（CROSSCFLAGS）：参考为
+#   "-march=x86-64 -msse3 -mfpmath=sse -O3 -ftree-vectorize -pipe"
+#   （其 PE 仅 i386/x86_64）。本形态 PE 同为 i386/x86_64，但为与
+#   arm64ec 形态（PE = arm64ec/aarch64/i386，x86 系 -march 会让
+#   arm64ec PE 目标直接报错）保持同一学实现，只对齐架构中立的
+#   -O3 -ftree-vectorize -pipe（见 pre_setup）。unix 侧 CFLAGS 由
+#   构建系统全局注入 -O3 -pipe -fvectorize（default.conf），
+#   与参考 -O3 -ftree-vectorize -pipe 等效。
+# ============================================================
 args="
   ac_cv_header_linux_userfaultfd_h=no
   ac_cv_path_GRADLE=no
@@ -42,8 +83,11 @@ args="
   --includedir=$prefix/opt/wine/include
   --enable-archs=i386,x86_64
   --enable-nls
+  --enable-win64
   --disable-tests
+  --disable-win16
   --disable-wineandroid-drv
+  --disable-winemenubuilder
   --with-alsa
   --without-capi
   --without-coreaudio
@@ -52,6 +96,7 @@ args="
   --with-ffmpeg
   --with-fontconfig
   --with-freetype
+  --with-gettext
   --without-gettextpo
   --without-gphoto
   --with-gnutls
@@ -59,6 +104,7 @@ args="
   --with-gstreamer
   --without-inotify
   --without-krb5
+  --without-ldap
   --without-netapi
   --without-opencl
   --with-opengl
@@ -819,7 +865,12 @@ PCMBSF
   export i386_CC="${_llvmMingwDir}/bin/i686-w64-mingw32-clang"
   export x86_64_CC="${_llvmMingwDir}/bin/x86_64-w64-mingw32-clang"
 
-  export CROSSCFLAGS="-O3 -pipe"
+  # 参考 yml 对齐轮：CROSSCFLAGS 对齐参考的 -O3 -ftree-vectorize -pipe
+  # （x86 系 -march 标志不进通用 CROSSCFLAGS：本形态 PE 虽为
+  # i386/x86_64，但 arm64ec 形态的 PE 含 arm64ec/aarch64 目标，
+  # x86 -march 会直接报错；-O3 下 clang 默认向量化，
+  # -ftree-vectorize 为与参考一致的显式声明）
+  export CROSSCFLAGS="-O3 -ftree-vectorize -pipe"
   export CROSSLDFLAGS="-s"
 
   args+=" --with-wine-tools=wine-tools-build --with-mingw=${_llvmMingwDir}/bin/clang"
