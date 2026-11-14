@@ -129,17 +129,17 @@ install() { ... }
 | `projects/rootfs-locale` | `usr/lib/locale/locale-archive` | 构建机 localedef（`--prefix`）编入 en_US/zh_CN/zh_TW/ja_JP/ko_KR/de_DE/fr_FR/es_ES/ru_RU/pt_BR；容器内 glibc 程序（含 box64 加载的 x86_64 程序）setlocale 可用 |
 | `projects/rootfs-fonts` | `usr/share/fonts/{dejavu,noto}` | DejaVu 2.37 全量 + Noto Sans SC（可变字体）；fontconfig `--with-default-fonts` 即指向该目录 |
 | `projects/glibc-aarch64` | `usr/lib/aarch64-linux-gnu/`（+ `usr/lib/ld-linux-aarch64.so.1` 便捷链接，仅 aarch64 rootfs） | aarch64 glibc 运行层：私有加载器 `ld-linux-aarch64.so.1` + `libc.so.6` 等（Ubuntu noble，Packages.gz 索引自愈解析版本）。rootfs 内 glibc 链接的 aarch64 二进制显式经该加载器启动；glibc 形态 box64（build-box64.yml 产物）的 PT_INTERP 也指向它。bionic 加载器（linker64）永不搜索该目录，与 rootfs 自身 bionic 库零串扰 |
-| `projects/glibc-x86_64` | `usr/lib/x86_64-linux-gnu/`（仅 aarch64 rootfs） | Ubuntu noble 的 libc6/libgcc-s1/libstdc++6/zlib1g 平铺安装，供 box64 运行常规 glibc x86_64 Linux 程序；anwind-wine 检测到该目录时自动导出 `BOX64_LD_LIBRARY_PATH` |
+| `projects/glibc-x86_64` | `usr/lib/x86_64-linux-gnu/`（仅 aarch64 rootfs） | Ubuntu noble 的 libc6/libgcc-s1/libstdc++6/zlib1g 平铺安装（Packages.gz 索引自愈解析版本），供 box64 运行常规 glibc x86_64 Linux 程序；anwind-wine 检测到该目录时自动导出 `BOX64_LD_LIBRARY_PATH` |
 | `projects/box64` | `usr/local/bin/box64` + `usr/bin/box64` 链接 + `usr/lib/box64-x86_64-linux-gnu/libc++_shared.so` + `usr/etc/box64.box64rc` | x86_64 仿真核心（NDK bionic 链接，与 rootfsbc 参考配方同参数：ANDROID/BAD_SIGNAL/ARM_DYNAREC）。deps 挂 glibc-aarch64 / glibc-x86_64，`--build box64` 即产出完整文件集（deps 为运行时配套闭包，非编译期依赖） |
 
 注意：
-- `glibc-x86_64` 的 deb 版本可用 `ANWIND_GLIBC_VER` / `ANWIND_GCC_VER` /
-  `ANWIND_ZLIB_VER` 覆盖（Ubuntu pool 旧版本会被回收，构建失败时改版本号即可）。
-- `glibc-aarch64` 默认从 noble 三 pocket（updates/security/release）的
-  Packages.gz 索引解析最新版本（pool 清理旧修订时自愈，无需改脚本）；
-  需要钉死时用 `ANWIND_GLIBC_VER` / `ANWIND_GCC_VER` / `ANWIND_ZLIB_VER`，
-  包 revision 用 `ANWIND_GLIBC_AARCH64_REV` 覆盖（默认 2.39，缓存于
-  pkgs/ 的旧 tar 强制刷新时配 `--rebuild glibc-aarch64`）。
+- `glibc-x86_64` 与 `glibc-aarch64` 默认均从 noble 三 pocket（updates/
+  security/release）的 Packages.gz 索引解析最新版本（pool 清理旧修订时
+  自愈，无需改脚本；libc6 2.39-0ubuntu8.9 被 pool 回收导致的 404 即属
+  此类）；需要钉死时用 `ANWIND_GLIBC_VER` / `ANWIND_GCC_VER` /
+  `ANWIND_ZLIB_VER`，包 revision 分别用 `ANWIND_GLIBC_X86_64_REV` /
+  `ANWIND_GLIBC_AARCH64_REV` 覆盖（默认均 2.39，缓存于 pkgs/ 的旧 tar
+  强制刷新时配 `--rebuild glibc-x86_64` / `--rebuild glibc-aarch64`）。
 - GStreamer 配方必须开启 `gst-plugins-base:gl`：wine（尤其 Proton 树）的
   configure 用 pkg-config 检查 `gstreamer-gl-1.0`，`gl=disabled` 时该 .pc
   不生成，wine 报 "gstreamer-1.0 base plugins development files not found"。
