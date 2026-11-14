@@ -165,7 +165,7 @@ pre_setup() {
   #     amd64 缺省）整体回移到 wine<10 树 —— 应用后 0011 主循环锚点自然
   #     跳空（内容已内联）、0018 断裂态不触发、0020 不触发（三 Valve 跳板
   #     为 SYSCALL_API 终形态）、.anwind-wine-info kind 自动落
-  #     arm64ec-wow64-x11（merge 布局）。41 文件全 hunk 硬校验（--fuzz=0
+  #     arm64ec-wow64-x11（merge 布局）。44 文件全 hunk 硬校验（--fuzz=0
   #     逐字锚点），异构树（official 9.x 等）锚点漂移直接失败拒绝。
   #   【判据】保持 --enable-archs=arm64ec,（未触发 0 步降级）时：
   #     * dlls/ntdll/loader.c 含 load_arm64ec_module —— x64 仿真装载点；
@@ -189,7 +189,7 @@ pre_setup() {
       if ! patch --silent --forward -p1 --fuzz=0 \
            < "${wsDir}/projects/${pjName}/0025-backport-arm64ec-wine10-proton9.patch.proton"; then
         echo "::error::0025 回移补丁有 hunk 未应用（--fuzz=0 逐字锚点）—— 本源码树与 proton_9.0 锚点漂移，整体回移不可套用！"
-        echo "::error::  0025 仅对 proton_9.0 树实证（41 文件全 hunk 硬校验）；异构树（official 9.x / wine-9.2 / hangover 9.x 等）不支持本回移"
+        echo "::error::  0025 仅对 proton_9.0 树实证（44 文件全 hunk 硬校验）；异构树（official 9.x / wine-9.2 / hangover 9.x 等）不支持本回移"
         echo "::error::  arm64ec 形态请改用：proton 9.0（经 0025 补全）/ proton 10.0 / proton 11.0 / official 10.0+ / hangover 10.0+"
         echo "::error::  若确需本树：请用 x86_64 形态构建（build-wine-bionic.yml flavor=x86_64，box64 后端运行）"
         return 1
@@ -307,6 +307,40 @@ pre_setup() {
         return 1
       fi
       echo "0025 后关键形态门禁通过（kernelbase 单链+双层嵌套 / ntdll 导出桩 EC 落 x64 字节桩 / actctx 链序 arm64 前置 / 四文件条件编译配平）"
+
+      # v3.4.15【0025 第二轮形态门禁 —— ARM64X 工具链四要素】（v3.4.15 实证：
+      #   第一轮补丁过了结构门禁仍死于【工具链/编译期】—— CI (20).zip 实证
+      #   memory.o 的 SEH 指令失配；本地全链路构建实证后续 12 处：
+      #   makedep 导入库 -marm64x 缺失 → 合并镜像链接全灭 "(native symbol)"；
+      #   winebuild 无 -N native def → 导入库缺原生视图；winegcc 双 spec.o
+      #   都带 .rsrc → "more than one resource obj"；win32u 单参宏已废 →
+      #   403 调用点编译错；suspend 管道 win64 架构集拉进 x86_64 趟 →
+      #   ntdll x64 链接未定义。五项硬校验防 0025 再次静默回归：
+      local _mkC="${srcDir}/${pjName}/tools/makedep.c"
+      local _wgC="${srcDir}/${pjName}/tools/winegcc/winegcc.c"
+      local _w32C="${srcDir}/${pjName}/dlls/win32u/main.c"
+      local _spec="${srcDir}/${pjName}/dlls/ntdll/ntdll.spec"
+      if ! grep -q "hybrid_target_flags\[hybrid_arch\]" "${_mkC}" 2>/dev/null; then
+        echo "::error::0025 后 makedep.c 缺 ARM64X 导入库旗标（output_import_lib 的 hybrid_target_flags[hybrid_arch] / -marm64x）—— 所有合并镜像将死于 undefined symbol ... native symbol（本地 llvm-mingw-20251202 全链路实证）"
+        return 1
+      fi
+      if ! grep -q "native_def_file" "${srcDir}/${pjName}/tools/winebuild/import.c" 2>/dev/null; then
+        echo "::error::0025 后 winebuild import.c 缺 native def + dlltool -N（ARM64X 双机种导入成员）—— 请核查 0025 的 tools/winebuild/import.c 段"
+        return 1
+      fi
+      if ! grep -q "strarray_addall( &spec_args, resources )" "${_wgC}" 2>/dev/null; then
+        echo "::error::0025 后 winegcc build_spec_obj 缺 resources 参数化（ARM64X 双 spec.o 只允许第一个带 .rsrc）—— lld-link more-than-one-resource-obj 必炸"
+        return 1
+      fi
+      if ! grep -q "#define SYSCALL_FUNC(name)" "${_w32C}" 2>/dev/null; then
+        echo "::error::0025 后 win32u/main.c 缺 SYSCALL_FUNC(name) 包装（wine-10 双参 __ASM_SYSCALL_FUNC 形态）—— arm64ec 趟 403 个调用点编译必炸"
+        return 1
+      fi
+      if ! grep -q "aarch64,arm64ec RtlWow64SuspendThread" "${_spec}" 2>/dev/null; then
+        echo "::error::0025 后 ntdll.spec 的 RtlWow64SuspendThread 未收窄为 aarch64,arm64ec —— -arch=win64 会拉进 x86_64 趟（无定义）炸 ntdll x64 链接"
+        return 1
+      fi
+      echo "0025 后 ARM64X 工具链形态门禁通过（makedep -marm64x 导入库 / winebuild -N 原生视图 / winegcc 资源单点 / win32u SYSCALL_FUNC / suspend 架构收窄 —— v3.4.15）"
     else
       echo "arm64ec 完整性门禁通过（loader.c 含 load_arm64ec_module、makedep.c 含 arm64x —— wine 10+ Linux 宿主形态）"
       # v3.4.13：wine-10+ 原生树同样拒绝成对伪影（防御性，双保险）

@@ -63,6 +63,47 @@
 #   syswow64 文件注入链路（Wow64Install/FakeDllsWow64）恢复完整，
 #   .anwind-wine-info kind 自动落 arm64ec-wow64-x11（下游 ARM64X 校验生效）。
 
+# v3.4.15【第二轮修复 —— 全链路本地真实编译验证（llvm-mingw-20251202，与 CI 同款）】
+#   【CI wine-build-log-arm64ec (20).zip 实证】第一轮（v3.4.12）的 memory.c
+#   段含手写 naked FlushInstructionCache 包装 —— SEH 指令覆盖 8 字节指令而
+#   .seh 仅覆盖 4 字节 → llvm "Incorrect size for #FlushInstructionCache
+#   prologue" 编译中止。本轮起全部按 wine-10 上游真实形态逐字回移，且整个
+#   补丁经【本地全链路构建】验证（工具链/补丁链/配置与 CI 逐字节同源）：
+#     1. kernelbase/memory.c：删除发明包装，改为上游最小差异（return
+#        set_ntstatus(NtFlushInstructionCache(...))；对称 3+3 上下文 hunk，
+#        兼容 GNU patch --fuzz=0 的"前重后轻即只匹配文件尾"行为）。
+#     2. makedep.c output_import_lib：补上 wine-10 的 -marm64x（ARM64X
+#        导入库生成）—— 缺失时所有合并镜像链接死于 "(native symbol)"。
+#     3. winebuild import.c build_dlltool_import_lib：补上 native 视图
+#        def + dlltool -N（双机种导入成员；llvm-dlltool -N 实测支持）。
+#     4. winegcc build_spec_obj：资源文件只进第一个（EC 视图）spec.o ——
+#        两个 spec.o 都带 .rsrc 时 lld-link "more than one resource obj"。
+#     5. ntdll/signal_arm64ec.c：need_backtrace 本地化（exception.c 的
+#        static 不可见）+ unwind.h 补 RtlVirtualUnwind2 原型（上游在
+#        rtlsupportapi.h，wine 9.0 无此头文件）。
+#     6. winnt.h：补 KNONVOLATILE_CONTEXT_POINTERS_ARM64（无守卫区，EC 编
+#        译单元只见 __x86_64__ 不见 __aarch64__）+ SCOPE_TABLE_AMD64 别名
+#        + IMAGE_ARM64_RUNTIME_FUNCTION_ENTRY_XDATA + RtlAddGrowable 声明
+#        对齐 NTSTATUS。
+#     7. signal_x86_64.c：本地 SCOPE_TABLE 移除（winnt.h 统一）+
+#        RtlIsEcCode ULONG_PTR 形态。
+#     8. signal_i386.c（新增文件）：is_valid_frame 已在 ntdll_misc.h，
+#        本地版删除、调用点 ULONG_PTR 转型（wine-10 同款）。
+#     9. exception.c：growable function table 三函数 #ifndef __arm64ec__
+#        守卫（本回移的 unwind.c 为 EC 专属，非 EC 架仍由本文件提供）+
+#        返回类型对齐 NTSTATUS。
+#    10. unwind.c x86_64 段 RtlVirtualUnwind 返回 PVOID（与共享 winnt.h
+#        声明的 9.0 signal_*.c 定义一致）。
+#    11. ntdll.spec RtlWow64SuspendThread -arch=win64 → aarch64,arm64ec +
+#        wow64/process.c 按架构分流（x86_64 宿主趟无定义，win64 会炸链接）。
+#    12. win32u/main.c（新增文件）：SYSCALL_FUNC(name) 包装 +
+#        hybrid_patchable（wine-10 双参 __ASM_SYSCALL_FUNC 形态；9.0 的
+#        单参宏已被 asm.h 替换，403 个调用点全部重写）。
+#   本地验证基线：kernelbase / ntdll（ARM64X 合并镜像）/ winecrt0 / wow64
+#   全家 / kernel32 / xtajit64 / msvcrt / win32u 全绿，其余 979 个 dll 清
+#   扫无 PE 侧错误（amd_ags unixlib 缺 libdrm 头为本地环境差异，CI 有）。
+
+
 --- a/configure.ac	2025-01-20 21:30:19.000000000 +0000
 +++ b/configure.ac	2026-11-13 09:11:54.726470995 +0000
 @@ -189,6 +189,8 @@
@@ -102,6 +143,7 @@
  WINE_CONFIG_MAKEFILE(fonts)
  WINE_CONFIG_MAKEFILE(include)
  WINE_CONFIG_MAKEFILE(libs/adsiid)
+
 --- a/dlls/kernel32/thread.c	2025-01-20 21:30:19.000000000 +0000
 +++ b/dlls/kernel32/thread.c	2026-11-13 09:11:54.839471627 +0000
 @@ -55,6 +55,15 @@
@@ -120,6 +162,7 @@
  #else
  void __fastcall BaseThreadInitThunk( DWORD unknown, LPTHREAD_START_ROUTINE entry, void *arg )
  {
+
 --- a/dlls/kernelbase/debug.c	2025-01-20 21:30:19.000000000 +0000
 +++ b/dlls/kernelbase/debug.c	2026-11-14 00:00:00.000000000 +0000
 @@ -313,7 +313,34 @@
@@ -205,48 +248,17 @@
   * Delphi saves rcx, rdx, r8 and r9 to the stack.  It then calls
 
 --- a/dlls/kernelbase/memory.c	2025-01-20 21:30:19.000000000 +0000
-+++ b/dlls/kernelbase/memory.c	2026-11-13 09:11:54.840471632 +0000
-@@ -125,7 +125,7 @@
- /****************************************************************************
-  *           FlushInstructionCache   (kernelbase.@)
-  */
--BOOL WINAPI DECLSPEC_HOTPATCH FlushInstructionCache( HANDLE process, LPCVOID addr, SIZE_T size )
-+static BOOL flush_instruction_cache( HANDLE process, LPCVOID addr, SIZE_T size ) /* anwind backport (wine-10) */
- {
-     CROSS_PROCESS_WORK_LIST *list;
- 
-@@ -134,8 +134,30 @@
++++ b/dlls/kernelbase/memory.c	2026-11-14 00:00:00.000000000 +0000
+@@ -134,7 +134,7 @@
          send_cross_process_notification( list, CrossProcessFlushCache, addr, size, 0 );
          close_cross_process_connection( list );
      }
 -    return TRUE;
-+    return set_ntstatus( NtFlushInstructionCache( process, addr, size ));
-+}
-+
-+#ifdef __arm64ec__
-+/* Wrapper that preserves RDX/X0 (anwind backport, wine-10) */
-+BOOL WINAPI __attribute__((naked)) FlushInstructionCache( HANDLE process, LPCVOID addr, SIZE_T size )
-+{
-+    asm( ".seh_proc \"#FlushInstructionCache\"\n\t"
-+         "stp x29, x30, [sp, #-32]!\n\t"
-+         "str x1, [sp, #16]\n\t"
-+         ".seh_save_fplr_x 32\n\t"
-+         ".seh_endprologue\n\t"
-+         "bl \"#flush_instruction_cache\"\n\t"
-+         "ldr x1, [sp, #16]\n\t"
-+         "ldp x29, x30, [sp], #32\n\t"
-+         "ret\n\t"
-+         ".seh_endproc" );
-+}
-+#else
-+BOOL WINAPI DECLSPEC_HOTPATCH FlushInstructionCache( HANDLE process, LPCVOID addr, SIZE_T size )
-+{
-+    return flush_instruction_cache( process, addr, size );
++    return set_ntstatus( NtFlushInstructionCache( process, addr, size )); /* anwind backport (wine-10) */
  }
-+#endif
  
  
- /***********************************************************************
+
 --- a/dlls/ntdll/Makefile.in	2025-01-20 21:30:19.000000000 +0000
 +++ b/dlls/ntdll/Makefile.in	2026-11-13 09:11:58.206490466 +0000
 @@ -43,6 +43,7 @@
@@ -257,6 +269,7 @@
  	threadpool.c \
  	time.c \
  	unix/cdrom.c \
+
 --- a/dlls/ntdll/actctx.c	2025-01-20 21:30:19.000000000 +0000
 +++ b/dlls/ntdll/actctx.c	2026-11-14 00:00:00.000000000 +0000
 @@ -596,12 +596,12 @@
@@ -287,7 +300,7 @@
      {
 
 --- a/dlls/ntdll/exception.c	2025-01-20 21:30:19.000000000 +0000
-+++ b/dlls/ntdll/exception.c	2026-11-13 09:11:58.207490472 +0000
++++ b/dlls/ntdll/exception.c	2026-11-14 00:00:00.000000000 +0000
 @@ -301,7 +301,7 @@
  }
  
@@ -297,7 +310,31 @@
  
  struct dynamic_unwind_entry
  {
-@@ -725,6 +725,11 @@
+@@ -519,11 +519,12 @@
+ }
+ 
+ 
++#ifndef __arm64ec__ /* anwind backport (wine-10): growable function table moved to unwind.c (EC pass); kept here for non-EC arches */
+ /*************************************************************************
+  *              RtlAddGrowableFunctionTable   (NTDLL.@)
+  */
+-DWORD WINAPI RtlAddGrowableFunctionTable( void **table, RUNTIME_FUNCTION *functions, DWORD count,
+-                                          DWORD max_count, ULONG_PTR base, ULONG_PTR end )
++NTSTATUS WINAPI RtlAddGrowableFunctionTable( void **table, RUNTIME_FUNCTION *functions, DWORD count,
++                                               DWORD max_count, ULONG_PTR base, ULONG_PTR end ) /* anwind backport (wine-10): NTSTATUS (body already returns statuses) */
+ {
+     struct dynamic_unwind_entry *entry;
+ 
+@@ -598,6 +599,8 @@
+     RtlFreeHeap( GetProcessHeap(), 0, to_free );
+ }
+ 
++#endif /* !__arm64ec__ */
++
+ 
+ /**********************************************************************
+  *              RtlDeleteFunctionTable   (NTDLL.@)
+@@ -725,6 +728,11 @@
      return func;
  }
  
@@ -309,7 +346,7 @@
  #else
  
  void register_module_exception_directory( void *module )
-@@ -1282,3 +1287,150 @@
+@@ -1282,3 +1290,150 @@
      }
      return STATUS_SUCCESS;
  }
@@ -460,6 +497,7 @@
 +#endif /* __arm64ec__ */
 +
 +/* anwind backport (wine-10): EC exception core end */
+
 --- a/dlls/ntdll/loader.c	2025-01-20 21:30:19.000000000 +0000
 +++ b/dlls/ntdll/loader.c	2026-11-14 00:00:00.000000000 +0000
 @@ -52,19 +52,14 @@
@@ -683,7 +721,7 @@
      if (NtCurrentTeb()->WowTebOffset) init_wow64( context );
 
 --- a/dlls/ntdll/ntdll.spec	2025-01-20 21:30:19.000000000 +0000
-+++ b/dlls/ntdll/ntdll.spec	2026-11-13 09:11:58.160490208 +0000
++++ b/dlls/ntdll/ntdll.spec	2026-11-14 00:00:00.000000000 +0000
 @@ -70,6 +70,7 @@
  @ stdcall -norelay KiRaiseUserExceptionDispatcher()
  @ stdcall -norelay KiUserApcDispatcher(ptr long long long ptr)
@@ -697,7 +735,7 @@
  @ stdcall RtlWow64IsWowGuestMachineSupported(long ptr)
  @ stdcall -arch=win64 RtlWow64PopAllCrossProcessWorkFromWorkList(ptr ptr)
 +@ stdcall -arch=arm64ec ProcessPendingCrossProcessEmulatorWork()
-+@ stdcall -arch=win64 RtlWow64SuspendThread(long ptr)
++@ stdcall -arch=aarch64,arm64ec RtlWow64SuspendThread(long ptr) # anwind: suspend pipeline defined for aarch64 (signal_arm64.c) + EC (signal_arm64ec.c) only; win64 would break the x86_64 pass link
  @ stdcall -arch=win64 RtlWow64PopCrossProcessWorkFromFreeList(ptr)
  @ stdcall -arch=win64 RtlWow64PushCrossProcessWorkOntoFreeList(ptr ptr)
  @ stdcall -arch=win64 RtlWow64PushCrossProcessWorkOntoWorkList(ptr ptr ptr)
@@ -709,6 +747,7 @@
  @ extern -private __wine_unixlib_handle
  @ stdcall -syscall __wine_set_unix_env(ptr ptr)
  
+
 --- a/dlls/ntdll/ntdll_misc.h	2025-01-20 21:30:19.000000000 +0000
 +++ b/dlls/ntdll/ntdll_misc.h	2026-11-13 09:11:58.189490371 +0000
 @@ -41,6 +41,70 @@
@@ -819,6 +858,7 @@
  
  #endif
  
+
 --- a/dlls/ntdll/process.c	2025-01-20 21:30:19.000000000 +0000
 +++ b/dlls/ntdll/process.c	2026-11-13 09:11:54.818471509 +0000
 @@ -96,10 +96,11 @@
@@ -881,6 +921,7 @@
                             GetCurrentProcess(), section, 0, 0, DUPLICATE_SAME_ACCESS ))
          return;
  
+
 --- a/dlls/ntdll/signal_arm64.c	2025-01-20 21:30:19.000000000 +0000
 +++ b/dlls/ntdll/signal_arm64.c	2026-11-13 09:11:54.820471520 +0000
 @@ -90,17 +90,6 @@
@@ -987,9 +1028,10 @@
  /*************************************************************************
   *             RtlCaptureStackBackTrace (NTDLL.@)
   */
+
 --- a/dlls/ntdll/signal_arm64ec.c	2025-01-20 21:30:19.000000000 +0000
-+++ b/dlls/ntdll/signal_arm64ec.c	2026-11-13 09:12:31.675677238 +0000
-@@ -22,1765 +22,1600 @@
++++ b/dlls/ntdll/signal_arm64ec.c	2026-11-14 00:00:00.000000000 +0000
+@@ -22,1765 +22,1608 @@
  
  #include <stdlib.h>
  #include <stdarg.h>
@@ -3234,11 +3276,19 @@
 +/**********************************************************************
 + *           virtual_unwind
 + */
-+static NTSTATUS virtual_unwind( ULONG type, DISPATCHER_CONTEXT_ARM64EC *dispatch,
-+                                ARM64EC_NT_CONTEXT *context, BOOL dump_backtrace )
++static BOOL need_backtrace( DWORD exc_code ) /* anwind backport (wine-10): same form as 9.0 signal_x86_64.c / exception.c */
  {
 -    __ASM_SYSCALL_FUNC( __id_NtSuspendProcess );
 -}
++    if (!WINE_BACKTRACE_LOG_ON()) return FALSE;
++    return exc_code != EXCEPTION_WINE_NAME_THREAD && exc_code != DBG_PRINTEXCEPTION_WIDE_C
++           && exc_code != DBG_PRINTEXCEPTION_C && exc_code != EXCEPTION_WINE_CXX_EXCEPTION
++           && exc_code != 0x6ba;
++}
++
++static NTSTATUS virtual_unwind( ULONG type, DISPATCHER_CONTEXT_ARM64EC *dispatch,
++                                ARM64EC_NT_CONTEXT *context, BOOL dump_backtrace )
++{
 +    DISPATCHER_CONTEXT_NONVOLREG_ARM64 *nonvol_regs;
 +    LDR_DATA_TABLE_ENTRY *module = NULL;
 +    DWORD64 pc = context->Pc;
@@ -4035,7 +4085,7 @@
  }
  
  
-@@ -1790,193 +1625,457 @@
+@@ -1790,193 +1633,457 @@
  void WINAPI RtlUnwindEx( PVOID end_frame, PVOID target_ip, EXCEPTION_RECORD *rec,
                           PVOID retval, CONTEXT *context, UNWIND_HISTORY_TABLE *table )
  {
@@ -4620,7 +4670,7 @@
  }
  
  
-@@ -1985,21 +2084,60 @@
+@@ -1985,21 +2092,60 @@
   */
  void WINAPI LdrInitializeThunk( CONTEXT *arm_context, ULONG_PTR unk2, ULONG_PTR unk3, ULONG_PTR unk4 )
  {
@@ -4688,7 +4738,7 @@
  }
  
  
-@@ -2008,7 +2146,11 @@
+@@ -2008,7 +2154,11 @@
   */
  void __attribute__((naked)) DbgBreakPoint(void)
  {
@@ -4701,7 +4751,7 @@
  }
  
  
-@@ -2017,7 +2159,11 @@
+@@ -2017,7 +2167,11 @@
   */
  void __attribute__((naked)) DbgUserBreakPoint(void)
  {
@@ -4714,8 +4764,63 @@
  }
  
  #endif  /* __arm64ec__ */
+
+--- a/dlls/ntdll/signal_i386.c	2025-01-20 21:30:19.000000000 +0000
++++ b/dlls/ntdll/signal_i386.c	2026-11-14 00:00:00.000000000 +0000
+@@ -106,15 +106,7 @@
+ #undef SYSCALL_ENTRY
+ 
+ 
+-/*******************************************************************
+- *         is_valid_frame
+- */
+-static inline BOOL is_valid_frame( void *frame )
+-{
+-    if ((ULONG_PTR)frame & 3) return FALSE;
+-    return (frame >= NtCurrentTeb()->Tib.StackLimit &&
+-            (void **)frame < (void **)NtCurrentTeb()->Tib.StackBase - 1);
+-}
++/* anwind backport (wine-10): is_valid_frame moved to ntdll_misc.h (ULONG_PTR form) */
+ 
+ /*******************************************************************
+  *         raise_handler
+@@ -163,7 +155,7 @@
+     while (frame != (EXCEPTION_REGISTRATION_RECORD*)~0UL)
+     {
+         /* Check frame address */
+-        if (!is_valid_frame( frame ))
++        if (!is_valid_frame( (ULONG_PTR)frame ))
+         {
+             rec->ExceptionFlags |= EH_STACK_INVALID;
+             break;
+@@ -457,7 +449,7 @@
+         if (pEndFrame && (frame > pEndFrame))
+             raise_status( STATUS_INVALID_UNWIND_TARGET, pRecord );
+ 
+-        if (!is_valid_frame( frame )) raise_status( STATUS_BAD_STACK, pRecord );
++        if (!is_valid_frame( (ULONG_PTR)frame )) raise_status( STATUS_BAD_STACK, pRecord );
+ 
+         /* Call handler */
+         TRACE( "calling handler at %p code=%lx flags=%lx\n",
+@@ -569,13 +561,13 @@
+ 
+     while (skip--)
+     {
+-        if (!is_valid_frame( frame )) return 0;
++        if (!is_valid_frame( (ULONG_PTR)frame )) return 0;
+         frame = (ULONG *)*frame;
+     }
+ 
+     for (i = 0; i < count; i++)
+     {
+-        if (!is_valid_frame( frame )) break;
++        if (!is_valid_frame( (ULONG_PTR)frame )) break;
+         buffer[i] = (void *)frame[1];
+         if (hash) *hash += frame[1];
+         frame = (ULONG *)*frame;
+
 --- a/dlls/ntdll/signal_x86_64.c	2025-01-20 21:30:19.000000000 +0000
-+++ b/dlls/ntdll/signal_x86_64.c	2026-11-13 09:11:54.789471347 +0000
++++ b/dlls/ntdll/signal_x86_64.c	2026-11-14 00:00:00.000000000 +0000
 @@ -18,7 +18,11 @@
   * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
   */
@@ -4729,7 +4834,26 @@
  
  #include <stdlib.h>
  #include <stdarg.h>
-@@ -339,6 +343,42 @@
+@@ -38,17 +42,7 @@
+ WINE_DECLARE_DEBUG_CHANNEL(relay);
+ WINE_DECLARE_DEBUG_CHANNEL(threadname);
+ 
+-typedef struct _SCOPE_TABLE
+-{
+-    ULONG Count;
+-    struct
+-    {
+-        ULONG BeginAddress;
+-        ULONG EndAddress;
+-        ULONG HandlerAddress;
+-        ULONG JumpTarget;
+-    } ScopeRecord[1];
+-} SCOPE_TABLE, *PSCOPE_TABLE;
++/* anwind backport (wine-10): SCOPE_TABLE moved to winnt.h (SCOPE_TABLE_AMD64, aliased for the __x86_64__ view) */
+ 
+ 
+ /* layering violation: the setjmp buffer is defined in msvcrt, but used by RtlUnwindEx */
+@@ -339,6 +333,42 @@
  __ASM_GLOBAL_FUNC( __chkstk, "ret" );
  
  
@@ -4772,12 +4896,22 @@
  /***********************************************************************
   *		RtlCaptureContext (NTDLL.@)
   */
-@@ -1765,4 +1805,5 @@
+@@ -749,7 +779,7 @@
+ /**************************************************************************
+  *              RtlIsEcCode (NTDLL.@)
+  */
+-BOOLEAN WINAPI RtlIsEcCode( const void *ptr )
++BOOLEAN WINAPI RtlIsEcCode( ULONG_PTR ptr ) /* anwind backport (wine-10): ULONG_PTR form */
+ {
+     return FALSE;
+ }
+@@ -1765,4 +1795,5 @@
                      "\n\tnop; nop; nop; nop; nop; nop; nop; nop"
                      "\n\tnop; nop; nop; nop; nop; nop" );
  
 +#endif  /* __arm64ec_x64__ */
  #endif  /* __x86_64__ */
+
 --- a/dlls/ntdll/unix/loader.c	2025-01-20 21:30:19.000000000 +0000
 +++ b/dlls/ntdll/unix/loader.c	2026-11-13 09:11:54.842471644 +0000
 @@ -110,6 +110,7 @@
@@ -4870,6 +5004,7 @@
      if (status == STATUS_DLL_NOT_FOUND)
      {
          free( name );
+
 --- a/dlls/ntdll/unix/process.c	2025-01-20 21:30:19.000000000 +0000
 +++ b/dlls/ntdll/unix/process.c	2026-11-13 09:11:54.842471644 +0000
 @@ -801,7 +801,12 @@
@@ -4886,6 +5021,7 @@
      if (!(startup_info = create_startup_info( attr.ObjectName, process_flags, params, &pe_info, &startup_info_size )))
          goto done;
      env_size = get_env_size( params, &winedebug );
+
 --- a/dlls/ntdll/unix/signal_arm64.c	2025-01-20 21:30:19.000000000 +0000
 +++ b/dlls/ntdll/unix/signal_arm64.c	2026-11-13 09:11:54.842471644 +0000
 @@ -1711,6 +1711,16 @@
@@ -4905,6 +5041,7 @@
      frame->syscall_cfa    = syscall_cfa;
      syscall_frame_fixup_for_fastpath( frame );
  
+
 --- a/dlls/ntdll/unix/thread.c	2025-01-20 21:30:19.000000000 +0000
 +++ b/dlls/ntdll/unix/thread.c	2026-11-13 09:11:54.842471644 +0000
 @@ -1245,6 +1245,24 @@
@@ -4932,6 +5069,7 @@
      /* native stack */
      if ((status = virtual_alloc_thread_stack( &stack, 0, limit, reserve_size, commit_size, TRUE )))
          return status;
+
 --- a/dlls/ntdll/unix/unix_private.h	2025-01-20 21:30:19.000000000 +0000
 +++ b/dlls/ntdll/unix/unix_private.h	2026-11-13 09:11:58.160490208 +0000
 @@ -137,6 +137,7 @@
@@ -4956,8 +5094,9 @@
  static inline void mutex_lock( pthread_mutex_t *mutex )
  {
      if (!process_exiting) pthread_mutex_lock( mutex );
+
 --- a/dlls/ntdll/unwind.c	1970-01-01 00:00:00.000000000 +0000
-+++ b/dlls/ntdll/unwind.c	2026-11-13 09:11:58.206490466 +0000
++++ b/dlls/ntdll/unwind.c	2026-11-14 00:00:00.000000000 +0000
 @@ -0,0 +1,2469 @@
 +/*
 + * Exception unwinding
@@ -7252,10 +7391,10 @@
 +/**********************************************************************
 + *              RtlVirtualUnwind   (NTDLL.@)
 + */
-+PEXCEPTION_ROUTINE WINAPI RtlVirtualUnwind( ULONG type, ULONG64 base, ULONG64 pc,
-+                                            RUNTIME_FUNCTION *func, CONTEXT *context,
-+                                            PVOID *handler_data, ULONG64 *frame_ret,
-+                                            KNONVOLATILE_CONTEXT_POINTERS *ctx_ptr )
++PVOID WINAPI RtlVirtualUnwind( ULONG type, ULONG64 base, ULONG64 pc, /* anwind backport: PVOID to match the 9.0 signal_*.c definitions sharing the winnt.h declaration */
++                               RUNTIME_FUNCTION *func, CONTEXT *context,
++                               PVOID *handler_data, ULONG64 *frame_ret,
++                               KNONVOLATILE_CONTEXT_POINTERS *ctx_ptr )
 +{
 +    PEXCEPTION_ROUTINE handler;
 +
@@ -7428,9 +7567,10 @@
 +#endif  /* !__i386__ */
 +
 +#endif /* __arm64ec__ */
+
 --- a/dlls/ntdll/unwind.h	1970-01-01 00:00:00.000000000 +0000
-+++ b/dlls/ntdll/unwind.h	2026-11-13 09:11:54.789471347 +0000
-@@ -0,0 +1,223 @@
++++ b/dlls/ntdll/unwind.h	2026-11-14 00:00:00.000000000 +0000
+@@ -0,0 +1,234 @@
 +/*
 + * Exception unwinding definitions
 + *
@@ -7460,6 +7600,17 @@
 +#include "winnt.h"
 +
 +#if defined(__aarch64__) || defined(__arm64ec__)
++
++/* anwind backport (wine-10): declared upstream in include/rtlsupportapi.h
++ * (which wine 9.0 lacks). Generic names: in arm64ec translation units they
++ * resolve to the AMD64 aliases, matching the x86_64-section definition in
++ * unwind.c that EC exception dispatch calls (x64 ABI view). */
++NTSTATUS WINAPI RtlVirtualUnwind2( ULONG type, ULONG_PTR base, ULONG_PTR pc,
++                                   RUNTIME_FUNCTION *func, CONTEXT *context,
++                                   BOOLEAN *mach_frame_unwound, void **handler_data,
++                                   ULONG_PTR *frame_ret, KNONVOLATILE_CONTEXT_POINTERS *ctx_ptr,
++                                   ULONG_PTR *limit_low, ULONG_PTR *limit_high,
++                                   PEXCEPTION_ROUTINE *handler_ret, ULONG flags );
 +
 +static inline ULONG ctx_flags_x64_to_arm( ULONG flags )
 +{
@@ -7654,6 +7805,2539 @@
 +#endif /* __aarch64__ || __arm64ec__ */
 +
 +#endif /* __WINE_NTDLL_UNWIND_H */
+
+--- a/dlls/win32u/main.c	2025-01-20 21:30:19.000000000 +0000
++++ b/dlls/win32u/main.c	2026-11-14 00:00:00.000000000 +0000
+@@ -45,106 +45,107 @@
+ #undef SYSCALL_ENTRY
+ };
+ 
+-#define SYSCALL_API __attribute__((naked))
++#define SYSCALL_API __attribute__((naked, hybrid_patchable)) /* anwind backport (wine-10) */
++#define SYSCALL_FUNC(name) __ASM_SYSCALL_FUNC( __id_##name, name ) /* anwind backport (wine-10) */
+ 
+ INT SYSCALL_API NtGdiAbortDoc( HDC hdc )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiAbortDoc );
++    SYSCALL_FUNC( NtGdiAbortDoc );
+ }
+ 
+ BOOL SYSCALL_API NtGdiAbortPath( HDC hdc )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiAbortPath );
++    SYSCALL_FUNC( NtGdiAbortPath );
+ }
+ 
+ HANDLE SYSCALL_API NtGdiAddFontMemResourceEx( void *ptr, DWORD size, void *dv, ULONG dv_size,
+                                               DWORD *count )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiAddFontMemResourceEx );
++    SYSCALL_FUNC( NtGdiAddFontMemResourceEx );
+ }
+ 
+ INT SYSCALL_API NtGdiAddFontResourceW( const WCHAR *str, ULONG size, ULONG files, DWORD flags,
+                                        DWORD tid, void *dv )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiAddFontResourceW );
++    SYSCALL_FUNC( NtGdiAddFontResourceW );
+ }
+ 
+ BOOL SYSCALL_API NtGdiAlphaBlend( HDC hdcDst, int xDst, int yDst, int widthDst, int heightDst,
+                                   HDC hdcSrc, int xSrc, int ySrc, int widthSrc, int heightSrc,
+                                   DWORD blend_func, HANDLE xform )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiAlphaBlend );
++    SYSCALL_FUNC( NtGdiAlphaBlend );
+ }
+ 
+ BOOL SYSCALL_API NtGdiAngleArc( HDC hdc, INT x, INT y, DWORD dwRadius, DWORD start_angle, DWORD sweep_angle )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiAngleArc );
++    SYSCALL_FUNC( NtGdiAngleArc );
+ }
+ 
+ BOOL SYSCALL_API NtGdiArcInternal( UINT type, HDC hdc, INT left, INT top, INT right,
+                                    INT bottom, INT xstart, INT ystart, INT xend, INT yend )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiArcInternal );
++    SYSCALL_FUNC( NtGdiArcInternal );
+ }
+ 
+ BOOL SYSCALL_API NtGdiBeginPath( HDC hdc )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiBeginPath );
++    SYSCALL_FUNC( NtGdiBeginPath );
+ }
+ 
+ BOOL SYSCALL_API NtGdiBitBlt( HDC hdc_dst, INT x_dst, INT y_dst, INT width, INT height,
+                               HDC hdc_src, INT x_src, INT y_src, DWORD rop, DWORD bk_color, FLONG fl )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiBitBlt );
++    SYSCALL_FUNC( NtGdiBitBlt );
+ }
+ 
+ BOOL SYSCALL_API NtGdiCloseFigure( HDC hdc )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiCloseFigure );
++    SYSCALL_FUNC( NtGdiCloseFigure );
+ }
+ 
+ INT SYSCALL_API NtGdiCombineRgn( HRGN hDest, HRGN hSrc1, HRGN hSrc2, INT mode )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiCombineRgn );
++    SYSCALL_FUNC( NtGdiCombineRgn );
+ }
+ 
+ BOOL SYSCALL_API NtGdiComputeXformCoefficients( HDC hdc )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiComputeXformCoefficients );
++    SYSCALL_FUNC( NtGdiComputeXformCoefficients );
+ }
+ 
+ HBITMAP SYSCALL_API NtGdiCreateBitmap( INT width, INT height, UINT planes,
+                                        UINT bpp, const void *bits )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiCreateBitmap );
++    SYSCALL_FUNC( NtGdiCreateBitmap );
+ }
+ 
+ HANDLE SYSCALL_API NtGdiCreateClientObj( ULONG type )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiCreateClientObj );
++    SYSCALL_FUNC( NtGdiCreateClientObj );
+ }
+ 
+ HBITMAP SYSCALL_API NtGdiCreateCompatibleBitmap( HDC hdc, INT width, INT height )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiCreateCompatibleBitmap );
++    SYSCALL_FUNC( NtGdiCreateCompatibleBitmap );
+ }
+ 
+ HDC SYSCALL_API NtGdiCreateCompatibleDC( HDC hdc )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiCreateCompatibleDC );
++    SYSCALL_FUNC( NtGdiCreateCompatibleDC );
+ }
+ 
+ HBRUSH SYSCALL_API NtGdiCreateDIBBrush( const void *data, UINT coloruse, UINT size,
+                                         BOOL is_8x8, BOOL pen, const void *client )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiCreateDIBBrush );
++    SYSCALL_FUNC( NtGdiCreateDIBBrush );
+ }
+ 
+ HBITMAP SYSCALL_API NtGdiCreateDIBSection( HDC hdc, HANDLE section, DWORD offset, const BITMAPINFO *bmi,
+                                            UINT usage, UINT header_size, ULONG flags,
+                                            ULONG_PTR color_space, void **bits )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiCreateDIBSection );
++    SYSCALL_FUNC( NtGdiCreateDIBSection );
+ }
+ 
+ HBITMAP SYSCALL_API NtGdiCreateDIBitmapInternal( HDC hdc, INT width, INT height, DWORD init,
+@@ -152,195 +153,195 @@
+                                                  UINT coloruse, UINT max_info, UINT max_bits,
+                                                  ULONG flags, HANDLE xform )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiCreateDIBitmapInternal );
++    SYSCALL_FUNC( NtGdiCreateDIBitmapInternal );
+ }
+ 
+ HRGN SYSCALL_API NtGdiCreateEllipticRgn( INT left, INT top, INT right, INT bottom )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiCreateEllipticRgn );
++    SYSCALL_FUNC( NtGdiCreateEllipticRgn );
+ }
+ 
+ HPALETTE SYSCALL_API NtGdiCreateHalftonePalette( HDC hdc )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiCreateHalftonePalette );
++    SYSCALL_FUNC( NtGdiCreateHalftonePalette );
+ }
+ 
+ HBRUSH SYSCALL_API NtGdiCreateHatchBrushInternal( INT style, COLORREF color, BOOL pen )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiCreateHatchBrushInternal );
++    SYSCALL_FUNC( NtGdiCreateHatchBrushInternal );
+ }
+ 
+ HDC SYSCALL_API NtGdiCreateMetafileDC( HDC hdc )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiCreateMetafileDC );
++    SYSCALL_FUNC( NtGdiCreateMetafileDC );
+ }
+ 
+ HPALETTE SYSCALL_API NtGdiCreatePaletteInternal( const LOGPALETTE *palette, UINT count )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiCreatePaletteInternal );
++    SYSCALL_FUNC( NtGdiCreatePaletteInternal );
+ }
+ 
+ HBRUSH SYSCALL_API NtGdiCreatePatternBrushInternal( HBITMAP bitmap, BOOL pen, BOOL is_8x8 )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiCreatePatternBrushInternal );
++    SYSCALL_FUNC( NtGdiCreatePatternBrushInternal );
+ }
+ 
+ HPEN SYSCALL_API NtGdiCreatePen( INT style, INT width, COLORREF color, HBRUSH brush )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiCreatePen );
++    SYSCALL_FUNC( NtGdiCreatePen );
+ }
+ 
+ HRGN SYSCALL_API NtGdiCreateRectRgn( INT left, INT top, INT right, INT bottom )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiCreateRectRgn );
++    SYSCALL_FUNC( NtGdiCreateRectRgn );
+ }
+ 
+ HRGN SYSCALL_API NtGdiCreateRoundRectRgn( INT left, INT top, INT right, INT bottom,
+                                           INT ellipse_width, INT ellipse_height )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiCreateRoundRectRgn );
++    SYSCALL_FUNC( NtGdiCreateRoundRectRgn );
+ }
+ 
+ HBRUSH SYSCALL_API NtGdiCreateSolidBrush( COLORREF color, HBRUSH brush )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiCreateSolidBrush );
++    SYSCALL_FUNC( NtGdiCreateSolidBrush );
+ }
+ 
+ NTSTATUS SYSCALL_API NtGdiDdDDICheckVidPnExclusiveOwnership( const D3DKMT_CHECKVIDPNEXCLUSIVEOWNERSHIP *desc )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiDdDDICheckVidPnExclusiveOwnership );
++    SYSCALL_FUNC( NtGdiDdDDICheckVidPnExclusiveOwnership );
+ }
+ 
+ NTSTATUS SYSCALL_API NtGdiDdDDICloseAdapter( const D3DKMT_CLOSEADAPTER *desc )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiDdDDICloseAdapter );
++    SYSCALL_FUNC( NtGdiDdDDICloseAdapter );
+ }
+ 
+ NTSTATUS SYSCALL_API NtGdiDdDDICreateDCFromMemory( D3DKMT_CREATEDCFROMMEMORY *desc )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiDdDDICreateDCFromMemory );
++    SYSCALL_FUNC( NtGdiDdDDICreateDCFromMemory );
+ }
+ 
+ NTSTATUS SYSCALL_API NtGdiDdDDICreateDevice( D3DKMT_CREATEDEVICE *desc )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiDdDDICreateDevice );
++    SYSCALL_FUNC( NtGdiDdDDICreateDevice );
+ }
+ 
+ NTSTATUS SYSCALL_API NtGdiDdDDIDestroyDCFromMemory( const D3DKMT_DESTROYDCFROMMEMORY *desc )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiDdDDIDestroyDCFromMemory );
++    SYSCALL_FUNC( NtGdiDdDDIDestroyDCFromMemory );
+ }
+ 
+ NTSTATUS SYSCALL_API NtGdiDdDDIDestroyDevice( const D3DKMT_DESTROYDEVICE *desc )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiDdDDIDestroyDevice );
++    SYSCALL_FUNC( NtGdiDdDDIDestroyDevice );
+ }
+ 
+ NTSTATUS SYSCALL_API NtGdiDdDDIEscape( const D3DKMT_ESCAPE *desc )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiDdDDIEscape );
++    SYSCALL_FUNC( NtGdiDdDDIEscape );
+ }
+ 
+ NTSTATUS SYSCALL_API NtGdiDdDDIOpenAdapterFromDeviceName( D3DKMT_OPENADAPTERFROMDEVICENAME *desc )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiDdDDIOpenAdapterFromDeviceName );
++    SYSCALL_FUNC( NtGdiDdDDIOpenAdapterFromDeviceName );
+ }
+ 
+ NTSTATUS SYSCALL_API NtGdiDdDDIOpenAdapterFromHdc( D3DKMT_OPENADAPTERFROMHDC *desc )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiDdDDIOpenAdapterFromHdc );
++    SYSCALL_FUNC( NtGdiDdDDIOpenAdapterFromHdc );
+ }
+ 
+ NTSTATUS SYSCALL_API NtGdiDdDDIOpenAdapterFromLuid( D3DKMT_OPENADAPTERFROMLUID *desc )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiDdDDIOpenAdapterFromLuid );
++    SYSCALL_FUNC( NtGdiDdDDIOpenAdapterFromLuid );
+ }
+ 
+ NTSTATUS SYSCALL_API NtGdiDdDDIQueryAdapterInfo( D3DKMT_QUERYADAPTERINFO *desc )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiDdDDIQueryAdapterInfo );
++    SYSCALL_FUNC( NtGdiDdDDIQueryAdapterInfo );
+ }
+ 
+ NTSTATUS SYSCALL_API NtGdiDdDDIQueryStatistics( D3DKMT_QUERYSTATISTICS *stats )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiDdDDIQueryStatistics );
++    SYSCALL_FUNC( NtGdiDdDDIQueryStatistics );
+ }
+ 
+ NTSTATUS SYSCALL_API NtGdiDdDDIQueryVideoMemoryInfo( D3DKMT_QUERYVIDEOMEMORYINFO *desc )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiDdDDIQueryVideoMemoryInfo );
++    SYSCALL_FUNC( NtGdiDdDDIQueryVideoMemoryInfo );
+ }
+ 
+ NTSTATUS SYSCALL_API NtGdiDdDDISetQueuedLimit( D3DKMT_SETQUEUEDLIMIT *desc )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiDdDDISetQueuedLimit );
++    SYSCALL_FUNC( NtGdiDdDDISetQueuedLimit );
+ }
+ 
+ NTSTATUS SYSCALL_API NtGdiDdDDISetVidPnSourceOwner( const D3DKMT_SETVIDPNSOURCEOWNER *desc )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiDdDDISetVidPnSourceOwner );
++    SYSCALL_FUNC( NtGdiDdDDISetVidPnSourceOwner );
+ }
+ 
+ BOOL SYSCALL_API NtGdiDeleteClientObj( HGDIOBJ handle )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiDeleteClientObj );
++    SYSCALL_FUNC( NtGdiDeleteClientObj );
+ }
+ 
+ BOOL SYSCALL_API NtGdiDeleteObjectApp( HGDIOBJ obj )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiDeleteObjectApp );
++    SYSCALL_FUNC( NtGdiDeleteObjectApp );
+ }
+ 
+ INT SYSCALL_API NtGdiDescribePixelFormat( HDC hdc, INT format, UINT size, PIXELFORMATDESCRIPTOR *descr )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiDescribePixelFormat );
++    SYSCALL_FUNC( NtGdiDescribePixelFormat );
+ }
+ 
+ LONG SYSCALL_API NtGdiDoPalette( HGDIOBJ handle, WORD start, WORD count, void *entries,
+                                  DWORD func, BOOL inbound )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiDoPalette );
++    SYSCALL_FUNC( NtGdiDoPalette );
+ }
+ 
+ BOOL SYSCALL_API NtGdiDrawStream( HDC hdc, ULONG in, void *pvin )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiDrawStream );
++    SYSCALL_FUNC( NtGdiDrawStream );
+ }
+ 
+ BOOL SYSCALL_API NtGdiEllipse( HDC hdc, INT left, INT top, INT right, INT bottom )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiEllipse );
++    SYSCALL_FUNC( NtGdiEllipse );
+ }
+ 
+ INT SYSCALL_API NtGdiEndDoc( HDC hdc )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiEndDoc );
++    SYSCALL_FUNC( NtGdiEndDoc );
+ }
+ 
+ INT SYSCALL_API NtGdiEndPage( HDC hdc )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiEndPage );
++    SYSCALL_FUNC( NtGdiEndPage );
+ }
+ 
+ BOOL SYSCALL_API NtGdiEndPath( HDC hdc )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiEndPath );
++    SYSCALL_FUNC( NtGdiEndPath );
+ }
+ 
+ BOOL SYSCALL_API NtGdiEnumFonts( HDC hdc, ULONG type, ULONG win32_compat, ULONG face_name_len,
+                                  const WCHAR *face_name, ULONG charset, ULONG *count, void *buf )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiEnumFonts );
++    SYSCALL_FUNC( NtGdiEnumFonts );
+ }
+ 
+ BOOL SYSCALL_API NtGdiEqualRgn( HRGN hrgn1, HRGN hrgn2 )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiEqualRgn );
++    SYSCALL_FUNC( NtGdiEqualRgn );
+ }
+ 
+ INT SYSCALL_API NtGdiExcludeClipRect( HDC hdc, INT left, INT top, INT right, INT bottom )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiExcludeClipRect );
++    SYSCALL_FUNC( NtGdiExcludeClipRect );
+ }
+ 
+ HPEN SYSCALL_API NtGdiExtCreatePen( DWORD style, DWORD width, ULONG brush_style, ULONG color,
+@@ -348,500 +349,500 @@
+                                     const DWORD *style_bits, ULONG dib_size, BOOL old_style,
+                                     HBRUSH brush )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiExtCreatePen );
++    SYSCALL_FUNC( NtGdiExtCreatePen );
+ }
+ 
+ HRGN SYSCALL_API NtGdiExtCreateRegion( const XFORM *xform, DWORD count, const RGNDATA *rgndata )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiExtCreateRegion );
++    SYSCALL_FUNC( NtGdiExtCreateRegion );
+ }
+ 
+ INT SYSCALL_API NtGdiExtEscape( HDC hdc, WCHAR *driver, int driver_id, INT escape, INT input_size,
+                                 const char *input, INT output_size, char *output )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiExtEscape );
++    SYSCALL_FUNC( NtGdiExtEscape );
+ }
+ 
+ BOOL SYSCALL_API NtGdiExtFloodFill( HDC hdc, INT x, INT y, COLORREF color, UINT fill_type )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiExtFloodFill );
++    SYSCALL_FUNC( NtGdiExtFloodFill );
+ }
+ 
+ INT SYSCALL_API NtGdiExtGetObjectW( HGDIOBJ handle, INT count, void *buffer )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiExtGetObjectW );
++    SYSCALL_FUNC( NtGdiExtGetObjectW );
+ }
+ 
+ INT SYSCALL_API NtGdiExtSelectClipRgn( HDC hdc, HRGN rgn, INT mode )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiExtSelectClipRgn );
++    SYSCALL_FUNC( NtGdiExtSelectClipRgn );
+ }
+ 
+ BOOL SYSCALL_API NtGdiExtTextOutW( HDC hdc, INT x, INT y, UINT flags, const RECT *lprect,
+                                    const WCHAR *str, UINT count, const INT *lpDx, DWORD cp )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiExtTextOutW );
++    SYSCALL_FUNC( NtGdiExtTextOutW );
+ }
+ 
+ BOOL SYSCALL_API NtGdiFillPath( HDC hdc )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiFillPath );
++    SYSCALL_FUNC( NtGdiFillPath );
+ }
+ 
+ BOOL SYSCALL_API NtGdiFillRgn( HDC hdc, HRGN hrgn, HBRUSH hbrush )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiFillRgn );
++    SYSCALL_FUNC( NtGdiFillRgn );
+ }
+ 
+ BOOL SYSCALL_API NtGdiFlattenPath( HDC hdc )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiFlattenPath );
++    SYSCALL_FUNC( NtGdiFlattenPath );
+ }
+ 
+ BOOL SYSCALL_API NtGdiFlush(void)
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiFlush );
++    SYSCALL_FUNC( NtGdiFlush );
+ }
+ 
+ BOOL SYSCALL_API NtGdiFontIsLinked( HDC hdc )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiFontIsLinked );
++    SYSCALL_FUNC( NtGdiFontIsLinked );
+ }
+ 
+ BOOL SYSCALL_API NtGdiFrameRgn( HDC hdc, HRGN hrgn, HBRUSH hbrush, INT width, INT height )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiFrameRgn );
++    SYSCALL_FUNC( NtGdiFrameRgn );
+ }
+ 
+ BOOL SYSCALL_API NtGdiGetAndSetDCDword( HDC hdc, UINT method, DWORD value, DWORD *prev_value )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiGetAndSetDCDword );
++    SYSCALL_FUNC( NtGdiGetAndSetDCDword );
+ }
+ 
+ INT SYSCALL_API NtGdiGetAppClipBox( HDC hdc, RECT *rect )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiGetAppClipBox );
++    SYSCALL_FUNC( NtGdiGetAppClipBox );
+ }
+ 
+ LONG SYSCALL_API NtGdiGetBitmapBits( HBITMAP hbitmap, LONG count, LPVOID bits )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiGetBitmapBits );
++    SYSCALL_FUNC( NtGdiGetBitmapBits );
+ }
+ 
+ BOOL SYSCALL_API NtGdiGetBitmapDimension( HBITMAP hbitmap, LPSIZE size )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiGetBitmapDimension );
++    SYSCALL_FUNC( NtGdiGetBitmapDimension );
+ }
+ 
+ UINT SYSCALL_API NtGdiGetBoundsRect( HDC hdc, RECT *rect, UINT flags )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiGetBoundsRect );
++    SYSCALL_FUNC( NtGdiGetBoundsRect );
+ }
+ 
+ BOOL SYSCALL_API NtGdiGetCharABCWidthsW( HDC hdc, UINT first, UINT last, WCHAR *chars,
+                                          ULONG flags, void *buffer )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiGetCharABCWidthsW );
++    SYSCALL_FUNC( NtGdiGetCharABCWidthsW );
+ }
+ 
+ BOOL SYSCALL_API NtGdiGetCharWidthInfo( HDC hdc, struct char_width_info *info )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiGetCharWidthInfo );
++    SYSCALL_FUNC( NtGdiGetCharWidthInfo );
+ }
+ 
+ BOOL SYSCALL_API NtGdiGetCharWidthW( HDC hdc, UINT first, UINT last, WCHAR *chars,
+                                      ULONG flags, void *buf )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiGetCharWidthW );
++    SYSCALL_FUNC( NtGdiGetCharWidthW );
+ }
+ 
+ BOOL SYSCALL_API NtGdiGetColorAdjustment( HDC hdc, COLORADJUSTMENT *ca )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiGetColorAdjustment );
++    SYSCALL_FUNC( NtGdiGetColorAdjustment );
+ }
+ 
+ BOOL SYSCALL_API NtGdiGetDCDword( HDC hdc, UINT method, DWORD *result )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiGetDCDword );
++    SYSCALL_FUNC( NtGdiGetDCDword );
+ }
+ 
+ HANDLE SYSCALL_API NtGdiGetDCObject( HDC hdc, UINT type )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiGetDCObject );
++    SYSCALL_FUNC( NtGdiGetDCObject );
+ }
+ 
+ BOOL SYSCALL_API NtGdiGetDCPoint( HDC hdc, UINT method, POINT *result )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiGetDCPoint );
++    SYSCALL_FUNC( NtGdiGetDCPoint );
+ }
+ 
+ INT SYSCALL_API NtGdiGetDIBitsInternal( HDC hdc, HBITMAP hbitmap, UINT startscan, UINT lines,
+                                         void *bits, BITMAPINFO *info, UINT coloruse,
+                                         UINT max_bits, UINT max_info )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiGetDIBitsInternal );
++    SYSCALL_FUNC( NtGdiGetDIBitsInternal );
+ }
+ 
+ INT SYSCALL_API NtGdiGetDeviceCaps( HDC hdc, INT cap )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiGetDeviceCaps );
++    SYSCALL_FUNC( NtGdiGetDeviceCaps );
+ }
+ 
+ BOOL SYSCALL_API NtGdiGetDeviceGammaRamp( HDC hdc, void *ptr )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiGetDeviceGammaRamp );
++    SYSCALL_FUNC( NtGdiGetDeviceGammaRamp );
+ }
+ 
+ DWORD SYSCALL_API NtGdiGetFontData( HDC hdc, DWORD table, DWORD offset, void *buffer, DWORD length )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiGetFontData );
++    SYSCALL_FUNC( NtGdiGetFontData );
+ }
+ 
+ BOOL SYSCALL_API NtGdiGetFontFileData( DWORD instance_id, DWORD file_index, UINT64 *offset,
+                                        void *buff, SIZE_T buff_size )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiGetFontFileData );
++    SYSCALL_FUNC( NtGdiGetFontFileData );
+ }
+ 
+ BOOL SYSCALL_API NtGdiGetFontFileInfo( DWORD instance_id, DWORD file_index, struct font_fileinfo *info,
+                                        SIZE_T size, SIZE_T *needed )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiGetFontFileInfo );
++    SYSCALL_FUNC( NtGdiGetFontFileInfo );
+ }
+ 
+ DWORD SYSCALL_API NtGdiGetFontUnicodeRanges( HDC hdc, GLYPHSET *lpgs )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiGetFontUnicodeRanges );
++    SYSCALL_FUNC( NtGdiGetFontUnicodeRanges );
+ }
+ 
+ DWORD SYSCALL_API NtGdiGetGlyphIndicesW( HDC hdc, const WCHAR *str, INT count,
+                                          WORD *indices, DWORD flags )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiGetGlyphIndicesW );
++    SYSCALL_FUNC( NtGdiGetGlyphIndicesW );
+ }
+ 
+ DWORD SYSCALL_API NtGdiGetGlyphOutline( HDC hdc, UINT ch, UINT format, GLYPHMETRICS *metrics,
+                                         DWORD size, void *buffer, const MAT2 *mat2,
+                                         BOOL ignore_rotation )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiGetGlyphOutline );
++    SYSCALL_FUNC( NtGdiGetGlyphOutline );
+ }
+ 
+ DWORD SYSCALL_API NtGdiGetKerningPairs( HDC hdc, DWORD count, KERNINGPAIR *kern_pair )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiGetKerningPairs );
++    SYSCALL_FUNC( NtGdiGetKerningPairs );
+ }
+ 
+ COLORREF SYSCALL_API NtGdiGetNearestColor( HDC hdc, COLORREF color )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiGetNearestColor );
++    SYSCALL_FUNC( NtGdiGetNearestColor );
+ }
+ 
+ UINT SYSCALL_API NtGdiGetNearestPaletteIndex( HPALETTE hpalette, COLORREF color )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiGetNearestPaletteIndex );
++    SYSCALL_FUNC( NtGdiGetNearestPaletteIndex );
+ }
+ 
+ UINT SYSCALL_API NtGdiGetOutlineTextMetricsInternalW( HDC hdc, UINT cbData,
+                                                       OUTLINETEXTMETRICW *lpOTM, ULONG opts )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiGetOutlineTextMetricsInternalW );
++    SYSCALL_FUNC( NtGdiGetOutlineTextMetricsInternalW );
+ }
+ 
+ INT SYSCALL_API NtGdiGetPath( HDC hdc, POINT *points, BYTE *types, INT size )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiGetPath );
++    SYSCALL_FUNC( NtGdiGetPath );
+ }
+ 
+ COLORREF SYSCALL_API NtGdiGetPixel( HDC hdc, INT x, INT y )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiGetPixel );
++    SYSCALL_FUNC( NtGdiGetPixel );
+ }
+ 
+ INT SYSCALL_API NtGdiGetRandomRgn( HDC hDC, HRGN hRgn, INT iCode )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiGetRandomRgn );
++    SYSCALL_FUNC( NtGdiGetRandomRgn );
+ }
+ 
+ BOOL SYSCALL_API NtGdiGetRasterizerCaps( RASTERIZER_STATUS *status, UINT size )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiGetRasterizerCaps );
++    SYSCALL_FUNC( NtGdiGetRasterizerCaps );
+ }
+ 
+ BOOL SYSCALL_API NtGdiGetRealizationInfo( HDC hdc, struct font_realization_info *info )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiGetRealizationInfo );
++    SYSCALL_FUNC( NtGdiGetRealizationInfo );
+ }
+ 
+ DWORD SYSCALL_API NtGdiGetRegionData( HRGN hrgn, DWORD count, RGNDATA *rgndata )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiGetRegionData );
++    SYSCALL_FUNC( NtGdiGetRegionData );
+ }
+ 
+ INT SYSCALL_API NtGdiGetRgnBox( HRGN hrgn, RECT *rect )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiGetRgnBox );
++    SYSCALL_FUNC( NtGdiGetRgnBox );
+ }
+ 
+ DWORD SYSCALL_API NtGdiGetSpoolMessage( void *ptr1, DWORD data2, void *ptr3, DWORD data4 )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiGetSpoolMessage );
++    SYSCALL_FUNC( NtGdiGetSpoolMessage );
+ }
+ 
+ UINT SYSCALL_API NtGdiGetSystemPaletteUse( HDC hdc )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiGetSystemPaletteUse );
++    SYSCALL_FUNC( NtGdiGetSystemPaletteUse );
+ }
+ 
+ UINT SYSCALL_API NtGdiGetTextCharsetInfo( HDC hdc, FONTSIGNATURE *fs, DWORD flags )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiGetTextCharsetInfo );
++    SYSCALL_FUNC( NtGdiGetTextCharsetInfo );
+ }
+ 
+ BOOL SYSCALL_API NtGdiGetTextExtentExW( HDC hdc, const WCHAR *str, INT count, INT max_ext,
+                                         INT *nfit, INT *dxs, SIZE *size, UINT flags )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiGetTextExtentExW );
++    SYSCALL_FUNC( NtGdiGetTextExtentExW );
+ }
+ 
+ INT SYSCALL_API NtGdiGetTextFaceW( HDC hdc, INT count, WCHAR *name, BOOL alias_name )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiGetTextFaceW );
++    SYSCALL_FUNC( NtGdiGetTextFaceW );
+ }
+ 
+ BOOL SYSCALL_API NtGdiGetTextMetricsW( HDC hdc, TEXTMETRICW *metrics, ULONG flags )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiGetTextMetricsW );
++    SYSCALL_FUNC( NtGdiGetTextMetricsW );
+ }
+ 
+ BOOL SYSCALL_API NtGdiGetTransform( HDC hdc, DWORD which, XFORM *xform )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiGetTransform );
++    SYSCALL_FUNC( NtGdiGetTransform );
+ }
+ 
+ BOOL SYSCALL_API NtGdiGradientFill( HDC hdc, TRIVERTEX *vert_array, ULONG nvert,
+                                     void *grad_array, ULONG ngrad, ULONG mode )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiGradientFill );
++    SYSCALL_FUNC( NtGdiGradientFill );
+ }
+ 
+ HFONT SYSCALL_API NtGdiHfontCreate( const void *logfont, ULONG size, ULONG type,
+                                     ULONG flags, void *data )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiHfontCreate );
++    SYSCALL_FUNC( NtGdiHfontCreate );
+ }
+ 
+ BOOL SYSCALL_API NtGdiIcmBrushInfo( HDC hdc, HBRUSH handle, BITMAPINFO *info, void *bits,
+                                     ULONG *bits_size, UINT *usage, BOOL *unk, UINT mode )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiIcmBrushInfo );
++    SYSCALL_FUNC( NtGdiIcmBrushInfo );
+ }
+ 
+ DWORD SYSCALL_API NtGdiInitSpool(void)
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiInitSpool );
++    SYSCALL_FUNC( NtGdiInitSpool );
+ }
+ 
+ INT SYSCALL_API NtGdiIntersectClipRect( HDC hdc, INT left, INT top, INT right, INT bottom )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiIntersectClipRect );
++    SYSCALL_FUNC( NtGdiIntersectClipRect );
+ }
+ 
+ BOOL SYSCALL_API NtGdiInvertRgn( HDC hdc, HRGN hrgn )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiInvertRgn );
++    SYSCALL_FUNC( NtGdiInvertRgn );
+ }
+ 
+ BOOL SYSCALL_API NtGdiLineTo( HDC hdc, INT x, INT y )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiLineTo );
++    SYSCALL_FUNC( NtGdiLineTo );
+ }
+ 
+ BOOL SYSCALL_API NtGdiMaskBlt( HDC hdcDest, INT nXDest, INT nYDest, INT nWidth, INT nHeight,
+                                HDC hdcSrc, INT nXSrc, INT nYSrc, HBITMAP hbmMask,
+                                INT xMask, INT yMask, DWORD dwRop, DWORD bk_color )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiMaskBlt );
++    SYSCALL_FUNC( NtGdiMaskBlt );
+ }
+ 
+ BOOL SYSCALL_API NtGdiModifyWorldTransform( HDC hdc, const XFORM *xform, DWORD mode )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiModifyWorldTransform );
++    SYSCALL_FUNC( NtGdiModifyWorldTransform );
+ }
+ 
+ BOOL SYSCALL_API NtGdiMoveTo( HDC hdc, INT x, INT y, POINT *pt )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiMoveTo );
++    SYSCALL_FUNC( NtGdiMoveTo );
+ }
+ 
+ INT SYSCALL_API NtGdiOffsetClipRgn( HDC hdc, INT x, INT y )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiOffsetClipRgn );
++    SYSCALL_FUNC( NtGdiOffsetClipRgn );
+ }
+ 
+ INT SYSCALL_API NtGdiOffsetRgn( HRGN hrgn, INT x, INT y )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiOffsetRgn );
++    SYSCALL_FUNC( NtGdiOffsetRgn );
+ }
+ 
+ HDC SYSCALL_API NtGdiOpenDCW( UNICODE_STRING *device, const DEVMODEW *devmode, UNICODE_STRING *output,
+                               ULONG type, BOOL is_display, HANDLE hspool, DRIVER_INFO_2W *driver_info,
+                               void *pdev )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiOpenDCW );
++    SYSCALL_FUNC( NtGdiOpenDCW );
+ }
+ 
+ BOOL SYSCALL_API NtGdiPatBlt( HDC hdc, INT left, INT top, INT width, INT height, DWORD rop )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiPatBlt );
++    SYSCALL_FUNC( NtGdiPatBlt );
+ }
+ 
+ HRGN SYSCALL_API NtGdiPathToRegion( HDC hdc )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiPathToRegion );
++    SYSCALL_FUNC( NtGdiPathToRegion );
+ }
+ 
+ BOOL SYSCALL_API NtGdiPlgBlt( HDC hdcDest, const POINT *lpPoint, HDC hdcSrc, INT nXSrc, INT nYSrc,
+                               INT nWidth, INT nHeight, HBITMAP hbmMask, INT xMask, INT yMask,
+                               DWORD bk_color )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiPlgBlt );
++    SYSCALL_FUNC( NtGdiPlgBlt );
+ }
+ 
+ BOOL SYSCALL_API NtGdiPolyDraw( HDC hdc, const POINT *points, const BYTE *types, DWORD count )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiPolyDraw );
++    SYSCALL_FUNC( NtGdiPolyDraw );
+ }
+ 
+ ULONG SYSCALL_API NtGdiPolyPolyDraw( HDC hdc, const POINT *points, const ULONG *counts,
+                                      DWORD count, UINT function )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiPolyPolyDraw );
++    SYSCALL_FUNC( NtGdiPolyPolyDraw );
+ }
+ 
+ BOOL SYSCALL_API NtGdiPtInRegion( HRGN hrgn, INT x, INT y )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiPtInRegion );
++    SYSCALL_FUNC( NtGdiPtInRegion );
+ }
+ 
+ BOOL SYSCALL_API NtGdiPtVisible( HDC hdc, INT x, INT y )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiPtVisible );
++    SYSCALL_FUNC( NtGdiPtVisible );
+ }
+ 
+ BOOL SYSCALL_API NtGdiRectInRegion( HRGN hrgn, const RECT *rect )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiRectInRegion );
++    SYSCALL_FUNC( NtGdiRectInRegion );
+ }
+ 
+ BOOL SYSCALL_API NtGdiRectVisible( HDC hdc, const RECT *rect )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiRectVisible );
++    SYSCALL_FUNC( NtGdiRectVisible );
+ }
+ 
+ BOOL SYSCALL_API NtGdiRectangle( HDC hdc, INT left, INT top, INT right, INT bottom )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiRectangle );
++    SYSCALL_FUNC( NtGdiRectangle );
+ }
+ 
+ BOOL SYSCALL_API NtGdiRemoveFontMemResourceEx( HANDLE handle )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiRemoveFontMemResourceEx );
++    SYSCALL_FUNC( NtGdiRemoveFontMemResourceEx );
+ }
+ 
+ BOOL SYSCALL_API NtGdiRemoveFontResourceW( const WCHAR *str, ULONG size, ULONG files, DWORD flags,
+                                            DWORD tid, void *dv )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiRemoveFontResourceW );
++    SYSCALL_FUNC( NtGdiRemoveFontResourceW );
+ }
+ 
+ BOOL SYSCALL_API NtGdiResetDC( HDC hdc, const DEVMODEW *devmode, BOOL *banding,
+                                DRIVER_INFO_2W *driver_info, void *dev )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiResetDC );
++    SYSCALL_FUNC( NtGdiResetDC );
+ }
+ 
+ BOOL SYSCALL_API NtGdiResizePalette( HPALETTE hPal, UINT count )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiResizePalette );
++    SYSCALL_FUNC( NtGdiResizePalette );
+ }
+ 
+ BOOL SYSCALL_API NtGdiRestoreDC( HDC hdc, INT level )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiRestoreDC );
++    SYSCALL_FUNC( NtGdiRestoreDC );
+ }
+ 
+ BOOL SYSCALL_API NtGdiRoundRect( HDC hdc, INT left, INT top, INT right,
+                                  INT bottom, INT ell_width, INT ell_height )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiRoundRect );
++    SYSCALL_FUNC( NtGdiRoundRect );
+ }
+ 
+ INT SYSCALL_API NtGdiSaveDC( HDC hdc )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiSaveDC );
++    SYSCALL_FUNC( NtGdiSaveDC );
+ }
+ 
+ BOOL SYSCALL_API NtGdiScaleViewportExtEx( HDC hdc, INT x_num, INT x_denom,
+                                           INT y_num, INT y_denom, SIZE *size )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiScaleViewportExtEx );
++    SYSCALL_FUNC( NtGdiScaleViewportExtEx );
+ }
+ 
+ BOOL SYSCALL_API NtGdiScaleWindowExtEx( HDC hdc, INT x_num, INT x_denom,
+                                         INT y_num, INT y_denom, SIZE *size )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiScaleWindowExtEx );
++    SYSCALL_FUNC( NtGdiScaleWindowExtEx );
+ }
+ 
+ HGDIOBJ SYSCALL_API NtGdiSelectBitmap( HDC hdc, HGDIOBJ handle )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiSelectBitmap );
++    SYSCALL_FUNC( NtGdiSelectBitmap );
+ }
+ 
+ HGDIOBJ SYSCALL_API NtGdiSelectBrush( HDC hdc, HGDIOBJ handle )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiSelectBrush );
++    SYSCALL_FUNC( NtGdiSelectBrush );
+ }
+ 
+ BOOL SYSCALL_API NtGdiSelectClipPath( HDC hdc, INT mode )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiSelectClipPath );
++    SYSCALL_FUNC( NtGdiSelectClipPath );
+ }
+ 
+ HGDIOBJ SYSCALL_API NtGdiSelectFont( HDC hdc, HGDIOBJ handle )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiSelectFont );
++    SYSCALL_FUNC( NtGdiSelectFont );
+ }
+ 
+ HGDIOBJ SYSCALL_API NtGdiSelectPen( HDC hdc, HGDIOBJ handle )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiSelectPen );
++    SYSCALL_FUNC( NtGdiSelectPen );
+ }
+ 
+ LONG SYSCALL_API NtGdiSetBitmapBits( HBITMAP hbitmap, LONG count, LPCVOID bits )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiSetBitmapBits );
++    SYSCALL_FUNC( NtGdiSetBitmapBits );
+ }
+ 
+ BOOL SYSCALL_API NtGdiSetBitmapDimension( HBITMAP hbitmap, INT x, INT y, LPSIZE prevSize )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiSetBitmapDimension );
++    SYSCALL_FUNC( NtGdiSetBitmapDimension );
+ }
+ 
+ UINT SYSCALL_API NtGdiSetBoundsRect( HDC hdc, const RECT *rect, UINT flags )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiSetBoundsRect );
++    SYSCALL_FUNC( NtGdiSetBoundsRect );
+ }
+ 
+ BOOL SYSCALL_API NtGdiSetBrushOrg( HDC hdc, INT x, INT y, POINT *oldorg )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiSetBrushOrg );
++    SYSCALL_FUNC( NtGdiSetBrushOrg );
+ }
+ 
+ BOOL SYSCALL_API NtGdiSetColorAdjustment( HDC hdc, const COLORADJUSTMENT *ca )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiSetColorAdjustment );
++    SYSCALL_FUNC( NtGdiSetColorAdjustment );
+ }
+ 
+ INT SYSCALL_API NtGdiSetDIBitsToDeviceInternal( HDC hdc, INT xDest, INT yDest, DWORD cx,
+@@ -850,75 +851,75 @@
+                                                 UINT coloruse, UINT max_bits, UINT max_info,
+                                                 BOOL xform_coords, HANDLE xform )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiSetDIBitsToDeviceInternal );
++    SYSCALL_FUNC( NtGdiSetDIBitsToDeviceInternal );
+ }
+ 
+ BOOL SYSCALL_API NtGdiSetDeviceGammaRamp( HDC hdc, void *ptr )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiSetDeviceGammaRamp );
++    SYSCALL_FUNC( NtGdiSetDeviceGammaRamp );
+ }
+ 
+ DWORD SYSCALL_API NtGdiSetLayout( HDC hdc, LONG wox, DWORD layout )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiSetLayout );
++    SYSCALL_FUNC( NtGdiSetLayout );
+ }
+ 
+ BOOL SYSCALL_API NtGdiSetMagicColors( HDC hdc, DWORD magic, ULONG index )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiSetMagicColors );
++    SYSCALL_FUNC( NtGdiSetMagicColors );
+ }
+ 
+ INT SYSCALL_API NtGdiSetMetaRgn( HDC hdc )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiSetMetaRgn );
++    SYSCALL_FUNC( NtGdiSetMetaRgn );
+ }
+ 
+ COLORREF SYSCALL_API NtGdiSetPixel( HDC hdc, INT x, INT y, COLORREF color )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiSetPixel );
++    SYSCALL_FUNC( NtGdiSetPixel );
+ }
+ 
+ BOOL SYSCALL_API NtGdiSetPixelFormat( HDC hdc, INT format )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiSetPixelFormat );
++    SYSCALL_FUNC( NtGdiSetPixelFormat );
+ }
+ 
+ BOOL SYSCALL_API NtGdiSetRectRgn( HRGN hrgn, INT left, INT top, INT right, INT bottom )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiSetRectRgn );
++    SYSCALL_FUNC( NtGdiSetRectRgn );
+ }
+ 
+ UINT SYSCALL_API NtGdiSetSystemPaletteUse( HDC hdc, UINT use )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiSetSystemPaletteUse );
++    SYSCALL_FUNC( NtGdiSetSystemPaletteUse );
+ }
+ 
+ BOOL SYSCALL_API NtGdiSetTextJustification( HDC hdc, INT extra, INT breaks )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiSetTextJustification );
++    SYSCALL_FUNC( NtGdiSetTextJustification );
+ }
+ 
+ BOOL SYSCALL_API NtGdiSetVirtualResolution( HDC hdc, DWORD horz_res, DWORD vert_res,
+                                             DWORD horz_size, DWORD vert_size )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiSetVirtualResolution );
++    SYSCALL_FUNC( NtGdiSetVirtualResolution );
+ }
+ 
+ INT SYSCALL_API NtGdiStartDoc( HDC hdc, const DOCINFOW *doc, BOOL *banding, INT job )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiStartDoc );
++    SYSCALL_FUNC( NtGdiStartDoc );
+ }
+ 
+ INT SYSCALL_API NtGdiStartPage( HDC hdc )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiStartPage );
++    SYSCALL_FUNC( NtGdiStartPage );
+ }
+ 
+ BOOL SYSCALL_API NtGdiStretchBlt( HDC hdcDst, INT xDst, INT yDst, INT widthDst, INT heightDst,
+                                   HDC hdcSrc, INT xSrc, INT ySrc, INT widthSrc, INT heightSrc,
+                                   DWORD rop, COLORREF bk_color )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiStretchBlt );
++    SYSCALL_FUNC( NtGdiStretchBlt );
+ }
+ 
+ INT SYSCALL_API NtGdiStretchDIBitsInternal( HDC hdc, INT xDst, INT yDst, INT widthDst, INT heightDst,
+@@ -926,194 +927,194 @@
+                                             const void *bits, const BITMAPINFO *bmi, UINT coloruse,
+                                             DWORD rop, UINT max_info, UINT max_bits, HANDLE xform )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiStretchDIBitsInternal );
++    SYSCALL_FUNC( NtGdiStretchDIBitsInternal );
+ }
+ 
+ BOOL SYSCALL_API NtGdiStrokeAndFillPath( HDC hdc )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiStrokeAndFillPath );
++    SYSCALL_FUNC( NtGdiStrokeAndFillPath );
+ }
+ 
+ BOOL SYSCALL_API NtGdiStrokePath( HDC hdc )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiStrokePath );
++    SYSCALL_FUNC( NtGdiStrokePath );
+ }
+ 
+ BOOL SYSCALL_API NtGdiSwapBuffers( HDC hdc )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiSwapBuffers );
++    SYSCALL_FUNC( NtGdiSwapBuffers );
+ }
+ 
+ BOOL SYSCALL_API NtGdiTransformPoints( HDC hdc, const POINT *points_in, POINT *points_out,
+                                        INT count, UINT mode )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiTransformPoints );
++    SYSCALL_FUNC( NtGdiTransformPoints );
+ }
+ 
+ BOOL SYSCALL_API NtGdiTransparentBlt( HDC hdcDest, int xDest, int yDest, int widthDest, int heightDest,
+                                       HDC hdcSrc, int xSrc, int ySrc, int widthSrc, int heightSrc,
+                                       UINT crTransparent )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiTransparentBlt );
++    SYSCALL_FUNC( NtGdiTransparentBlt );
+ }
+ 
+ BOOL SYSCALL_API NtGdiUnrealizeObject( HGDIOBJ obj )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiUnrealizeObject );
++    SYSCALL_FUNC( NtGdiUnrealizeObject );
+ }
+ 
+ BOOL SYSCALL_API NtGdiUpdateColors( HDC hDC )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiUpdateColors );
++    SYSCALL_FUNC( NtGdiUpdateColors );
+ }
+ 
+ BOOL SYSCALL_API NtGdiWidenPath( HDC hdc )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtGdiWidenPath );
++    SYSCALL_FUNC( NtGdiWidenPath );
+ }
+ 
+ HKL SYSCALL_API NtUserActivateKeyboardLayout( HKL layout, UINT flags )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserActivateKeyboardLayout );
++    SYSCALL_FUNC( NtUserActivateKeyboardLayout );
+ }
+ 
+ BOOL SYSCALL_API NtUserAddClipboardFormatListener( HWND hwnd )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserAddClipboardFormatListener );
++    SYSCALL_FUNC( NtUserAddClipboardFormatListener );
+ }
+ 
+ UINT SYSCALL_API NtUserAssociateInputContext( HWND hwnd, HIMC ctx, ULONG flags )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserAssociateInputContext );
++    SYSCALL_FUNC( NtUserAssociateInputContext );
+ }
+ 
+ BOOL SYSCALL_API NtUserAttachThreadInput( DWORD from, DWORD to, BOOL attach )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserAttachThreadInput );
++    SYSCALL_FUNC( NtUserAttachThreadInput );
+ }
+ 
+ HDC SYSCALL_API NtUserBeginPaint( HWND hwnd, PAINTSTRUCT *ps )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserBeginPaint );
++    SYSCALL_FUNC( NtUserBeginPaint );
+ }
+ 
+ NTSTATUS SYSCALL_API NtUserBuildHimcList( UINT thread_id, UINT count, HIMC *buffer, UINT *size )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserBuildHimcList );
++    SYSCALL_FUNC( NtUserBuildHimcList );
+ }
+ 
+ NTSTATUS SYSCALL_API NtUserBuildHwndList( HDESK desktop, ULONG unk2, ULONG unk3, ULONG unk4,
+                                           ULONG thread_id, ULONG count, HWND *buffer, ULONG *size )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserBuildHwndList );
++    SYSCALL_FUNC( NtUserBuildHwndList );
+ }
+ 
+ ULONG_PTR SYSCALL_API NtUserCallHwnd( HWND hwnd, DWORD code )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserCallHwnd );
++    SYSCALL_FUNC( NtUserCallHwnd );
+ }
+ 
+ ULONG_PTR SYSCALL_API NtUserCallHwndParam( HWND hwnd, DWORD_PTR param, DWORD code )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserCallHwndParam );
++    SYSCALL_FUNC( NtUserCallHwndParam );
+ }
+ 
+ BOOL SYSCALL_API NtUserCallMsgFilter( MSG *msg, INT code )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserCallMsgFilter );
++    SYSCALL_FUNC( NtUserCallMsgFilter );
+ }
+ 
+ LRESULT SYSCALL_API NtUserCallNextHookEx( HHOOK hhook, INT code, WPARAM wparam, LPARAM lparam )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserCallNextHookEx );
++    SYSCALL_FUNC( NtUserCallNextHookEx );
+ }
+ 
+ ULONG_PTR SYSCALL_API NtUserCallNoParam( ULONG code )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserCallNoParam );
++    SYSCALL_FUNC( NtUserCallNoParam );
+ }
+ 
+ ULONG_PTR SYSCALL_API NtUserCallOneParam( ULONG_PTR arg, ULONG code )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserCallOneParam );
++    SYSCALL_FUNC( NtUserCallOneParam );
+ }
+ 
+ ULONG_PTR SYSCALL_API NtUserCallTwoParam( ULONG_PTR arg1, ULONG_PTR arg2, ULONG code )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserCallTwoParam );
++    SYSCALL_FUNC( NtUserCallTwoParam );
+ }
+ 
+ BOOL SYSCALL_API NtUserChangeClipboardChain( HWND hwnd, HWND next )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserChangeClipboardChain );
++    SYSCALL_FUNC( NtUserChangeClipboardChain );
+ }
+ 
+ LONG SYSCALL_API NtUserChangeDisplaySettings( UNICODE_STRING *devname, DEVMODEW *devmode, HWND hwnd,
+                                               DWORD flags, void *lparam )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserChangeDisplaySettings );
++    SYSCALL_FUNC( NtUserChangeDisplaySettings );
+ }
+ 
+ DWORD SYSCALL_API NtUserCheckMenuItem( HMENU handle, UINT id, UINT flags )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserCheckMenuItem );
++    SYSCALL_FUNC( NtUserCheckMenuItem );
+ }
+ 
+ HWND SYSCALL_API NtUserChildWindowFromPointEx( HWND parent, LONG x, LONG y, UINT flags )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserChildWindowFromPointEx );
++    SYSCALL_FUNC( NtUserChildWindowFromPointEx );
+ }
+ 
+ BOOL SYSCALL_API NtUserClipCursor( const RECT *rect )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserClipCursor );
++    SYSCALL_FUNC( NtUserClipCursor );
+ }
+ 
+ BOOL SYSCALL_API NtUserCloseClipboard(void)
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserCloseClipboard );
++    SYSCALL_FUNC( NtUserCloseClipboard );
+ }
+ 
+ BOOL SYSCALL_API NtUserCloseDesktop( HDESK handle )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserCloseDesktop );
++    SYSCALL_FUNC( NtUserCloseDesktop );
+ }
+ 
+ BOOL SYSCALL_API NtUserCloseWindowStation( HWINSTA handle )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserCloseWindowStation );
++    SYSCALL_FUNC( NtUserCloseWindowStation );
+ }
+ 
+ INT SYSCALL_API NtUserCopyAcceleratorTable( HACCEL src, ACCEL *dst, INT count )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserCopyAcceleratorTable );
++    SYSCALL_FUNC( NtUserCopyAcceleratorTable );
+ }
+ 
+ INT SYSCALL_API NtUserCountClipboardFormats(void)
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserCountClipboardFormats );
++    SYSCALL_FUNC( NtUserCountClipboardFormats );
+ }
+ 
+ HACCEL SYSCALL_API NtUserCreateAcceleratorTable( ACCEL *table, INT count )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserCreateAcceleratorTable );
++    SYSCALL_FUNC( NtUserCreateAcceleratorTable );
+ }
+ 
+ BOOL SYSCALL_API NtUserCreateCaret( HWND hwnd, HBITMAP bitmap, int width, int height )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserCreateCaret );
++    SYSCALL_FUNC( NtUserCreateCaret );
+ }
+ 
+ HDESK SYSCALL_API NtUserCreateDesktopEx( OBJECT_ATTRIBUTES *attr, UNICODE_STRING *device,
+                                          DEVMODEW *devmode, DWORD flags, ACCESS_MASK access,
+                                          ULONG heap_size )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserCreateDesktopEx );
++    SYSCALL_FUNC( NtUserCreateDesktopEx );
+ }
+ 
+ HIMC SYSCALL_API NtUserCreateInputContext( UINT_PTR client_ptr )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserCreateInputContext );
++    SYSCALL_FUNC( NtUserCreateInputContext );
+ }
+ 
+ HWND SYSCALL_API NtUserCreateWindowEx( DWORD ex_style, UNICODE_STRING *class_name,
+@@ -1122,1048 +1123,1048 @@
+                                        HWND parent, HMENU menu, HINSTANCE instance, void *params,
+                                        DWORD flags, HINSTANCE client_instance, DWORD unk, BOOL ansi )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserCreateWindowEx );
++    SYSCALL_FUNC( NtUserCreateWindowEx );
+ }
+ 
+ HWINSTA SYSCALL_API NtUserCreateWindowStation( OBJECT_ATTRIBUTES *attr, ACCESS_MASK access, ULONG arg3,
+                                                ULONG arg4, ULONG arg5, ULONG arg6, ULONG arg7 )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserCreateWindowStation );
++    SYSCALL_FUNC( NtUserCreateWindowStation );
+ }
+ 
+ HDWP SYSCALL_API NtUserDeferWindowPosAndBand( HDWP hdwp, HWND hwnd, HWND after,
+                                               INT x, INT y, INT cx, INT cy,
+                                               UINT flags, UINT unk1, UINT unk2 )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserDeferWindowPosAndBand );
++    SYSCALL_FUNC( NtUserDeferWindowPosAndBand );
+ }
+ 
+ BOOL SYSCALL_API NtUserDeleteMenu( HMENU handle, UINT id, UINT flags )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserDeleteMenu );
++    SYSCALL_FUNC( NtUserDeleteMenu );
+ }
+ 
+ BOOL SYSCALL_API NtUserDestroyAcceleratorTable( HACCEL handle )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserDestroyAcceleratorTable );
++    SYSCALL_FUNC( NtUserDestroyAcceleratorTable );
+ }
+ 
+ BOOL SYSCALL_API NtUserDestroyCursor( HCURSOR cursor, ULONG arg )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserDestroyCursor );
++    SYSCALL_FUNC( NtUserDestroyCursor );
+ }
+ 
+ BOOL SYSCALL_API NtUserDestroyInputContext( HIMC handle )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserDestroyInputContext );
++    SYSCALL_FUNC( NtUserDestroyInputContext );
+ }
+ 
+ BOOL SYSCALL_API NtUserDestroyMenu( HMENU handle )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserDestroyMenu );
++    SYSCALL_FUNC( NtUserDestroyMenu );
+ }
+ 
+ BOOL SYSCALL_API NtUserDestroyWindow( HWND hwnd )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserDestroyWindow );
++    SYSCALL_FUNC( NtUserDestroyWindow );
+ }
+ 
+ BOOL SYSCALL_API NtUserDisableThreadIme( DWORD thread_id )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserDisableThreadIme );
++    SYSCALL_FUNC( NtUserDisableThreadIme );
+ }
+ 
+ LRESULT SYSCALL_API NtUserDispatchMessage( const MSG *msg )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserDispatchMessage );
++    SYSCALL_FUNC( NtUserDispatchMessage );
+ }
+ 
+ NTSTATUS SYSCALL_API NtUserDisplayConfigGetDeviceInfo( DISPLAYCONFIG_DEVICE_INFO_HEADER *packet )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserDisplayConfigGetDeviceInfo );
++    SYSCALL_FUNC( NtUserDisplayConfigGetDeviceInfo );
+ }
+ 
+ BOOL SYSCALL_API NtUserDragDetect( HWND hwnd, int x, int y )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserDragDetect );
++    SYSCALL_FUNC( NtUserDragDetect );
+ }
+ 
+ DWORD SYSCALL_API NtUserDragObject( HWND parent, HWND hwnd, UINT fmt, ULONG_PTR data, HCURSOR cursor )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserDragObject );
++    SYSCALL_FUNC( NtUserDragObject );
+ }
+ 
+ BOOL SYSCALL_API NtUserDrawCaptionTemp( HWND hwnd, HDC hdc, const RECT *rect, HFONT font,
+                                         HICON icon, const WCHAR *str, UINT flags )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserDrawCaptionTemp );
++    SYSCALL_FUNC( NtUserDrawCaptionTemp );
+ }
+ 
+ BOOL SYSCALL_API NtUserDrawIconEx( HDC hdc, INT x0, INT y0, HICON icon, INT width,
+                                    INT height, UINT step, HBRUSH brush, UINT flags )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserDrawIconEx );
++    SYSCALL_FUNC( NtUserDrawIconEx );
+ }
+ 
+ DWORD SYSCALL_API NtUserDrawMenuBarTemp( HWND hwnd, HDC hdc, RECT *rect, HMENU handle, HFONT font )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserDrawMenuBarTemp );
++    SYSCALL_FUNC( NtUserDrawMenuBarTemp );
+ }
+ 
+ BOOL SYSCALL_API NtUserEmptyClipboard(void)
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserEmptyClipboard );
++    SYSCALL_FUNC( NtUserEmptyClipboard );
+ }
+ 
+ BOOL SYSCALL_API NtUserEnableMenuItem( HMENU handle, UINT id, UINT flags )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserEnableMenuItem );
++    SYSCALL_FUNC( NtUserEnableMenuItem );
+ }
+ 
+ BOOL SYSCALL_API NtUserEnableMouseInPointer( BOOL enable )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserEnableMouseInPointer );
++    SYSCALL_FUNC( NtUserEnableMouseInPointer );
+ }
+ 
+ BOOL SYSCALL_API NtUserEnableScrollBar( HWND hwnd, UINT bar, UINT flags )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserEnableScrollBar );
++    SYSCALL_FUNC( NtUserEnableScrollBar );
+ }
+ 
+ BOOL SYSCALL_API NtUserEndDeferWindowPosEx( HDWP hdwp, BOOL async )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserEndDeferWindowPosEx );
++    SYSCALL_FUNC( NtUserEndDeferWindowPosEx );
+ }
+ 
+ BOOL SYSCALL_API NtUserEndMenu(void)
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserEndMenu );
++    SYSCALL_FUNC( NtUserEndMenu );
+ }
+ 
+ BOOL SYSCALL_API NtUserEndPaint( HWND hwnd, const PAINTSTRUCT *ps )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserEndPaint );
++    SYSCALL_FUNC( NtUserEndPaint );
+ }
+ 
+ NTSTATUS SYSCALL_API NtUserEnumDisplayDevices( UNICODE_STRING *device, DWORD index,
+                                                DISPLAY_DEVICEW *info, DWORD flags )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserEnumDisplayDevices );
++    SYSCALL_FUNC( NtUserEnumDisplayDevices );
+ }
+ 
+ BOOL SYSCALL_API NtUserEnumDisplayMonitors( HDC hdc, RECT *rect, MONITORENUMPROC proc, LPARAM lparam )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserEnumDisplayMonitors );
++    SYSCALL_FUNC( NtUserEnumDisplayMonitors );
+ }
+ 
+ BOOL SYSCALL_API NtUserEnumDisplaySettings( UNICODE_STRING *device, DWORD index, DEVMODEW *devmode, DWORD flags )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserEnumDisplaySettings );
++    SYSCALL_FUNC( NtUserEnumDisplaySettings );
+ }
+ 
+ INT SYSCALL_API NtUserExcludeUpdateRgn( HDC hdc, HWND hwnd )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserExcludeUpdateRgn );
++    SYSCALL_FUNC( NtUserExcludeUpdateRgn );
+ }
+ 
+ HICON SYSCALL_API NtUserFindExistingCursorIcon( UNICODE_STRING *module, UNICODE_STRING *res_name, void *desc )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserFindExistingCursorIcon );
++    SYSCALL_FUNC( NtUserFindExistingCursorIcon );
+ }
+ 
+ HWND SYSCALL_API NtUserFindWindowEx( HWND parent, HWND child, UNICODE_STRING *class, UNICODE_STRING *title,
+                                      ULONG unk )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserFindWindowEx );
++    SYSCALL_FUNC( NtUserFindWindowEx );
+ }
+ 
+ BOOL SYSCALL_API NtUserFlashWindowEx( FLASHWINFO *info )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserFlashWindowEx );
++    SYSCALL_FUNC( NtUserFlashWindowEx );
+ }
+ 
+ HWND SYSCALL_API NtUserGetAncestor( HWND hwnd, UINT type )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserGetAncestor );
++    SYSCALL_FUNC( NtUserGetAncestor );
+ }
+ 
+ SHORT SYSCALL_API NtUserGetAsyncKeyState( INT key )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserGetAsyncKeyState );
++    SYSCALL_FUNC( NtUserGetAsyncKeyState );
+ }
+ 
+ ULONG SYSCALL_API NtUserGetAtomName( ATOM atom, UNICODE_STRING *name )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserGetAtomName );
++    SYSCALL_FUNC( NtUserGetAtomName );
+ }
+ 
+ UINT SYSCALL_API NtUserGetCaretBlinkTime(void)
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserGetCaretBlinkTime );
++    SYSCALL_FUNC( NtUserGetCaretBlinkTime );
+ }
+ 
+ BOOL SYSCALL_API NtUserGetCaretPos( POINT *pt )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserGetCaretPos );
++    SYSCALL_FUNC( NtUserGetCaretPos );
+ }
+ 
+ ATOM SYSCALL_API NtUserGetClassInfoEx( HINSTANCE instance, UNICODE_STRING *name, WNDCLASSEXW *wc,
+                                        struct client_menu_name *menu_name, BOOL ansi )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserGetClassInfoEx );
++    SYSCALL_FUNC( NtUserGetClassInfoEx );
+ }
+ 
+ INT SYSCALL_API NtUserGetClassName( HWND hwnd, BOOL real, UNICODE_STRING *name )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserGetClassName );
++    SYSCALL_FUNC( NtUserGetClassName );
+ }
+ 
+ HANDLE SYSCALL_API NtUserGetClipboardData( UINT format, struct get_clipboard_params *params )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserGetClipboardData );
++    SYSCALL_FUNC( NtUserGetClipboardData );
+ }
+ 
+ INT SYSCALL_API NtUserGetClipboardFormatName( UINT format, WCHAR *buffer, INT maxlen )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserGetClipboardFormatName );
++    SYSCALL_FUNC( NtUserGetClipboardFormatName );
+ }
+ 
+ HWND SYSCALL_API NtUserGetClipboardOwner(void)
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserGetClipboardOwner );
++    SYSCALL_FUNC( NtUserGetClipboardOwner );
+ }
+ 
+ DWORD SYSCALL_API NtUserGetClipboardSequenceNumber(void)
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserGetClipboardSequenceNumber );
++    SYSCALL_FUNC( NtUserGetClipboardSequenceNumber );
+ }
+ 
+ HWND SYSCALL_API NtUserGetClipboardViewer(void)
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserGetClipboardViewer );
++    SYSCALL_FUNC( NtUserGetClipboardViewer );
+ }
+ 
+ HCURSOR SYSCALL_API NtUserGetCursor(void)
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserGetCursor );
++    SYSCALL_FUNC( NtUserGetCursor );
+ }
+ 
+ HCURSOR SYSCALL_API NtUserGetCursorFrameInfo( HCURSOR cursor, DWORD istep, DWORD *rate_jiffies,
+                                               DWORD *num_steps )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserGetCursorFrameInfo );
++    SYSCALL_FUNC( NtUserGetCursorFrameInfo );
+ }
+ 
+ BOOL SYSCALL_API NtUserGetCursorInfo( CURSORINFO *info )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserGetCursorInfo );
++    SYSCALL_FUNC( NtUserGetCursorInfo );
+ }
+ 
+ HDC SYSCALL_API NtUserGetDC( HWND hwnd )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserGetDC );
++    SYSCALL_FUNC( NtUserGetDC );
+ }
+ 
+ HDC SYSCALL_API NtUserGetDCEx( HWND hwnd, HRGN clip_rgn, DWORD flags )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserGetDCEx );
++    SYSCALL_FUNC( NtUserGetDCEx );
+ }
+ 
+ LONG SYSCALL_API NtUserGetDisplayConfigBufferSizes( UINT32 flags, UINT32 *num_path_info,
+                                                     UINT32 *num_mode_info )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserGetDisplayConfigBufferSizes );
++    SYSCALL_FUNC( NtUserGetDisplayConfigBufferSizes );
+ }
+ 
+ UINT SYSCALL_API NtUserGetDoubleClickTime(void)
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserGetDoubleClickTime );
++    SYSCALL_FUNC( NtUserGetDoubleClickTime );
+ }
+ 
+ BOOL SYSCALL_API NtUserGetDpiForMonitor( HMONITOR monitor, UINT type, UINT *x, UINT *y )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserGetDpiForMonitor );
++    SYSCALL_FUNC( NtUserGetDpiForMonitor );
+ }
+ 
+ HWND SYSCALL_API NtUserGetForegroundWindow(void)
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserGetForegroundWindow );
++    SYSCALL_FUNC( NtUserGetForegroundWindow );
+ }
+ 
+ BOOL SYSCALL_API NtUserGetGUIThreadInfo( DWORD id, GUITHREADINFO *info )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserGetGUIThreadInfo );
++    SYSCALL_FUNC( NtUserGetGUIThreadInfo );
+ }
+ 
+ BOOL SYSCALL_API NtUserGetIconInfo( HICON icon, ICONINFO *info, UNICODE_STRING *module,
+                                     UNICODE_STRING *res_name, DWORD *bpp, LONG unk )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserGetIconInfo );
++    SYSCALL_FUNC( NtUserGetIconInfo );
+ }
+ 
+ BOOL SYSCALL_API NtUserGetIconSize( HICON handle, UINT step, LONG *width, LONG *height )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserGetIconSize );
++    SYSCALL_FUNC( NtUserGetIconSize );
+ }
+ 
+ UINT SYSCALL_API NtUserGetInternalWindowPos( HWND hwnd, RECT *rect, POINT *pt )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserGetInternalWindowPos );
++    SYSCALL_FUNC( NtUserGetInternalWindowPos );
+ }
+ 
+ INT SYSCALL_API NtUserGetKeyNameText( LONG lparam, WCHAR *buffer, INT size )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserGetKeyNameText );
++    SYSCALL_FUNC( NtUserGetKeyNameText );
+ }
+ 
+ SHORT SYSCALL_API NtUserGetKeyState( INT vkey )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserGetKeyState );
++    SYSCALL_FUNC( NtUserGetKeyState );
+ }
+ 
+ HKL SYSCALL_API NtUserGetKeyboardLayout( DWORD thread_id )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserGetKeyboardLayout );
++    SYSCALL_FUNC( NtUserGetKeyboardLayout );
+ }
+ 
+ UINT SYSCALL_API NtUserGetKeyboardLayoutList( INT size, HKL *layouts )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserGetKeyboardLayoutList );
++    SYSCALL_FUNC( NtUserGetKeyboardLayoutList );
+ }
+ 
+ BOOL SYSCALL_API NtUserGetKeyboardLayoutName( WCHAR *name )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserGetKeyboardLayoutName );
++    SYSCALL_FUNC( NtUserGetKeyboardLayoutName );
+ }
+ 
+ BOOL SYSCALL_API NtUserGetKeyboardState( BYTE *state )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserGetKeyboardState );
++    SYSCALL_FUNC( NtUserGetKeyboardState );
+ }
+ 
+ BOOL SYSCALL_API NtUserGetLayeredWindowAttributes( HWND hwnd, COLORREF *key, BYTE *alpha, DWORD *flags )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserGetLayeredWindowAttributes );
++    SYSCALL_FUNC( NtUserGetLayeredWindowAttributes );
+ }
+ 
+ BOOL SYSCALL_API NtUserGetMenuBarInfo( HWND hwnd, LONG id, LONG item, MENUBARINFO *info )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserGetMenuBarInfo );
++    SYSCALL_FUNC( NtUserGetMenuBarInfo );
+ }
+ 
+ BOOL SYSCALL_API NtUserGetMenuItemRect( HWND hwnd, HMENU handle, UINT item, RECT *rect )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserGetMenuItemRect );
++    SYSCALL_FUNC( NtUserGetMenuItemRect );
+ }
+ 
+ BOOL SYSCALL_API NtUserGetMessage( MSG *msg, HWND hwnd, UINT first, UINT last )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserGetMessage );
++    SYSCALL_FUNC( NtUserGetMessage );
+ }
+ 
+ int SYSCALL_API NtUserGetMouseMovePointsEx( UINT size, MOUSEMOVEPOINT *ptin, MOUSEMOVEPOINT *ptout,
+                                             int count, DWORD resolution )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserGetMouseMovePointsEx );
++    SYSCALL_FUNC( NtUserGetMouseMovePointsEx );
+ }
+ 
+ BOOL SYSCALL_API NtUserGetObjectInformation( HANDLE handle, INT index, void *info,
+                                              DWORD len, DWORD *needed )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserGetObjectInformation );
++    SYSCALL_FUNC( NtUserGetObjectInformation );
+ }
+ 
+ HWND SYSCALL_API NtUserGetOpenClipboardWindow(void)
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserGetOpenClipboardWindow );
++    SYSCALL_FUNC( NtUserGetOpenClipboardWindow );
+ }
+ 
+ BOOL SYSCALL_API NtUserGetPointerInfoList( UINT32 id, POINTER_INPUT_TYPE type, UINT_PTR unk0, UINT_PTR unk1, SIZE_T size,
+                                            UINT32 *entry_count, UINT32 *pointer_count, void *pointer_info )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserGetPointerInfoList );
++    SYSCALL_FUNC( NtUserGetPointerInfoList );
+ }
+ 
+ INT SYSCALL_API NtUserGetPriorityClipboardFormat( UINT *list, INT count )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserGetPriorityClipboardFormat );
++    SYSCALL_FUNC( NtUserGetPriorityClipboardFormat );
+ }
+ 
+ ULONG SYSCALL_API NtUserGetProcessDpiAwarenessContext( HANDLE process )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserGetProcessDpiAwarenessContext );
++    SYSCALL_FUNC( NtUserGetProcessDpiAwarenessContext );
+ }
+ 
+ HWINSTA SYSCALL_API NtUserGetProcessWindowStation(void)
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserGetProcessWindowStation );
++    SYSCALL_FUNC( NtUserGetProcessWindowStation );
+ }
+ 
+ HANDLE SYSCALL_API NtUserGetProp( HWND hwnd, const WCHAR *str )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserGetProp );
++    SYSCALL_FUNC( NtUserGetProp );
+ }
+ 
+ DWORD SYSCALL_API NtUserGetQueueStatus( UINT flags )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserGetQueueStatus );
++    SYSCALL_FUNC( NtUserGetQueueStatus );
+ }
+ 
+ UINT SYSCALL_API NtUserGetRawInputBuffer( RAWINPUT *data, UINT *data_size, UINT header_size )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserGetRawInputBuffer );
++    SYSCALL_FUNC( NtUserGetRawInputBuffer );
+ }
+ 
+ UINT SYSCALL_API NtUserGetRawInputData( HRAWINPUT rawinput, UINT command, void *data, UINT *data_size, UINT header_size )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserGetRawInputData );
++    SYSCALL_FUNC( NtUserGetRawInputData );
+ }
+ 
+ UINT SYSCALL_API NtUserGetRawInputDeviceInfo( HANDLE handle, UINT command, void *data, UINT *data_size )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserGetRawInputDeviceInfo );
++    SYSCALL_FUNC( NtUserGetRawInputDeviceInfo );
+ }
+ 
+ UINT SYSCALL_API NtUserGetRawInputDeviceList( RAWINPUTDEVICELIST *device_list, UINT *device_count, UINT size )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserGetRawInputDeviceList );
++    SYSCALL_FUNC( NtUserGetRawInputDeviceList );
+ }
+ 
+ UINT SYSCALL_API NtUserGetRegisteredRawInputDevices( RAWINPUTDEVICE *devices, UINT *device_count, UINT device_size )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserGetRegisteredRawInputDevices );
++    SYSCALL_FUNC( NtUserGetRegisteredRawInputDevices );
+ }
+ 
+ BOOL SYSCALL_API NtUserGetScrollBarInfo( HWND hwnd, LONG id, SCROLLBARINFO *info )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserGetScrollBarInfo );
++    SYSCALL_FUNC( NtUserGetScrollBarInfo );
+ }
+ 
+ ULONG SYSCALL_API NtUserGetSystemDpiForProcess( HANDLE process )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserGetSystemDpiForProcess );
++    SYSCALL_FUNC( NtUserGetSystemDpiForProcess );
+ }
+ 
+ HMENU SYSCALL_API NtUserGetSystemMenu( HWND hwnd, BOOL revert )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserGetSystemMenu );
++    SYSCALL_FUNC( NtUserGetSystemMenu );
+ }
+ 
+ HDESK SYSCALL_API NtUserGetThreadDesktop( DWORD thread )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserGetThreadDesktop );
++    SYSCALL_FUNC( NtUserGetThreadDesktop );
+ }
+ 
+ BOOL SYSCALL_API NtUserGetTitleBarInfo( HWND hwnd, TITLEBARINFO *info )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserGetTitleBarInfo );
++    SYSCALL_FUNC( NtUserGetTitleBarInfo );
+ }
+ 
+ BOOL SYSCALL_API NtUserGetTouchInputInfo( HTOUCHINPUT handle, UINT count, TOUCHINPUT *ptr, int size )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserGetTouchInputInfo );
++    SYSCALL_FUNC( NtUserGetTouchInputInfo );
+ }
+ 
+ BOOL SYSCALL_API NtUserGetUpdateRect( HWND hwnd, RECT *rect, BOOL erase )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserGetUpdateRect );
++    SYSCALL_FUNC( NtUserGetUpdateRect );
+ }
+ 
+ INT SYSCALL_API NtUserGetUpdateRgn( HWND hwnd, HRGN hrgn, BOOL erase )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserGetUpdateRgn );
++    SYSCALL_FUNC( NtUserGetUpdateRgn );
+ }
+ 
+ BOOL SYSCALL_API NtUserGetUpdatedClipboardFormats( UINT *formats, UINT size, UINT *out_size )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserGetUpdatedClipboardFormats );
++    SYSCALL_FUNC( NtUserGetUpdatedClipboardFormats );
+ }
+ 
+ HDC SYSCALL_API NtUserGetWindowDC( HWND hwnd )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserGetWindowDC );
++    SYSCALL_FUNC( NtUserGetWindowDC );
+ }
+ 
+ BOOL SYSCALL_API NtUserGetWindowPlacement( HWND hwnd, WINDOWPLACEMENT *placement )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserGetWindowPlacement );
++    SYSCALL_FUNC( NtUserGetWindowPlacement );
+ }
+ 
+ int SYSCALL_API NtUserGetWindowRgnEx( HWND hwnd, HRGN hrgn, UINT unk )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserGetWindowRgnEx );
++    SYSCALL_FUNC( NtUserGetWindowRgnEx );
+ }
+ 
+ BOOL SYSCALL_API NtUserHideCaret( HWND hwnd )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserHideCaret );
++    SYSCALL_FUNC( NtUserHideCaret );
+ }
+ 
+ BOOL SYSCALL_API NtUserHiliteMenuItem( HWND hwnd, HMENU handle, UINT item, UINT hilite )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserHiliteMenuItem );
++    SYSCALL_FUNC( NtUserHiliteMenuItem );
+ }
+ 
+ NTSTATUS SYSCALL_API NtUserInitializeClientPfnArrays( const struct user_client_procs *client_procsA,
+                                                       const struct user_client_procs *client_procsW,
+                                                       const void *client_workers, HINSTANCE user_module )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserInitializeClientPfnArrays );
++    SYSCALL_FUNC( NtUserInitializeClientPfnArrays );
+ }
+ 
+ HICON SYSCALL_API NtUserInternalGetWindowIcon( HWND hwnd, UINT type )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserInternalGetWindowIcon );
++    SYSCALL_FUNC( NtUserInternalGetWindowIcon );
+ }
+ 
+ INT SYSCALL_API NtUserInternalGetWindowText( HWND hwnd, WCHAR *text, INT count )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserInternalGetWindowText );
++    SYSCALL_FUNC( NtUserInternalGetWindowText );
+ }
+ 
+ BOOL SYSCALL_API NtUserInvalidateRect( HWND hwnd, const RECT *rect, BOOL erase )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserInvalidateRect );
++    SYSCALL_FUNC( NtUserInvalidateRect );
+ }
+ 
+ BOOL SYSCALL_API NtUserInvalidateRgn( HWND hwnd, HRGN hrgn, BOOL erase )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserInvalidateRgn );
++    SYSCALL_FUNC( NtUserInvalidateRgn );
+ }
+ 
+ BOOL SYSCALL_API NtUserIsClipboardFormatAvailable( UINT format )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserIsClipboardFormatAvailable );
++    SYSCALL_FUNC( NtUserIsClipboardFormatAvailable );
+ }
+ 
+ BOOL SYSCALL_API NtUserIsMouseInPointerEnabled(void)
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserIsMouseInPointerEnabled );
++    SYSCALL_FUNC( NtUserIsMouseInPointerEnabled );
+ }
+ 
+ BOOL SYSCALL_API NtUserIsTouchWindow( HWND hwnd, ULONG *flags )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserIsTouchWindow );
++    SYSCALL_FUNC( NtUserIsTouchWindow );
+ }
+ 
+ BOOL SYSCALL_API NtUserKillTimer( HWND hwnd, UINT_PTR id )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserKillTimer );
++    SYSCALL_FUNC( NtUserKillTimer );
+ }
+ 
+ BOOL SYSCALL_API NtUserLockWindowUpdate( HWND hwnd )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserLockWindowUpdate );
++    SYSCALL_FUNC( NtUserLockWindowUpdate );
+ }
+ 
+ BOOL SYSCALL_API NtUserLogicalToPerMonitorDPIPhysicalPoint( HWND hwnd, POINT *pt )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserLogicalToPerMonitorDPIPhysicalPoint );
++    SYSCALL_FUNC( NtUserLogicalToPerMonitorDPIPhysicalPoint );
+ }
+ 
+ UINT SYSCALL_API NtUserMapVirtualKeyEx( UINT code, UINT type, HKL layout )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserMapVirtualKeyEx );
++    SYSCALL_FUNC( NtUserMapVirtualKeyEx );
+ }
+ 
+ INT SYSCALL_API NtUserMenuItemFromPoint( HWND hwnd, HMENU handle, int x, int y )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserMenuItemFromPoint );
++    SYSCALL_FUNC( NtUserMenuItemFromPoint );
+ }
+ 
+ LRESULT SYSCALL_API NtUserMessageCall( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam,
+                                        void *result_info, DWORD type, BOOL ansi )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserMessageCall );
++    SYSCALL_FUNC( NtUserMessageCall );
+ }
+ 
+ BOOL SYSCALL_API NtUserMoveWindow( HWND hwnd, INT x, INT y, INT cx, INT cy, BOOL repaint )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserMoveWindow );
++    SYSCALL_FUNC( NtUserMoveWindow );
+ }
+ 
+ DWORD SYSCALL_API NtUserMsgWaitForMultipleObjectsEx( DWORD count, const HANDLE *handles,
+                                                      DWORD timeout, DWORD mask, DWORD flags )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserMsgWaitForMultipleObjectsEx );
++    SYSCALL_FUNC( NtUserMsgWaitForMultipleObjectsEx );
+ }
+ 
+ void SYSCALL_API NtUserNotifyIMEStatus( HWND hwnd, UINT status )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserNotifyIMEStatus );
++    SYSCALL_FUNC( NtUserNotifyIMEStatus );
+ }
+ 
+ void SYSCALL_API NtUserNotifyWinEvent( DWORD event, HWND hwnd, LONG object_id, LONG child_id )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserNotifyWinEvent );
++    SYSCALL_FUNC( NtUserNotifyWinEvent );
+ }
+ 
+ BOOL SYSCALL_API NtUserOpenClipboard( HWND hwnd, ULONG unk )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserOpenClipboard );
++    SYSCALL_FUNC( NtUserOpenClipboard );
+ }
+ 
+ HDESK SYSCALL_API NtUserOpenDesktop( OBJECT_ATTRIBUTES *attr, DWORD flags, ACCESS_MASK access )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserOpenDesktop );
++    SYSCALL_FUNC( NtUserOpenDesktop );
+ }
+ 
+ HDESK SYSCALL_API NtUserOpenInputDesktop( DWORD flags, BOOL inherit, ACCESS_MASK access )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserOpenInputDesktop );
++    SYSCALL_FUNC( NtUserOpenInputDesktop );
+ }
+ 
+ HWINSTA SYSCALL_API NtUserOpenWindowStation( OBJECT_ATTRIBUTES *attr, ACCESS_MASK access )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserOpenWindowStation );
++    SYSCALL_FUNC( NtUserOpenWindowStation );
+ }
+ 
+ BOOL SYSCALL_API NtUserPeekMessage( MSG *msg_out, HWND hwnd, UINT first, UINT last, UINT flags )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserPeekMessage );
++    SYSCALL_FUNC( NtUserPeekMessage );
+ }
+ 
+ BOOL SYSCALL_API NtUserPerMonitorDPIPhysicalToLogicalPoint( HWND hwnd, POINT *pt )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserPerMonitorDPIPhysicalToLogicalPoint );
++    SYSCALL_FUNC( NtUserPerMonitorDPIPhysicalToLogicalPoint );
+ }
+ 
+ BOOL SYSCALL_API NtUserPostMessage( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserPostMessage );
++    SYSCALL_FUNC( NtUserPostMessage );
+ }
+ 
+ BOOL SYSCALL_API NtUserPostThreadMessage( DWORD thread, UINT msg, WPARAM wparam, LPARAM lparam )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserPostThreadMessage );
++    SYSCALL_FUNC( NtUserPostThreadMessage );
+ }
+ 
+ BOOL SYSCALL_API NtUserPrintWindow( HWND hwnd, HDC hdc, UINT flags )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserPrintWindow );
++    SYSCALL_FUNC( NtUserPrintWindow );
+ }
+ 
+ LONG SYSCALL_API NtUserQueryDisplayConfig( UINT32 flags, UINT32 *paths_count, DISPLAYCONFIG_PATH_INFO *paths,
+                                            UINT32 *modes_count, DISPLAYCONFIG_MODE_INFO *modes,
+                                            DISPLAYCONFIG_TOPOLOGY_ID *topology_id )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserQueryDisplayConfig );
++    SYSCALL_FUNC( NtUserQueryDisplayConfig );
+ }
+ 
+ UINT_PTR SYSCALL_API NtUserQueryInputContext( HIMC handle, UINT attr )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserQueryInputContext );
++    SYSCALL_FUNC( NtUserQueryInputContext );
+ }
+ 
+ HWND SYSCALL_API NtUserRealChildWindowFromPoint( HWND parent, LONG x, LONG y )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserRealChildWindowFromPoint );
++    SYSCALL_FUNC( NtUserRealChildWindowFromPoint );
+ }
+ 
+ BOOL SYSCALL_API NtUserRedrawWindow( HWND hwnd, const RECT *rect, HRGN hrgn, UINT flags )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserRedrawWindow );
++    SYSCALL_FUNC( NtUserRedrawWindow );
+ }
+ 
+ ATOM SYSCALL_API NtUserRegisterClassExWOW( const WNDCLASSEXW *wc, UNICODE_STRING *name, UNICODE_STRING *version,
+                                            struct client_menu_name *client_menu_name, DWORD fnid,
+                                            DWORD flags, DWORD *wow )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserRegisterClassExWOW );
++    SYSCALL_FUNC( NtUserRegisterClassExWOW );
+ }
+ 
+ BOOL SYSCALL_API NtUserRegisterHotKey( HWND hwnd, INT id, UINT modifiers, UINT vk )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserRegisterHotKey );
++    SYSCALL_FUNC( NtUserRegisterHotKey );
+ }
+ 
+ BOOL SYSCALL_API NtUserRegisterRawInputDevices( const RAWINPUTDEVICE *devices, UINT device_count, UINT device_size )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserRegisterRawInputDevices );
++    SYSCALL_FUNC( NtUserRegisterRawInputDevices );
+ }
+ 
+ INT SYSCALL_API NtUserReleaseDC( HWND hwnd, HDC hdc )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserReleaseDC );
++    SYSCALL_FUNC( NtUserReleaseDC );
+ }
+ 
+ BOOL SYSCALL_API NtUserRemoveClipboardFormatListener( HWND hwnd )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserRemoveClipboardFormatListener );
++    SYSCALL_FUNC( NtUserRemoveClipboardFormatListener );
+ }
+ 
+ BOOL SYSCALL_API NtUserRemoveMenu( HMENU handle, UINT id, UINT flags )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserRemoveMenu );
++    SYSCALL_FUNC( NtUserRemoveMenu );
+ }
+ 
+ HANDLE SYSCALL_API NtUserRemoveProp( HWND hwnd, const WCHAR *str )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserRemoveProp );
++    SYSCALL_FUNC( NtUserRemoveProp );
+ }
+ 
+ BOOL SYSCALL_API NtUserScrollDC( HDC hdc, INT dx, INT dy, const RECT *scroll, const RECT *clip,
+                                  HRGN ret_update_rgn, RECT *update_rect )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserScrollDC );
++    SYSCALL_FUNC( NtUserScrollDC );
+ }
+ 
+ INT SYSCALL_API NtUserScrollWindowEx( HWND hwnd, INT dx, INT dy, const RECT *rect,
+                                       const RECT *clip_rect, HRGN update_rgn,
+                                       RECT *update_rect, UINT flags )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserScrollWindowEx );
++    SYSCALL_FUNC( NtUserScrollWindowEx );
+ }
+ 
+ HPALETTE SYSCALL_API NtUserSelectPalette( HDC hdc, HPALETTE hpal, WORD bkg )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserSelectPalette );
++    SYSCALL_FUNC( NtUserSelectPalette );
+ }
+ 
+ UINT SYSCALL_API NtUserSendInput( UINT count, INPUT *inputs, int size )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserSendInput );
++    SYSCALL_FUNC( NtUserSendInput );
+ }
+ 
+ HWND SYSCALL_API NtUserSetActiveWindow( HWND hwnd )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserSetActiveWindow );
++    SYSCALL_FUNC( NtUserSetActiveWindow );
+ }
+ 
+ HWND SYSCALL_API NtUserSetCapture( HWND hwnd )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserSetCapture );
++    SYSCALL_FUNC( NtUserSetCapture );
+ }
+ 
+ DWORD SYSCALL_API NtUserSetClassLong( HWND hwnd, INT offset, LONG newval, BOOL ansi )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserSetClassLong );
++    SYSCALL_FUNC( NtUserSetClassLong );
+ }
+ 
+ ULONG_PTR SYSCALL_API NtUserSetClassLongPtr( HWND hwnd, INT offset, LONG_PTR newval, BOOL ansi )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserSetClassLongPtr );
++    SYSCALL_FUNC( NtUserSetClassLongPtr );
+ }
+ 
+ WORD SYSCALL_API NtUserSetClassWord( HWND hwnd, INT offset, WORD newval )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserSetClassWord );
++    SYSCALL_FUNC( NtUserSetClassWord );
+ }
+ 
+ NTSTATUS SYSCALL_API NtUserSetClipboardData( UINT format, HANDLE data, struct set_clipboard_params *params )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserSetClipboardData );
++    SYSCALL_FUNC( NtUserSetClipboardData );
+ }
+ 
+ HWND SYSCALL_API NtUserSetClipboardViewer( HWND hwnd )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserSetClipboardViewer );
++    SYSCALL_FUNC( NtUserSetClipboardViewer );
+ }
+ 
+ HCURSOR SYSCALL_API NtUserSetCursor( HCURSOR cursor )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserSetCursor );
++    SYSCALL_FUNC( NtUserSetCursor );
+ }
+ 
+ BOOL SYSCALL_API NtUserSetCursorIconData( HCURSOR cursor, UNICODE_STRING *module, UNICODE_STRING *res_name,
+                                           struct cursoricon_desc *desc )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserSetCursorIconData );
++    SYSCALL_FUNC( NtUserSetCursorIconData );
+ }
+ 
+ BOOL SYSCALL_API NtUserSetCursorPos( INT x, INT y )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserSetCursorPos );
++    SYSCALL_FUNC( NtUserSetCursorPos );
+ }
+ 
+ HWND SYSCALL_API NtUserSetFocus( HWND hwnd )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserSetFocus );
++    SYSCALL_FUNC( NtUserSetFocus );
+ }
+ 
+ void SYSCALL_API NtUserSetInternalWindowPos( HWND hwnd, UINT cmd, RECT *rect, POINT *pt )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserSetInternalWindowPos );
++    SYSCALL_FUNC( NtUserSetInternalWindowPos );
+ }
+ 
+ BOOL SYSCALL_API NtUserSetKeyboardState( BYTE *state )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserSetKeyboardState );
++    SYSCALL_FUNC( NtUserSetKeyboardState );
+ }
+ 
+ BOOL SYSCALL_API NtUserSetLayeredWindowAttributes( HWND hwnd, COLORREF key, BYTE alpha, DWORD flags )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserSetLayeredWindowAttributes );
++    SYSCALL_FUNC( NtUserSetLayeredWindowAttributes );
+ }
+ 
+ BOOL SYSCALL_API NtUserSetMenu( HWND hwnd, HMENU menu )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserSetMenu );
++    SYSCALL_FUNC( NtUserSetMenu );
+ }
+ 
+ BOOL SYSCALL_API NtUserSetMenuContextHelpId( HMENU handle, DWORD id )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserSetMenuContextHelpId );
++    SYSCALL_FUNC( NtUserSetMenuContextHelpId );
+ }
+ 
+ BOOL SYSCALL_API NtUserSetMenuDefaultItem( HMENU handle, UINT item, UINT bypos )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserSetMenuDefaultItem );
++    SYSCALL_FUNC( NtUserSetMenuDefaultItem );
+ }
+ 
+ BOOL SYSCALL_API NtUserSetObjectInformation( HANDLE handle, INT index, void *info, DWORD len )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserSetObjectInformation );
++    SYSCALL_FUNC( NtUserSetObjectInformation );
+ }
+ 
+ HWND SYSCALL_API NtUserSetParent( HWND hwnd, HWND parent )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserSetParent );
++    SYSCALL_FUNC( NtUserSetParent );
+ }
+ 
+ BOOL SYSCALL_API NtUserSetProcessDpiAwarenessContext( ULONG awareness, ULONG unknown )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserSetProcessDpiAwarenessContext );
++    SYSCALL_FUNC( NtUserSetProcessDpiAwarenessContext );
+ }
+ 
+ BOOL SYSCALL_API NtUserSetProcessWindowStation( HWINSTA handle )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserSetProcessWindowStation );
++    SYSCALL_FUNC( NtUserSetProcessWindowStation );
+ }
+ 
+ BOOL SYSCALL_API NtUserSetProp( HWND hwnd, const WCHAR *str, HANDLE handle )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserSetProp );
++    SYSCALL_FUNC( NtUserSetProp );
+ }
+ 
+ INT SYSCALL_API NtUserSetScrollInfo( HWND hwnd, int bar, const SCROLLINFO *info, BOOL redraw )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserSetScrollInfo );
++    SYSCALL_FUNC( NtUserSetScrollInfo );
+ }
+ 
+ BOOL SYSCALL_API NtUserSetShellWindowEx( HWND shell, HWND list_view )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserSetShellWindowEx );
++    SYSCALL_FUNC( NtUserSetShellWindowEx );
+ }
+ 
+ BOOL SYSCALL_API NtUserSetSysColors( INT count, const INT *colors, const COLORREF *values )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserSetSysColors );
++    SYSCALL_FUNC( NtUserSetSysColors );
+ }
+ 
+ BOOL SYSCALL_API NtUserSetSystemMenu( HWND hwnd, HMENU menu )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserSetSystemMenu );
++    SYSCALL_FUNC( NtUserSetSystemMenu );
+ }
+ 
+ UINT_PTR SYSCALL_API NtUserSetSystemTimer( HWND hwnd, UINT_PTR id, UINT timeout )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserSetSystemTimer );
++    SYSCALL_FUNC( NtUserSetSystemTimer );
+ }
+ 
+ BOOL SYSCALL_API NtUserSetThreadDesktop( HDESK handle )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserSetThreadDesktop );
++    SYSCALL_FUNC( NtUserSetThreadDesktop );
+ }
+ 
+ UINT_PTR SYSCALL_API NtUserSetTimer( HWND hwnd, UINT_PTR id, UINT timeout, TIMERPROC proc, ULONG tolerance )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserSetTimer );
++    SYSCALL_FUNC( NtUserSetTimer );
+ }
+ 
+ HWINEVENTHOOK SYSCALL_API NtUserSetWinEventHook( DWORD event_min, DWORD event_max, HMODULE inst,
+                                                  UNICODE_STRING *module, WINEVENTPROC proc,
+                                                  DWORD pid, DWORD tid, DWORD flags )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserSetWinEventHook );
++    SYSCALL_FUNC( NtUserSetWinEventHook );
+ }
+ 
+ LONG SYSCALL_API NtUserSetWindowLong( HWND hwnd, INT offset, LONG newval, BOOL ansi )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserSetWindowLong );
++    SYSCALL_FUNC( NtUserSetWindowLong );
+ }
+ 
+ LONG_PTR SYSCALL_API NtUserSetWindowLongPtr( HWND hwnd, INT offset, LONG_PTR newval, BOOL ansi )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserSetWindowLongPtr );
++    SYSCALL_FUNC( NtUserSetWindowLongPtr );
+ }
+ 
+ BOOL SYSCALL_API NtUserSetWindowPlacement( HWND hwnd, const WINDOWPLACEMENT *wpl )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserSetWindowPlacement );
++    SYSCALL_FUNC( NtUserSetWindowPlacement );
+ }
+ 
+ BOOL SYSCALL_API NtUserSetWindowPos( HWND hwnd, HWND after, INT x, INT y, INT cx, INT cy, UINT flags )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserSetWindowPos );
++    SYSCALL_FUNC( NtUserSetWindowPos );
+ }
+ 
+ int SYSCALL_API NtUserSetWindowRgn( HWND hwnd, HRGN hrgn, BOOL redraw )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserSetWindowRgn );
++    SYSCALL_FUNC( NtUserSetWindowRgn );
+ }
+ 
+ WORD SYSCALL_API NtUserSetWindowWord( HWND hwnd, INT offset, WORD newval )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserSetWindowWord );
++    SYSCALL_FUNC( NtUserSetWindowWord );
+ }
+ 
+ HHOOK SYSCALL_API NtUserSetWindowsHookEx( HINSTANCE inst, UNICODE_STRING *module, DWORD tid, INT id,
+                                           HOOKPROC proc, BOOL ansi )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserSetWindowsHookEx );
++    SYSCALL_FUNC( NtUserSetWindowsHookEx );
+ }
+ 
+ BOOL SYSCALL_API NtUserShowCaret( HWND hwnd )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserShowCaret );
++    SYSCALL_FUNC( NtUserShowCaret );
+ }
+ 
+ INT SYSCALL_API NtUserShowCursor( BOOL show )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserShowCursor );
++    SYSCALL_FUNC( NtUserShowCursor );
+ }
+ 
+ BOOL SYSCALL_API NtUserShowScrollBar( HWND hwnd, INT bar, BOOL show )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserShowScrollBar );
++    SYSCALL_FUNC( NtUserShowScrollBar );
+ }
+ 
+ BOOL SYSCALL_API NtUserShowWindow( HWND hwnd, INT cmd )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserShowWindow );
++    SYSCALL_FUNC( NtUserShowWindow );
+ }
+ 
+ BOOL SYSCALL_API NtUserShowWindowAsync( HWND hwnd, INT cmd )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserShowWindowAsync );
++    SYSCALL_FUNC( NtUserShowWindowAsync );
+ }
+ 
+ BOOL SYSCALL_API NtUserSystemParametersInfo( UINT action, UINT val, void *ptr, UINT winini )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserSystemParametersInfo );
++    SYSCALL_FUNC( NtUserSystemParametersInfo );
+ }
+ 
+ BOOL SYSCALL_API NtUserSystemParametersInfoForDpi( UINT action, UINT val, PVOID ptr, UINT winini, UINT dpi )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserSystemParametersInfoForDpi );
++    SYSCALL_FUNC( NtUserSystemParametersInfoForDpi );
+ }
+ 
+ BOOL SYSCALL_API NtUserThunkedMenuInfo( HMENU menu, const MENUINFO *info )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserThunkedMenuInfo );
++    SYSCALL_FUNC( NtUserThunkedMenuInfo );
+ }
+ 
+ UINT SYSCALL_API NtUserThunkedMenuItemInfo( HMENU handle, UINT pos, UINT flags, UINT method,
+                                             MENUITEMINFOW *info, UNICODE_STRING *str )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserThunkedMenuItemInfo );
++    SYSCALL_FUNC( NtUserThunkedMenuItemInfo );
+ }
+ 
+ INT SYSCALL_API NtUserToUnicodeEx( UINT virt, UINT scan, const BYTE *state,
+                                    WCHAR *str, int size, UINT flags, HKL layout )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserToUnicodeEx );
++    SYSCALL_FUNC( NtUserToUnicodeEx );
+ }
+ 
+ BOOL SYSCALL_API NtUserTrackMouseEvent( TRACKMOUSEEVENT *info )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserTrackMouseEvent );
++    SYSCALL_FUNC( NtUserTrackMouseEvent );
+ }
+ 
+ BOOL SYSCALL_API NtUserTrackPopupMenuEx( HMENU handle, UINT flags, INT x, INT y, HWND hwnd,
+                                          TPMPARAMS *params )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserTrackPopupMenuEx );
++    SYSCALL_FUNC( NtUserTrackPopupMenuEx );
+ }
+ 
+ INT SYSCALL_API NtUserTranslateAccelerator( HWND hwnd, HACCEL accel, MSG *msg )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserTranslateAccelerator );
++    SYSCALL_FUNC( NtUserTranslateAccelerator );
+ }
+ 
+ BOOL SYSCALL_API NtUserTranslateMessage( const MSG *msg, UINT flags )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserTranslateMessage );
++    SYSCALL_FUNC( NtUserTranslateMessage );
+ }
+ 
+ BOOL SYSCALL_API NtUserUnhookWinEvent( HWINEVENTHOOK handle )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserUnhookWinEvent );
++    SYSCALL_FUNC( NtUserUnhookWinEvent );
+ }
+ 
+ BOOL SYSCALL_API NtUserUnhookWindowsHookEx( HHOOK handle )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserUnhookWindowsHookEx );
++    SYSCALL_FUNC( NtUserUnhookWindowsHookEx );
+ }
+ 
+ BOOL SYSCALL_API NtUserUnregisterClass( UNICODE_STRING *name, HINSTANCE instance,
+                                         struct client_menu_name *client_menu_name )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserUnregisterClass );
++    SYSCALL_FUNC( NtUserUnregisterClass );
+ }
+ 
+ BOOL SYSCALL_API NtUserUnregisterHotKey( HWND hwnd, INT id )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserUnregisterHotKey );
++    SYSCALL_FUNC( NtUserUnregisterHotKey );
+ }
+ 
+ BOOL SYSCALL_API NtUserUpdateInputContext( HIMC handle, UINT attr, UINT_PTR value )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserUpdateInputContext );
++    SYSCALL_FUNC( NtUserUpdateInputContext );
+ }
+ 
+ BOOL SYSCALL_API NtUserUpdateLayeredWindow( HWND hwnd, HDC hdc_dst, const POINT *pts_dst, const SIZE *size,
+                                             HDC hdc_src, const POINT *pts_src, COLORREF key,
+                                             const BLENDFUNCTION *blend, DWORD flags, const RECT *dirty )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserUpdateLayeredWindow );
++    SYSCALL_FUNC( NtUserUpdateLayeredWindow );
+ }
+ 
+ BOOL SYSCALL_API NtUserValidateRect( HWND hwnd, const RECT *rect )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserValidateRect );
++    SYSCALL_FUNC( NtUserValidateRect );
+ }
+ 
+ WORD SYSCALL_API NtUserVkKeyScanEx( WCHAR chr, HKL layout )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserVkKeyScanEx );
++    SYSCALL_FUNC( NtUserVkKeyScanEx );
+ }
+ 
+ DWORD SYSCALL_API NtUserWaitForInputIdle( HANDLE process, DWORD timeout, BOOL wow )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserWaitForInputIdle );
++    SYSCALL_FUNC( NtUserWaitForInputIdle );
+ }
+ 
+ BOOL SYSCALL_API NtUserWaitMessage(void)
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserWaitMessage );
++    SYSCALL_FUNC( NtUserWaitMessage );
+ }
+ 
+ HWND SYSCALL_API NtUserWindowFromDC( HDC hdc )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserWindowFromDC );
++    SYSCALL_FUNC( NtUserWindowFromDC );
+ }
+ 
+ HWND SYSCALL_API NtUserWindowFromPoint( LONG x, LONG y )
+ {
+-    __ASM_SYSCALL_FUNC( __id_NtUserWindowFromPoint );
++    SYSCALL_FUNC( NtUserWindowFromPoint );
+ }
+ 
+ BOOL SYSCALL_API __wine_get_file_outline_text_metric( const WCHAR *path, TEXTMETRICW *otm,
+                                                       UINT *em_square, WCHAR *face_name )
+ {
+-    __ASM_SYSCALL_FUNC( __id___wine_get_file_outline_text_metric );
++    SYSCALL_FUNC( __wine_get_file_outline_text_metric );
+ }
+ 
+ BOOL SYSCALL_API __wine_get_icm_profile( HDC hdc, BOOL allow_default, DWORD *size, WCHAR *filename )
+ {
+-    __ASM_SYSCALL_FUNC( __id___wine_get_icm_profile );
++    SYSCALL_FUNC( __wine_get_icm_profile );
+ }
+ 
+ BOOL SYSCALL_API __wine_send_input( HWND hwnd, const INPUT *input, const RAWINPUT *rawinput )
+ {
+-    __ASM_SYSCALL_FUNC( __id___wine_send_input );
++    SYSCALL_FUNC( __wine_send_input );
+ }
+ 
+ #else /*  __arm64ec__ */
+
 --- a/dlls/winecrt0/arm64ec.c	2025-01-20 21:30:19.000000000 +0000
 +++ b/dlls/winecrt0/arm64ec.c	2026-11-13 09:11:54.839471627 +0000
 @@ -24,7 +24,6 @@
@@ -7733,9 +10417,10 @@
 # build 的该提交（p9 spec32.c 无 output_load_config），删块会让所有 EC 模
 # 块链接失败（lld-link: EC version of '_load_config_used' is missing）——
 # 保留 wine-9 的 CRT 内联块（见文件头【修法】5 的例外说明）。
+
 --- a/dlls/wow64/process.c	2025-01-20 21:30:19.000000000 +0000
-+++ b/dlls/wow64/process.c	2026-11-13 09:11:54.820471520 +0000
-@@ -1027,12 +1027,17 @@
++++ b/dlls/wow64/process.c	2026-11-14 00:00:00.000000000 +0000
+@@ -1027,12 +1027,21 @@
  /**********************************************************************
   *           wow64_NtSuspendThread
   */
@@ -7749,11 +10434,15 @@
      HANDLE handle = get_handle( &args );
      ULONG *count = get_ptr( &args );
  
--    return NtSuspendThread( handle, count );
++#if defined(__aarch64__) || defined(__arm64ec__) /* anwind: suspend pipeline (FEX/HODLL64) - aarch64+EC passes */
 +    return RtlWow64SuspendThread( handle, count );
++#else /* anwind: wine-10 form - the x86_64 host pass has no RtlWow64SuspendThread */
+     return NtSuspendThread( handle, count );
++#endif
  }
  
  
+
 --- a/dlls/wow64/syscall.c	2025-01-20 21:30:19.000000000 +0000
 +++ b/dlls/wow64/syscall.c	2026-11-13 09:11:54.821471526 +0000
 @@ -99,6 +99,7 @@
@@ -7784,6 +10473,7 @@
 +{
 +    return pBTCpuSuspendLocalThread( thread, count );
 +}
+
 --- a/dlls/wow64/wow64.spec	2025-01-20 21:30:19.000000000 +0000
 +++ b/dlls/wow64/wow64.spec	2026-11-13 09:11:54.820471520 +0000
 @@ -22,7 +22,7 @@
@@ -7795,6 +10485,7 @@
  @ stdcall -norelay Wow64SystemServiceEx(long ptr)
  @ stub Wow64ValidateUserCallTarget
  @ stub Wow64ValidateUserCallTargetFilter
+
 --- a/dlls/xtajit64/Makefile.in	1970-01-01 00:00:00.000000000 +0000
 +++ b/dlls/xtajit64/Makefile.in	2026-11-13 09:11:54.839471627 +0000
 @@ -0,0 +1,8 @@
@@ -7806,6 +10497,7 @@
 +
 +SOURCES = \
 +	cpu.c
+
 --- a/dlls/xtajit64/cpu.c	1970-01-01 00:00:00.000000000 +0000
 +++ b/dlls/xtajit64/cpu.c	2026-11-13 09:11:54.839471627 +0000
 @@ -0,0 +1,250 @@
@@ -8059,6 +10751,7 @@
 +    if (reason == DLL_PROCESS_ATTACH) LdrDisableThreadCalloutsForDll( inst );
 +    return TRUE;
 +}
+
 --- a/dlls/xtajit64/xtajit64.spec	1970-01-01 00:00:00.000000000 +0000
 +++ b/dlls/xtajit64/xtajit64.spec	2026-11-13 09:11:54.839471627 +0000
 @@ -0,0 +1,20 @@
@@ -8082,6 +10775,7 @@
 +@ stdcall ThreadInit()
 +@ stdcall ThreadTerm(ptr long)
 +@ stdcall UpdateProcessorInformation(ptr)
+
 --- a/include/ntstatus.h	2025-01-20 21:30:19.000000000 +0000
 +++ b/include/ntstatus.h	2026-11-13 09:11:58.191490382 +0000
 @@ -139,6 +139,9 @@
@@ -8094,6 +10788,7 @@
  #define STATUS_WAKE_SYSTEM               ((NTSTATUS) 0x40000294)
  #define STATUS_DS_SHUTTING_DOWN          ((NTSTATUS) 0x40000370)
  
+
 --- a/include/wine/asm.h	2025-01-20 21:30:19.000000000 +0000
 +++ b/include/wine/asm.h	2026-11-13 09:11:54.785471325 +0000
 @@ -71,6 +71,14 @@
@@ -8188,6 +10883,7 @@
  #elif defined __x86_64__
  /* Chromium depends on syscall thunks having the same form as on
   * Windows. For 64-bit systems the only viable form we can emulate is
+
 --- a/include/wine/server_protocol.h	2025-01-20 21:30:19.000000000 +0000
 +++ b/include/wine/server_protocol.h	2026-11-13 09:11:58.160490208 +0000
 @@ -844,7 +844,8 @@
@@ -8200,9 +10896,87 @@
      unsigned char  image_flags;
      unsigned int   loader_flags;
      unsigned int   header_size;
+
 --- a/include/winnt.h	2025-01-20 21:30:19.000000000 +0000
-+++ b/include/winnt.h	2026-11-13 09:11:58.190490376 +0000
-@@ -1946,7 +1946,7 @@
++++ b/include/winnt.h	2026-11-14 00:00:00.000000000 +0000
+@@ -1402,6 +1402,21 @@
+ #define CONTEXT_ALL CONTEXT_AMD64_ALL
+ 
+ typedef AMD64_CONTEXT CONTEXT, *PCONTEXT;
++
++/* anwind backport (wine-10): scope table alias for the __x86_64__ view
++ * (arm64ec translation units define __x86_64__, not __aarch64__) */
++typedef struct _SCOPE_TABLE_AMD64
++{
++    DWORD Count;
++    struct
++    {
++        DWORD BeginAddress;
++        DWORD EndAddress;
++        DWORD HandlerAddress;
++        DWORD JumpTarget;
++    } ScopeRecord[1];
++} SCOPE_TABLE_AMD64, *PSCOPE_TABLE_AMD64;
++typedef SCOPE_TABLE_AMD64 SCOPE_TABLE, *PSCOPE_TABLE;
+ typedef AMD64_RUNTIME_FUNCTION RUNTIME_FUNCTION, *PRUNTIME_FUNCTION;
+ 
+ typedef struct _KNONVOLATILE_CONTEXT_POINTERS
+@@ -1700,6 +1715,20 @@
+     } DUMMYUNIONNAME;
+ } IMAGE_ARM64_RUNTIME_FUNCTION_ENTRY, *PIMAGE_ARM64_RUNTIME_FUNCTION_ENTRY;
+ 
++typedef union IMAGE_ARM64_RUNTIME_FUNCTION_ENTRY_XDATA
++{
++    DWORD HeaderData;
++    struct
++    {
++        DWORD FunctionLength : 18;
++        DWORD Version : 2;
++        DWORD ExceptionDataPresent : 1;
++        DWORD EpilogInHeader : 1;
++        DWORD EpilogCount : 5;
++        DWORD CodeWords : 5;
++    } DUMMYSTRUCTNAME;
++} IMAGE_ARM64_RUNTIME_FUNCTION_ENTRY_XDATA; /* anwind backport (wine-10) */
++
+ typedef IMAGE_ARM64_RUNTIME_FUNCTION_ENTRY ARM64_RUNTIME_FUNCTION, *PARM64_RUNTIME_FUNCTION;
+ 
+ typedef union _ARM64_NT_NEON128
+@@ -1715,6 +1744,33 @@
+     BYTE  B[16];
+ } ARM64_NT_NEON128, *PARM64_NT_NEON128;
+ 
++/* anwind backport (wine-10): unguarded like the rest of the ARM64_NT_*
++ * family, so arm64ec translation units (which define __x86_64__, not
++ * __aarch64__) can see it; same placement family as upstream wine-10 */
++typedef struct _KNONVOLATILE_CONTEXT_POINTERS_ARM64
++{
++    PDWORD64 X19;
++    PDWORD64 X20;
++    PDWORD64 X21;
++    PDWORD64 X22;
++    PDWORD64 X23;
++    PDWORD64 X24;
++    PDWORD64 X25;
++    PDWORD64 X26;
++    PDWORD64 X27;
++    PDWORD64 X28;
++    PDWORD64 Fp;
++    PDWORD64 Lr;
++    PDWORD64 D8;
++    PDWORD64 D9;
++    PDWORD64 D10;
++    PDWORD64 D11;
++    PDWORD64 D12;
++    PDWORD64 D13;
++    PDWORD64 D14;
++    PDWORD64 D15;
++} KNONVOLATILE_CONTEXT_POINTERS_ARM64, *PKNONVOLATILE_CONTEXT_POINTERS_ARM64;
++
+ typedef struct DECLSPEC_ALIGN(16) _ARM64_NT_CONTEXT
+ {
+     ULONG ContextFlags;                 /* 000 */
+@@ -1946,7 +2002,7 @@
  #define WOW64_MAXIMUM_SUPPORTED_EXTENSION 512
  
  #ifdef __x86_64__
@@ -8211,7 +10985,7 @@
  #endif
  
  /* Exception definitions */
-@@ -1961,6 +1961,38 @@
+@@ -1961,6 +2017,38 @@
  typedef EXCEPTION_DISPOSITION WINAPI EXCEPTION_ROUTINE(struct _EXCEPTION_RECORD*,PVOID,CONTEXT*,PVOID);
  typedef EXCEPTION_ROUTINE *PEXCEPTION_ROUTINE;
  
@@ -8250,7 +11024,7 @@
  #ifdef __x86_64__
  
  #define UNWIND_HISTORY_TABLE_SIZE 12
-@@ -1999,6 +2031,30 @@
+@@ -1999,6 +2087,30 @@
      DWORD                 Fill0;
  } DISPATCHER_CONTEXT, *PDISPATCHER_CONTEXT;
  
@@ -8281,7 +11055,16 @@
  typedef LONG (CALLBACK *PEXCEPTION_FILTER)(struct _EXCEPTION_POINTERS*,PVOID);
  typedef void (CALLBACK *PTERMINATION_HANDLER)(BOOLEAN,PVOID);
  
-@@ -4045,6 +4101,15 @@
+@@ -2108,7 +2220,7 @@
+ typedef PRUNTIME_FUNCTION (CALLBACK *PGET_RUNTIME_FUNCTION_CALLBACK)(DWORD_PTR,PVOID);
+ 
+ NTSYSAPI BOOLEAN CDECL  RtlAddFunctionTable(RUNTIME_FUNCTION*,DWORD,DWORD_PTR);
+-NTSYSAPI DWORD   WINAPI RtlAddGrowableFunctionTable(void**,PRUNTIME_FUNCTION,DWORD,DWORD,ULONG_PTR,ULONG_PTR);
++NTSYSAPI LONG WINAPI RtlAddGrowableFunctionTable(void**,PRUNTIME_FUNCTION,ULONG,ULONG,ULONG_PTR,ULONG_PTR); /* anwind backport (wine-10): NTSTATUS (=== LONG, not yet defined here) + ULONG */
+ NTSYSAPI BOOLEAN CDECL  RtlDeleteFunctionTable(RUNTIME_FUNCTION*);
+ NTSYSAPI void    WINAPI RtlDeleteGrowableFunctionTable(void*);
+ NTSYSAPI void    WINAPI RtlGrowFunctionTable(void*,DWORD);
+@@ -4045,6 +4157,15 @@
      ULONG  ExtraRFETableSize;
      ULONG  __os_arm64x_dispatch_fptr;
      ULONG  AuxiliaryIATCopy;
@@ -8297,6 +11080,7 @@
  } IMAGE_ARM64EC_METADATA;
  
  typedef struct _IMAGE_ARM64EC_REDIRECTION_ENTRY
+
 --- a/include/winternl.h	2025-01-20 21:30:19.000000000 +0000
 +++ b/include/winternl.h	2026-11-13 09:11:58.191490382 +0000
 @@ -304,6 +304,17 @@
@@ -8354,6 +11138,7 @@
  } CROSS_PROCESS_NOTIFICATION;
  
  #define CROSS_PROCESS_LIST_FLUSH 0x80000000
+
 --- a/loader/wine.inf.in	2025-01-20 21:30:19.000000000 +0000
 +++ b/loader/wine.inf.in	2026-11-13 09:11:54.840471632 +0000
 @@ -450,6 +450,7 @@
@@ -8364,6 +11149,7 @@
  HKLM,Software\Microsoft\Wow64\arm,,2,"wowarmhw.dll"
  HKLM,Software\Microsoft\Wow64\x86,,2,"xtajit.dll"
  
+
 --- a/server/mapping.c	2025-01-20 21:30:19.000000000 +0000
 +++ b/server/mapping.c	2026-11-13 09:11:54.846471666 +0000
 @@ -721,6 +721,39 @@
@@ -8440,6 +11226,7 @@
      if (!build_shared_mapping( mapping, unix_fd, sec, nt.FileHeader.NumberOfSections ))
          return STATUS_INVALID_FILE_FOR_SECTION;
  
+
 --- a/server/protocol.def	2025-01-20 21:30:19.000000000 +0000
 +++ b/server/protocol.def	2026-11-13 09:11:54.843471649 +0000
 @@ -873,7 +873,8 @@
@@ -8452,8 +11239,9 @@
      unsigned char  image_flags;
      unsigned int   loader_flags;
      unsigned int   header_size;
+
 --- a/tools/makedep.c	2025-01-20 21:30:19.000000000 +0000
-+++ b/tools/makedep.c	2026-11-13 09:11:54.739471068 +0000
++++ b/tools/makedep.c	2026-11-14 00:00:00.000000000 +0000
 @@ -101,6 +101,7 @@
  #define FLAG_C_IMPLIB       0x040000  /* file is part of an import library */
  #define FLAG_C_UNIX         0x080000  /* file is part of a Unix library */
@@ -8692,7 +11480,7 @@
  
      strarray_add( &make->clean_files, name );
      if (needs_delay_lib( make, arch ))
-@@ -3461,14 +3529,16 @@
+@@ -3461,14 +3529,17 @@
      }
      output( "%s: %s %s", obj_dir_path( make, name ), tools_path( make, "winebuild" ), spec_file );
      output_filenames_obj_dir( make, make->implib_files[arch] );
@@ -8703,6 +11491,7 @@
 -    output_filenames( target_flags[arch] );
 +    output_filenames( target_flags[hybrid_arch ? hybrid_arch : arch] ); /* anwind backport (wine-10) */
      if (make->is_win16) output_filename( "-m16" );
++    if (hybrid_arch) output_filenames( hybrid_target_flags[hybrid_arch] ); /* anwind backport (wine-10): -marm64x import lib */
      output_filename( "--export" );
      output_filename( spec_file );
      output_filenames_obj_dir( make, make->implib_files[arch] );
@@ -8710,7 +11499,7 @@
      output( "\n" );
  
      add_install_rule( make, make->importlib, arch, name,
-@@ -3512,15 +3582,20 @@
+@@ -3512,15 +3583,20 @@
  static void output_static_lib( struct makefile *make, unsigned int arch )
  {
      const char *name = strmake( "%s%s", arch_dirs[arch], make->staticlib );
@@ -8732,7 +11521,7 @@
      if (!arch) output_filenames_obj_dir( make, make->unixobj_files );
      output( "\n" );
      if (!make->extlib)
-@@ -3542,6 +3617,9 @@
+@@ -3542,6 +3618,9 @@
      struct strarray all_libs = empty_strarray;
      struct makefile *parent = get_parent_makefile( make );
      const char *debug_file;
@@ -8742,7 +11531,7 @@
  
      strarray_addall( &all_libs, add_import_libs( make, &dep_libs, make->imports, IMPORT_TYPE_DIRECT, arch ) );
      strarray_addall( &all_libs, add_import_libs( make, &dep_libs, default_imports, IMPORT_TYPE_DEFAULT, arch ) );
-@@ -3549,9 +3627,10 @@
+@@ -3549,9 +3628,10 @@
      strarray_add( &make->all_targets[arch], testmodule );
      strarray_add( &make->clean_files, stripped );
      output( "%s:\n", obj_dir_path( make, testmodule ));
@@ -8754,7 +11543,7 @@
      output_filenames_obj_dir( make, make->res_files[arch] );
      if ((debug_file = get_debug_file( make, testmodule, arch )))
          output_filename( strmake( "-Wl,--debug-file,%s", obj_dir_path( make, debug_file )));
-@@ -4404,7 +4483,7 @@
+@@ -4404,7 +4484,7 @@
  {
      const char *makeflags = getenv( "MAKEFLAGS" );
      const char *target, *tmp;
@@ -8763,7 +11552,7 @@
  
      if (makeflags) parse_makeflags( makeflags );
  
-@@ -4485,6 +4564,14 @@
+@@ -4485,6 +4565,14 @@
      strarray_add( &archs, get_expanded_make_variable( top_makefile, "HOST_ARCH" ));
      strarray_addall( &archs, get_expanded_make_var_array( top_makefile, "PE_ARCHS" ));
  
@@ -8778,6 +11567,7 @@
      arch_dirs[0] = "";
      arch_pe_dirs[0] = strmake( "%s-windows/", archs.str[0] );
      arch_install_dirs[0] = unix_lib_supported ? strmake( "$(dlldir)/%s-unix/", archs.str[0] ) : "$(dlldir)/";
+
 --- a/tools/winebuild/build.h	2025-01-20 21:30:19.000000000 +0000
 +++ b/tools/winebuild/build.h	2026-11-13 09:11:54.758471174 +0000
 @@ -367,6 +367,7 @@
@@ -8788,6 +11578,61 @@
  extern int safe_seh;
  extern int prefer_native;
  extern int data_only;
+
+--- a/tools/winebuild/import.c	2025-01-20 21:30:19.000000000 +0000
++++ b/tools/winebuild/import.c	2026-11-14 00:00:00.000000000 +0000
+@@ -1468,17 +1468,50 @@
+ {
+     struct strarray args;
+     char *def_file;
++    char *native_def_file = NULL; /* anwind backport (wine-10): ARM64X */
+ 
+     def_file = open_temp_output_file( ".def" );
+     output_def_file( spec, 1 );
+     fclose( output_file );
+ 
++    /* anwind backport (wine-10): with -marm64x also emit the native (non-EC)
++     * view of the exports and pass it to dlltool as -N, so the import library
++     * carries both machine views (ARM64X). wine-10 keeps this view in
++     * spec->native_exports filled by assign_exports(); the 9.x-era parser
++     * filters arch-restricted entries per target.cpu at parse time, so
++     * re-parsing the spec with target.cpu = native_arch yields the same
++     * native export view. */
++    if (native_arch != -1 && spec_file_name)
++    {
++        struct target orig_target = target;
++        DLLSPEC *native_spec = alloc_dll_spec();
++        FILE *native_input = open_input_file( NULL, spec_file_name );
++
++        if (native_input)
++        {
++            target.cpu = native_arch;
++            parse_spec_file( native_input, native_spec );
++            close_input_file( native_input );
++            target = orig_target;
++            if (!native_spec->file_name) native_spec->file_name = xstrdup( spec->file_name );
++            native_def_file = open_temp_output_file( ".def" );
++            output_def_file( native_spec, 1 );
++            fclose( output_file );
++        }
++        else target = orig_target;
++    }
++
+     args = find_tool( "dlltool", NULL );
+     strarray_add( &args, "-k" );
+     strarray_add( &args, strendswith( lib_name, ".delay.a" ) ? "-y" : "-l" );
+     strarray_add( &args, lib_name );
+     strarray_add( &args, "-d" );
+     strarray_add( &args, def_file );
++    if (native_def_file) /* anwind backport (wine-10): ARM64X native view */
++    {
++        strarray_add( &args, "-N" );
++        strarray_add( &args, native_def_file );
++    }
+ 
+     switch (target.cpu)
+     {
+
 --- a/tools/winebuild/main.c	2025-01-20 21:30:19.000000000 +0000
 +++ b/tools/winebuild/main.c	2026-11-13 09:11:54.757471168 +0000
 @@ -43,6 +43,7 @@
@@ -8806,8 +11651,9 @@
          else if (!strncmp( optarg, "cpu=", 4 )) cpu_option = xstrdup( optarg + 4 );
          else if (!strncmp( optarg, "fpu=", 4 )) fpu_option = xstrdup( optarg + 4 );
          else if (!strncmp( optarg, "arch=", 5 )) arch_option = xstrdup( optarg + 5 );
+
 --- a/tools/winegcc/winegcc.c	2025-01-20 21:30:19.000000000 +0000
-+++ b/tools/winegcc/winegcc.c	2026-11-13 09:11:54.765471213 +0000
++++ b/tools/winegcc/winegcc.c	2026-11-14 00:00:00.000000000 +0000
 @@ -157,6 +157,7 @@
      enum processor processor;
      struct target target;
@@ -8913,7 +11759,7 @@
 -                                   struct strarray files, struct strarray lib_dirs, const char *entry_point )
 +static void build_spec_obj( struct options *opts, const char *spec_file, const char *output_file,
 +                           const char *target, struct strarray files, struct strarray lib_dirs,
-+                           const char *entry_point, struct strarray *spec_objs ) /* anwind backport (wine-10) */
++                           struct strarray resources, const char *entry_point, struct strarray *spec_objs ) /* anwind backport (wine-10) */
  {
      unsigned int i;
      int is_pe = is_pe_target( opts );
@@ -8940,7 +11786,18 @@
      if (!is_pe)
      {
          if (opts->pic) strarray_add(&spec_args, "-fPIC");
-@@ -1040,14 +1043,14 @@
+@@ -1021,9 +1024,7 @@
+             strarray_add(&spec_args, strmake("-d%s", opts->delayimports.str[i]));
+     }
+ 
+-    /* add resource files */
+-    for (i = 0; i < files.count; i++)
+-	if (files.str[i][1] == 'r') strarray_add(&spec_args, files.str[i]);
++    strarray_addall( &spec_args, resources ); /* anwind backport (wine-10): caller decides which view carries resources */
+ 
+     /* add other files */
+     strarray_add(&spec_args, "--");
+@@ -1040,14 +1041,14 @@
      }
  
      spawn(opts->prefix, spec_args, 0);
@@ -8957,36 +11814,45 @@
  
      strarray_add(&spec_args, opts->shared ? "--dll" : "--exe");
      strarray_add(&spec_args, "-o");
-@@ -1070,8 +1073,9 @@
+@@ -1070,8 +1071,11 @@
      struct strarray lib_dirs = empty_strarray;
      struct strarray files = empty_strarray;
      struct strarray link_args;
 +    struct strarray spec_objs = empty_strarray; /* anwind backport (wine-10) */
++    struct strarray resources = empty_strarray; /* anwind backport (wine-10) */
++    unsigned int i; /* anwind backport (wine-10): resource collection */
      char *output_file, *output_path;
 -    const char *spec_o_name = NULL, *libgcc = NULL;
 +    const char *libgcc = NULL;
      const char *output_name, *spec_file, *lang;
      int generate_app_loader = 1;
      const char *crt_lib = NULL, *entry_point = NULL;
-@@ -1225,7 +1229,16 @@
+@@ -1225,7 +1229,23 @@
          build_data_lib( opts, spec_file, output_file, files );
          return;
      }
 -    spec_o_name = build_spec_obj( opts, spec_file, output_file, files, lib_dirs, entry_point );
 +    /* anwind backport (wine-10): build the spec object for the target, and for
 +     * ARM64X hybrid builds a second one for the native (aarch64) view. */
-+    build_spec_obj( opts, spec_file, output_file, opts->target_alias, files, lib_dirs, entry_point, &spec_objs );
++    /* anwind backport (wine-10): collect the resource files once; only the
++     * first (EC view) spec object may carry them - the native view spec.o
++     * must not embed .rsrc (lld-link: "more than one resource obj file not
++     * allowed" on ARM64X merged images). */
++    for (i = 0; i < files.count; i++)
++	if (files.str[i][1] == 'r') strarray_add( &resources, files.str[i] );
++
++    build_spec_obj( opts, spec_file, output_file, opts->target_alias, files, lib_dirs, resources, entry_point, &spec_objs );
 +    if (opts->native_arch)
 +    {
 +        const char *suffix = strchr( opts->target_alias, '-' );
 +        if (!suffix) suffix = "";
 +        build_spec_obj( opts, spec_file, output_file, strmake( "%s%s", opts->native_arch, suffix ),
-+                        files, empty_strarray, entry_point, &spec_objs );
++                        files, empty_strarray, empty_strarray, entry_point, &spec_objs );
 +    }
  
      if (opts->fake_module) return;  /* nothing else to do */
  
-@@ -1265,7 +1278,10 @@
+@@ -1265,7 +1285,10 @@
                                              entry_point));
      }
  
@@ -8998,7 +11864,7 @@
  
      if (is_pe)
      {
-@@ -1341,7 +1357,7 @@
+@@ -1341,7 +1364,7 @@
  
      if (opts->debug_file && !strendswith(opts->debug_file, ".pdb"))
      {
@@ -9007,7 +11873,7 @@
  
          tool = empty_strarray;
          strarray_addall( &tool, objcopy );
-@@ -1371,10 +1387,10 @@
+@@ -1371,10 +1394,10 @@
          if (!spec_file)
              error("--out-implib requires a .spec or .def file\n");
  
@@ -9021,7 +11887,7 @@
          strarray_add( &implib_args, strmake( "--ld-cmd=%s", strarray_tostring( tool, " " )));
  
          strarray_add(&implib_args, "--implib");
-@@ -1702,6 +1718,11 @@
+@@ -1702,6 +1725,11 @@
  			raw_linker_arg = 1;
                          raw_winebuild_arg = 1;
                      }

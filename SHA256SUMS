@@ -1,4 +1,3 @@
-cfdeffab9fac8137324b9e8ea67bdd883a56d28a91e3e33a1e1db11f07ee21b0  ./.github/workflows/build-wine-bionic.yml
-59de68773514ef336d67040c732503dcc13285ddb70ab44df15fc6452c5bf13b  ./README-安装说明.md
-d8e2026a5c8f6d02638437264d8dc90aac9b6690b89938b11a6499a61c54fb32  ./bionic-rootfs/projects/hangover-wine/0025-backport-arm64ec-wine10-proton9.patch.proton
-d2db888ec04dcb46ee4d50ecc832b7d4f0dc28be4e54ed586132db2d12a0ca2c  ./bionic-rootfs/projects/hangover-wine/build.sh
+82fcf9e3f901e5e183b458419b63d2ad472f5c0f07dc110a95fe0054a9a9dc2b  bionic-rootfs/projects/hangover-wine/0025-backport-arm64ec-wine10-proton9.patch.proton
+2a0e5ebc918694f7cf0d81304e599aa8bc60d5e95c444885b95291e4584950ca  bionic-rootfs/projects/hangover-wine/build.sh
+3bace6a50bb265258b62f9ec554f5fcc519695be32249154c7c6c70d3a5a3962  README.txt
