@@ -1,0 +1,60 @@
+From: AnWind <anwind@example.invalid>
+Subject: [PATCH 8/8] AnWind box64: gate SD845/SD865 cluster -mtune to GNU (NDK clang build fix)
+
+box64's SD845/SD865 platform branches set
+    set(CFLAGS -pipe -march=armv8.2-a+simd+crypto -mtune=cortex-a75.cortex-a55)
+The big.LITTLE cluster spelling of -mtune ("core.core") is understood by
+GCC only. Clang - including the NDK r29 clang of the bionic chain - has
+never accepted it and hard-errors:
+    clang: error: unsupported argument 'cortex-a75.cortex-a55'
+           to option '-mtune='
+(box64-build-log-aarch64(12).zip: the interpreter / test_interpreter
+targets die on src/emu/x64run.c at 2%, dynarec_native's sources carry
+ASMFLAGS instead and pass.)
+
+The reference yml set (-DSD845=ON -DSD865=ON -DSD888=ON -DSD8G2=ON)
+comes from the glibc-form workflow, whose GCC toolchain is fine with
+cluster -mtune; copying it into the NDK-clang bionic recipe broke the
+build. This patch keeps the exact same flag set working on both chains:
+the -DSD8xx preprocessor fast paths and the -march baseline stay for
+every compiler, the GCC-only cluster tune is appended only when
+CMAKE_C_COMPILER_ID is GNU (the same idiom upstream itself uses for the
+ASMFLAGS GNU<9 branch ten lines below). Glibc-form builds are therefore
+bit-identical (GNU keeps -mtune); bionic clang builds drop only the
+tune, which clang could not consume anyway.
+
+Version coverage: the set(CFLAGS ...) spelling is identical in v0.3.8
+and v0.4.4 (verified line-by-line) - the patch applies to both with
+--fuzz=0. v0.3.2 and older used add_definitions()/CMAKE_ASM_FLAGS
+instead; there the dry-run fails and the file is skipped whole -
+harmless (same skip semantics as 0002/0005/0007 twins).
+
+---
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -206,11 +206,22 @@
+     set(CFLAGS -pipe -march=armv8.1-a+crc+simd+crypto)
+ elseif(SD845)
+     add_definitions(-DSD845)
+-    set(CFLAGS -pipe -march=armv8.2-a+simd+crypto -mtune=cortex-a75.cortex-a55)
++    set(CFLAGS -pipe -march=armv8.2-a+simd+crypto)
++    if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
++        # AnWind: big.LITTLE cluster -mtune (cortex-a75.cortex-a55) is a
++        # GCC-only spelling; clang (NDK bionic chain) hard-errors with
++        # "unsupported argument 'cortex-a75.cortex-a55' to option '-mtune='"
++        # - keep the tune for GNU builds, clang runs the plain -march.
++        list(APPEND CFLAGS -mtune=cortex-a75.cortex-a55)
++    endif()
+ elseif(SD865)
+     add_definitions(-DSD865)
+     #note that cortex-a77.cortex-a55 is not supported, so fall back to a76 instead
+-    set(CFLAGS -pipe -march=armv8.2-a+simd+crypto -mtune=cortex-a76.cortex-a55)
++    set(CFLAGS -pipe -march=armv8.2-a+simd+crypto)
++    if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
++        # AnWind: same cluster -mtune gating as SD845 (GCC-only spelling).
++        list(APPEND CFLAGS -mtune=cortex-a76.cortex-a55)
++    endif()
+ elseif(SD888)
+     add_definitions(-DSD888)
+     set(CFLAGS -pipe -march=armv8.4-a+simd+crypto)

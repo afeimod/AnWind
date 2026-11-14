@@ -285,6 +285,21 @@ custom_patch() {
 # 分别激活（0001→静态 shm；0002/0003→RELR）。glibc 工作流另修 CWD
 # bug（cd box64 后 patch -d box64 解析为 box64/box64，v3.2.19 起补丁
 # 从未真正应用）。本配方 custom_patch() 无需改动。
+# v3.3.38（box64-build-log-aarch64(12).zip 实证）：glibc 双层 404 修复
+# 后构建推进到 box64 本体，2% 处折戟
+#   clang: error: unsupported argument 'cortex-a75.cortex-a55' to option '-mtune='
+# （interpreter / test_interpreter 目标编 src/emu/x64run.c 时）。根因：
+# v3.3.37 参考对齐轮照搬 glibc yml 的 -DSD845=ON 组到 NDK clang 链 ——
+# box64 CMake 平台分支里 SD845/SD865 会 set(CFLAGS ... -mtune=<big.LITTLE
+# 组合>)，该组合语法仅 GCC 认（glibc 链无恙的原因），clang 一律报
+# unsupported argument。dynarec_native 目标源文件只吃 ASMFLAGS
+# （-mcpu=cortex-a76，clang 安全）故先行编过，纯属错觉。修复：
+# 0008-anwind-clang-mtune-cluster-gate.patch 把两处 cluster -mtune 门禁到
+# CMAKE_C_COMPILER_ID STREQUAL "GNU"（上游自己在 ASMFLAGS GNU<9 分支的
+# 同款手法）：glibc 形态标志位逐比特不变；bionic clang 形态保留全部
+# -DSD8xx 快路径与 -march 基线，仅去掉 clang 消费不了的 tune。
+# 三树实测（fuzz=0 全序列）：v0.4.4 / v0.3.8 命中（两版该段文本逐字
+# 相同），v0.3.2 老式 add_definitions 布局按设计跳过（0007 同款语义）。
 # 参考 yml 对齐轮（build-box64.yml → 本配方）：
 # 参考 cmake 选项集（glibc 形态）为
 #   -DARM_DYNAREC=ON -DCMAKE_BUILD_TYPE=Release -DWINLATOR_GLIBC=ON
@@ -308,9 +323,21 @@ custom_patch() {
 #                             亦自动置 ON，显式写出对齐参考语义）
 #   SD845/SD865/SD888/SD8G2   ✓ 新增对齐 —— 骁龙平台 dynarec 快路径
 #                             预设（Termux/上游参考部署链默认开启组，
-#                             纯预处理器开关、与 ANDROID 模式正交）；
-#                             非 SD8xx 设备由 box64 运行时 CPU 探测
-#                             自动忽略，不影响兼容性
+#                             与 ANDROID 模式正交）；非 SD8xx 设备由
+#                             box64 运行时 CPU 探测自动忽略，不影响兼容
+#                             性。⚠ v3.3.38 勘误：并非"纯预处理器开关"
+#                             —— CMake 平台分支同时设置 CFLAGS，其中
+#                             SD845/SD865 的 big.LITTLE 组合 -mtune
+#                             （cortex-a75.cortex-a55 / a76.cortex-a55）
+#                             是 GCC 专属语法，NDK clang 直接
+#                             "unsupported argument ... to option '-mtune='"
+#                             （box64-build-log-aarch64(12).zip：interpreter/
+#                             test_interpreter 在 2% 处即死）。该组开关
+#                             从 glibc 参考链（GCC）照搬时踩坑；由
+#                             0008-anwind-clang-mtune-cluster-gate.patch
+#                             将 cluster -mtune 门禁到 GNU（glibc 形态
+#                             标志位逐比特不变，clang 形态仅去掉它本就
+#                             无法消费的 tune）。
 args="-DANDROID=ON -DARM64=ON -DBAD_SIGNAL=ON -DARM_DYNAREC=ON -DNOLOADADDR=ON -DSD845=ON -DSD865=ON -DSD888=ON -DSD8G2=ON"
 
 # 运行时配套闭包（见头部【deps 说明】：非编译期依赖，是保证
